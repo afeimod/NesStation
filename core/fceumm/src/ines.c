@@ -1373,9 +1373,26 @@ int iNESLoad(const char *name, FCEUFILE *fp)
    SetupCartPRGMapping(0, ROM, rom_size_pow2, 0);
 
    SetInput();
-   
-   if (iNESCart.iNES2 < 1)
-      CheckHInfo();
+
+   /* CheckHInfo applies the CRC32-based header correction table
+    * (ines-correct.h: mapper/mirroring/battery/region overrides for known
+    * dumps). The reference engine (FCEUX, as used by NostalgiaLite) runs
+    * this check UNCONDITIONALLY -- including NES 2.0 headers -- see fceux
+    * ines.cpp iNESLoad(): CheckHInfo() is called with no iNES2 guard.
+    *
+    * Guarding it away for NES 2.0 broke the large family of Chinese hack
+    * ROMs (Waixing FS303 / mapper 195 class: Captain Tsubasa Vol.II Chinese
+    * translation, Crystalis Chinese translation, ...) whose headers carry
+    * an ACCIDENTAL NES 2.0 marker (byte 7 bits 2-3 == 0b10, e.g. tools
+    * writing 0x08 there). For those, the correction table is the ONLY
+    * thing that routes the header's mapper 4 to the real mapper 195 board
+    * (which provides the $5000-$5FFF WRAM window and CHR-RAM banks 0-3
+    * the hacks require). Skipping the table left them on plain MMC3: the
+    * boot code probed the missing $5000 window, read open bus and hung
+    * with rendering disabled -- the permanent gray screen. The table only
+    * ever fires on an exact CRC32 match, so legitimately-marked NES 2.0
+    * ROMs that are not in the table are completely unaffected. */
+   CheckHInfo();
 
    {
       int x;

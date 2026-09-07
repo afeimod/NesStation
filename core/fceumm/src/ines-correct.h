@@ -812,6 +812,9 @@
 	{ 0xa925226c,  194, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Dai-2-Ji - Super Robot Taisen (Ch) [b1].nes */
 	{ 0x33c5df92,  195, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Captain Tsubasa Vol. II - Super Striker (Ch) [a1].nes */
 	{ 0x1bc0be6c,  195, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Captain Tsubasa Vol. II - Super Striker (Ch) [a3].nes */
+	{ 0x13E09D7A,    4, DEFAULT, 0,       DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* mapper 4 correction (from fceux table) */
+	{ 0x4E7729FF,  114, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Super Donkey Kong (from fceux table) */
+	{ 0x4E1C1E3C,  206, DEFAULT, 0,       DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Karnov (from fceux table) */
 	{ 0xd5224fde,  195, DEFAULT, DEFAULT, 1, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* God Slayer - Haruka Tenkuu no Sonata (Ch).nes */
 	{ 0xfdec419f,  196, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Street Fighter VI 16 Peoples (Unl) [!].nes */
 	{ 0x700705f4,  198, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* ---- */
