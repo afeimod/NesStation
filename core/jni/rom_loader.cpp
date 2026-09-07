@@ -621,38 +621,45 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
         std::fclose(f);
         if (rd != (size_t)sz) { retro_deinit(); return "Cannot read ROM file"; }
 
-        // === iNES Header Patching for Multicarts ===
-        // Many pirate multicarts (500-in-1, 1000000-in-1, COOLBOY etc.)
-        // ship with an iNES header whose PRG/CHR size byte is wrong —
-        // typically reporting 1MB PRG when the actual file is 2MB+.
-        // FCEUmm will silently truncate to the header-indicated size,
-        // reading only the first 1MB and leaving the upper banks
-        // inaccessible. The multicart menu then can't switch banks
-        // and the screen stays gray.
+        // === iNES Header Patching for Multicarts (whitelisted mappers ONLY) ===
+        // Some pirate multicart dumps (COOLBOY / MINDKIDS 500-in-1 etc.)
+        // carry an iNES header whose PRG size byte lies about the real
+        // mask-ROM size (typically reporting 1MB for a 2MB+ dump). FCEUmm
+        // loads only the header-indicated size, so the upper banks the
+        // multicart menu switches to are inaccessible and the screen stays
+        // gray. For THOSE mappers we patch the header's PRG size to cover
+        // the whole file.
         //
-        // Fix: if the file is larger than the iNES header claims, patch
-        // the header (in our in-memory copy) so the PRG_size field
-        // reflects the actual file size.
+        // CRITICAL: this patch must NOT run for ordinary mapper boards.
+        // Chinese hack ROMs (e.g. 天使之翼2中文版 Captain Tsubasa Vol.2,
+        // mapper 195 / Waixing FS303) legitimately carry trailing append
+        // data (extended font/translation tables) after the PRG+CHR body.
+        // Padding that data into the PRG size remaps the MMC3 fixed
+        // $E000-$FFFF window away from the real last bank, the reset
+        // vector goes wrong, and the game boots into a permanent gray
+        // screen. Reference engines (FCEUX as used by NostalgiaLite)
+        // simply load the header sizes and ignore trailing data, which is
+        // why those games play fine there. Verified experimentally:
+        //   clean 512KB mapper-195 ROM  -> boots OK
+        //   same ROM + 64KB tail        -> boots OK  (core ignores tail)
+        //   tail + header patched       -> reset vector garbage, gray
         //
-        // iNES header layout (16 bytes, matching FCEUmm's iNES_HEADER):
-        //   [0..3]   "NES\x1a" magic
-        //   [4]      PRG ROM size, low 8 bits (in 16KB units)
-        //   [5]      CHR ROM size, low 8 bits (in 8KB units)
-        //   [6]      flags 6 (mapper low 4 bits + mirroring + trainer + 4-screen)
-        //   [7]      flags 7 (mapper high 4 bits + NES2 marker bits 2-3)
-        //   [8]      NES 2.0: submapper (high nibble) + mapper bits 8-11 (low nibble)
-        //   [9]      NES 2.0: PRG size bits 8-11 (low nibble) + CHR size bits 8-11 (high nibble)
-        //   [10..15] NES 2.0: PRG RAM, CHR RAM, region, VS, misc, exp device
-        //
-        // PRG size encoding (NES 2.0):
-        //   12-bit merged value = byte4 | ((byte9 & 0x0F) << 8)
-        //   If merged < 0xF00:  PRG bytes = merged * 16KB    (up to ~60MB)
-        //   If merged >= 0xF00: exponent mode (rare; not used here)
-        //
-        // NES 2.0 identifier: byte 7 bits 2-3 == 0b10
-        //   (byte 7 & 0x0C) == 0x08
-        // We must set this marker so that byte 9's low nibble is read.
+        // Whitelist: 268 = COOLBOY / MINDKIDS, 269 = Games Xplosion 121-in-1
+        // (the only families known to ship mis-sized headers in practice).
+        uint32_t patchMapper = 0xFFFFFFFFu;
         if (romData.size() >= 16 &&
+            romData[0] == 0x4E && romData[1] == 0x45 &&
+            romData[2] == 0x53 && romData[3] == 0x1A) {
+            bool isNES2 = (romData[7] & 0x0C) == 0x08;
+            patchMapper = ((uint32_t)(romData[7] & 0xF0)) |
+                          ((uint32_t)romData[6] >> 4);
+            if (isNES2)
+                patchMapper |= ((uint32_t)(romData[8] & 0x0F)) << 8;
+        }
+        bool isMulticartMapper = (patchMapper == 268 || patchMapper == 269);
+
+        if (isMulticartMapper &&
+            romData.size() >= 16 &&
             romData[0] == 0x4E && romData[1] == 0x45 &&
             romData[2] == 0x53 && romData[3] == 0x1A) {
 
@@ -664,11 +671,9 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
                                           hdrPrgBytes + hdrChrBytes;
             uint64_t actualSize = romData.size();
 
-            // Decode current mapper (for diagnostic logging) — same formula
-            // FCEUmm's iNES_get_mapper_id uses on the LEGACY path (byte7 & 0x0C == 0).
-            // We log this so the user can verify the patch preserved the mapper.
-            uint32_t origMapper = ((uint32_t)(romData[7] & 0xF0)) |
-                                  ((uint32_t)romData[6] >> 4);
+            // Mapper already decoded above into patchMapper; log it so the
+            // user can verify the patch preserved the mapper ID.
+            uint32_t origMapper = patchMapper;
 
             // If the file is significantly larger than the header claims
             // (more than 16KB extra = one PRG bank), patch the header.
