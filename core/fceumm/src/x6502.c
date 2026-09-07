@@ -19,6 +19,7 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 
 #include "fceu.h"
 #include "fceu-types.h"
@@ -33,6 +34,10 @@ uint8_t encryptOpcodesConfig = 0;
 uint32_t timestamp;
 uint32_t sound_timestamp;
 void FP_FASTAPASS(1) (*MapIRQHook)(int a);
+
+/* Host-only instruction trace hook (set by test harness). */
+FILE *X6502TraceFile = NULL;
+uint32_t X6502TraceLeft = 0;
 
 #define _PC        X.PC
 #define _A         X.A
@@ -447,6 +452,12 @@ void X6502_Run(int32_t cycles)
 
 		_PI = _P;
 		b1 = RdMem(_PC);
+
+		if (X6502TraceFile && X6502TraceLeft) {
+			X6502TraceLeft--;
+			fprintf(X6502TraceFile, "PC=%04X OP=%02X A=%02X X=%02X Y=%02X P=%02X SP=%02X DB=%02X\n",
+				_PC, b1, _A, _X, _Y, _P, _S, _DB);
+		}
 
 		ADDCYC(CycTable[b1]);
 

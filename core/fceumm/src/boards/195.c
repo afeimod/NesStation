@@ -20,6 +20,8 @@
 #include "mapinc.h"
 #include "mmc3.h"
 
+#include <stdio.h>
+
 static uint8_t *CHRRAM;
 static uint32_t CHRRAMSIZE;
 static uint32_t Mapper195_PRGBanks;   // actual 8KB banks in the cart (not the power-of-two buffer)
@@ -41,8 +43,10 @@ static void Mapper195_PWrap(uint32_t A, uint8_t V) {
 	// sends, so walk them back from the last real bank (0xFF->last,
 	// 0xFE->last-1, ...); genuine bank selects always fit below the count
 	// and pass through untouched.
+	fprintf(stderr, "PW A=%04X V=%02X banks=%u PC=%04X", A, V, Mapper195_PRGBanks, X.PC);
 	if (V >= Mapper195_PRGBanks)
 		V = (uint8_t)(Mapper195_PRGBanks - 1 - (0xFF - V));
+	fprintf(stderr, " -> V=%02X\n", V);
 	setprg8(A, V);
 }
 
