@@ -196,7 +196,7 @@
 	{ 0x6e68e31a,   16, DEFAULT, DFAULT8, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Dragon Ball 3 - Gokuu Den (Japan).nes */
 	{ 0x33b899c9,   16, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Dragon Ball - Daimaou Fukkatsu (Japan).nes */
 	{ 0xa262a81f,   16, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Rokudenashi Blues (Japan).nes */
-	{ 0x286fcd20,   21, DEFAULT, DEFAULT, 1, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Ganbare Goemon Gaiden 2 - Tenka no Zaihou (Japan).nes */
+	{ 0x286FCD20,   23, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Ganbare Goemon Gaiden 2 - Tenka no Zaihou (Japan).nes [mapper 21->23 (fceux)] */
 	{ 0x335e6339,   23, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* kung fu legend (unl)[!].nes */
 	{ 0x1a8d767b,   23, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* kung fu legend (unl)[!p].nes */
 	{ 0x0e263d47,   23, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* World Hero (Unl) (TV System Select) [!].nes */
@@ -686,10 +686,10 @@
 	{ 0xF29C8186,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* Shanghai Tycoon - 上海大亨 (960313).nes */
 	{ 0xF2398802,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 七龙珠 2꞉ 激战弗利萨!!.nes */
 	{ 0x53B62838,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 七龙珠 2꞉ 电光石火.nes */
-	{ 0xED481B7C,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 七龙珠 Z 外传꞉ 赛亚人灭绝计划 (rev1).nes */
+	{ 0xED481B7C,  199, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 七龙珠 Z 外传꞉ 赛亚人灭绝计划 (rev1).nes [mapper 176->199 (fceux)] */
 	{ 0xC768098B,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 三侠五义꞉ 御猫傳奇 (2006SR04307).nes */
 	{ 0xB511C04B,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 三侠五义꞉ 御猫傳奇 (2006SR04307)[protection removed].nes */
-	{ 0x44C20420,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 三国志 II - 中文加强版.nes */
+	{ 0x44C20420,  199, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 三国志 II - 中文加强版.nes [mapper 176->199 (fceux)] */
 	{ 0x8FFC1864,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 三国志 II꞉ 覇王の大陸.nes */
 	{ 0x8F6AB5AC,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 三国忠烈传 - The Story of Three Kingdoms (FS005).nes */
 	{ 0x94782FBD,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 三國志꞉ 雄霸天下 (980100026).nes */
@@ -742,10 +742,10 @@
 	{ 0x1923A8C5,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 水滸神獸 [protection removed].nes */
 	{ 0x6B4CAC80,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 水滸神獸.nes */
 	{ 0xC9D968AF,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 混沌世界.nes */
-	{ 0x7F3DBF1B,  176,       2, DEFAULT, 1,    0x90,    0x07,     PAL, NOEXTRA }, /* 混沌世界 [VirtuaNES PAL].nes */
-	{ 0xB616885C,  176,       2, DEFAULT, 1,    0x90,    0x07,     PAL, NOEXTRA }, /* 混沌世界 [VirtuaNES PAL, SRAM bank switch removed].nes */
+	{ 0x7F3DBF1B,  195, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 混沌世界 [VirtuaNES PAL].nes [mapper 176->195 (fceux, mirror 0)] */
+	{ 0xB616885C,  195, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 混沌世界 [VirtuaNES PAL, SRAM bank switch removed].nes [mapper 176->195 (fceux, mirror 0)] */
 	{ 0xF031E7CD,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 激战弗利萨之孙悟饭.nes */
-	{ 0xD871D3E6,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 激战弗利萨之孙悟饭 [bad CHR].nes */
+	{ 0xD871D3E6,  199, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 激战弗利萨之孙悟饭 [bad CHR].nes [mapper 176->199 (fceux)] */
 	{ 0xC35E9AA8,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 激战弗利萨之孙悟饭 [Traditional Chinese].nes */
 	{ 0xBFF7C60C,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 激斗圣战士.nes */
 	{ 0x8CAAFF73,  176,       2, DEFAULT, 1,    0x90,    0x07,   DENDY, NOEXTRA }, /* 爆笑三國 - Jacks in Tri-Empire (970261)(FS005).nes */
@@ -965,7 +965,7 @@
 	{ 0x4dc6107d,  260, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 2-in-1 - Boogerman + Flintstones, The (Unl) [p1][!].nes */
 	{ 0xb72b2cf4,  260, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 2-in-1 - Aladdin + Lion King, The (Unl) [p1][!].nes */
 	{ 0x5638ba59,  260, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Mortal Kombat Trilogy - 8 People (M1274) (Ch) [!].nes */
-	{ 0xa1dc16c0,  262, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Street Heroes (Asia) (Ja) (Unl).nes */
+	{ 0xA1DC16C0,  116, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Street Heroes (Asia) (Ja) (Unl).nes [mapper 262->116 (fceux)] */
 	{ 0x1df10182,  263, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* Boogerman II (Rex-Soft) [!].nes */
 	{ 0xf956fcea,  521, DEFAULT, DEFAULT, 0, DEFAULT,    0x70, DEFAULT, NOEXTRA }, /* Korean Igo (Korea) (Unl).nes */
 	{ 0x2eed2e34,  289, DEFAULT, DEFAULT, 0, DEFAULT, DEFAULT, DEFAULT, NOEXTRA }, /* 76-in-1 [p1][a1].nes 2048 PRG, 0 CHR */

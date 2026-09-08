@@ -1094,8 +1094,12 @@ static uint32_t iNES_get_mapper_id(void)
 	case 0x00:	/* header version is iNES */
 		ret = (head.ROM_type2 & 0xF0) | (head.ROM_type >> 4);
 		break;
-	default:	/* any other value is Archaic iNes, byte 7-15 not used */
-		ret = (head.ROM_type >> 4);
+	default:	/* Archaic iNES: fceux (ines.cpp iNESLoad) still ORs byte 7's
+		 * high nibble into the mapper number (MapperNo |= (head.ROM_type2 & 0xF0))
+		 * even when bits 2-3 of byte 7 are neither 0b00 nor 0b10.  Keep the
+		 * decode identical so the same ROM resolves to the same pre-correction
+		 * mapper (CheckHInfo then applies the same CRC fix). */
+		ret = ((uint32_t)head.ROM_type2 & 0xF0) | (head.ROM_type >> 4);
 		break;
 	}
 	return ret;
@@ -1290,14 +1294,27 @@ int iNESLoad(const char *name, FCEUFILE *fp)
 		   FCEU_PrintError(" Misc ROM block truncated; remaining bytes left zero.\n");
    }
 
-   iNESCart.PRGCRC32   = CalcCRC32(0, ROM, iNESCart.PRGRomSize);
-   iNESCart.CHRCRC32   = CalcCRC32(0, VROM, iNESCart.CHRRomSize);
-   iNESCart.CRC32      = CalcCRC32(iNESCart.PRGCRC32, VROM, iNESCart.CHRRomSize);
+   /* Identification CRC32/MD5 MUST be computed over the pow2-padded PRG/CHR
+    * buffers (0xFF fill), exactly like the reference engine (FCEUX as used by
+    * NostalgiaLite, ines.cpp iNESLoad(): CalcCRC32(0, ROM, ROM_size << 14)).
+    * fceumm previously hashed only the exact header-sized bytes, so any ROM
+    * whose PRG/CHR size is not a power of two (very common in Chinese hack
+    * ROMs with appended translation/font tables) produced a DIFFERENT CRC
+    * from every entry of the ines-correct.h database (whose CRCs were all
+    * generated with FCEUX's padded-buffer semantics).  The correction table
+    * then never matched, the broken header mapper survived CheckHInfo(), and
+    * the game grey-screened -- while the very same file worked in the
+    * reference engine.  rom_size_pow2 / vrom_size_pow2 are the same padded
+    * lengths actually allocated above. */
+   iNESCart.PRGCRC32   = CalcCRC32(0, ROM, rom_size_pow2);
+   iNESCart.CHRCRC32   = CalcCRC32(0, VROM, iNESCart.CHRRomSize ? vrom_size_pow2 : 0);
+   iNESCart.CRC32      = CalcCRC32(iNESCart.PRGCRC32, VROM,
+                                   iNESCart.CHRRomSize ? vrom_size_pow2 : 0);
 
    md5_starts(&md5);
-   md5_update(&md5, ROM, iNESCart.PRGRomSize);
+   md5_update(&md5, ROM, rom_size_pow2);
    if (iNESCart.CHRRomSize)
-      md5_update(&md5, VROM, iNESCart.CHRRomSize);
+      md5_update(&md5, VROM, vrom_size_pow2);
    md5_finish(&md5, iNESCart.MD5);
 
    memcpy(&GameInfo->MD5, &iNESCart.MD5, sizeof(iNESCart.MD5));
