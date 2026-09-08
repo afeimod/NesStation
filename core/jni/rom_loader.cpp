@@ -173,7 +173,14 @@ static std::atomic<bool> s_optionsChanged{false};
 // audio always uses FCEUmm's native defaults without any frontend interference.
 static void initDefaultOptions() {
     // --- System ---
-    s_options["fceumm_region"]                  = "Auto";
+    // "NTSC" instead of "Auto": the reference engine app (NostalgiaLite/fceux)
+    // always calls FCEUI_SetVidSystem(isPal ? 1 : 0) with isPal=false, i.e. it
+    // FORCES NTSC regardless of what the ROM header claims. "Auto" would let
+    // fceumm follow a mislabeled NES 2.0 region byte (byte 12) into PAL/Dendy
+    // timing that the reference never uses. Forcing NTSC here reproduces the
+    // reference behavior exactly; genuine PAL carts are not part of this
+    // app's target library (FC 中文游戏/ hacks are all NTSC-family).
+    s_options["fceumm_region"]                  = "NTSC";
     s_options["fceumm_game_genie"]              = "disabled";
     s_options["fceumm_show_adv_system_options"]  = "disabled";
 
@@ -620,6 +627,95 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
         size_t rd = std::fread(romData.data(), 1, (size_t)sz, f);
         std::fclose(f);
         if (rd != (size_t)sz) { retro_deinit(); return "Cannot read ROM file"; }
+
+        LOGI("FC core pipeline V3 (NostalgiaLite-parity, %s %s): %s (%zu bytes)",
+             __DATE__, __TIME__, path.c_str(), romData.size());
+
+        // === Truncated-ROM guard: fail with a CLEAR message instead of a
+        // permanent gray screen. ===
+        // If the file cannot even deliver the header-declared PRG body (plus
+        // trainer), the CPU reset vector lands in 0xFF filler and the core
+        // renders a solid screen forever. Some older app versions shipped a
+        // Kotlin-side header patcher whose FileOutputStream write TRUNCATED
+        // the ROM to 16 bytes — victims of that bug surface here as an
+        // explicit, actionable error instead of a silent gray screen.
+        if (romData.size() >= 16 &&
+            romData[0] == 0x4E && romData[1] == 0x45 &&
+            romData[2] == 0x53 && romData[3] == 0x1A) {
+            bool hdrNES2 = (romData[7] & 0x0C) == 0x08;
+            uint32_t hdrPrgUnits = romData[4];
+            if (hdrNES2) {
+                hdrPrgUnits |= (uint32_t)(romData[9] & 0x0F) << 8;
+            } else if (hdrPrgUnits == 0) {
+                hdrPrgUnits = 256;
+            }
+            /* Skip the exponent form of NES 2.0 (byte 4 >= 0xF0) - those
+             * headers encode size = 2^exp * mult and cannot be sanity
+             * checked with simple arithmetic. */
+            if (hdrPrgUnits < 0xF00) {
+                uint64_t prgEnd = 16ULL + ((romData[6] & 0x04) ? 512ULL : 0ULL) +
+                                  (uint64_t)hdrPrgUnits * 16384ULL;
+                if (romData.size() < prgEnd) {
+                    char msg[256];
+                    std::snprintf(msg, sizeof(msg),
+                                  "ROM 文件不完整：%s 只有 %zu 字节，但 iNES 头声明 PRG 主体需要 %llu 字节。"
+                                  "文件可能已被旧版本的自动修复功能截断，请删除后重新导入该游戏。",
+                                  path.c_str(), romData.size(), (unsigned long long)prgEnd);
+                    LOGE("%s", msg);
+                    retro_deinit();
+                    return msg;
+                }
+            }
+        }
+
+        // === Non-power-of-two PRG snap-down (in-memory) ===
+        // Chinese hack ROMs (天使之翼2改版 / 幻影之翼 / 阿木 hack family and the
+        // like) circulate with iNES headers whose PRG size is NOT a power of
+        // two (80/96 x 16KB etc. — the file usually also carries appended
+        // translation/hack data). With such a header NO header-faithful
+        // engine can boot the ROM: iNESLoad pads the PRG region up to the
+        // next power of two with 0xFF, and the MMC3 fixed $C000-$FFFF window
+        // (banks -2/-1) then addresses the 0xFF filler, so the reset vector
+        // reads 0xFFFF and the game dead-locks on a solid screen (verified
+        // differentially against the reference engine). The MMC3/195-class
+        // boards of this family decode at most 512KB-1MB of PRG anyway, so
+        // snapping the declared PRG size DOWN to the largest power of two
+        // that still fits the file restores a bootable layout, restores the
+        // ines-correct.h CRC-table routing (whose entries were generated
+        // over pow2-padded buffers of the ORIGINAL dumps), and never affects
+        // well-formed (pow2) files. Mirrors the Kotlin-side
+        // InesHeaderPatcher repair so both entry paths agree.
+        if (romData.size() >= 16 &&
+            romData[0] == 0x4E && romData[1] == 0x45 &&
+            romData[2] == 0x53 && romData[3] == 0x1A) {
+            bool isNES2 = (romData[7] & 0x0C) == 0x08;
+            uint32_t mapper = ((uint32_t)(romData[7] & 0xF0)) |
+                              ((uint32_t)romData[6] >> 4);
+            if (!isNES2 && mapper < 256) {
+                uint32_t prgUnits = romData[4] ? romData[4] : 256;
+                uint32_t chrBytes = (uint32_t)romData[5] * 8192u;
+                bool isPow2 = prgUnits && ((prgUnits & (prgUnits - 1)) == 0);
+                if (!isPow2) {
+                    uint32_t snapped = prgUnits;
+                    while (snapped > 1 &&
+                           (16ULL + chrBytes + ((uint64_t)snapped * 16384ULL)) >
+                               romData.size()) {
+                        snapped >>= 1;
+                    }
+                    // additional step: ensure snapped is a clean power of two
+                    while (snapped > 1 && (snapped & (snapped - 1)) != 0) {
+                        snapped &= snapped - 1;  // drop lowest set bit
+                    }
+                    if (snapped >= 1 && snapped < prgUnits) {
+                        LOGI("iNES PRG snap-down: mapper=%u PRG=%u units (non-pow2) "
+                             "-> %u units; file=%zu chr=%uKB",
+                             mapper, prgUnits, snapped, romData.size(),
+                             chrBytes / 1024);
+                        romData[4] = (uint8_t)snapped;
+                    }
+                }
+            }
+        }
 
         // === iNES Header Patching for Multicarts (whitelisted mappers ONLY) ===
         // Some pirate multicart dumps (COOLBOY / MINDKIDS 500-in-1 etc.)

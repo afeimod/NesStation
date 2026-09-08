@@ -1178,10 +1178,9 @@ int iNESLoad(const char *name, FCEUFILE *fp)
 {
    const char *tv_region[] = { "NTSC", "PAL", "Multi-region", "Dendy" };
    struct md5_context md5;
-#ifdef DEBUG
+   /* load diagnostics run unconditionally (fceux-parity) - see below */
    char* mappername        = NULL;
    uint32_t mappertest       = 0;
-#endif
    uint64_t filesize         = FCEU_fgetsize(fp); /* size of file including header */
    uint64_t romSize          = 0;                 /* size of PRG + CHR rom */
    /* used for malloc and cart mapping */
@@ -1319,7 +1318,14 @@ int iNESLoad(const char *name, FCEUFILE *fp)
 
    memcpy(&GameInfo->MD5, &iNESCart.MD5, sizeof(iNESCart.MD5));
 
-#ifdef DEBUG
+   /* Load diagnostics: FCEUX (the reference engine used by NostalgiaLite)
+    * prints the parsed ROM identity on EVERY load (PRG/CHR sizes, CRC32,
+    * mapper number, mirroring...) unconditionally - see fceux ines.cpp
+    * iNESLoad(). fceumm gated the same information behind #ifdef DEBUG,
+    * so on-device failures could not be diagnosed from logcat. Print the
+    * same set unconditionally (pre-correction values; CheckHInfo logs its
+    * own overrides, and the final board result is printed after
+    * iNES_Init()). */
    mappername = "Not Listed";
 
    for (mappertest = 0; mappertest < (sizeof bmap / sizeof bmap[0]) - 1; mappertest++)
@@ -1330,7 +1336,17 @@ int iNESLoad(const char *name, FCEUFILE *fp)
          break;
       }
    }
-#endif
+   FCEU_printf(" iNES: file=%llu bytes\n", (unsigned long long)filesize + 16);
+   FCEU_printf(" iNES: PRG=%dKB (pow2 map %uKB) CHR=%dKB trainer=%d battery=%d\n",
+               iNESCart.PRGRomSize >> 10, rom_size_pow2 >> 10,
+               iNESCart.CHRRomSize >> 10,
+               (head.ROM_type & 4) ? 1 : 0,
+               (head.ROM_type & 2) ? 1 : 0);
+   FCEU_printf(" iNES: mapper=%u (%s) mirror=%d iNES2=%d\n",
+               iNESCart.mapper, mappername, iNESCart.mirror,
+               iNESCart.iNES2);
+   FCEU_printf(" iNES: PRG CRC32=0x%08X  PRG+CHR CRC32=0x%08X\n",
+               iNESCart.PRGCRC32, iNESCart.CRC32);
 
    if (iNESCart.iNES2 == 0) {
       if (strstr(name, "(E)") || strstr(name, "(e)") ||
@@ -1463,6 +1479,9 @@ int iNESLoad(const char *name, FCEUFILE *fp)
             iNESCart.mapper);
       return 0;
    }
+   /* Final board result - printed unconditionally like FCEUX's load log. */
+   FCEU_printf(" iNES: board mapper=%d init OK (post-CRC-correction)\n",
+               iNESCart.mapper);
 
    GameInterface = iNESGI;
 

@@ -1,46 +1,43 @@
 package com.nesstation.app.core.storage
 
 import java.io.File
+import java.io.RandomAccessFile
 
 /**
- * Patches iNES headers for pirate multicart ROMs (500-in-1, 1000000-in-1,
- * COOLBOY, etc.) whose PRG/CHR size byte is wrong — typically reporting 1MB
- * PRG when the actual file is 16MB+.
+ * iNES header maintenance for the FC core, kept in lockstep with the
+ * in-memory policy in core/jni/rom_loader.cpp.
  *
- * WHY: FCEUmm trusts the iNES header's PRG/CHR size fields to allocate memory
- * and load ROM data. If the header says 1MB PRG but the file is 16MB, FCEUmm
- * loads only the first 1MB, leaving the upper banks inaccessible. The
- * multicart menu then can't switch banks and the screen stays gray.
+ * Two operations, both NON-DESTRUCTIVE (RandomAccessFile in-place writes —
+ * the file is NEVER truncated; an earlier version of this class used
+ * File.outputStream(), whose constructor TRUNCATES the file, and could
+ * destroy a ROM down to its 16-byte header):
  *
- * This patcher fixes the header in the actual temp file (not just in memory)
- * so FCEUmm sees the correct size whether it loads from `game.data` or
- * re-reads from `game.path`. The native rom_loader.cpp also patches in
- * memory, but if FCEUmm uses need_fullpath=true mode and reads the file
- * directly, the in-memory patch is wasted. Writing to the file ensures the
- * patch always takes effect.
+ * 1) INFLATE (legacy behaviour, now whitelisted) — pirate multicart dumps
+ *    (COOLBOY / MINDKIDS, mappers 268/269) whose PRG size byte lies about
+ *    the real mask-ROM size. Inflating PRG to cover the whole file is ONLY
+ *    allowed for those mappers; inflating ordinary games (Captain Tsubasa
+ *    hacks etc. carrying trailing append data) is FORBIDDEN — folding the
+ *    appendix into PRG makes emulators pad PRG to the next power of two,
+ *    which moves the MMC3 fixed $C000-$FFFF window into the 0xFF filler,
+ *    breaks the reset vector and produces the permanent gray screen
+ *    (verified experimentally and differentially against
+ *    NostalgiaLite/FCEUX).
  *
- * Header layout (16 bytes, iNES / NES 2.0):
- *   [0..3]   "NES\x1a" magic
- *   [4]      PRG ROM size, low 8 bits (in 16KB units; 0 = 256 units legacy)
- *   [5]      CHR ROM size, low 8 bits (in 8KB units)
- *   [6]      flags 6 (mapper low 4 bits + mirroring + trainer + 4-screen)
- *   [7]      flags 7 (mapper high 4 bits + NES2 marker bits 2-3)
- *   [8]      NES 2.0: submapper + mapper bits 8-11
- *   [9]      NES 2.0: PRG size bits 8-11 (low) + CHR size bits 8-11 (high)
- *   [10..15] NES 2.0: PRG RAM, CHR RAM, region, VS, misc, exp device
- *
- * NES 2.0 identifier: byte 7 bits 2-3 == 0b10 → (byte 7 & 0x0C) == 0x08
+ * 2) REPAIR (new) — files whose header PRG size is NOT a power of two
+ *    (e.g. 80/96 x 16KB): either born mis-sized (Chinese hack dumps like
+ *    the 天使之翼2 改版 family) or corrupted by the old un-whitelisted
+ *    patcher of this very class. No header-faithful engine can boot such a
+ *    ROM (fixed window lands in the pow2 padding; reset vector = 0xFFFF).
+ *    The MMC3/195-class boards of this family decode at most 512KB-1MB of
+ *    PRG anyway, so snapping the declared PRG size down to the largest
+ *    power of two that still fits the file restores a bootable layout and
+ *    the ines-correct CRC routing. Runs automatically before every FC game
+ *    launch, so ROMs already damaged on disk heal on the next start.
  */
 object InesHeaderPatcher {
 
-    /**
-     * Patch the iNES header of [file] in place if the file is significantly
-     * larger than the header claims. Returns a human-readable description
-     * of what was patched (or "no patch needed" / error message).
-     *
-     * Safe to call on non-iNES files — checks magic bytes first and returns
-     * early if not an iNES header.
-     */
+    private val INFLATE_WHITELIST = setOf(268, 269) // COOLBOY / MINDKIDS, Games Xplosion
+
     fun patchIfNeeded(file: File): String {
         android.util.Log.i("InesHeaderPatcher",
             "patchIfNeeded: file=${file.absolutePath}, size=${file.length()}")
@@ -48,92 +45,99 @@ object InesHeaderPatcher {
         val size = file.length()
         if (size < 16) return "file too small"
 
-        // Read the 16-byte header
         val header = ByteArray(16)
         try {
-            file.inputStream().use { input ->
-                val read = input.read(header)
-                if (read != 16) return "header read failed"
+            RandomAccessFile(file, "r").use { raf ->
+                raf.readFully(header)
             }
         } catch (e: Exception) {
             return "header read error: ${e.message}"
         }
 
-        // Verify iNES magic ("NES\x1a")
-        if (header[0] != 0x4E.toByte() ||  // 'N'
-            header[1] != 0x45.toByte() ||  // 'E'
-            header[2] != 0x53.toByte() ||  // 'S'
-            header[3] != 0x1A.toByte()) {  // \x1a
+        if (header[0] != 0x4E.toByte() || header[1] != 0x45.toByte() ||
+            header[2] != 0x53.toByte() || header[3] != 0x1A.toByte()) {
             return "not iNES format (no patch needed)"
         }
 
-        // Decode legacy PRG/CHR sizes
-        val prgSizeByte = header[4].toInt() and 0xFF
-        val chrSizeByte = header[5].toInt() and 0xFF
-        val hdrPrgBytes = (if (prgSizeByte == 0) 256 else prgSizeByte) * 16 * 1024
-        val hdrChrBytes = chrSizeByte * 8 * 1024
-        val hasTrainer = (header[6].toInt() and 0x04) != 0
-        val headerClaimedSize = 16L + (if (hasTrainer) 512L else 0L) + hdrPrgBytes + hdrChrBytes
-
-        // Only patch if file is significantly larger than header claims
-        // (more than 16KB extra = one PRG bank)
-        if (size <= headerClaimedSize + 16 * 1024) {
-            return "no patch needed (size=${size}, claimed=${headerClaimedSize})"
+        val isNES2 = (header[7].toInt() and 0x0C) == 0x08
+        var mapper = ((header[6].toInt() and 0xF0) shr 4) or
+                     (header[7].toInt() and 0xF0)
+        if (isNES2) {
+            mapper = mapper or ((header[8].toInt() and 0x0F) shl 8)
         }
+        val prgUnits = (header[4].toInt() and 0xFF).let { if (it == 0 && !isNES2) 256 else it }
+        val chrBytes = (header[5].toInt() and 0xFF) * 8 * 1024
 
-        // Compute new PRG size
-        val extraBytes = size - headerClaimedSize
-        val newPrgBytes = hdrPrgBytes.toLong() + extraBytes
-        // Round up to a multiple of 16KB (use Long to avoid overflow on big ROMs)
-        var prgUnits = (newPrgBytes + 16L * 1024L - 1L) / (16L * 1024L)
-        // Cap at 0xEFF (~60MB) — beyond this requires broken exponent mode
-        if (prgUnits > 0xEFFL) prgUnits = 0xEFFL
-        // Convert to Int for header byte math (always fits — 0xEFF is well within Int range)
-        val prgUnitsInt = prgUnits.toInt()
-
-        // Decode current mapper (for diagnostic logging)
-        val mapperLow = header[6].toInt() and 0x0F
-        val mapperHigh = (header[7].toInt() and 0xF0) shr 4
-        val mapper = mapperLow or (mapperHigh shl 4)
-
-        // Build patched header
-        header[4] = (prgUnitsInt and 0xFF).toByte()
-        val highNibble = ((prgUnitsInt shr 8) and 0x0F)
-
-        if (highNibble > 0) {
-            // Need NES 2.0 marker so byte 9's low nibble is read.
-            // Set byte 7 bits 2-3 = 0b10 (preserve other bits including mapper).
-            header[7] = ((header[7].toInt() and 0xF3) or 0x08).toByte()
-            // Set byte 9 low nibble = highNibble (preserve high nibble = CHR size bits)
-            header[9] = ((header[9].toInt() and 0xF0) or highNibble).toByte()
-
-            // CRITICAL: when we switch the header to NES 2.0 format, FCEUmm's
-            // iNES_get_mapper_id() now reads byte 8's LOW nibble as mapper
-            // bits 8-11 (ret = ((byte8 << 8) & 0xF00) | (byte7 & 0xF0) | (byte6 >> 4)).
-            // On the legacy path (byte7 & 0x0C == 0) byte 8 is ignored, so pirate
-            // multicarts often leave garbage there. If we don't clear it, the
-            // computed mapper ID changes (e.g. mapper 268 + garbage = mapper 0xN268)
-            // and iNES_Init() fails → gray screen.
-            //
-            // Fix: clear byte 8 entirely. Byte 8 = submapper (high nibble) +
-            // mapper bits 8-11 (low nibble). Pirate multicarts don't use
-            // submappers, so clearing both is safe and preserves the original
-            // mapper ID encoded in byte 6 low nibble + byte 7 high nibble.
-            header[8] = 0
-        }
-        // If highNibble == 0, byte 4 alone holds the full PRG size (legacy mode).
-
-        // Write the patched header back to the file (only the first 16 bytes)
-        try {
-            file.outputStream().use { out ->
-                out.write(header, 0, 16)
+        // ---- 1) whitelisted multicart INFLATE (mappers 268 / 269 only) ----
+        if (INFLATE_WHITELIST.contains(mapper)) {
+            val hdrPrgBytes = prgUnits * 16 * 1024
+            val hasTrainer = (header[6].toInt() and 0x04) != 0
+            val headerClaimedSize = 16L + (if (hasTrainer) 512L else 0L) +
+                                    hdrPrgBytes + chrBytes
+            if (size <= headerClaimedSize + 16 * 1024) {
+                return "no patch needed (size=$size, claimed=$headerClaimedSize)"
             }
-        } catch (e: Exception) {
-            return "header write failed: ${e.message}"
+            val extraBytes = size - headerClaimedSize
+            val newPrgBytes = hdrPrgBytes.toLong() + extraBytes
+            var prgUnitsNew = (newPrgBytes + 16L * 1024L - 1L) / (16L * 1024L)
+            if (prgUnitsNew > 0xEFFL) prgUnitsNew = 0xEFFL
+            val prgUnitsInt = prgUnitsNew.toInt()
+            header[4] = (prgUnitsInt and 0xFF).toByte()
+            val highNibble = (prgUnitsInt shr 8) and 0x0F
+            if (highNibble > 0) {
+                // keep the NES 2.0 marker so byte 9's low nibble is honoured
+                header[7] = ((header[7].toInt() and 0xF3) or 0x08).toByte()
+                header[9] = ((header[9].toInt() and 0xF0) or highNibble).toByte()
+                // mapper bits 8-11 live in byte 8 under NES 2.0; the multicart
+                // mappers 268/269 need them kept intact — only garbage there
+                // would corrupt the ID, and 268/269 dumps carry valid values,
+                // so byte 8 is left untouched here.
+            }
+            return try {
+                writeHeaderInPlace(file, header)
+                "PATCHED(268/269 inflate): file=${size}B claimed=$headerClaimedSize " +
+                    "newPRG=$prgUnitsInt units"
+            } catch (e: Exception) {
+                "header write failed: ${e.message}"
+            }
         }
 
-        return "PATCHED: file=${size}B, header claimed=${headerClaimedSize}B " +
-               "(PRG=${hdrPrgBytes}, CHR=${hdrChrBytes}, trainer=$hasTrainer, mapper=$mapper). " +
-               "New PRG=${prgUnitsInt} units (${prgUnitsInt * 16 * 1024}B), highNibble=$highNibble"
+        // ---- 2) non-pow2 PRG snap-down REPAIR (legacy headers, mapper < 256) ----
+        if (!isNES2 && mapper < 256) {
+            val isPow2 = prgUnits != 0 && (prgUnits and (prgUnits - 1)) == 0
+            if (!isPow2) {
+                var snapped = prgUnits
+                while (snapped > 1 &&
+                    (16L + chrBytes + snapped.toLong() * 16384L) > size) {
+                    snapped = snapped shr 1
+                }
+                // largest power of two <= snapped (clear lowest set bit for
+                // non-pow2 inputs, e.g. 80 -> 64, 96 -> 64, 48 -> 32)
+                while (snapped > 1 && (snapped and (snapped - 1)) != 0) {
+                    snapped = snapped and (snapped - 1)
+                }
+                if (snapped in 1 until prgUnits) {
+                    header[4] = snapped.toByte()
+                    return try {
+                        writeHeaderInPlace(file, header)
+                        "REPAIRED: PRG=$prgUnits units (non-pow2) -> $snapped units " +
+                            "(file=$size, chr=${chrBytes / 1024}KB, mapper=$mapper)"
+                    } catch (e: Exception) {
+                        "header write failed: ${e.message}"
+                    }
+                }
+                return "no repair possible (prg=$prgUnits, size=$size)"
+            }
+        }
+
+        return "no patch needed (size=$size, mapper=$mapper, prg=$prgUnits)"
+    }
+
+    /** In-place write of the first 16 bytes. NEVER truncates the file. */
+    private fun writeHeaderInPlace(file: File, header: ByteArray) {
+        RandomAccessFile(file, "rw").use { raf ->
+            raf.seek(0)
+            raf.write(header, 0, 16)
+        }
     }
 }
