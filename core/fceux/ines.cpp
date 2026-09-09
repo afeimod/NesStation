@@ -48,6 +48,7 @@ extern SFORMAT FCEUVSUNI_STATEINFO[];
 uint8 *trainerpoo = NULL;
 uint8 *ROM = NULL;
 uint8 *VROM = NULL;
+uint32 actualPRGSize = 0;
 uint8 *ExtraNTARAM = NULL;
 iNES_HEADER head;
 
@@ -645,7 +646,7 @@ static BMAPPINGLocal bmap[] = {
 	{"TW MMC3+VRAM Rev. B",	192, Mapper192_Init},
 	{"NTDEC TC-112",		193, Mapper193_Init},	// War in the Gulf
 	{"TW MMC3+VRAM Rev. C",	194, Mapper194_Init},
-	{"TW MMC3+VRAM Rev. D",	195, Mapper195_Init},
+	{"TW MMC3+VRAM Rev. D",	195, Mapper195_Init},	// NES2.0 mapper195 = FK23C but 天使之翼2中文版 is TW MMC3
 	{"",					196, Mapper196_Init},
 	{"",					197, Mapper197_Init},
 	{"TW MMC3+VRAM Rev. E",	198, Mapper198_Init},
@@ -767,6 +768,30 @@ int iNESLoad(const char *name, FCEUFILE *fp, int OverwriteVidMode) {
 
 	VROM_size = uppow2(head.VROM_size | (iNES2?((head.Upper_ROM_VROM_size & 0xF0)<<4):0));
 
+	// Some pirate dumps (Waixing FS303 / TW MMC3 mapper 195, e.g. the 1.25MB
+	// Chinese translation of Captain Tsubasa Vol.2) carry more PRG than the
+	// header declares while the CHR count is correct. The boot bank then maps
+	// past the loaded data into 0xFF padding and the game stays grey. If the
+	// file contains whole extra 16KiB PRG banks beyond the declared PRG+CHR
+	// totals, load them so such dumps can boot.
+	bool prg_extended = false;
+	{
+		int declared_prg_banks = not_round_size;
+		long header_bytes = 16 + ((head.ROM_type & 4) ? 512 : 0);
+		long declared_total = ((long)declared_prg_banks << 14) + ((long)VROM_size << 13);
+		long extra = (long)fp->size - header_bytes - declared_total;
+		if (extra > 0 && (extra & 0x3FFF) == 0) {
+			int real_prg_banks = declared_prg_banks + (int)(extra >> 14);
+			int new_rom_size = uppow2(real_prg_banks);
+			if (new_rom_size > ROM_size) {
+				not_round_size = real_prg_banks;
+				ROM_size = new_rom_size;
+				prg_extended = true;
+				FCEU_printf(" PRG size corrected to %d x 16KiB (file contains undeclared extra PRG)\n", real_prg_banks);
+			}
+		}
+	}
+
 	int round = true;
 	for (int i = 0; i != sizeof(not_power2) / sizeof(not_power2[0]); ++i) {
 		//for games not to the power of 2, so we just read enough
@@ -803,15 +828,20 @@ int iNESLoad(const char *name, FCEUFILE *fp, int OverwriteVidMode) {
 
 	SetupCartPRGMapping(0, ROM, ROM_size << 14, 0);
 
-	FCEU_fread(ROM, 0x4000, (round) ? ROM_size : not_round_size, fp);
+	int read_prg_banks = (round && !prg_extended) ? ROM_size : not_round_size;
+	actualPRGSize = read_prg_banks << 14;
+
+	FCEU_fread(ROM, 0x4000, read_prg_banks, fp);
 
 	if (VROM_size)
 		FCEU_fread(VROM, 0x2000, VROM_size, fp);
 
-	md5_starts(&md5);
-	md5_update(&md5, ROM, ROM_size << 14);
+	uint32 checksumPRGSize = prg_extended ? actualPRGSize : (ROM_size << 14);
 
-	iNESGameCRC32 = CalcCRC32(0, ROM, ROM_size << 14);
+	md5_starts(&md5);
+	md5_update(&md5, ROM, checksumPRGSize);
+
+	iNESGameCRC32 = CalcCRC32(0, ROM, checksumPRGSize);
 
 	if (VROM_size) {
 		iNESGameCRC32 = CalcCRC32(iNESGameCRC32, VROM, VROM_size << 13);

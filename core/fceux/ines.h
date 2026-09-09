@@ -42,6 +42,7 @@ extern uint8 *ROM;
 extern uint8 *VROM;
 extern uint32 VROM_size;
 extern uint32 ROM_size;
+extern uint32 actualPRGSize;	// actual PRG bytes loaded (may exceed header-declared size for pirate dumps)
 extern uint8 *ExtraNTARAM;
 extern int iNesSave(); //bbit Edited: line added
 extern int iNesSaveAs(char* name);

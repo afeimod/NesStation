@@ -26,6 +26,7 @@
 
 #include "mapinc.h"
 #include "mmc3.h"
+#include "../ines.h"
 
 uint8 MMC3_cmd;
 uint8 kt_extra;
@@ -1002,6 +1003,35 @@ static void M195CW(uint32 A, uint8 V) {
 		setchr1r(0, A, V);
 }
 
+static void M195PW(uint32 A, uint8 V) {
+	// Waixing FS303 (mapper 195) pirate boards can carry up to 2MB PRG. The
+	// generic MMC3 GENPWRAP masks V with 0x7F (1MB max), which breaks dumps
+	// whose banks are >= 128 (e.g. the 1.25MB Chinese translation of Captain
+	// Tsubasa Vol.2 / е¤©дЅїд№‹зїј2дё­ж–‡з‰€). setprg8() masks with PRGmask8 (255
+	// for the 2MB padded buffer), so passing V through is fine for banks
+	// inside the real image.
+
+	// For non-power-of-two PRG sizes (e.g. 1.25MB = 160 banks) the fceumm
+	// trick of shrinking PRGmask8 to (nbanks-1) is wrong, because that
+	// value is not 2^n-1: the AND in setprg8 corrupts bank numbers (66 &
+	// 159 = 2). Instead keep the power-of-two mask and handle bounds here.
+	//
+	// FixMMC3PRG sends ~0 (0xFF)/~1 (0xFE) as sentinels for the last/
+	// second-last 8KB banks вЂ” remap them. For game-supplied bank values
+	// that exceed the real bank count, modulo-wrap so the padded buffer's
+	// FF region is never exposed.
+	if (actualPRGSize) {
+		uint32 nbanks = actualPRGSize >> 13;
+		if (V == 0xFF)
+			V = (uint8)(nbanks - 1);
+		else if (V == 0xFE)
+			V = (uint8)(nbanks - 2);
+		else if (nbanks < 256 && V >= nbanks)
+			V %= (uint8)nbanks;
+	}
+	setprg8(A, V);
+}
+
 static void M195Power(void) {
 	GenMMC3Power();
 	setprg4r(0x10, 0x5000, 2);
@@ -1012,6 +1042,7 @@ static void M195Power(void) {
 void Mapper195_Init(CartInfo *info) {
 	GenMMC3_Init(info, 512, 256, 16, info->battery);
 	cwrap = M195CW;
+	pwrap = M195PW;
 	info->Power = M195Power;
 	CHRRAMSIZE = 4096;
 	CHRRAM = (uint8*)FCEU_gmalloc(CHRRAMSIZE);
@@ -1136,7 +1167,7 @@ static void M205PW(uint32 A, uint8 V) {
 }
 
 static void M205CW(uint32 A, uint8 V) {
-// GN-30A - начальная маска должна быть FF
+// GN-30A - начальная маска должна быть 1F + аппаратный переключатель на шине адреса
 	setchr1(A, (V & 0x7F) | (EXPREGS[0] << 3));
 }
 
