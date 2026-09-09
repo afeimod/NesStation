@@ -11,7 +11,7 @@
 
 | 平台 | 核心 | 文件扩展名 | 是否需要 BIOS |
 | --- | --- | --- | --- |
-| **NES / FC**   | FCEUmm            | `.nes` `.fds` `.unf`           | FDS 游戏需要 `disksys.rom` |
+| **NES / FC**   | fceux-fix            | `.nes` `.fds` `.unf`           | FDS 游戏需要 `disksys.rom` |
 | **SNES / SFC** | snes9x            | `.smc` `.sfc` `.fig` `.swc`   | 否 |
 | **GB / GBC**   | mGBA              | `.gb` `.gbc` `.sgb`           | 否 |
 | **GBA**        | mGBA              | `.gba`                        | 否 |
@@ -29,7 +29,7 @@
 
 ## 🎮 各核心说明
 
-### NES / FC（FCEUmm 核心）
+### NES / FC（fceux-fix 核心）
 - 业界精度与兼容性最好的 NES 模拟核心
 - 支持 NTSC / PAL / Dendy 三种区域
 - 支持 FDS 磁碟游戏（需 `disksys.rom` BIOS，已内置在 assets）
@@ -219,7 +219,7 @@ cp /path/to/bios_CD_U.zip app/src/main/assets/genesis/
 | 组件 | 许可证 |
 | --- | --- |
 | 应用代码 | MIT |
-| FCEUmm（NES 核心） | GPLv2 — 见 `assets/legal/LICENSE-FCEUmm.txt` |
+| fceux-fix（NES 核心） | GPLv2 — 见 `assets/legal/LICENSE-fceux-fix.txt` |
 | snes9x（SNES 核心） | 非商业 — 见 `assets/legal/LICENSE-snes9x.txt` |
 | mGBA（GBA 核心） | MPL-2.0 — 见 `assets/legal/LICENSE-mGBA.txt` |
 | DOSBox-Pure（DOS 核心） | GPLv2 — 见 `assets/legal/LICENSE-DOSBox-Pure.txt` |
@@ -245,7 +245,7 @@ cp /path/to/bios_CD_U.zip app/src/main/assets/genesis/
 
 ## 🙌 致谢
 
-- **FCEUX / FCEUmm 团队** — NES 模拟核心
+- **FCEUX / fceux 团队** — NES 模拟核心
 - **snes9x 团队** — SNES 模拟核心
 - **mGBA 团队**（Vicki Pfau 等）— GB/GBC/GBA 模拟核心
 - **DOSBox-Pure 团队**（Markus Mertama 等）— DOS 模拟核心
