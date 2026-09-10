@@ -391,7 +391,26 @@ fun LibraryScreen(
             if (path.startsWith("content://")) return@filter true
             if (!path.startsWith("/")) return@filter false
             val f = File(path)
-            if (f.exists()) return@filter true
+            if (f.exists()) {
+                // === DC 散装音轨残留清理 ===
+                // 旧版本扫描曾把 GDI/CDI 目录里的散装音轨（track01.iso 等）
+                // 当成独立 DC 游戏入库。文件本身仍然存在，所以上面的
+                // exists() 检查不会移除它们；但点开这种条目 = 引导没有
+                // ip.bin 的纯数据音轨 = flycast 原生崩溃。这里按 Flycast
+                // game_scanner.cpp 的规则补一刀：DC 平台条目 + 音轨扩展名
+                // + 同目录存在 .gdi/.cdi 完整镜像 → 残留音轨，移除。
+                if (game.platform == GamePlatform.DC) {
+                    val ext = f.extension.lowercase()
+                    if (ext in setOf("iso", "raw", "bin", "img", "dat")) {
+                        val hasDisc = f.parentFile?.listFiles()?.any {
+                            it.isFile && (it.name.endsWith(".gdi", ignoreCase = true) ||
+                                          it.name.endsWith(".cdi", ignoreCase = true))
+                        } == true
+                        if (hasDisc) return@filter false
+                    }
+                }
+                return@filter true
+            }
             // File not visible. If the parent dir can't be read (permission
             // scoping), keep the entry instead of deleting it.
             val parent = f.parentFile

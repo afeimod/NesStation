@@ -611,6 +611,59 @@ private fun loadDosGameFolder(
 ): java.io.File? = loadGameFolder(context, launcherUriStr, gameId, "dos_games")
 
 /** Same as [loadDosGameFolder], but copies into [subDir] under filesDir. */
+/**
+ * 检查 ROM 所在目录是否包含 .gdi / .cdi 完整镜像（本地路径与 SAF URI 均支持）。
+ * 用于拦截从 GDI 目录里误启动散装音轨（track01.iso 等）—— 那些只是音轨，
+ * 不是独立游戏；强行让 flycast 引导只会读到无 ip.bin 的垃圾数据，
+ * SH4 执行野代码后原生崩溃（SIGSEGV in addrspace::write32）。
+ */
+private fun dcFolderHasDiscImage(
+    context: android.content.Context,
+    romPath: String
+): Boolean {
+    return try {
+        if (romPath.startsWith("content://")) {
+            val uri = android.net.Uri.parse(romPath)
+            val paths = uri.pathSegments
+            val treeIdx = paths.indexOf("tree")
+            if (treeIdx < 0 || treeIdx + 1 >= paths.size) return false
+            val treeUri = android.net.Uri.Builder()
+                .scheme(android.content.ContentResolver.SCHEME_CONTENT)
+                .authority(uri.authority)
+                .appendPath("tree")
+                .appendPath(paths[treeIdx + 1])
+                .build()
+            val docId = try {
+                android.provider.DocumentsContract.getDocumentId(uri)
+            } catch (_: Exception) {
+                return false
+            }
+            val lastSlash = docId.lastIndexOf('/')
+            if (lastSlash <= 0) return false
+            val parentDocId = docId.substring(0, lastSlash)
+            val childrenUri = android.provider.DocumentsContract
+                .buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+            context.contentResolver.query(childrenUri, null, null, null, null)?.use { c ->
+                val nameIdx = c.getColumnIndex(
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                while (c.moveToNext()) {
+                    val n = c.getString(nameIdx)?.lowercase() ?: continue
+                    if (n.endsWith(".gdi") || n.endsWith(".cdi")) return true
+                }
+            }
+            false
+        } else {
+            val parent = java.io.File(romPath).parentFile ?: return false
+            parent.listFiles()?.any {
+                it.isFile && (it.name.endsWith(".gdi", ignoreCase = true) ||
+                              it.name.endsWith(".cdi", ignoreCase = true))
+            } ?: false
+        }
+    } catch (_: Exception) {
+        false
+    }
+}
+
 private fun loadGameFolder(
     context: android.content.Context,
     launcherUriStr: String,
@@ -1451,6 +1504,63 @@ fun EmulatorScreen(
                         "也可以把 BIOS 文件放入 app/src/main/assets/pce/ 重新打包，启动时自动识别。\n" +
                         "卡带游戏 (.pce/.sgx) 和 HES 音乐文件 (.hes) 不需要 BIOS。"
                     }
+                    return@LaunchedEffect
+                }
+            }
+        }
+
+        // === DC (Flycast) 启动前自检 ===
+        // 两个拦截点，对应"运行 DC 游戏闪退（SIGSEGV in addrspace::write32）"：
+        // (a) 散装音轨误启动：旧版本扫描曾把 GDI 目录里的 track01.iso 等
+        //     音轨当成独立游戏入库（残留条目），点开即引导纯数据音轨 ——
+        //     DC 从 LBA0 读 ip.bin 只会读到垃圾，SH4 执行野代码立刻崩溃。
+        //     同目录存在 .gdi/.cdi 时明确报错，提示从镜像文件启动。
+        // (b) BIOS 缺失/损坏拦截：flycast 找不到有效 boot ROM 时自动退回
+        //     HLE BIOS，大多数商业游戏在 HLE 下也是原生崩溃。启动镜像前
+        //     先校验 dc/dc_boot.bin (2MB) 与 dc/dc_flash.bin (128KB)，不满足
+        //     就给出修复指引（内置 BIOS 会在应用启动时自动修复，这里兜底）。
+        //     用户在设置里显式启用 HLE BIOS 时不拦截（尊重用户选择）。
+        if (platform == GamePlatform.DC) {
+            val dcExt = romPath.substringAfterLast('/', "")
+                .substringAfterLast('.', "").lowercase()
+
+            // (a) 音轨误启动拦截（iso/raw/bin/img/dat + 同目录有 .gdi/.cdi）
+            if (dcExt in setOf("iso", "raw", "bin", "img", "dat") &&
+                dcFolderHasDiscImage(context, romPath)
+            ) {
+                val displayName = try {
+                    java.net.URLDecoder.decode(
+                        romPath.substringAfterLast('/').substringAfterLast(':'), "UTF-8")
+                } catch (_: Exception) {
+                    romPath.substringAfterLast('/')
+                }
+                errorMsg = "「$displayName」是 GDI/CDI 镜像目录里的音轨文件，" +
+                    "不是独立游戏，无法直接启动。\n\n" +
+                    "请从同一目录中的 disc.gdi / .cdi 镜像文件启动游戏。\n" +
+                    "如果是旧版本扫描留下的多余条目，在游戏库点「刷新」即可自动清理。"
+                return@LaunchedEffect
+            }
+
+            // (b) BIOS 有效性预检（仅光盘镜像；Naomi/Atomiswave 的 zip 由
+            //     核心自己报 naomi.zip 缺失，不在此拦截）
+            val isDiscImage = dcExt in setOf("gdi", "cdi", "chd", "cue", "iso", "m3u")
+            if (isDiscImage && padLayout.dcHleBios != "enabled") {
+                val dcDir = java.io.File(context.filesDir, "dc")
+                val boot = java.io.File(dcDir, "dc_boot.bin")
+                val altBoot = java.io.File(dcDir, "dc_bios.bin")
+                val flash = java.io.File(dcDir, "dc_flash.bin")
+                // 核心按 *boot.bin / *bios.bin 模式扫描候选，两个名字都有效
+                val bootOk = boot.length() == 2_097_152L || altBoot.length() == 2_097_152L
+                val flashOk = flash.length() == 131_072L
+                if (!bootOk || !flashOk) {
+                    errorMsg = "DC 游戏已停止加载：BIOS 文件缺失或损坏。\n\n" +
+                        "  dc_boot.bin 应为 2MB（当前 ${boot.length()} 字节）\n" +
+                        "  dc_flash.bin 应为 128KB（当前 ${flash.length()} 字节）\n\n" +
+                        "BIOS 已内置在应用中（assets/dc/），正常安装会自动提取。" +
+                        "请重新打开应用（启动时会自动校验并修复）；若仍失败，" +
+                        "可在系统设置中清除本应用数据后重试" +
+                        "（注意：会同时清空应用内的 VMU/存档）。\n" +
+                        "自检报告见应用内部目录 dc/bios_check.txt。"
                     return@LaunchedEffect
                 }
             }

@@ -646,6 +646,96 @@ class NesApp : Application() {
             Log.w("NesApp", "DC BIOS boot ROM check failed", e)
         }
 
+        // === 关键文件有效性校验 + 自动修复 ===
+        // dc_boot.bin 必须是 2MB 的 boot ROM；dc_flash.bin 必须是 128KB 且以
+        // "KATANA_FLASH" 魔数开头。缺失/截断/内容无效的文件会让 flycast 找
+        // 不到有效 BIOS 而自动退回 HLE BIOS —— 大多数商业游戏在 HLE 模式下
+        // 直接原生崩溃（SIGSEGV in addrspace::write32，用户报告的"运行 DC
+        // 游戏闪退"）。这里发现无效文件即删除并从 assets 重新提取（覆盖式），
+        // assets 也提取失败时保留现场，由 bios_check.txt 记录，便于排查。
+        val BOOT_SIZE = 2_097_152L    // 0x200000 — Dreamcast boot ROM
+        val FLASH_SIZE = 131_072L     // 0x20000  — Dreamcast flash ROM
+        fun extractOverwrite(name: String): Boolean = try {
+            assets.open("dc/$name").use { input ->
+                File(dcDir, name).outputStream().use { output -> input.copyTo(output) }
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+
+        val bootFile = File(dcDir, "dc_boot.bin")
+        if (!bootFile.exists() || bootFile.length() != BOOT_SIZE) {
+            bootFile.delete()
+            if (extractOverwrite("dc_boot.bin")) {
+                Log.i("NesApp", "DC BIOS: invalid dc_boot.bin — re-extracted from assets")
+            } else {
+                Log.e("NesApp", "DC BIOS: dc_boot.bin invalid AND assets copy unavailable!")
+            }
+        }
+        val flashFile = File(dcDir, "dc_flash.bin")
+        val flashValid = flashFile.exists() && flashFile.length() == FLASH_SIZE && run {
+            try {
+                flashFile.inputStream().use { input ->
+                    val hdr = ByteArray(12)
+                    var read = 0
+                    while (read < 12) {
+                        val n = input.read(hdr, read, 12 - read)
+                        if (n <= 0) break
+                        read += n
+                    }
+                    read == 12 && String(hdr, Charsets.US_ASCII) == "KATANA_FLASH"
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+        if (!flashValid) {
+            flashFile.delete()
+            if (extractOverwrite("dc_flash.bin")) {
+                Log.i("NesApp", "DC BIOS: invalid dc_flash.bin — re-extracted from assets")
+            } else {
+                Log.w("NesApp", "DC BIOS: dc_flash.bin invalid; flycast will create a default flash")
+            }
+        }
+
+        // VMU 预置档同时放入 dc/data/（部分 flycast 版本把 VMU 读写放在
+        // data/ 子目录，两处都有可确保四种槽位开箱有卡）。
+        for (vmu in listOf("vmu_save_A1.bin", "vmu_save_B1.bin",
+                           "vmu_save_C1.bin", "vmu_save_D1.bin")) {
+            val src = File(dcDir, vmu)
+            val dst = File(dataDir, vmu)
+            if (src.exists() && src.length() > 0L && (!dst.exists() || dst.length() == 0L)) {
+                try { src.copyTo(dst, overwrite = true) } catch (_: Exception) { }
+            }
+        }
+
+        // === BIOS 状态报告 ===
+        // 写 dc/bios_check.txt（大小 + MD5 + 结论）。用户再遇到 DC 闪退时
+        // 可直接把这个文件发回来定位，不用猜。
+        try {
+            val sb = StringBuilder()
+            sb.append("NesStation DC BIOS check\n")
+            sb.append("time: ").append(
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                    .format(java.util.Date())
+            ).append('\n')
+            sb.append("expected sizes: dc_boot.bin/dc_bios.bin = $BOOT_SIZE, dc_flash.bin/dc_nvmem.bin = $FLASH_SIZE\n\n")
+            for (name in biosFiles) {
+                val f = File(dcDir, name)
+                val size = if (f.exists()) f.length() else -1L
+                val md5 = if (size > 0L) md5Of(f) else "-"
+                val verdict = when {
+                    size < 0L -> "MISSING"
+                    size == 0L -> "EMPTY"
+                    else -> "OK"
+                }
+                sb.append(String.format(java.util.Locale.US, "%-18s %10d  %-8s %s%n",
+                    name, size, verdict, md5))
+            }
+            File(dcDir, "bios_check.txt").writeText(sb.toString())
+        } catch (_: Exception) { }
+
         if (extracted > 0) {
             Log.i("NesApp", "DC BIOS: $extracted file(s) extracted to ${dcDir.absolutePath}")
         } else {
