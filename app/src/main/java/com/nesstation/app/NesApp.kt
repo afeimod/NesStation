@@ -12,6 +12,7 @@ import com.nesstation.app.core.engine.PceEngine
 import com.nesstation.app.core.engine.PsxEngine
 import com.nesstation.app.core.engine.Psx2Engine
 import com.nesstation.app.core.engine.NdsEngine
+import com.nesstation.app.core.engine.FlycastEngine
 import com.nesstation.app.core.storage.AppContainer
 import com.nesstation.app.core.storage.SettingsRepository
 import java.io.File
@@ -98,12 +99,18 @@ class NesApp : Application() {
             com.nesstation.app.core.jni.NdsNative.appContext = this
             NdsEngine.ensureLoaded()
         }
+        tryInit("FlycastEngine")       {
+            // Flycast DC core — dlopen()s libflycast_libretro_android.so.
+            com.nesstation.app.core.jni.FlycastNative.appContext = this
+            FlycastEngine.ensureLoaded()
+        }
         tryInit("FdsBios")            { ensureFdsBios() }
         tryInit("FbNeoBios")          { ensureFbNeoBios() }
         tryInit("GenesisBios")        { ensureGenesisBios() }
         tryInit("PceBios")            { ensurePceBios() }
         tryInit("NdsBios")            { ensureNdsBios() }
         tryInit("PsxBios")            { ensurePsxBios() }
+        tryInit("DcBios")             { ensureDcBios() }
         tryInit("ArcadeTitleMigrate") { migrateArcadeTitles() }
     }
 
@@ -552,6 +559,59 @@ class NesApp : Application() {
         } else {
             Log.i("NesApp", "PSX BIOS: no bundled BIOS files found in assets/psx/. " +
                     "Import via Settings → PSX → BIOS Management, or use HLE BIOS (pcsx_rearmed_bios = HLE).")
+        }
+    }
+
+    /**
+     * 准备 Flycast (Dreamcast/Naomi/Atomiswave) 的系统目录结构。
+     *
+     * flycast 核心把所有系统文件放在 <systemDir>/dc/ 下（systemDir 直接传
+     * filesDir，见 EmulatorScreen 的 DC 分支），启动时按文件名查找：
+     *   dc_boot.bin    — Dreamcast 启动 ROM（GD-ROM 游戏必需）
+     *   dc_flash.bin   — Dreamcast 闪存 ROM（必需，含区域/语言/时钟）
+     *   naomi.zip      — Naomi 街机 BIOS（MAME romset，Naomi 游戏必需）
+     *   atomiswave.zip — Atomiswave 街机 BIOS（MAME romset）
+     * 核心还会在 dc/ 下自动创建 data/ 存放 VMU/闪存写入（启动时自己建，
+     * loader 的 setPaths 也兜底建一次）。
+     *
+     * 这里只创建目录结构 + 从 assets/dc/ 提取预置 BIOS（若打包了的话）。
+     * BIOS 有版权不能随 APK 分发 —— 缺失时游戏会给出明确的错误提示，
+     * 用户可经「设置 → 系统 → BIOS 管理」或手动放入文件。
+     */
+    private fun ensureDcBios() {
+        val dcDir = File(filesDir, "dc")
+        if (!dcDir.exists()) dcDir.mkdirs()
+        // data/ 目录由核心写入 VMU/flash —— 提前建好避免首启动写入失败。
+        val dataDir = File(dcDir, "data")
+        if (!dataDir.exists()) dataDir.mkdirs()
+
+        val biosFiles = listOf(
+            "dc_boot.bin", "dc_flash.bin", "naomi.zip", "atomiswave.zip"
+        )
+
+        var extracted = 0
+        for (name in biosFiles) {
+            val dest = File(dcDir, name)
+            if (dest.exists() && dest.length() > 0) continue  // don't overwrite
+            try {
+                assets.open("dc/$name").use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                extracted++
+                Log.i("NesApp", "DC BIOS extracted: $name")
+            } catch (_: java.io.FileNotFoundException) {
+                // Not bundled — skip
+            } catch (e: Exception) {
+                Log.w("NesApp", "Failed to extract DC BIOS $name", e)
+                if (dest.exists()) dest.delete()
+            }
+        }
+        if (extracted > 0) {
+            Log.i("NesApp", "DC BIOS: $extracted file(s) extracted to ${dcDir.absolutePath}")
+        } else {
+            Log.i("NesApp", "DC BIOS: no bundled BIOS files in assets/dc/. " +
+                    "Place dc_boot.bin + dc_flash.bin (Dreamcast) or naomi.zip / " +
+                    "atomiswave.zip (Naomi / Atomiswave) in ${dcDir.absolutePath}.")
         }
     }
 

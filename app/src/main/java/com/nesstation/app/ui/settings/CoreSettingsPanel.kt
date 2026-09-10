@@ -1080,6 +1080,259 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {pscxIcache = it}) }
                 }
             }
+            GamePlatform.DC -> item {
+                // Flycast 核心 — Dreamcast / Naomi / Atomiswave。
+                // 键名/取值对照 flycast 上游 shell/libretro/libretro_core_options.h
+                // （CORE_OPTION_NAME = "reicast"），与 buildbot 预编译核心同源。
+                SettingsSection("DC (Flycast) · 系统") {
+                    DropdownRow("区域",
+                        listOf("Japan" to "日本", "USA" to "美国", "Europe" to "欧洲", "Default" to "跟随游戏"),
+                        padLayout.dcRegion
+                    ) { updateLayout(padLayout.copy {dcRegion = it}) }
+
+                    DropdownRow("语言",
+                        listOf("Japanese" to "日语", "English" to "英语", "German" to "德语",
+                               "French" to "法语", "Spanish" to "西班牙语", "Italian" to "意大利语",
+                               "Default" to "跟随区域"),
+                        padLayout.dcLanguage
+                    ) { updateLayout(padLayout.copy {dcLanguage = it}) }
+
+                    DropdownRow("HLE BIOS (需重启)",
+                        listOf("disabled" to "关闭 (需真实 BIOS)", "enabled" to "开启 (无需 BIOS, 兼容性低)"),
+                        padLayout.dcHleBios
+                    ) { updateLayout(padLayout.copy {dcHleBios = it}) }
+
+                    DropdownRow("广播制式",
+                        listOf("NTSC" to "NTSC", "PAL" to "PAL (欧洲)",
+                               "PAL_N" to "PAL-N (南美)", "PAL_M" to "PAL-M (巴西)", "Default" to "自动"),
+                        padLayout.dcBroadcast
+                    ) { updateLayout(padLayout.copy {dcBroadcast = it}) }
+
+                    DropdownRow("视频输出",
+                        listOf("VGA" to "VGA (清晰)", "TV (RGB)" to "TV (RGB)", "TV (Composite)" to "TV (复合, 默认)"),
+                        padLayout.dcCableType
+                    ) { updateLayout(padLayout.copy {dcCableType = it}) }
+
+                    DropdownRow("音频 DSP",
+                        listOf("enabled" to "开启 (音质更好)", "disabled" to "关闭 (更快)"),
+                        padLayout.dcEnableDsp
+                    ) { updateLayout(padLayout.copy {dcEnableDsp = it}) }
+
+                    DropdownRow("32MB 内存改造",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (仅部分自制软件需要)"),
+                        padLayout.dc32MbMod
+                    ) { updateLayout(padLayout.copy {dc32MbMod = it}) }
+                }
+
+                SettingsSection("DC · 画面") {
+                    DropdownRow("内部分辨率",
+                        listOf("320x240" to "320x240 (半分辨率)", "640x480" to "640x480 (原生)",
+                               "800x600" to "800x600 (x1.25)", "960x720" to "960x720 (x1.5)",
+                               "1280x960" to "1280x960 (x2)", "1600x1200" to "1600x1200 (x2.5)",
+                               "1920x1440" to "1920x1440 (x3)", "2560x1920" to "2560x1920 (x4)"),
+                        padLayout.dcInternalRes
+                    ) { updateLayout(padLayout.copy {dcInternalRes = it}) }
+
+                    DropdownRow("透明排序精度",
+                        listOf("per-strip (fast, least accurate)" to "按条带 (最快, 最不准)",
+                               "per-triangle (normal)" to "按三角形 (正常, 推荐)",
+                               "per-pixel (accurate)" to "按像素 (最准, 最慢)"),
+                        padLayout.dcAlphaSorting
+                    ) { updateLayout(padLayout.copy {dcAlphaSorting = it}) }
+
+                    DropdownRow("各向异性过滤",
+                        listOf("off" to "关闭", "2" to "2x", "4" to "4x", "8" to "8x", "16" to "16x"),
+                        padLayout.dcAnisotropic
+                    ) { updateLayout(padLayout.copy {dcAnisotropic = it}) }
+
+                    DropdownRow("纹理过滤",
+                        listOf("0" to "默认", "1" to "强制最近邻 (锐利)", "2" to "强制线性 (平滑)"),
+                        padLayout.dcTextureFiltering
+                    ) { updateLayout(padLayout.copy {dcTextureFiltering = it}) }
+
+                    DropdownRow("Mipmapping",
+                        listOf("enabled" to "开启", "disabled" to "关闭"),
+                        padLayout.dcMipmapping
+                    ) { updateLayout(padLayout.copy {dcMipmapping = it}) }
+
+                    DropdownRow("雾效",
+                        listOf("enabled" to "开启", "disabled" to "关闭"),
+                        padLayout.dcFog
+                    ) { updateLayout(padLayout.copy {dcFog = it}) }
+
+                    DropdownRow("半透明修正",
+                        listOf("enabled" to "开启", "disabled" to "关闭"),
+                        padLayout.dcVolumeModifier
+                    ) { updateLayout(padLayout.copy {dcVolumeModifier = it}) }
+
+                    DropdownRow("宽屏变形",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (画面拉伸到 16:9)"),
+                        padLayout.dcWidescreenHack
+                    ) { updateLayout(padLayout.copy {dcWidescreenHack = it}) }
+
+                    DropdownRow("PVR2 后处理滤镜",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (模糊/辉光)"),
+                        padLayout.dcPvr2Filtering
+                    ) { updateLayout(padLayout.copy {dcPvr2Filtering = it}) }
+
+                    DropdownRow("帧交换延迟",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (减少闪屏)"),
+                        padLayout.dcDelayFrameSwapping
+                    ) { updateLayout(padLayout.copy {dcDelayFrameSwapping = it}) }
+
+                    DropdownRow("屏幕旋转",
+                        listOf("horizontal" to "横向", "vertical" to "纵向 (竖版游戏)"),
+                        padLayout.dcScreenRotation
+                    ) { updateLayout(padLayout.copy {dcScreenRotation = it}) }
+
+                    DropdownRow("纹理放大 (xBRZ)",
+                        listOf("1" to "关闭", "2" to "2x", "4" to "4x", "6" to "6x"),
+                        padLayout.dcTexUpscale
+                    ) { updateLayout(padLayout.copy {dcTexUpscale = it}) }
+
+                    DropdownRow("纹理放大上限",
+                        listOf("256" to "256px", "512" to "512px", "1024" to "1024px"),
+                        padLayout.dcTexUpscaleMaxSize
+                    ) { updateLayout(padLayout.copy {dcTexUpscaleMaxSize = it}) }
+                }
+
+                SettingsSection("DC · 性能") {
+                    DropdownRow("线程化渲染",
+                        listOf("enabled" to "开启 (推荐, GPU 独立线程)",
+                               "disabled" to "关闭 (兼容性优先)"),
+                        padLayout.dcThreadedRendering
+                    ) { updateLayout(padLayout.copy {dcThreadedRendering = it}) }
+
+                    DropdownRow("自动跳帧",
+                        listOf("disabled" to "关闭", "some" to "普通", "more" to "激进"),
+                        padLayout.dcAutoSkipFrame
+                    ) { updateLayout(padLayout.copy {dcAutoSkipFrame = it}) }
+
+                    DropdownRow("强制跳帧",
+                        listOf("disabled" to "关闭", "1" to "每 2 帧跳 1", "2" to "每 3 帧跳 1",
+                               "3" to "每 4 帧跳 1", "4" to "每 5 帧跳 1",
+                               "5" to "每 6 帧跳 1", "6" to "每 7 帧跳 1"),
+                        padLayout.dcFrameSkipping
+                    ) { updateLayout(padLayout.copy {dcFrameSkipping = it}) }
+
+                    DropdownRow("GD-ROM 读盘提速",
+                        listOf("enabled" to "开启 (推荐)", "disabled" to "关闭 (原速)"),
+                        padLayout.dcGdromFastLoading
+                    ) { updateLayout(padLayout.copy {dcGdromFastLoading = it}) }
+
+                    DropdownRow("SH4 CPU 主频 (MHz)",
+                        listOf("100" to "100", "200" to "200 (原生)", "300" to "300 (超频)",
+                               "330" to "330 (极限超频)"),
+                        padLayout.dcSh4Clock
+                    ) { updateLayout(padLayout.copy {dcSh4Clock = it}) }
+                }
+
+                SettingsSection("DC · 高级渲染修正") {
+                    DropdownRow("全帧缓冲模拟 (慢)",
+                        listOf("disabled" to "关闭 (推荐)", "enabled" to "开启 (部分 2D 游戏/光枪游戏需要)"),
+                        padLayout.dcEmulateFramebuffer
+                    ) { updateLayout(padLayout.copy {dcEmulateFramebuffer = it}) }
+
+                    DropdownRow("RTT 缩解 (RTTB)",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (少数游戏需要)"),
+                        padLayout.dcEnableRttb
+                    ) { updateLayout(padLayout.copy {dcEnableRttb = it}) }
+
+                    DropdownRow("原生深度插值",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (少数游戏需要)"),
+                        padLayout.dcDepthInterpolation
+                    ) { updateLayout(padLayout.copy {dcDepthInterpolation = it}) }
+
+                    DropdownRow("高分辨率边缘修复",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (高分辨率纹理出血)"),
+                        padLayout.dcFixUpscaleBleeding
+                    ) { updateLayout(padLayout.copy {dcFixUpscaleBleeding = it}) }
+                }
+
+                SettingsSection("DC · VMU 与扩展槽") {
+                    DropdownRow("VMU 蜂鸣",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (VMU 小游戏提示音)"),
+                        padLayout.dcVmuSound
+                    ) { updateLayout(padLayout.copy {dcVmuSound = it}) }
+
+                    DropdownRow("每游戏独立 VMU",
+                        listOf("disabled" to "关闭 (共享存储)", "VMU A1" to "每游戏独立 (A1)",
+                               "All VMUs" to "全部独立"),
+                        padLayout.dcPerContentVmus
+                    ) { updateLayout(padLayout.copy {dcPerContentVmus = it}) }
+
+                    DropdownRow("接口 1 · 扩展槽 1",
+                        listOf("VMU" to "VMU 存储卡", "Purupuru" to "震动包",
+                               "DreamPotato" to "DreamPotato", "None" to "空"),
+                        padLayout.dcPort1Slot1
+                    ) { updateLayout(padLayout.copy {dcPort1Slot1 = it}) }
+
+                    DropdownRow("接口 1 · 扩展槽 2",
+                        listOf("VMU" to "VMU 存储卡", "Purupuru" to "震动包", "None" to "空"),
+                        padLayout.dcPort1Slot2
+                    ) { updateLayout(padLayout.copy {dcPort1Slot2 = it}) }
+
+                    DropdownRow("接口 2 · 扩展槽 1",
+                        listOf("VMU" to "VMU 存储卡", "Purupuru" to "震动包",
+                               "DreamPotato" to "DreamPotato", "None" to "空"),
+                        padLayout.dcPort2Slot1
+                    ) { updateLayout(padLayout.copy {dcPort2Slot1 = it}) }
+
+                    DropdownRow("接口 3 · 扩展槽 1",
+                        listOf("VMU" to "VMU 存储卡", "Purupuru" to "震动包",
+                               "DreamPotato" to "DreamPotato", "None" to "空"),
+                        padLayout.dcPort3Slot1
+                    ) { updateLayout(padLayout.copy {dcPort3Slot1 = it}) }
+
+                    DropdownRow("接口 4 · 扩展槽 1",
+                        listOf("VMU" to "VMU 存储卡", "Purupuru" to "震动包",
+                               "DreamPotato" to "DreamPotato", "None" to "空"),
+                        padLayout.dcPort4Slot1
+                    ) { updateLayout(padLayout.copy {dcPort4Slot1 = it}) }
+                }
+
+                SettingsSection("DC · 街机 (Naomi / Atomiswave)") {
+                    DropdownRow("允许服务按键",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (摇杆 Service/Test 菜单)"),
+                        padLayout.dcAllowServiceButtons
+                    ) { updateLayout(padLayout.copy {dcAllowServiceButtons = it}) }
+
+                    DropdownRow("强制 Freeplay",
+                        listOf("disabled" to "关闭 (正常投币)", "enabled" to "开启 (免投币直接开始)"),
+                        padLayout.dcForceFreeplay
+                    ) { updateLayout(padLayout.copy {dcForceFreeplay = it}) }
+
+                    DropdownRow("投币上限",
+                        (0..20).map { v -> v.toString() to (if (v == 0) "不限制" else v.toString()) },
+                        padLayout.dcCoinLimit
+                    ) { updateLayout(padLayout.copy {dcCoinLimit = it}) }
+
+                    Text(
+                        "Naomi / Atomiswave 游戏为 MAME romset (.zip)；Select=投币，" +
+                        "L3=Test 菜单，R3=Service（可在布局编辑器/键位映射中查看）。",
+                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                }
+
+                SettingsSection("DC · 输入") {
+                    DropdownRow("摇杆死区",
+                        listOf("0%" to "0 (无死区)", "5%" to "5%", "10%" to "10%",
+                               "15%" to "15% (默认)", "20%" to "20%", "25%" to "25%", "30%" to "30%"),
+                        padLayout.dcStickDeadzone
+                    ) { updateLayout(padLayout.copy {dcStickDeadzone = it}) }
+
+                    DropdownRow("扳机死区",
+                        listOf("0%" to "0 (无死区)", "5%" to "5%", "10%" to "10%",
+                               "15%" to "15%", "20%" to "20%", "25%" to "25%", "30%" to "30%"),
+                        padLayout.dcTriggerDeadzone
+                    ) { updateLayout(padLayout.copy {dcTriggerDeadzone = it}) }
+
+                    DropdownRow("数字扳机",
+                        listOf("disabled" to "关闭 (模拟扳机, 推荐)",
+                               "enabled" to "开启 (轻触即全扣, 老游戏手感)"),
+                        padLayout.dcDigitalTriggers
+                    ) { updateLayout(padLayout.copy {dcDigitalTriggers = it}) }
+                }
+            }
             GamePlatform.PS2 -> item {
                 // PCEE2 核心 — 上游 PCSX2 (v2.7.523) 的 libretro 官方 Android 构建。
                 // 键名/取值已对照 pcee2-libretro 源码 Libretro.cpp definitions[] 表验证

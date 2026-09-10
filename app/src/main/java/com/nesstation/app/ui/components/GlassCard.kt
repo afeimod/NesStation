@@ -266,6 +266,7 @@ private fun PlatformBadge(platform: GamePlatform, modifier: Modifier = Modifier)
         GamePlatform.NDS    -> "NDS"  to Color(0xFF4527A0)   // deep purple — Nintendo DS
         GamePlatform.PSX    -> "PSX"  to Color(0xFF5D4037)   // brown — PlayStation 1
         GamePlatform.PS2    -> "PS2"  to Color(0xFF37474F)   // blue-grey — PlayStation 2 (PCEE2/PCSX2)
+        GamePlatform.DC     -> "DC"   to Color(0xFFE65100)   // deep orange — Sega Dreamcast (Flycast)
         GamePlatform.JAVA   -> "Java" to Color(0xFF4E342E)   // brown — J2ME
     }
     Box(

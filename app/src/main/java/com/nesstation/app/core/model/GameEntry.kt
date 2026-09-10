@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
  * PSX    = Sony PlayStation 1 (PCSX-ReARMed core)
  * PS2    = Sony PlayStation 2 (PCEE2 libretro core — the official libretro
  *          Android build of upstream PCSX2, shipped by the buildbot)
+ * DC     = Sega Dreamcast / Naomi / Atomiswave (Flycast libretro core)
  * JAVA   = J2ME/Java ME games (J2ME-Loader engine)
  */
 enum class GamePlatform(val displayName: String) {
@@ -34,6 +35,7 @@ enum class GamePlatform(val displayName: String) {
     NDS("NDS"),
     PSX("PSX"),
     PS2("PS2"),
+    DC("DC"),
     JAVA("Java");
 
     companion object {
@@ -52,6 +54,9 @@ enum class GamePlatform(val displayName: String) {
          *   ARCADE ← arcade / fbneo / fbneocore / mame / cps1 / cps2 / cps3 / neogeo / pgm
          *   MD     ← md / genesis / megadrive / segagenesis / megacd / segacd / genplus
          *   PCE    ← pce / pcengine / turbografx / tg16 / geargrafx / supergrafx
+         *   PSX    ← psx / ps1 / playstation / playstation1 / sony / pcsx / pcsxrearmed / pcsxr
+         *   PS2    ← ps2 / playstation2 / play / psx2 / pcsx2
+         *   DC     ← dc / dreamcast / flycast / reicast / naomi / atomiswave / gdrom
          *   JAVA   ← java / j2me / midlet
          *
          * 旧版（大小写敏感 + `entries.firstOrNull { it.name == value } ?: NES`）
@@ -91,6 +96,9 @@ enum class GamePlatform(val displayName: String) {
                 "pcsxrearmed", "pcsxr" -> PSX
                 // Sony PlayStation 2 (PCEE2 libretro core — PCSX2)
                 "ps2", "playstation2", "play", "psx2", "pcsx2" -> PS2
+                // Sega Dreamcast / Naomi / Atomiswave (Flycast)
+                "dc", "dreamcast", "flycast", "reicast", "naomi",
+                "atomiswave", "gdrom", "segadreamcast" -> DC
                 // J2ME
                 "java", "j2me", "midlet" -> JAVA
                 // 兜底：未识别的字符串保持 NES 行为不变（旧 API 兼容）
@@ -168,7 +176,19 @@ enum class GamePlatform(val displayName: String) {
                 // platform tab in detectPlatformFromUri). Unambiguous PS2-only
                 // extensions: .cso/.zso (compressed iso), .isz (legacy,
                 // kept for old libraries), .elf (PS2 homebrew/executable).
+                // NOTE: .elf is ALSO a Dreamcast homebrew format — flycast's
+                // supported extensions include .elf. The PS2 mapping wins for
+                // historical reasons; DC users can pick the DC tab during
+                // import (detectFromUri hint) which overrides this.
                 "cso", "isz", "elf", "zso" -> PS2
+                // Sega Dreamcast / Naomi / Atomiswave (Flycast).
+                // .cdi = DiscJuggler image (most common DC dump),
+                // .gdi = raw GD-ROM (two tracks + data), .chd = compressed,
+                // .cue/.iso/.m3u shared with other CD platforms
+                // (disambiguated by the platform tab / hint).
+                // .zip/.7z = Naomi / Atomiswave MAME romsets (shared with
+                // Arcade — disambiguated by the platform tab / zip peek).
+                "cdi", "gdi" -> DC
                 "jar", "jad" -> JAVA
                 // .zip is intentionally NOT mapped — see detectPlatformFromUri
                 // for the disambiguation logic.

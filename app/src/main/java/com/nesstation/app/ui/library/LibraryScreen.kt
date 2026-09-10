@@ -850,6 +850,7 @@ fun LibraryScreen(
                     GamePlatform.NDS,
                     GamePlatform.PSX,
                     GamePlatform.PS2,
+                    GamePlatform.DC,
                     GamePlatform.JAVA
                 )) { platform ->
                     FilterChip(
@@ -1627,6 +1628,7 @@ private fun FsdPlatformBadge(platform: GamePlatform, modifier: Modifier = Modifi
         GamePlatform.NDS    -> "NDS"
         GamePlatform.PSX    -> "PSX"
         GamePlatform.PS2    -> "PS2"
+        GamePlatform.DC     -> "DC"
         GamePlatform.JAVA   -> "Java"
     }
     Box(

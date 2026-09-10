@@ -615,6 +615,65 @@ if(ANDROID_ABI STREQUAL "arm64-v8a")
 endif()
 
 # ---------------------------------------------------------------------------
+# Flycast (Sega Dreamcast / Naomi / Atomiswave) — built as libflycastcore.so,
+# which dlopen()s the prebuilt libflycast_libretro_android.so from
+# app/src/main/jniLibs/<abi>/ at runtime (same pattern as FBNeo / PCSX-ReARMed
+# / Genesis-Plus-GX / Geargrafx). The prebuilt .so comes from the libretro
+# buildbot (https://buildbot.libretro.com/nightly/android/latest/<abi>/).
+#
+# Unlike the 2D cores, flycast is a GPU core: it renders the Dreamcast's
+# PowerVR2 output through OpenGL ES 3 (glsm) and signals frames via
+# video_cb(RETRO_HW_FRAME_BUFFER_VALID). Our frontend (flycast_loader.cpp)
+# therefore implements the libretro hardware-rendering protocol on top of
+# EGL: GLES3 context on the ANativeWindow, an RGBA8+D24S8 FBO handed to the
+# core via get_current_framebuffer, a texture compositor after retro_run and
+# eglSwapBuffers. When no Surface is attached the context falls back to a
+# pbuffer so captureFrame / CPU readback still work.
+#
+# BIOS / system files (inside <systemDir>/dc/):
+#   dc_boot.bin + dc_flash.bin            — Dreamcast (required)
+#   naomi.zip / atomiswave.zip            — Naomi / Atomiswave MAME BIOS sets
+# Per-game VMU / naomi eeprom saves live in <saveDir>/reicast/ and
+# <systemDir>/dc/data/ (created on demand by the core).
+# ---------------------------------------------------------------------------
+set(FLYCAST_JNI_SOURCES
+    "${APP_JNI_DIR}/flycast_bridge.cpp"
+    "${APP_JNI_DIR}/flycast_loader.cpp"
+)
+
+add_library(flycastcore SHARED ${FLYCAST_JNI_SOURCES})
+
+target_include_directories(flycastcore PRIVATE
+    "${APP_JNI_DIR}"
+    "${APP_JNI_DIR}/shared"
+)
+
+target_compile_definitions(flycastcore PRIVATE
+    __LIBRETRO__
+    ANDROID
+    NDEBUG
+)
+
+target_compile_options(flycastcore PRIVATE
+    -O2
+    -fvisibility=hidden
+    -ffunction-sections -fdata-sections
+    -fno-rtti
+    -fno-exceptions
+    -Wno-unused-parameter
+    -Wno-unused-variable
+    -Wno-sign-compare
+    -Wno-write-strings
+    -Wno-deprecated-declarations
+)
+
+# `dl` is required for dlopen()/dlsym() on the prebuilt flycast .so;
+# EGL/GLESv3 for the hardware-rendering frontend, `android` for
+# ANativeWindow.
+target_link_libraries(flycastcore log android dl EGL GLESv3)
+
+
+# ---------------------------------------------------------------------------
 # melonDS (Nintendo DS / DSi) — built as libndscore.so, which links the
 # melonDS core + libretro wrapper as a static library (melonds-core),
 # compiled directly from source via core/melonds/CMakeLists.txt.

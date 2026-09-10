@@ -5,7 +5,7 @@
 
 一个为 Android 手机与 Android TV 打造的高质感多平台复古游戏模拟器。
 
-支持 **9 大平台**：NES / SFC / GB / GBA / PCE / DOS / Arcade / MD / Java ME，通过
+支持 **13 大平台**：NES / SFC / GB / GBA / PCE / DOS / Arcade / MD / NDS / PSX / PS2 / **DC** / Java ME，通过
 统一的 Compose UI 与一致的游戏内菜单体验，让你在 TV 大屏和手机小屏上都能
 畅玩从 8-bit 到街机的所有经典游戏。
 
@@ -19,6 +19,10 @@
 | **DOS**        | DOSBox-Pure       | `.bat` `.exe` `.dosz` `.conf` `.iso` | 否 |
 | **Arcade**     | **FBNeo**         | `.zip` `.7z`                  | NeoGeo / PGM / Mega-CD 游戏需要 |
 | **MD / SEGA**  | **Genesis-Plus-GX** | `.md` `.smd` `.sms` `.gg` `.sg` `.cue` `.chd` | Mega-CD 游戏需要 |
+| **NDS**        | melonDS           | `.nds` `.dsi` `.srl`          | DSi 模式需要 DSi BIOS |
+| **PSX**        | PCSX-ReARMed      | `.cue` `.bin` `.chd` `.pbp` `.m3u` `.ecm` `.mdf/.mds` | 推荐 BIOS（无 BIOS 回退 HLE） |
+| **PS2**        | PCEE2 (PCSX2)     | `.iso` `.cso` `.chd` `.cue`   | 需要 PS2 BIOS |
+| **DC**         | **Flycast**       | `.cdi` `.gdi` `.chd` `.cue` `.iso` `.m3u` `.zip` `.7z` | DC 需要 `dc_boot.bin`+`dc_flash.bin`；Naomi/Atomiswave 需要 `naomi.zip`/`atomiswave.zip` |
 | **Java ME**    | J2ME-Loader       | `.jar` `.jad`                 | 否 |
 
 > 主界面参考 Pico-8 / Analogue Pocket 的视觉语言：像素云朵天空 + 玻璃拟态卡片 + 圆角高亮。
@@ -90,6 +94,19 @@
 - Mega-CD CD 快速启动（跳过 BIOS 动画）
 - 超频（100% / 125% / 150% / 200%）
 - **BIOS 需求**：MD/SMS/GG/SG 卡带游戏无需 BIOS；Mega-CD 光盘游戏需要 `bios_CD_E/J/U.zip`，详见 `assets/genesis/README.txt`
+
+### **DC / Naomi / Atomiswave（Flycast 核心）**
+- Flycast 是精度与性能俱佳的 Dreamcast 模拟核心，同时支持 **Naomi** 与 **Atomiswave** 街机平台
+- **GD-ROM / 光盘镜像**：`.cdi`（DiscJuggler）、`.gdi`（原始 GD-ROM）、`.chd`（压缩）、`.cue/.bin`、`.iso`、`.m3u` 多碟列表
+- **街机 romset**：`.zip` / `.7z` MAME 格式（Naomi / Atomiswave），Select=投币、L3=Test、R3=Service、可免投币 Freeplay
+- **内部分辨率**：320x240 半分辨率 → 2560x1920（4x），GPU 硬件渲染（OpenGL ES 3）
+- 透明排序精度（按条带 / 按三角形 / 按像素）、各向异性过滤、纹理过滤/放大（xBRZ）
+- 宽屏变形 Hack、PVR2 后处理滤镜、雾效、Mipmap、帧交换延迟（减少闪屏）
+- 线程化渲染（GPU 独立线程，性能关键）、自动/强制跳帧、GD-ROM 读盘提速
+- **模拟摇杆 + L/R 模拟扳机**（屏幕摇杆控件直接输出真实模拟轴，可调死区）
+- VMU 存储卡（每游戏独立 VMU 可选）、震动包（Purupuru）、VMU 屏显/蜂鸣
+- 屏幕旋转（竖版游戏）、32MB 内存改造（部分自制软件）
+- **BIOS 需求**：DC 游戏 → `dc_boot.bin` + `dc_flash.bin`（放在 `<filesDir>/dc/`）；Naomi → `naomi.zip`；Atomiswave → `atomiswave.zip`（MAME BIOS romset，同样放 `<filesDir>/dc/`）
 
 ### J2ME / Java ME（J2ME-Loader 引擎）
 - 支持 `.jar` 格式的 Java ME 游戏 / MIDlet
@@ -182,6 +199,13 @@ J2ME 游戏使用 J2ME-Loader 的虚拟键盘系统，支持：
 - **两种添加方式**：同 FBNeo
 - 详见 `app/src/main/assets/genesis/README.txt`
 
+### Flycast（DC / Naomi / Atomiswave）BIOS
+- **必需**：Dreamcast 游戏 → `dc_boot.bin`（启动 ROM）+ `dc_flash.bin`（闪存 ROM），或开启 HLE BIOS（兼容性低，不建议）
+- **Naomi 游戏** → `naomi.zip`（MAME BIOS romset）；**Atomiswave 游戏** → `atomiswave.zip`
+- BIOS 文件位置：`<filesDir>/dc/`（VMU/闪存写入在 `<filesDir>/dc/data/`，自动创建）
+- **两种添加方式**：① 打包到 APK：放入 `app/src/main/assets/dc/`，启动时自动解压；② 手动放入设备 `<filesDir>/dc/`
+- 启动报错提示会明确指出缺失的 BIOS 名称
+
 ### Geargrafx（PCE-CD）BIOS
 - **必需**：PCE-CD 光盘游戏 → `syscard3.pce`（System Card 3 / Arcade Card Pro，最常用）
 - 可选：`syscard1.pce` / `syscard2.pce`（旧 System Card）/ `gexpress.pce`（少量游戏需要）
@@ -225,6 +249,7 @@ cp /path/to/bios_CD_U.zip app/src/main/assets/genesis/
 | DOSBox-Pure（DOS 核心） | GPLv2 — 见 `assets/legal/LICENSE-DOSBox-Pure.txt` |
 | FBNeo（Arcade 核心） | 非商业 — 见 `assets/legal/LICENSE-FBNeo.txt` |
 | Genesis-Plus-GX（MD 核心） | GPLv2 — 见 `assets/legal/LICENSE-Genesis-Plus-GX.txt` |
+| Flycast（DC/Naomi/Atomiswave 核心） | GPLv2 — 预编译核心来自 libretro buildbot |
 | J2ME-Loader | Apache License 2.0 |
 | M3G 3D 引擎 | Apache License 2.0 |
 | HQ2X / HQ4X 算法 | Maxim Stepin（免费使用） |

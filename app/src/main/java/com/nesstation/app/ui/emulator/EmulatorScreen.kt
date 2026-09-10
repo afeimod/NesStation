@@ -371,6 +371,24 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ps2_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START)
         )
+        // DC (Flycast — Dreamcast / Naomi / Atomiswave)。DC 标准手柄：
+        // 十字键 + 摇杆(独立模拟轴) + A/B/X/Y + L/R 模拟扳机 + Start。
+        // 屏幕标签 A/B/X/Y 与 DC 键同名；L/R 默认映射到 L2/R2 位（扳机）。
+        // Naomi：Select=Coin、L3=Test、R3=Service（flycast 输入描述符）。
+        GamePlatform.DC -> listOf(
+            KeyActionInternal("dc_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("dc_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("dc_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("dc_right", KeyEvent.KEYCODE_DPAD_RIGHT),
+            KeyActionInternal("dc_a", KeyEvent.KEYCODE_BUTTON_A),      // DC A
+            KeyActionInternal("dc_b", KeyEvent.KEYCODE_BUTTON_B),      // DC B
+            KeyActionInternal("dc_x", KeyEvent.KEYCODE_BUTTON_X),      // DC X
+            KeyActionInternal("dc_y", KeyEvent.KEYCODE_BUTTON_Y),      // DC Y
+            KeyActionInternal("dc_l", KeyEvent.KEYCODE_BUTTON_L2),     // L 扳机
+            KeyActionInternal("dc_r", KeyEvent.KEYCODE_BUTTON_R2),     // R 扳机
+            KeyActionInternal("dc_select", KeyEvent.KEYCODE_BUTTON_SELECT),
+            KeyActionInternal("dc_start", KeyEvent.KEYCODE_BUTTON_START)
+        )
     }
     return base
 }
@@ -524,6 +542,38 @@ private fun psxToLibretroLayout(bits: Int): Int {
     if (bits and BTN_R2 != 0)      r = r or (1 shl 13)  // R2
     if (bits and BTN_L3 != 0)      r = r or (1 shl 14)  // L3
     if (bits and BTN_R3 != 0)      r = r or (1 shl 15)  // R3
+    return r
+}
+
+// DC (Flycast) 专用：项目位布局 → libretro JOYPAD 布局。
+// flycast 的 dc_joymap（shell/libretro/libretro.cpp，已对照上游源码）：
+//   JOYPAD_B(bit0)=DC A / 街机 Button 1    JOYPAD_A(bit8)=DC B / Button 2
+//   JOYPAD_Y(bit1)=DC X / Button 3         JOYPAD_X(bit9)=DC Y / Button 4
+//   JOYPAD_L(bit10)=DC C / Button 6        JOYPAD_R(bit11)=DC Z / Button 5
+//   JOYPAD_L2(bit12)=左扳机 / Button 8     JOYPAD_R2(bit13)=右扳机 / Button 7
+//   SELECT(bit2)=Coin（Naomi 投币）/ DC D 键   L3/R3=Test/Service（Naomi）
+// 因此屏幕标签 A/B/X/Y 与 DC 键位同名直传：
+//   屏A(bit0)→libretro bit0、屏B(bit1)→bit8、屏X(bit8)→bit1、屏Y(bit9)→bit9。
+// DC 的 L/R 扳机在屏幕上用 L2/R2 位（详见 lBit/rBit 的 DC 分支），
+// 物理 L1/R1 仍落在 C/Z（Naomi Button 6/5），L3/R3 保留 Test/Service。
+private fun dcToLibretroLayout(bits: Int): Int {
+    var r = 0
+    if (bits and BTN_A != 0)       r = r or (1 shl 0)   // DC A / Button 1
+    if (bits and BTN_B != 0)       r = r or (1 shl 8)   // DC B / Button 2
+    if (bits and BTN_X != 0)       r = r or (1 shl 1)   // DC X / Button 3
+    if (bits and BTN_Y != 0)       r = r or (1 shl 9)   // DC Y / Button 4
+    if (bits and BTN_SELECT != 0)  r = r or (1 shl 2)   // Coin (Naomi) / DC D
+    if (bits and BTN_START != 0)   r = r or (1 shl 3)   // Start
+    if (bits and BTN_UP != 0)      r = r or (1 shl 4)   // Up
+    if (bits and BTN_DOWN != 0)    r = r or (1 shl 5)   // Down
+    if (bits and BTN_LEFT != 0)    r = r or (1 shl 6)   // Left
+    if (bits and BTN_RIGHT != 0)   r = r or (1 shl 7)   // Right
+    if (bits and BTN_L_SNES != 0)  r = r or (1 shl 10)  // C / Button 6
+    if (bits and BTN_R_SNES != 0)  r = r or (1 shl 11)  // Z / Button 5
+    if (bits and BTN_L2 != 0)      r = r or (1 shl 12)  // 左扳机 / Button 8
+    if (bits and BTN_R2 != 0)      r = r or (1 shl 13)  // 右扳机 / Button 7
+    if (bits and BTN_L3 != 0)      r = r or (1 shl 14)  // Test (Naomi)
+    if (bits and BTN_R3 != 0)      r = r or (1 shl 15)  // Service (Naomi)
     return r
 }
 
@@ -843,9 +893,9 @@ fun EmulatorScreen(
     // 0 = player 1, 1 = player 2, etc.
     var currentPlayer by remember { mutableStateOf(0) }
     // Max players supported by this platform.
-    // ARCADE=4, NES/SFC/MD/PCE=2, GB/GBA/DOS/JAVA=1
+    // ARCADE/DC=4, NES/SFC/MD/PCE=2, GB/GBA/DOS/JAVA=1
     val maxPlayers = when (platform) {
-        GamePlatform.ARCADE -> 4
+        GamePlatform.ARCADE, GamePlatform.DC -> 4
         GamePlatform.DOS, GamePlatform.JAVA, GamePlatform.GB, GamePlatform.GBA -> 1
         else -> 2
     }
@@ -1250,6 +1300,10 @@ fun EmulatorScreen(
         // PCEE2 (PCSX2) expects PS2 BIOS files in <filesDir>/ps2/pcsx2/bios/
         // (e.g. scph10000.bin); the native loader auto-migrates a legacy
         // <filesDir>/ps2/bios/ folder from previous releases on first load.
+        // Flycast (DC) builds its own dc/ folder under the system dir:
+        // <filesDir>/dc/dc_boot.bin + dc_flash.bin (+ naomi.zip /
+        // atomiswave.zip for Naomi / Atomiswave romsets) — the core appends
+        // dc/ itself, so we pass filesDir directly (see NesApp.ensureDcBios).
         // Other cores (NES/SNES/GBA/DOS) use the root filesDir.
         val systemDir = when (platform) {
             GamePlatform.ARCADE -> java.io.File(context.filesDir, "fbneo").apply { mkdirs() }.absolutePath
@@ -1258,6 +1312,12 @@ fun EmulatorScreen(
             GamePlatform.NDS    -> java.io.File(context.filesDir, "nds").apply { mkdirs() }.absolutePath
             GamePlatform.PSX    -> java.io.File(context.filesDir, "psx").apply { mkdirs() }.absolutePath
             GamePlatform.PS2    -> java.io.File(context.filesDir, "ps2").apply { mkdirs() }.absolutePath
+            // flycast appends dc/ to the system dir → BIOS root = filesDir
+            GamePlatform.DC     -> java.io.File(context.filesDir, "dc").apply {
+                // 双保险：确保 dc/ 与 dc/data/ 存在（NesApp.ensureDcBios 已建）
+                mkdirs()
+                java.io.File(this, "data").mkdirs()
+            }.parentFile!!.absolutePath
             else                -> context.filesDir.absolutePath
         }
         val filesDir = systemDir  // pass the platform-specific system dir to the core
@@ -1538,6 +1598,32 @@ fun EmulatorScreen(
                     loaded = true
                 }
             }
+        } else if (platform == GamePlatform.DC &&
+                   (romPath.endsWith(".cue", ignoreCase = true) ||
+                    romPath.endsWith(".chd", ignoreCase = true) ||
+                    romPath.endsWith(".iso", ignoreCase = true) ||
+                    romPath.endsWith(".cdi", ignoreCase = true) ||
+                    romPath.endsWith(".gdi", ignoreCase = true) ||
+                    romPath.endsWith(".m3u", ignoreCase = true))) {
+            // === DC / GD-ROM image via SAF (content://) ===
+            // 与 PSX 同理：.cue/.gdi/.m3u 用相对路径引用轨道文件（.bin/.raw
+            // 多轨道数据），只拷单个文件会让 flycast 找不到轨道。整目录拷贝。
+            // .cdi/.chd/.iso 虽是单文件镜像，同样走目录拷贝保持一致
+            // （顺带覆盖 .cdi+子轨道等边角情况）。
+            val cdFile = withContext(Dispatchers.IO) {
+                loadGameFolder(context, romPath, game.id, "dc_cd")
+            }
+            if (cdFile == null) {
+                errorMsg = "DC 加载失败：无法读取文件夹内容（.gdi/.cue 轨道文件）"
+            } else {
+                val ok = engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                if (!ok) {
+                    val err = engine.lastError()
+                    errorMsg = err.ifEmpty { "DC 加载失败" }
+                } else {
+                    loaded = true
+                }
+            }
         } else {
             try {
                 val input = context.contentResolver.openInputStream(android.net.Uri.parse(romPath))
@@ -1555,9 +1641,13 @@ fun EmulatorScreen(
                     // filename is irrelevant to the core, so we keep the
                     // legacy temp_rom.<ext> path.
                     // ----------------------------------------------------------------
-                    val origName: String = if (platform == GamePlatform.ARCADE) {
+                    val origName: String = if (platform == GamePlatform.ARCADE || platform == GamePlatform.DC) {
                         // Query SAF for the original filename — this preserves
                         // the driver name (kof98h.zip, mvc.zip, etc.).
+                        // DC (Flycast): Naomi / Atomiswave romsets are MAME
+                        // zips too — the filename doubles as the game
+                        // identifier hint, so it must be preserved like
+                        // arcade sets.
                         // NOTE: game.title is the localized Chinese display name
                         // (e.g. "拳皇98 - ...") and is NOT a valid driver name.
                         // If the SAF query fails, we fall back to the URI's last
@@ -1653,7 +1743,8 @@ fun EmulatorScreen(
                     // are usually safe, but we want to be defensive).
                     val sanitizedOrigName = origName.replace(Regex("[^A-Za-z0-9._-]"), "_")
                     val tempFileName = when {
-                        platform == GamePlatform.ARCADE && sanitizedOrigName.isNotBlank() -> sanitizedOrigName
+                        (platform == GamePlatform.ARCADE || platform == GamePlatform.DC) &&
+                            sanitizedOrigName.isNotBlank() -> sanitizedOrigName
                         // PSX single-file formats (.pbp/.ecm/.m3u/.ccd): use game ID
                         // to create unique temp files. Previously all PSX games
                         // shared "temp_rom.pbp" etc., causing the second game
@@ -1704,6 +1795,11 @@ fun EmulatorScreen(
                         origName.endsWith(".pce", ignoreCase = true) -> ".pce"
                         origName.endsWith(".sgx", ignoreCase = true) -> ".sgx"
                         origName.endsWith(".hes", ignoreCase = true) -> ".hes"
+                        // Dreamcast / Naomi / Atomiswave (Flycast) extensions
+                        origName.endsWith(".cdi", ignoreCase = true) -> ".cdi"
+                        origName.endsWith(".gdi", ignoreCase = true) -> ".gdi"
+                        origName.endsWith(".lst", ignoreCase = true) -> ".lst"
+                        origName.endsWith(".dat", ignoreCase = true) -> ".dat"
                         // Arcade: FBNeo loads .zip / .7z archives
                         origName.endsWith(".zip", ignoreCase = true) -> ".zip"
                         origName.endsWith(".7z", ignoreCase = true) -> ".7z"
@@ -1716,14 +1812,15 @@ fun EmulatorScreen(
                         romPath.contains(".gb", ignoreCase = true) -> ".gb"
                         // Default extension based on platform
                         platform == GamePlatform.ARCADE -> ".zip"
+                        platform == GamePlatform.DC -> ".chd"
                         platform == GamePlatform.MD -> ".md"
                         platform == GamePlatform.PCE -> ".pce"
                         else -> ".nes"
                     }
-                    // For arcade, tempFileName already includes the extension
-                    // (sanitizedOrigName keeps the original .zip/.7z suffix).
-                    // For other platforms, append ext to tempFileName.
-                    val tempFile = if (platform == GamePlatform.ARCADE &&
+                    // For arcade / DC archives, tempFileName already includes
+                    // the extension (sanitizedOrigName keeps the original
+                    // .zip/.7z suffix). For other platforms, append ext.
+                    val tempFile = if ((platform == GamePlatform.ARCADE || platform == GamePlatform.DC) &&
                                        sanitizedOrigName.endsWith(ext, ignoreCase = true)) {
                         java.io.File(context.cacheDir, tempFileName)
                     } else {
@@ -2145,8 +2242,10 @@ fun EmulatorScreen(
                             routePadBits(engine, currentPlayer, bits, platform = platform)
                         }
                     },
-                    // PS2 双摇杆：把归一化拇指位置转成 int16 libretro 轴值
-                    // 直接推给 PCEE2 核心（数字位走上面的 onPadBits 链路）
+                    // PS2 / DC：把归一化拇指位置转成 int16 libretro 轴值
+                    // 直接推给核心（数字位走上面的 onPadBits 链路）。
+                    // PS2 用双摇杆（PCEE2 原生模拟轴）；DC 用左摇杆
+                    //（flycast 的 DC 摇杆必须走 RETRO_DEVICE_ANALOG 轴）。
                     onAnalogAxes = if (platform == GamePlatform.PS2) {
                         { lx, ly, rx, ry ->
                             (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxes(
@@ -2154,6 +2253,12 @@ fun EmulatorScreen(
                                 (ly * 32767).toInt(),
                                 (rx * 32767).toInt(),
                                 (ry * 32767).toInt()
+                            )
+                        }
+                    } else if (platform == GamePlatform.DC) {
+                        { lx, ly, rx, ry ->
+                            (engine as? com.nesstation.app.core.engine.FlycastEngine)?.setAnalogAxes(
+                                lx, ly, rx, ry
                             )
                         }
                     } else null,
@@ -2916,16 +3021,19 @@ private fun routePadBits(
     netplayController: com.nesstation.app.battle.NetplayController? = null,
     platform: GamePlatform = GamePlatform.NES
 ) {
-    // NDS / PSX / PS2 使用项目位布局到 libretro 标准位布局的转换。
+    // NDS / PSX / PS2 / DC 使用项目位布局到 libretro 标准位布局的转换。
     // NDS（melonDS）按标准 libretro JOYPAD 位理解，用 projectToLibretroLayout。
     // PSX（PCSX-ReARMed）libretro 映射为：✕=bit0(B)、□=bit1(Y)、
     // ○=bit8(A)、△=bit9(X)，且 PSX 屏幕标签是 A=✕、B=○、X=△、Y=□，
     // 因此用 psxToLibretroLayout（A→bit0、B→bit8、X→bit9、Y→bit1）。
     // PS2（PCEE2）按键 label 语义不同（×=bit0、□=bit1、○=bit8、△=bit9），
     // 用 ps2ToLibretroLayout 单独转换。
+    // DC（Flycast）按 dc_joymap 同名直传：A=bit0、B=bit8、X=bit1、Y=bit9、
+    // L2/R2=扳机，用 dcToLibretroLayout。
     val ndsBits = if (platform == GamePlatform.NDS) projectToLibretroLayout(bits)
                   else if (platform == GamePlatform.PSX) psxToLibretroLayout(bits)
                   else if (platform == GamePlatform.PS2) ps2ToLibretroLayout(bits)
+                  else if (platform == GamePlatform.DC) dcToLibretroLayout(bits)
                   else bits
     if (netplayController != null) {
         // 联机对战：只接受本地 1P 输入；2P 由远端玩家控制
@@ -2935,8 +3043,17 @@ private fun routePadBits(
     when (player) {
         0 -> engine.setPad1(ndsBits)
         1 -> engine.setPad2(ndsBits)
-        2 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad3(ndsBits)
-        3 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad4(ndsBits)
+        // 3P/4P：FbNeo 与 Flycast 支持 4 端口（街机/DC 4 人游戏）
+        2 -> when (engine) {
+            is com.nesstation.app.core.engine.FbNeoEngine -> engine.setPad3(ndsBits)
+            is com.nesstation.app.core.engine.FlycastEngine -> engine.setPad3(ndsBits)
+            else -> {}
+        }
+        3 -> when (engine) {
+            is com.nesstation.app.core.engine.FbNeoEngine -> engine.setPad4(ndsBits)
+            is com.nesstation.app.core.engine.FlycastEngine -> engine.setPad4(ndsBits)
+            else -> {}
+        }
     }
 }
 
@@ -3187,6 +3304,72 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("pcsx_rearmed_negcon_response", layout.pscxNegconResponse)
             engine.setCoreOption("pcsx_rearmed_negcon_deadzone", layout.pscxNegconDeadzone)
             engine.setCoreOption("pcsx_rearmed_gpu_peops_odd_even_bit", layout.pscxGpuOddEven)
+        }
+        GamePlatform.DC -> {
+            // Flycast core options — 键名/取值已对照 flycast 上游
+            // shell/libretro/libretro_core_options.h（CORE_OPTION_NAME = "reicast"）
+            // 与 buildbot 预编译 libflycast_libretro_android.so 内嵌字符串双向校验。
+            // 分辨率/滤镜等改后即时生效；hle_bios 等标注重启生效的项在
+            // applyCoreOptions 先于 loadRom 运行，下次进游戏即生效。
+
+            // --- 系统 / BIOS ---
+            engine.setCoreOption("reicast_region", layout.dcRegion)             // Japan|USA|Europe|Default
+            engine.setCoreOption("reicast_language", layout.dcLanguage)        // BIOS/游戏语言
+            engine.setCoreOption("reicast_hle_bios", layout.dcHleBios)         // 强制 HLE BIOS（重启）
+            engine.setCoreOption("reicast_enable_dsp", layout.dcEnableDsp)     // AICA DSP 音频精度
+            engine.setCoreOption("reicast_broadcast", layout.dcBroadcast)      // NTSC|PAL|PAL_N|PAL_M|Default
+            engine.setCoreOption("reicast_cable_type", layout.dcCableType)     // VGA|TV (RGB)|TV (Composite)
+            engine.setCoreOption("reicast_dc_32mb_mod", layout.dc32MbMod)      // 32MB 内存改造(自制软件)
+
+            // --- CPU / SH4 ---
+            engine.setCoreOption("reicast_sh4clock", layout.dcSh4Clock)        // SH4 主频 MHz
+
+            // --- 画面 / GPU (PowerVR2) ---
+            engine.setCoreOption("reicast_internal_resolution", layout.dcInternalRes)
+            engine.setCoreOption("reicast_alpha_sorting", layout.dcAlphaSorting)
+            engine.setCoreOption("reicast_anisotropic_filtering", layout.dcAnisotropic)
+            engine.setCoreOption("reicast_texture_filtering", layout.dcTextureFiltering)
+            engine.setCoreOption("reicast_mipmapping", layout.dcMipmapping)
+            engine.setCoreOption("reicast_fog", layout.dcFog)
+            engine.setCoreOption("reicast_volume_modifier_enable", layout.dcVolumeModifier)
+            engine.setCoreOption("reicast_widescreen_hack", layout.dcWidescreenHack)
+            engine.setCoreOption("reicast_pvr2_filtering", layout.dcPvr2Filtering)
+            engine.setCoreOption("reicast_emulate_framebuffer", layout.dcEmulateFramebuffer)
+            engine.setCoreOption("reicast_enable_rttb", layout.dcEnableRttb)
+            engine.setCoreOption("reicast_native_depth_interpolation", layout.dcDepthInterpolation)
+            engine.setCoreOption("reicast_fix_upscale_bleeding_edge", layout.dcFixUpscaleBleeding)
+            engine.setCoreOption("reicast_texupscale", layout.dcTexUpscale)
+            engine.setCoreOption("reicast_texupscale_max_filtered_texture_size", layout.dcTexUpscaleMaxSize)
+            engine.setCoreOption("reicast_screen_rotation", layout.dcScreenRotation)
+            engine.setCoreOption("reicast_delay_frame_swapping", layout.dcDelayFrameSwapping)
+
+            // --- 性能 / 线程 ---
+            engine.setCoreOption("reicast_threaded_rendering", layout.dcThreadedRendering)
+            engine.setCoreOption("reicast_auto_skip_frame", layout.dcAutoSkipFrame)
+            engine.setCoreOption("reicast_frame_skipping", layout.dcFrameSkipping)
+            engine.setCoreOption("reicast_gdrom_fast_loading", layout.dcGdromFastLoading)
+
+            // --- 音频 / VMU ---
+            engine.setCoreOption("reicast_vmu_sound", layout.dcVmuSound)
+            engine.setCoreOption("reicast_per_content_vmus", layout.dcPerContentVmus)
+            engine.setCoreOption("reicast_device_port1_slot1", layout.dcPort1Slot1)
+            engine.setCoreOption("reicast_device_port1_slot2", layout.dcPort1Slot2)
+            engine.setCoreOption("reicast_device_port2_slot1", layout.dcPort2Slot1)
+            engine.setCoreOption("reicast_device_port2_slot2", layout.dcPort2Slot2)
+            engine.setCoreOption("reicast_device_port3_slot1", layout.dcPort3Slot1)
+            engine.setCoreOption("reicast_device_port3_slot2", layout.dcPort3Slot2)
+            engine.setCoreOption("reicast_device_port4_slot1", layout.dcPort4Slot1)
+            engine.setCoreOption("reicast_device_port4_slot2", layout.dcPort4Slot2)
+
+            // --- 街机（Naomi / Atomiswave）---
+            engine.setCoreOption("reicast_allow_service_buttons", layout.dcAllowServiceButtons)
+            engine.setCoreOption("reicast_force_freeplay", layout.dcForceFreeplay)
+            engine.setCoreOption("reicast_coin_limit", layout.dcCoinLimit)
+
+            // --- 输入 ---
+            engine.setCoreOption("reicast_analog_stick_deadzone", layout.dcStickDeadzone)
+            engine.setCoreOption("reicast_trigger_deadzone", layout.dcTriggerDeadzone)
+            engine.setCoreOption("reicast_digital_triggers", layout.dcDigitalTriggers)
         }
         GamePlatform.PS2 -> {
             // --- PCEE2 (PCSX2 v2.7.523) core options ---
@@ -3858,6 +4041,7 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         GamePlatform.NDS    -> padLayout.comboButtonsSfc  // NDS uses SNES-style combos
         GamePlatform.PSX    -> padLayout.comboButtonsSfc  // PSX uses SNES-style combos
         GamePlatform.PS2    -> padLayout.comboButtonsSfc  // PS2 uses SNES-style combos
+        GamePlatform.DC     -> padLayout.comboButtonsSfc  // DC uses SNES-style combos
         GamePlatform.JAVA   -> ""
     }
     if (json.isBlank()) return emptyList()
@@ -4055,11 +4239,13 @@ fun OnScreenController(
     val showLR = platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     val showXY = platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     // L2/R2 (Turbo toggle for PCE, L2/R2 for PSX) — show for ARCADE when explicitly enabled,
     // always for PCE (PCE has turbo toggle as a standard feature), and for PSX
     // (DualShock L2/R2 mapped to libretro bits 12/13).
@@ -4130,9 +4316,23 @@ fun OnScreenController(
     // 回调用 rememberUpdatedState 包装，手势协程重启期间始终拿到最新 lambda
     val currentOnAnalogAxes by rememberUpdatedState(onAnalogAxes)
 
-    // L/R bit values differ between GBA (bit8/9) and SNES/ARCADE/MD (bit10/11)
-    val lBit = if (platform == GamePlatform.GBA) BTN_L_GBA else BTN_L_SNES
-    val rBit = if (platform == GamePlatform.GBA) BTN_R_GBA else BTN_R_SNES
+    // L/R bit values differ between GBA (bit8/9) and SNES/ARCADE/MD (bit10/11).
+    // DC: 屏幕的 L/R 就是 Dreamcast 的模拟扳机，直接用 L2/R2 位
+    // （dcToLibretroLayout 把 bit12/13 转 libretro JOYPAD_L2/R2 = 扳机）。
+    val lBit = when {
+        platform == GamePlatform.GBA -> BTN_L_GBA
+        platform == GamePlatform.DC  -> BTN_L2
+        else -> BTN_L_SNES
+    }
+    val rBit = when {
+        platform == GamePlatform.GBA -> BTN_R_GBA
+        platform == GamePlatform.DC  -> BTN_R2
+        else -> BTN_R_SNES
+    }
+    // 即时存档 / 即时读档按钮回调用 rememberUpdatedState 包装，
+    // 手势协程重启期间始终拿到最新 lambda
+    val currentOnQuickSave by rememberUpdatedState(onQuickSave)
+    val currentOnQuickLoad by rememberUpdatedState(onQuickLoad)
 
     // === 横竖屏布局选择 ===
     // 横屏用 dpad / btnA / btnB / ...，竖屏用 dpadP / btnAP / btnBP / ...
@@ -4430,6 +4630,15 @@ fun OnScreenController(
                                     // 十字键=十字键，左摇杆=左摇杆，互不串扰）。
                                     analogThumbX = tx
                                     analogThumbY = ty
+                                    if (platform == GamePlatform.DC) {
+                                        // DC：摇杆模式下摇杆控件同时输出真实模拟轴
+                                        //（flycast 的 DC 摇杆必须走 ANALOG 轴，
+                                        // 仅数字位大多数 3D 游戏动不了）；
+                                        // 数字方向位同时保留（纯数字游戏兼容）。
+                                        lStickTX = tx
+                                        lStickTY = ty
+                                        pushAnalog()
+                                    }
                                 }
                             }
                             BtnType.LSTICK -> {
@@ -4534,6 +4743,12 @@ fun OnScreenController(
                                                 if (bt == BtnType.DPAD && useAnalogStick) {
                                                     analogThumbX = 0f
                                                     analogThumbY = 0f
+                                                    if (platform == GamePlatform.DC) {
+                                                        // DC：松手回中 —— 轴值归零并推送
+                                                        lStickTX = 0f
+                                                        lStickTY = 0f
+                                                        pushAnalog()
+                                                    }
                                                 }
                                             }
                                             // 即时存档 / 即时读档无输入位，UP 仅移除指针
@@ -4568,6 +4783,12 @@ fun OnScreenController(
                                         if (useAnalogStick) {
                                             analogThumbX = tx
                                             analogThumbY = ty
+                                            if (platform == GamePlatform.DC) {
+                                                // DC：拖动时同步更新模拟轴（同上）
+                                                lStickTX = tx
+                                                lStickTY = ty
+                                                pushAnalog()
+                                            }
                                         }
                                         sendStateNow(visualState, turboState)
                                     } else if (entry != null && entry.first == BtnType.LSTICK) {
@@ -6816,13 +7037,15 @@ private fun PadLayoutEditor(
     val showLR = platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     // JAVA（J2ME）手柄模式的虚拟按键同样带 X/Y 两个键（X=右软键，Y=*键），
     // 布局编辑器必须允许拖动它们 —— 旧版没包含 JAVA，编辑器里缺少 X/Y。
     val showXY = platform == GamePlatform.SFC || platform == GamePlatform.JAVA ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     // L2/R2 editable in edit mode for Arcade (when enabled) and PCE (turbo toggle)
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE || platform == GamePlatform.PSX ||

@@ -77,8 +77,17 @@ object PlatformDetector {
                 GamePlatform.PCE -> GamePlatform.PCE
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
+                GamePlatform.DC -> GamePlatform.DC
                 else -> GamePlatform.MD
             }
+        }
+
+        // === DC 专属镜像扩展（.cdi / .gdi）===
+        // 无歧义：DiscJuggler (.cdi) 与原始 GD-ROM (.gdi) 是 Dreamcast 标准
+        // dump 格式，其他平台不用。flycast 支持列表里的 .lst/.dat 是 Naomi
+        // 旧版 romset（MAME 格式化前），也归 DC。
+        if (ext == "cdi" || ext == "gdi" || ext == "lst" || ext == "dat") {
+            return GamePlatform.DC
         }
 
         // === MDF/MDS/NRG 镜像：靠 hint 消歧，PS2 页导入 → PS2，否则默认 PSX ===
@@ -139,14 +148,22 @@ object PlatformDetector {
                 if (psxHints.any { lowerPath.contains(it) }) return GamePlatform.PSX
                 val ps2Hints = listOf("ps2", "playstation2", "psx2")
                 if (ps2Hints.any { lowerPath.contains(it) }) return GamePlatform.PS2
+                val dcHints = listOf("dc", "dreamcast", "naomi", "atomiswave", "flycast", "gdrom")
+                if (dcHints.any { lowerPath.contains(it) }) return GamePlatform.DC
             }
             return when (hintPlatform) {
                 GamePlatform.DOS -> GamePlatform.DOS
                 GamePlatform.PCE -> GamePlatform.PCE
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
+                GamePlatform.DC -> GamePlatform.DC
                 else -> GamePlatform.MD
             }
+        }
+
+        // === DC 专属镜像扩展（.cdi / .gdi / .lst / .dat）===
+        if (ext == "cdi" || ext == "gdi" || ext == "lst" || ext == "dat") {
+            return GamePlatform.DC
         }
 
         // === MDF/MDS/NRG 镜像：先看路径关键字(ps2)，再看 hint，最后默认 PSX ===
@@ -206,6 +223,7 @@ object PlatformDetector {
                 GamePlatform.DOS -> GamePlatform.DOS
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
+                GamePlatform.DC -> GamePlatform.DC
                 else -> GamePlatform.ARCADE
             }
         }

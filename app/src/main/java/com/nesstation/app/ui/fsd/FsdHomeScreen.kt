@@ -79,6 +79,7 @@ private fun platformIcon(p: GamePlatform) = when (p) {
     GamePlatform.NDS    -> Icons.Rounded.MenuBook        // 翻盖双屏
     GamePlatform.ARCADE -> Icons.Rounded.LocalPlay       // 街机厅票券（legacy 集无 Arcade 图标）
     GamePlatform.DOS    -> Icons.Rounded.Terminal        // DOS 命令行
+    GamePlatform.DC     -> Icons.Rounded.SportsEsports   // DC 手柄（圆盘+模拟摇杆）
     GamePlatform.JAVA   -> Icons.Rounded.LocalCafe       // Java 咖啡
 }
 
@@ -169,7 +170,8 @@ fun FsdHomeScreen(
     val platformOrder = listOf(
         GamePlatform.NES, GamePlatform.SFC, GamePlatform.GB, GamePlatform.GBA,
         GamePlatform.MD, GamePlatform.PCE, GamePlatform.PSX, GamePlatform.PS2,
-        GamePlatform.NDS, GamePlatform.ARCADE, GamePlatform.DOS, GamePlatform.JAVA
+        GamePlatform.NDS, GamePlatform.ARCADE, GamePlatform.DOS, GamePlatform.DC,
+        GamePlatform.JAVA
     )
     val countByPlatform = remember(games) {
         games.groupingBy { it.platform }.eachCount()

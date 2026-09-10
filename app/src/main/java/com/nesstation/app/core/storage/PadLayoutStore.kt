@@ -554,6 +554,66 @@ class PadLayout {
     var ps2HalfPixelOffset: String = "0"             // pcsx2_half_pixel_offset: 0..5 (GSHalfPixelOffset, 0=关闭)
     var ps2TexturePreloading: String = "1"           // pcsx2_texture_preloading: 0=Off|1=Partial|2=Full (Full 最吃显存)
 
+    // === DC (Flycast — Dreamcast / Naomi / Atomiswave) core options ===
+    // 键名/取值对照 flycast 上游 shell/libretro/libretro_core_options.h
+    // （CORE_OPTION_NAME = "reicast"）并已与 buildbot 预编译核心内嵌
+    // 字符串双向校验。默认值与上游一致。
+    // --- 系统 ---
+    var dcRegion: String = "USA"                     // reicast_region: Japan|USA|Europe|Default
+    var dcLanguage: String = "English"               // reicast_language: Japanese|English|German|French|Spanish|Italian|Default
+    var dcHleBios: String = "disabled"               // reicast_hle_bios: disabled|enabled (重启生效)
+    var dcEnableDsp: String = "enabled"              // reicast_enable_dsp: disabled|enabled (AICA DSP)
+    var dcBroadcast: String = "Default"              // reicast_broadcast: NTSC|PAL|PAL_N|PAL_M|Default
+    var dcCableType: String = "TV (Composite)"       // reicast_cable_type: VGA|TV (RGB)|TV (Composite)
+    var dc32MbMod: String = "disabled"               // reicast_dc_32mb_mod: disabled|enabled
+    // --- CPU ---
+    var dcSh4Clock: String = "200"                   // reicast_sh4clock: 100..330 (MHz)
+    // --- 画面 ---
+    var dcInternalRes: String = "640x480"            // reicast_internal_resolution: 320x240..2560x1920 (UI 上限 4x)
+    var dcAlphaSorting: String = "per-triangle (normal)"  // per-strip (fast, least accurate)|per-triangle (normal)|per-pixel (accurate)
+    var dcAnisotropic: String = "4"                  // reicast_anisotropic_filtering: off|2|4|8|16
+    var dcTextureFiltering: String = "0"             // reicast_texture_filtering: 0 默认|1 强制最近邻|2 强制线性
+    var dcMipmapping: String = "enabled"             // reicast_mipmapping
+    var dcFog: String = "enabled"                    // reicast_fog
+    var dcVolumeModifier: String = "enabled"         // reicast_volume_modifier_enable
+    var dcWidescreenHack: String = "disabled"        // reicast_widescreen_hack (16:9 变形)
+    var dcPvr2Filtering: String = "disabled"         // reicast_pvr2_filtering (PowerVR2 后处理)
+    var dcEmulateFramebuffer: String = "disabled"    // reicast_emulate_framebuffer (全帧缓冲模拟, 慢)
+    var dcEnableRttb: String = "disabled"            // reicast_enable_rttb (RTT 缩解, 少数游戏)
+    var dcDepthInterpolation: String = "disabled"    // reicast_native_depth_interpolation
+    var dcFixUpscaleBleeding: String = "disabled"    // reicast_fix_upscale_bleeding_edge
+    var dcTexUpscale: String = "1"                   // reicast_texupscale: 1 关闭|2|4|6 (xBRZ 纹理放大)
+    var dcTexUpscaleMaxSize: String = "256"          // reicast_texupscale_max_filtered_texture_size: 256|512|1024
+    var dcScreenRotation: String = "horizontal"      // reicast_screen_rotation: horizontal|vertical (竖屏射击)
+    var dcDelayFrameSwapping: String = "disabled"    // reicast_delay_frame_swapping (减少闪屏)
+    // --- 性能 ---
+    var dcThreadedRendering: String = "enabled"      // reicast_threaded_rendering (GPU 线程, 性能关键)
+    var dcAutoSkipFrame: String = "disabled"         // reicast_auto_skip_frame: disabled|some|more (仅线程渲染)
+    var dcFrameSkipping: String = "disabled"         // reicast_frame_skipping: disabled|1..6
+    var dcGdromFastLoading: String = "enabled"       // reicast_gdrom_fast_loading (GD-ROM 读盘提速)
+    // --- 音频 / VMU ---
+    var dcVmuSound: String = "disabled"              // reicast_vmu_sound (VMU 蜂鸣)
+    var dcPerContentVmus: String = "disabled"        // reicast_per_content_vmus: disabled|VMU A1|All VMUs
+    var dcPort1Slot1: String = "VMU"                 // reicast_device_port1_slot1: VMU|Purupuru|DreamPotato|None
+    var dcPort1Slot2: String = "Purupuru"            // reicast_device_port1_slot2: VMU|Purupuru|None (震动包)
+    var dcPort2Slot1: String = "VMU"                 // reicast_device_port2_slot1
+    var dcPort2Slot2: String = "None"                // reicast_device_port2_slot2
+    var dcPort3Slot1: String = "VMU"                 // reicast_device_port3_slot1
+    var dcPort3Slot2: String = "None"                // reicast_device_port3_slot2
+    var dcPort4Slot1: String = "VMU"                 // reicast_device_port4_slot1
+    var dcPort4Slot2: String = "None"                // reicast_device_port4_slot2
+    // --- 街机（Naomi / Atomiswave）---
+    var dcAllowServiceButtons: String = "disabled"   // reicast_allow_service_buttons
+    var dcForceFreeplay: String = "disabled"         // reicast_force_freeplay (免投币)
+    var dcCoinLimit: String = "0"                    // reicast_coin_limit: 0(不限)|1..20
+    // --- 输入 ---
+    var dcStickDeadzone: String = "15%"              // reicast_analog_stick_deadzone: 0%..30%
+    var dcTriggerDeadzone: String = "0%"             // reicast_trigger_deadzone: 0%..30%
+    var dcDigitalTriggers: String = "disabled"       // reicast_digital_triggers: disabled|enabled
+    // DC 输入模式（十字键 / 摇杆）—— DC 摇杆是核心输入（3D 游戏），
+    // 默认 analog；与全局 inputMode 分开存储（同 ARCADE 的 arcadeInputMode）。
+    var dcInputMode: String = "analog"               // dpad | analog
+
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
         fun normalizePs2ResMulti(raw: String?): String = when (raw?.trim()) {
@@ -669,6 +729,7 @@ class PadLayout {
     var hiddenButtonsPce: String = ""     // PCE hidden button keys
     var hiddenButtonsNds: String = ""     // NDS hidden button keys
     var hiddenButtonsPsx: String = ""     // PSX hidden button keys
+    var hiddenButtonsDc: String = ""      // DC hidden button keys
     var hiddenButtonsPs2: String = ""     // PS2 hidden button keys (含 l3/r3；双摇杆常驻不隐藏)
 
     // === Input mode (joystick vs D-pad) ===
@@ -976,6 +1037,53 @@ class PadLayout {
         pscxMultitap = another.pscxMultitap
         pscxGpuOddEven = another.pscxGpuOddEven
         pscxAnalogAxis = another.pscxAnalogAxis
+        // DC (Flycast) core options + 输入模式
+        dcRegion = another.dcRegion
+        dcLanguage = another.dcLanguage
+        dcHleBios = another.dcHleBios
+        dcEnableDsp = another.dcEnableDsp
+        dcBroadcast = another.dcBroadcast
+        dcCableType = another.dcCableType
+        dc32MbMod = another.dc32MbMod
+        dcSh4Clock = another.dcSh4Clock
+        dcInternalRes = another.dcInternalRes
+        dcAlphaSorting = another.dcAlphaSorting
+        dcAnisotropic = another.dcAnisotropic
+        dcTextureFiltering = another.dcTextureFiltering
+        dcMipmapping = another.dcMipmapping
+        dcFog = another.dcFog
+        dcVolumeModifier = another.dcVolumeModifier
+        dcWidescreenHack = another.dcWidescreenHack
+        dcPvr2Filtering = another.dcPvr2Filtering
+        dcEmulateFramebuffer = another.dcEmulateFramebuffer
+        dcEnableRttb = another.dcEnableRttb
+        dcDepthInterpolation = another.dcDepthInterpolation
+        dcFixUpscaleBleeding = another.dcFixUpscaleBleeding
+        dcTexUpscale = another.dcTexUpscale
+        dcTexUpscaleMaxSize = another.dcTexUpscaleMaxSize
+        dcScreenRotation = another.dcScreenRotation
+        dcDelayFrameSwapping = another.dcDelayFrameSwapping
+        dcThreadedRendering = another.dcThreadedRendering
+        dcAutoSkipFrame = another.dcAutoSkipFrame
+        dcFrameSkipping = another.dcFrameSkipping
+        dcGdromFastLoading = another.dcGdromFastLoading
+        dcVmuSound = another.dcVmuSound
+        dcPerContentVmus = another.dcPerContentVmus
+        dcPort1Slot1 = another.dcPort1Slot1
+        dcPort1Slot2 = another.dcPort1Slot2
+        dcPort2Slot1 = another.dcPort2Slot1
+        dcPort2Slot2 = another.dcPort2Slot2
+        dcPort3Slot1 = another.dcPort3Slot1
+        dcPort3Slot2 = another.dcPort3Slot2
+        dcPort4Slot1 = another.dcPort4Slot1
+        dcPort4Slot2 = another.dcPort4Slot2
+        dcAllowServiceButtons = another.dcAllowServiceButtons
+        dcForceFreeplay = another.dcForceFreeplay
+        dcCoinLimit = another.dcCoinLimit
+        dcStickDeadzone = another.dcStickDeadzone
+        dcTriggerDeadzone = another.dcTriggerDeadzone
+        dcDigitalTriggers = another.dcDigitalTriggers
+        dcInputMode = another.dcInputMode
         ps2ResMulti = another.ps2ResMulti
         ps2Renderer = another.ps2Renderer
         ps2Bilinear = another.ps2Bilinear
@@ -1061,6 +1169,7 @@ class PadLayout {
         hiddenButtonsPce = another.hiddenButtonsPce
         hiddenButtonsNds = another.hiddenButtonsNds
         hiddenButtonsPsx = another.hiddenButtonsPsx
+        hiddenButtonsDc = another.hiddenButtonsDc
         inputMode = another.inputMode
         homeBackgroundUri = another.homeBackgroundUri
         homeBackgroundIsVideo = another.homeBackgroundIsVideo
@@ -1739,6 +1848,53 @@ object PadLayoutStore {
             }
             pscxGpuOddEven = p.getString("psx_gpu_odd_even", "disabled") ?: "disabled"
             pscxAnalogAxis = p.getString("psx_analog_axis", "square") ?: "square"
+            // === DC (Flycast) core options + 输入模式 ===
+            dcRegion = p.getString("dc_region", "USA") ?: "USA"
+            dcLanguage = p.getString("dc_language", "English") ?: "English"
+            dcHleBios = p.getString("dc_hle_bios", "disabled") ?: "disabled"
+            dcEnableDsp = p.getString("dc_enable_dsp", "enabled") ?: "enabled"
+            dcBroadcast = p.getString("dc_broadcast", "Default") ?: "Default"
+            dcCableType = p.getString("dc_cable_type", "TV (Composite)") ?: "TV (Composite)"
+            dc32MbMod = p.getString("dc_32mb_mod", "disabled") ?: "disabled"
+            dcSh4Clock = p.getString("dc_sh4clock", "200") ?: "200"
+            dcInternalRes = p.getString("dc_internal_res", "640x480") ?: "640x480"
+            dcAlphaSorting = p.getString("dc_alpha_sorting", "per-triangle (normal)") ?: "per-triangle (normal)"
+            dcAnisotropic = p.getString("dc_anisotropic", "4") ?: "4"
+            dcTextureFiltering = p.getString("dc_texture_filtering", "0") ?: "0"
+            dcMipmapping = p.getString("dc_mipmapping", "enabled") ?: "enabled"
+            dcFog = p.getString("dc_fog", "enabled") ?: "enabled"
+            dcVolumeModifier = p.getString("dc_volume_modifier", "enabled") ?: "enabled"
+            dcWidescreenHack = p.getString("dc_widescreen_hack", "disabled") ?: "disabled"
+            dcPvr2Filtering = p.getString("dc_pvr2_filtering", "disabled") ?: "disabled"
+            dcEmulateFramebuffer = p.getString("dc_emulate_framebuffer", "disabled") ?: "disabled"
+            dcEnableRttb = p.getString("dc_enable_rttb", "disabled") ?: "disabled"
+            dcDepthInterpolation = p.getString("dc_depth_interpolation", "disabled") ?: "disabled"
+            dcFixUpscaleBleeding = p.getString("dc_fix_upscale_bleeding", "disabled") ?: "disabled"
+            dcTexUpscale = p.getString("dc_tex_upscale", "1") ?: "1"
+            dcTexUpscaleMaxSize = p.getString("dc_tex_upscale_max_size", "256") ?: "256"
+            dcScreenRotation = p.getString("dc_screen_rotation", "horizontal") ?: "horizontal"
+            dcDelayFrameSwapping = p.getString("dc_delay_frame_swapping", "disabled") ?: "disabled"
+            dcThreadedRendering = p.getString("dc_threaded_rendering", "enabled") ?: "enabled"
+            dcAutoSkipFrame = p.getString("dc_auto_skip_frame", "disabled") ?: "disabled"
+            dcFrameSkipping = p.getString("dc_frame_skipping", "disabled") ?: "disabled"
+            dcGdromFastLoading = p.getString("dc_gdrom_fast_loading", "enabled") ?: "enabled"
+            dcVmuSound = p.getString("dc_vmu_sound", "disabled") ?: "disabled"
+            dcPerContentVmus = p.getString("dc_per_content_vmus", "disabled") ?: "disabled"
+            dcPort1Slot1 = p.getString("dc_port1_slot1", "VMU") ?: "VMU"
+            dcPort1Slot2 = p.getString("dc_port1_slot2", "Purupuru") ?: "Purupuru"
+            dcPort2Slot1 = p.getString("dc_port2_slot1", "VMU") ?: "VMU"
+            dcPort2Slot2 = p.getString("dc_port2_slot2", "None") ?: "None"
+            dcPort3Slot1 = p.getString("dc_port3_slot1", "VMU") ?: "VMU"
+            dcPort3Slot2 = p.getString("dc_port3_slot2", "None") ?: "None"
+            dcPort4Slot1 = p.getString("dc_port4_slot1", "VMU") ?: "VMU"
+            dcPort4Slot2 = p.getString("dc_port4_slot2", "None") ?: "None"
+            dcAllowServiceButtons = p.getString("dc_allow_service_buttons", "disabled") ?: "disabled"
+            dcForceFreeplay = p.getString("dc_force_freeplay", "disabled") ?: "disabled"
+            dcCoinLimit = p.getString("dc_coin_limit", "0") ?: "0"
+            dcStickDeadzone = p.getString("dc_stick_deadzone", "15%") ?: "15%"
+            dcTriggerDeadzone = p.getString("dc_trigger_deadzone", "0%") ?: "0%"
+            dcDigitalTriggers = p.getString("dc_digital_triggers", "disabled") ?: "disabled"
+            dcInputMode = p.getString("dc_input_mode", "analog") ?: "analog"
             // === PS2 (PCEE2 — PCSX2 core) core options + 专属按键布局 ===
             // PCEE2 迁移：旧值 "1x"/"2x"/"4x"/"8x" 自动归一到 "1".."4"
             ps2ResMulti = PadLayout.normalizePs2ResMulti(p.getString("ps2_res_multi", null))
@@ -1849,6 +2005,7 @@ object PadLayoutStore {
             hiddenButtonsPce = p.getString("hidden_buttons_pce", "") ?: ""
             hiddenButtonsNds = p.getString("hidden_buttons_nds", "") ?: ""
             hiddenButtonsPsx = p.getString("hidden_buttons_psx", "") ?: ""
+            hiddenButtonsDc = p.getString("hidden_buttons_dc", "") ?: ""
             // === Input mode ===
             inputMode = p.getString("input_mode", "dpad") ?: "dpad"
     }
@@ -2324,6 +2481,54 @@ object PadLayoutStore {
             putString("hidden_buttons_pce", layout.hiddenButtonsPce)
             putString("hidden_buttons_nds", layout.hiddenButtonsNds)
             putString("hidden_buttons_psx", layout.hiddenButtonsPsx)
+            putString("hidden_buttons_dc", layout.hiddenButtonsDc)
+            // === DC (Flycast) ===
+            putString("dc_region", layout.dcRegion)
+            putString("dc_language", layout.dcLanguage)
+            putString("dc_hle_bios", layout.dcHleBios)
+            putString("dc_enable_dsp", layout.dcEnableDsp)
+            putString("dc_broadcast", layout.dcBroadcast)
+            putString("dc_cable_type", layout.dcCableType)
+            putString("dc_32mb_mod", layout.dc32MbMod)
+            putString("dc_sh4clock", layout.dcSh4Clock)
+            putString("dc_internal_res", layout.dcInternalRes)
+            putString("dc_alpha_sorting", layout.dcAlphaSorting)
+            putString("dc_anisotropic", layout.dcAnisotropic)
+            putString("dc_texture_filtering", layout.dcTextureFiltering)
+            putString("dc_mipmapping", layout.dcMipmapping)
+            putString("dc_fog", layout.dcFog)
+            putString("dc_volume_modifier", layout.dcVolumeModifier)
+            putString("dc_widescreen_hack", layout.dcWidescreenHack)
+            putString("dc_pvr2_filtering", layout.dcPvr2Filtering)
+            putString("dc_emulate_framebuffer", layout.dcEmulateFramebuffer)
+            putString("dc_enable_rttb", layout.dcEnableRttb)
+            putString("dc_depth_interpolation", layout.dcDepthInterpolation)
+            putString("dc_fix_upscale_bleeding", layout.dcFixUpscaleBleeding)
+            putString("dc_tex_upscale", layout.dcTexUpscale)
+            putString("dc_tex_upscale_max_size", layout.dcTexUpscaleMaxSize)
+            putString("dc_screen_rotation", layout.dcScreenRotation)
+            putString("dc_delay_frame_swapping", layout.dcDelayFrameSwapping)
+            putString("dc_threaded_rendering", layout.dcThreadedRendering)
+            putString("dc_auto_skip_frame", layout.dcAutoSkipFrame)
+            putString("dc_frame_skipping", layout.dcFrameSkipping)
+            putString("dc_gdrom_fast_loading", layout.dcGdromFastLoading)
+            putString("dc_vmu_sound", layout.dcVmuSound)
+            putString("dc_per_content_vmus", layout.dcPerContentVmus)
+            putString("dc_port1_slot1", layout.dcPort1Slot1)
+            putString("dc_port1_slot2", layout.dcPort1Slot2)
+            putString("dc_port2_slot1", layout.dcPort2Slot1)
+            putString("dc_port2_slot2", layout.dcPort2Slot2)
+            putString("dc_port3_slot1", layout.dcPort3Slot1)
+            putString("dc_port3_slot2", layout.dcPort3Slot2)
+            putString("dc_port4_slot1", layout.dcPort4Slot1)
+            putString("dc_port4_slot2", layout.dcPort4Slot2)
+            putString("dc_allow_service_buttons", layout.dcAllowServiceButtons)
+            putString("dc_force_freeplay", layout.dcForceFreeplay)
+            putString("dc_coin_limit", layout.dcCoinLimit)
+            putString("dc_stick_deadzone", layout.dcStickDeadzone)
+            putString("dc_trigger_deadzone", layout.dcTriggerDeadzone)
+            putString("dc_digital_triggers", layout.dcDigitalTriggers)
+            putString("dc_input_mode", layout.dcInputMode)
             // === Input mode ===
             putString("input_mode", layout.inputMode)
         }.apply()
@@ -2366,6 +2571,7 @@ object PadLayoutStore {
             GamePlatform.MD -> isHiddenInList(layout.hiddenButtonsMd, key)
             GamePlatform.NDS -> isHiddenInList(layout.hiddenButtonsNds, key)
             GamePlatform.PSX -> isHiddenInList(layout.hiddenButtonsPsx, key)
+            GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
             GamePlatform.PS2 -> isHiddenInList(layout.hiddenButtonsPs2, key)
             else -> false
         }
@@ -2402,6 +2608,7 @@ object PadLayoutStore {
             GamePlatform.MD -> layout.copy {hiddenButtonsMd = updateHiddenList(layout.hiddenButtonsMd, key, hidden)}
             GamePlatform.NDS -> layout.copy {hiddenButtonsNds = updateHiddenList(layout.hiddenButtonsNds, key, hidden)}
             GamePlatform.PSX -> layout.copy {hiddenButtonsPsx = updateHiddenList(layout.hiddenButtonsPsx, key, hidden)}
+            GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
             GamePlatform.PS2 -> layout.copy {hiddenButtonsPs2 = updateHiddenList(layout.hiddenButtonsPs2, key, hidden)}
             else -> layout
         }
@@ -2413,6 +2620,8 @@ object PadLayoutStore {
      * All other platforms use the global inputMode field.
      */
     fun getInputMode(layout: PadLayout, platform: GamePlatform): String {
+        // DC：摇杆是 Dreamcast 的核心输入（3D 游戏），独立存储且默认 analog。
+        if (platform == GamePlatform.DC) return layout.dcInputMode
         return if (platform == GamePlatform.ARCADE) layout.arcadeInputMode else layout.inputMode
     }
 
@@ -2421,10 +2630,10 @@ object PadLayoutStore {
      * Arcade updates arcadeInputMode; all others update the global inputMode.
      */
     fun setInputMode(layout: PadLayout, platform: GamePlatform, mode: String): PadLayout {
-        return if (platform == GamePlatform.ARCADE) {
-            layout.copy {arcadeInputMode = mode}
-        } else {
-            layout.copy {inputMode = mode}
+        return when (platform) {
+            GamePlatform.DC -> layout.copy {dcInputMode = mode}
+            GamePlatform.ARCADE -> layout.copy {arcadeInputMode = mode}
+            else -> layout.copy {inputMode = mode}
         }
     }
 
@@ -2511,6 +2720,13 @@ object PadLayoutStore {
                 "l3" to "L3键", "r3" to "R3键",
                 "start" to "START", "select" to "SELECT"
                 // 双摇杆为 PS2 常驻控件，不参与显隐
+            )
+            GamePlatform.DC -> listOf(
+                "dpad" to "十字键/摇杆", "a" to "A键", "b" to "B键",
+                "x" to "X键", "y" to "Y键",
+                "l" to "L 扳机", "r" to "R 扳机",
+                "ta" to "连射A", "tb" to "连射B",
+                "start" to "START", "select" to "SELECT"
             )
             else -> emptyList()
         } + listOf("qs" to "即时存档", "ql" to "即时读档")

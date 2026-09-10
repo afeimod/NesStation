@@ -226,6 +226,25 @@ private val PS2_ACTIONS = listOf(
     KeyAction("ps2_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
 )
 
+// DC (Flycast — Dreamcast / Naomi / Atomiswave)。DC 标准手柄：十字键 +
+// A/B/X/Y + L/R 模拟扳机 + Start + 摇杆（摇杆由物理手柄轴直推）。
+// L/R 默认用 L2/R2 键码 → BIT_L2/R2 位（dcToLibretroLayout 转为扳机）。
+// Naomi：Select=Coin；物理 L1/R1 落 C/Z（Button 6/5）。
+private val DC_ACTIONS = listOf(
+    KeyAction("dc_up",     "上",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("dc_down",   "下",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("dc_left",   "左",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("dc_right",  "右",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("dc_a",      "A",      Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_A,   "DC A / Naomi Button 1"),
+    KeyAction("dc_b",      "B",      Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_B,   "DC B / Naomi Button 2"),
+    KeyAction("dc_x",      "X",      Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_X,   "DC X / Naomi Button 3"),
+    KeyAction("dc_y",      "Y",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_Y,   "DC Y / Naomi Button 4"),
+    KeyAction("dc_l",      "L",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_L2,  "L 扳机 / Button 8"),
+    KeyAction("dc_r",      "R",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_R2,  "R 扳机 / Button 7"),
+    KeyAction("dc_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "投币 (Naomi) / DC D"),
+    KeyAction("dc_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
+)
+
 private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction> {
     val suffix = "_p${player + 1}"
     return when (platform) {
@@ -241,6 +260,7 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         GamePlatform.NDS    -> SNES_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.PSX    -> SNES_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.PS2    -> PS2_ACTIONS.map { it.copy(id = it.id + suffix) }
+        GamePlatform.DC     -> DC_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.JAVA   -> JAVA_ACTIONS.map { it.copy(id = it.id + suffix) }
     }
 }
