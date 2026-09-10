@@ -124,6 +124,12 @@ val ROM_EXTENSIONS = listOf(
     // CD images — used by BOTH DOSBox (DOS CD games) and Mega-CD.
     // Platform disambiguation uses the user's selected tab as a hint.
     "iso", "cue", "img", "ccd", "sub",
+    // Dreamcast / GD-ROM disc images (Flycast core) — .gdi (raw GD-ROM
+    // index) and .cdi (DiscJuggler) are DC-only formats. Track files
+    // referenced by a .gdi (track01.iso / track02.raw) are excluded from
+    // the scan when the folder contains the .gdi/.cdi (see the two-pass
+    // dedup in scanUriForRomsRecursive / scanLocalFolderForRoms).
+    "gdi", "cdi",
     // SEGA Mega Drive / Genesis / Master System / Game Gear / SG-1000
     "md", "smd", "gen", "sms", "gg", "sg", "68k",
     "bin",                                           // MD cart dump (ambiguous; see note above)
@@ -1357,15 +1363,24 @@ private fun scanUriForRomsRecursive(
     val folderExts = candidates.map { it.ext }.toSet()
     val hasCue = "cue" in folderExts
     val hasCcd = "ccd" in folderExts
+    // DC (Flycast): if the folder contains a .gdi (raw GD-ROM index) or a
+    // .cdi (DiscJuggler image), the loose .iso/.raw/.bin/.img/.dat files in
+    // the SAME folder are tracks referenced by that image — not standalone
+    // games. This matches Flycast's own content browser, which never lists
+    // loose track files (see flycast core/ui/game_scanner.cpp). The
+    // .gdi/.cdi index itself (plus .chd/.cue/.m3u) is always imported.
+    val hasDcDisc = "gdi" in folderExts || "cdi" in folderExts
     // .bin is tricky — it could be a Mega-CD data track OR a SEGA MD
-    // cartridge dump. Only skip .bin if we have a .cue (which references
-    // it as a CD data track); otherwise keep it (it's likely a cart).
+    // cartridge dump. Only skip .bin if we have a .cue/.gdi/.cdi (which
+    // references it as a CD data track); otherwise keep it (likely a cart).
     val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
     val skipIfCcd = setOf("img", "sub")
+    val skipIfDcDisc = setOf("iso", "raw", "bin", "img", "dat")
 
     for (c in candidates) {
         if (hasCue && c.ext in skipIfCue) continue
         if (hasCue.not() && hasCcd && c.ext in skipIfCcd) continue
+        if (hasDcDisc && c.ext in skipIfDcDisc) continue
         // .sub is always a companion file — never import standalone.
         if (c.ext == "sub") continue
         results.add(c.name to c.uri)
@@ -1392,6 +1407,9 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
     // === Two-pass deduplication (same logic as scanUriForRomsRecursive) ===
     // If folder contains .cue → skip .img/.bin/.ccd/.sub/.iso (CD companions)
     // If folder contains .ccd (no .cue) → skip .img/.sub
+    // If folder contains .gdi/.cdi (DC image) → skip .iso/.raw/.bin/.img/.dat
+    //   (loose GD-ROM tracks referenced by the index — see Flycast's
+    //   game_scanner.cpp: only .gdi/.cdi/.chd/.cue/.zip/.7z are game entries)
     // .sub is always skipped (always a companion file).
     val fileChildren = children.filter { it.isFile && !it.name.startsWith(".") }
     val dirChildren = children.filter { it.isDirectory && !it.name.startsWith(".") }
@@ -1399,14 +1417,17 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
     val folderExts = fileChildren.map { it.extension.lowercase() }.toSet()
     val hasCue = "cue" in folderExts
     val hasCcd = "ccd" in folderExts
+    val hasDcDisc = "gdi" in folderExts || "cdi" in folderExts
     val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
     val skipIfCcd = setOf("img", "sub")
+    val skipIfDcDisc = setOf("iso", "raw", "bin", "img", "dat")
 
     for (f in fileChildren) {
         val ext = f.extension.lowercase()
         if (ext !in ROM_EXTENSIONS) continue
         if (hasCue && ext in skipIfCue) continue
         if (hasCue.not() && hasCcd && ext in skipIfCcd) continue
+        if (hasDcDisc && ext in skipIfDcDisc) continue
         if (ext == "sub") continue
         results.add(f)
     }

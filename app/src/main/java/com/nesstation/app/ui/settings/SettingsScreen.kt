@@ -307,6 +307,7 @@ fun SettingsScreen(
                             SettingsRow("NDS / DSi", "melonDS 核心 · 屏幕/OpenGL/JIT/触摸", trailing = { Arrow() }) { selectedCore = GamePlatform.NDS }
                             SettingsRow("PSX", "PCSX-ReARMed 核心 · DRC/GPU线程/超频/SPU/手柄", trailing = { Arrow() }) { selectedCore = GamePlatform.PSX }
                             SettingsRow("PS2", "PCSX2 (PCEE2) 核心 · 渲染器/分辨率倍数/双摇杆/肩键", trailing = { Arrow() }) { selectedCore = GamePlatform.PS2 }
+                            SettingsRow("DC / Dreamcast", "Flycast 核心 · 区域/HLE BIOS/分辨率/宽屏/VMU", trailing = { Arrow() }) { selectedCore = GamePlatform.DC }
                             SettingsRow("Java / J2ME", "J2ME 虚拟机 · 分辨率/缩放/按键映射/数字键盘", trailing = { Arrow() }) { selectedCore = GamePlatform.JAVA }
                         }
                     }
@@ -465,10 +466,10 @@ fun SettingsScreen(
                     item {
                         SettingsSection("关于") {
                             SettingsRow("版本", "3.6.0", trailing = { ValueText("3.6.0") })
-                            SettingsRow("核心", "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2)",
-                                trailing = { ValueText("11 个模拟核心") })
+                            SettingsRow("核心", "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC)",
+                                trailing = { ValueText("12 个模拟核心") })
                             SettingsRow("开源许可", "MIT License", trailing = { Arrow() }) {
-                                dialogText = "GameBox 基于 FCEUmm (NES)、Snes9x (SFC)、mGBA (GB/GBC/GBA)、Genesis-Plus-GX (MD)、Geargrafx (PCE)、DOSBox-Pure (DOS)、FBNeo (Arcade)、melonDS (NDS)、PCSX-ReARMed (PSX)、PCEE2 / PCSX2 (PS2) 核心构建，遵循各自开源许可证"
+                                dialogText = "GameBox 基于 FCEUmm (NES)、Snes9x (SFC)、mGBA (GB/GBC/GBA)、Genesis-Plus-GX (MD)、Geargrafx (PCE)、DOSBox-Pure (DOS)、FBNeo (Arcade)、melonDS (NDS)、PCSX-ReARMed (PSX)、PCEE2 / PCSX2 (PS2)、Flycast (DC) 核心构建，遵循各自开源许可证"
                             }
                         }
                     }

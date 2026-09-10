@@ -585,8 +585,22 @@ class NesApp : Application() {
         val dataDir = File(dcDir, "data")
         if (!dataDir.exists()) dataDir.mkdirs()
 
+        // 全量预置文件清单：
+        //   - Dreamcast 主机 BIOS：dc_boot.bin + dc_flash.bin（必需），
+        //     dc_nvmem.bin 为初始 NVRAM 备份（可选）。
+        //   - 街机 BIOS（MAME romset zip，Flycast 原名识别）：
+        //       naomi.zip    Naomi
+        //       naomi2.zip   Naomi 2（部分游戏如无限航路用）
+        //       awbios.zip   Atomiswave
+        //       hod2bios.zip Naomi 2 专用 BIOS（House of the Dead 2 等）
+        //       f355bios.zip / f355dlx.zip / airlbios.zip 多板卡游戏专用 BIOS
+        //   - 预置空白 VMU（vmu_save_A1..D1.bin）：避免部分游戏首次启动
+        //     因 VMU 缺失而报错/无法存档。
         val biosFiles = listOf(
-            "dc_boot.bin", "dc_flash.bin", "naomi.zip", "atomiswave.zip"
+            "dc_boot.bin", "dc_flash.bin", "dc_nvmem.bin", "dc_bios.bin",
+            "naomi.zip", "naomi2.zip", "awbios.zip", "hod2bios.zip",
+            "f355bios.zip", "f355dlx.zip", "airlbios.zip",
+            "vmu_save_A1.bin", "vmu_save_B1.bin", "vmu_save_C1.bin", "vmu_save_D1.bin"
         )
 
         var extracted = 0
@@ -606,6 +620,32 @@ class NesApp : Application() {
                 if (dest.exists()) dest.delete()
             }
         }
+
+        // === boot ROM 一致性校验 ===
+        // Flycast 只认 <sysdir>/dc_boot.bin 这个名字。社区/抓包渠道常把同一
+        // 片 boot ROM 存成 dc_bios.bin。已知合法 boot ROM dump 的 MD5 为
+        // e10c53c2f8b90bab96ead2d368858623（与 MAME dc.xml / RetroArch 系统目录
+        // 校验值一致）。若 assets 里打包的 dc_boot.bin 与该值不符，而
+        // dc_bios.bin 匹配（说明 dc_boot.bin 是别的版本/损坏 dump），
+        // 则以 dc_bios.bin 内容生成 dc_boot.bin，保证开箱即用。
+        try {
+            val boot = File(dcDir, "dc_boot.bin")
+            val alt = File(dcDir, "dc_bios.bin")
+            if (boot.exists() && alt.exists()) {
+                val GOOD_BOOT_MD5 = "e10c53c2f8b90bab96ead2d368858623"
+                val bootMd5 = md5Of(boot)
+                if (!bootMd5.equals(GOOD_BOOT_MD5, ignoreCase = true) &&
+                    md5Of(alt).equals(GOOD_BOOT_MD5, ignoreCase = true)
+                ) {
+                    alt.copyTo(boot, overwrite = true)
+                    Log.i("NesApp", "DC BIOS: dc_boot.bin MD5 mismatch ($bootMd5) — " +
+                            "replaced with bundled dc_bios.bin (known-good dump)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("NesApp", "DC BIOS boot ROM check failed", e)
+        }
+
         if (extracted > 0) {
             Log.i("NesApp", "DC BIOS: $extracted file(s) extracted to ${dcDir.absolutePath}")
         } else {
@@ -613,6 +653,20 @@ class NesApp : Application() {
                     "Place dc_boot.bin + dc_flash.bin (Dreamcast) or naomi.zip / " +
                     "atomiswave.zip (Naomi / Atomiswave) in ${dcDir.absolutePath}.")
         }
+    }
+
+    /** 计算文件 MD5（小写 hex）。用于 DC boot ROM 一致性校验。 */
+    private fun md5Of(f: File): String {
+        val md = java.security.MessageDigest.getInstance("MD5")
+        f.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     /**

@@ -60,6 +60,12 @@ class RomScanner(private val context: Context) {
         // Mega-CD / SEGA-CD disc images
         name.endsWith(".cue", ignoreCase = true) ||
         name.endsWith(".chd", ignoreCase = true) ||
+        // Dreamcast / GD-ROM disc images (Flycast core) — .gdi (raw GD-ROM
+        // index) and .cdi (DiscJuggler) are DC-only formats. Track files
+        // referenced by a .gdi (track01.iso / track02.raw / .bin) are NOT
+        // imported as separate games — see dedupeDiscTracks() below.
+        name.endsWith(".gdi", ignoreCase = true) ||
+        name.endsWith(".cdi", ignoreCase = true) ||
         // Geargrafx — PC-Engine / TurboGrafx-16 / SuperGrafx / PCE-CD
         // (PCE-CD uses .cue/.chd which are already covered above; the
         // disambiguation between MD-CD / DOS-CD / PCE-CD happens in
@@ -103,6 +109,7 @@ class RomScanner(private val context: Context) {
         candidates.filter { it.exists() && it.isDirectory }
             .flatMap { it.walkTopDown().filter(File::isFile).toList() }
             .filter { isRomFile(it.name) }
+            .let { dedupeDiscTracks(it, File::getParentFile, File::getName) }
     }
 
     suspend fun scanSafTree(treeUri: Uri): List<File> = withContext(Dispatchers.IO) {
@@ -111,7 +118,56 @@ class RomScanner(private val context: Context) {
         doc.traverse { name ->
             if (isRomFile(name)) out.add(File(name))
         }
-        out
+        // name is the full SAF document path ("primary:Games/dc/disc.gdi"),
+        // so we can group by the virtual parent path the same way as the
+        // local-file scan.
+        dedupeDiscTracks(out, File::getParentFile, File::getName)
+    }
+
+    companion object {
+        /**
+         * Disc-image track 去重（参考 Flycast game_scanner.cpp 的行为：
+         * 只有 .gdi/.cdi/.chd/.cue/.zip/.7z/.m3u 才是游戏入口，散装音轨
+         * 文件永不单独列出）。
+         *
+         * 一个 GDI dump 目录的典型内容：
+         *   disc.gdi + track01.iso + track02.raw + track03.iso ...
+         * .gdi 是文本索引文件，用相对路径引用各音轨；目录里散装的
+         * .iso/.raw/.bin 只是音轨，不是独立游戏。此前扫描器不认识
+         * .gdi，反而把每个 track .iso 都当成独立游戏列进了游戏库。
+         *
+         * 规则：同一目录内存在 .gdi 或 .cdi（两者都是 DC 专属完整镜像）
+         * 时，该目录下的 .iso/.raw/.bin/.img/.dat 音轨不再单独导入。
+         * .gdi/.cdi/.chd/.cue 本身永远保留。
+         *
+         * @param files   候选 ROM 列表
+         * @param parent  取父目录（分组键）的函数
+         * @param name    取文件名的函数
+         */
+        fun <T> dedupeDiscTracks(
+            files: List<T>,
+            parent: (T) -> Any?,
+            name: (T) -> String
+        ): List<T> {
+            // 按"父目录 → 是否有 DC 完整镜像"分组检测。
+            val dirHasDisc = HashMap<Any?, Boolean>()
+            for (f in files) {
+                val n = name(f)
+                val ext = n.substringAfterLast('.', "").lowercase()
+                if (ext == "gdi" || ext == "cdi") {
+                    val p = parent(f) ?: continue
+                    dirHasDisc[p] = true
+                }
+            }
+            if (dirHasDisc.isEmpty()) return files
+            return files.filter { f ->
+                val n = name(f)
+                val ext = n.substringAfterLast('.', "").lowercase()
+                if (dirHasDisc[parent(f)] != true) return@filter true
+                // DC 完整镜像目录：散装音轨不再作为独立游戏
+                ext !in setOf("iso", "raw", "bin", "img", "dat")
+            }
+        }
     }
 
     /**
