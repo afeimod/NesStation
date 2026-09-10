@@ -4329,10 +4329,6 @@ fun OnScreenController(
         platform == GamePlatform.DC  -> BTN_R2
         else -> BTN_R_SNES
     }
-    // 即时存档 / 即时读档按钮回调用 rememberUpdatedState 包装，
-    // 手势协程重启期间始终拿到最新 lambda
-    val currentOnQuickSave by rememberUpdatedState(onQuickSave)
-    val currentOnQuickLoad by rememberUpdatedState(onQuickLoad)
 
     // === 横竖屏布局选择 ===
     // 横屏用 dpad / btnA / btnB / ...，竖屏用 dpadP / btnAP / btnBP / ...
@@ -9601,6 +9597,257 @@ private fun SettingsPanel(
                     color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp
                 )
                 Psx2BiosImportSection()
+            }
+            GamePlatform.DC -> {
+                Text("DC/Dreamcast (Flycast) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Spacer(Modifier.size(6.dp))
+                Text("支持: Dreamcast / Naomi / Atomiswave。GDI(.gdi/.cue/.cdi)与 CHD(.chd) 镜像可直接运行。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
+                Spacer(Modifier.size(6.dp))
+
+                Spacer(Modifier.size(4.dp))
+                Text("系统", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("主机区域",
+                    listOf("Japan" to "日本", "USA" to "美国", "Europe" to "欧洲", "Default" to "默认"),
+                    padLayout.dcRegion
+                ) { onLayoutChange(padLayout.copy {dcRegion = it}) }
+
+                DropdownSetting("系统语言",
+                    listOf("Japanese" to "日本語", "English" to "English",
+                           "German" to "Deutsch", "French" to "Français",
+                           "Spanish" to "Español", "Italian" to "Italiano",
+                           "Default" to "默认"),
+                    padLayout.dcLanguage
+                ) { onLayoutChange(padLayout.copy {dcLanguage = it}) }
+
+                DropdownSetting("HLE BIOS",
+                    listOf("disabled" to "关闭(需真实BIOS)", "enabled" to "开启(无BIOS启动)"),
+                    padLayout.dcHleBios
+                ) { onLayoutChange(padLayout.copy {dcHleBios = it}) }
+
+                DropdownSetting("AICA DSP",
+                    listOf("enabled" to "开启(高精度)", "disabled" to "关闭(提速)"),
+                    padLayout.dcEnableDsp
+                ) { onLayoutChange(padLayout.copy {dcEnableDsp = it}) }
+
+                DropdownSetting("电视制式",
+                    listOf("Default" to "默认", "NTSC" to "NTSC", "PAL" to "PAL",
+                           "PAL_N" to "PAL-N", "PAL_M" to "PAL-M"),
+                    padLayout.dcBroadcast
+                ) { onLayoutChange(padLayout.copy {dcBroadcast = it}) }
+
+                DropdownSetting("视频输出",
+                    listOf("VGA" to "VGA", "TV (RGB)" to "TV (RGB)",
+                           "TV (Composite)" to "TV (复合)"),
+                    padLayout.dcCableType
+                ) { onLayoutChange(padLayout.copy {dcCableType = it}) }
+
+                DropdownSetting("32MB 内存改造",
+                    listOf("disabled" to "关闭", "enabled" to "开启(自制软件)"),
+                    padLayout.dc32MbMod
+                ) { onLayoutChange(padLayout.copy {dc32MbMod = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("CPU", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("SH4 主频 (MHz)",
+                    listOf("100" to "100", "200" to "200 (默认)", "300" to "300",
+                           "330" to "330 (超频)"),
+                    padLayout.dcSh4Clock
+                ) { onLayoutChange(padLayout.copy {dcSh4Clock = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("内部分辨率",
+                    listOf("320x240" to "0.5x (320x240)",
+                           "640x480" to "1x (640x480)",
+                           "1280x960" to "2x (1280x960)",
+                           "1920x1440" to "3x (1920x1440)",
+                           "2560x1920" to "4x (2560x1920)"),
+                    padLayout.dcInternalRes
+                ) { onLayoutChange(padLayout.copy {dcInternalRes = it}) }
+
+                DropdownSetting("Alpha 排序",
+                    listOf("per-strip (fast, least accurate)" to "按条带(快,最不准)",
+                           "per-triangle (normal)" to "按三角形(标准)",
+                           "per-pixel (accurate)" to "按像素(准确,最慢)"),
+                    padLayout.dcAlphaSorting
+                ) { onLayoutChange(padLayout.copy {dcAlphaSorting = it}) }
+
+                DropdownSetting("各向异性过滤",
+                    listOf("off" to "关闭", "2" to "2x", "4" to "4x",
+                           "8" to "8x", "16" to "16x"),
+                    padLayout.dcAnisotropic
+                ) { onLayoutChange(padLayout.copy {dcAnisotropic = it}) }
+
+                DropdownSetting("纹理过滤",
+                    listOf("0" to "默认", "1" to "强制最近邻", "2" to "强制线性"),
+                    padLayout.dcTextureFiltering
+                ) { onLayoutChange(padLayout.copy {dcTextureFiltering = it}) }
+
+                DropdownSetting("Mipmapping",
+                    listOf("enabled" to "开启", "disabled" to "关闭"),
+                    padLayout.dcMipmapping
+                ) { onLayoutChange(padLayout.copy {dcMipmapping = it}) }
+
+                DropdownSetting("雾化效果",
+                    listOf("enabled" to "开启", "disabled" to "关闭"),
+                    padLayout.dcFog
+                ) { onLayoutChange(padLayout.copy {dcFog = it}) }
+
+                DropdownSetting("Volume Modifier",
+                    listOf("enabled" to "开启", "disabled" to "关闭"),
+                    padLayout.dcVolumeModifier
+                ) { onLayoutChange(padLayout.copy {dcVolumeModifier = it}) }
+
+                DropdownSetting("宽屏 Hack",
+                    listOf("disabled" to "关闭", "enabled" to "开启(16:9 变形)"),
+                    padLayout.dcWidescreenHack
+                ) { onLayoutChange(padLayout.copy {dcWidescreenHack = it}) }
+
+                DropdownSetting("PowerVR2 后处理",
+                    listOf("disabled" to "关闭", "enabled" to "开启"),
+                    padLayout.dcPvr2Filtering
+                ) { onLayoutChange(padLayout.copy {dcPvr2Filtering = it}) }
+
+                DropdownSetting("全帧缓冲模拟",
+                    listOf("disabled" to "关闭", "enabled" to "开启(慢,部分游戏)"),
+                    padLayout.dcEmulateFramebuffer
+                ) { onLayoutChange(padLayout.copy {dcEmulateFramebuffer = it}) }
+
+                DropdownSetting("RTT 缩解",
+                    listOf("disabled" to "关闭", "enabled" to "开启(少数游戏)"),
+                    padLayout.dcEnableRttb
+                ) { onLayoutChange(padLayout.copy {dcEnableRttb = it}) }
+
+                DropdownSetting("深度插值",
+                    listOf("disabled" to "关闭(默认)", "enabled" to "开启(原生精度)"),
+                    padLayout.dcDepthInterpolation
+                ) { onLayoutChange(padLayout.copy {dcDepthInterpolation = it}) }
+
+                DropdownSetting("修复放大渗色",
+                    listOf("disabled" to "关闭", "enabled" to "开启(边缘修复)"),
+                    padLayout.dcFixUpscaleBleeding
+                ) { onLayoutChange(padLayout.copy {dcFixUpscaleBleeding = it}) }
+
+                DropdownSetting("xBRZ 纹理放大",
+                    listOf("1" to "关闭", "2" to "2x", "4" to "4x", "6" to "6x"),
+                    padLayout.dcTexUpscale
+                ) { onLayoutChange(padLayout.copy {dcTexUpscale = it}) }
+
+                DropdownSetting("放大纹理上限",
+                    listOf("256" to "256", "512" to "512", "1024" to "1024"),
+                    padLayout.dcTexUpscaleMaxSize
+                ) { onLayoutChange(padLayout.copy {dcTexUpscaleMaxSize = it}) }
+
+                DropdownSetting("屏幕旋转",
+                    listOf("horizontal" to "横屏", "vertical" to "竖屏(射击游戏)"),
+                    padLayout.dcScreenRotation
+                ) { onLayoutChange(padLayout.copy {dcScreenRotation = it}) }
+
+                DropdownSetting("延迟换帧",
+                    listOf("disabled" to "关闭", "enabled" to "开启(减少闪屏)"),
+                    padLayout.dcDelayFrameSwapping
+                ) { onLayoutChange(padLayout.copy {dcDelayFrameSwapping = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("性能", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("线程渲染",
+                    listOf("enabled" to "开启(推荐)", "disabled" to "关闭"),
+                    padLayout.dcThreadedRendering
+                ) { onLayoutChange(padLayout.copy {dcThreadedRendering = it}) }
+
+                DropdownSetting("自动跳帧",
+                    listOf("disabled" to "关闭", "some" to "少量", "more" to "较多"),
+                    padLayout.dcAutoSkipFrame
+                ) { onLayoutChange(padLayout.copy {dcAutoSkipFrame = it}) }
+
+                DropdownSetting("跳帧",
+                    listOf("disabled" to "关闭", "1" to "1", "2" to "2", "3" to "3",
+                           "4" to "4", "5" to "5", "6" to "6"),
+                    padLayout.dcFrameSkipping
+                ) { onLayoutChange(padLayout.copy {dcFrameSkipping = it}) }
+
+                DropdownSetting("GD-ROM 快速读盘",
+                    listOf("enabled" to "开启", "disabled" to "关闭"),
+                    padLayout.dcGdromFastLoading
+                ) { onLayoutChange(padLayout.copy {dcGdromFastLoading = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("音频 / VMU", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("VMU 提示音",
+                    listOf("disabled" to "关闭", "enabled" to "开启"),
+                    padLayout.dcVmuSound
+                ) { onLayoutChange(padLayout.copy {dcVmuSound = it}) }
+
+                DropdownSetting("独立 VMU 存档",
+                    listOf("disabled" to "关闭(全局VMU)",
+                           "VMU A1" to "VMU A1(每游戏)",
+                           "All VMUs" to "全部 VMU(每游戏)"),
+                    padLayout.dcPerContentVmus
+                ) { onLayoutChange(padLayout.copy {dcPerContentVmus = it}) }
+
+                DropdownSetting("手柄1 插槽1",
+                    listOf("VMU" to "VMU(记忆卡)", "Purupuru" to "Purupuru(震动)",
+                           "DreamPotato" to "DreamPotato(麦克风)", "None" to "空"),
+                    padLayout.dcPort1Slot1
+                ) { onLayoutChange(padLayout.copy {dcPort1Slot1 = it}) }
+
+                DropdownSetting("手柄1 插槽2",
+                    listOf("VMU" to "VMU(记忆卡)", "Purupuru" to "Purupuru(震动)", "None" to "空"),
+                    padLayout.dcPort1Slot2
+                ) { onLayoutChange(padLayout.copy {dcPort1Slot2 = it}) }
+
+                DropdownSetting("手柄2 插槽1",
+                    listOf("VMU" to "VMU(记忆卡)", "Purupuru" to "Purupuru(震动)", "None" to "空"),
+                    padLayout.dcPort2Slot1
+                ) { onLayoutChange(padLayout.copy {dcPort2Slot1 = it}) }
+
+                DropdownSetting("手柄3 插槽1",
+                    listOf("VMU" to "VMU(记忆卡)", "Purupuru" to "Purupuru(震动)", "None" to "空"),
+                    padLayout.dcPort3Slot1
+                ) { onLayoutChange(padLayout.copy {dcPort3Slot1 = it}) }
+
+                DropdownSetting("手柄4 插槽1",
+                    listOf("VMU" to "VMU(记忆卡)", "Purupuru" to "Purupuru(震动)", "None" to "空"),
+                    padLayout.dcPort4Slot1
+                ) { onLayoutChange(padLayout.copy {dcPort4Slot1 = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("街机 (Naomi / Atomiswave)", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("服务按钮",
+                    listOf("disabled" to "关闭", "enabled" to "开启"),
+                    padLayout.dcAllowServiceButtons
+                ) { onLayoutChange(padLayout.copy {dcAllowServiceButtons = it}) }
+
+                DropdownSetting("免投币",
+                    listOf("disabled" to "关闭", "enabled" to "开启"),
+                    padLayout.dcForceFreeplay
+                ) { onLayoutChange(padLayout.copy {dcForceFreeplay = it}) }
+
+                DropdownSetting("投币上限",
+                    ((0..20).map { it.toString() to if (it == 0) "不限" else it.toString() }),
+                    padLayout.dcCoinLimit
+                ) { onLayoutChange(padLayout.copy {dcCoinLimit = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("输入", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("摇杆死区",
+                    listOf("0%" to "0%", "5%" to "5%", "10%" to "10%", "15%" to "15%",
+                           "20%" to "20%", "25%" to "25%", "30%" to "30%"),
+                    padLayout.dcStickDeadzone
+                ) { onLayoutChange(padLayout.copy {dcStickDeadzone = it}) }
+
+                DropdownSetting("扳机死区",
+                    listOf("0%" to "0%", "5%" to "5%", "10%" to "10%", "15%" to "15%",
+                           "20%" to "20%", "25%" to "25%", "30%" to "30%"),
+                    padLayout.dcTriggerDeadzone
+                ) { onLayoutChange(padLayout.copy {dcTriggerDeadzone = it}) }
+
+                DropdownSetting("数字扳机",
+                    listOf("disabled" to "关闭(模拟量)", "enabled" to "开启(数字量)"),
+                    padLayout.dcDigitalTriggers
+                ) { onLayoutChange(padLayout.copy {dcDigitalTriggers = it}) }
             }
             GamePlatform.JAVA -> {
                 Text("J2ME 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
