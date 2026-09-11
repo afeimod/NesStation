@@ -30,6 +30,18 @@
 #include <string>
 #include <vector>
 
+// SIGSEGV armor: flycast installs its own SIGSEGV handler (fault_handler)
+// during retro_init() to service writes into write-protected RAM/VRAM pages
+// (dynarec code protection). If anything in this process overwrites the
+// process-wide SIGSEGV handler afterwards (GL driver init, another libretro
+// core, crash SDK), protected-page writes die instead of being rewritten —
+// exactly the single-frame addrspace::write32 + [anon:.bss] tombstone we
+// were chasing. We re-assert the core's handler around game load and wrap it
+// with a probe that logs fault addr + registers for diagnosis.
+#include <csignal>
+#include <cerrno>
+#include <ucontext.h>
+
 #define TAG "flycastcore-rom"
 #undef LOGI
 #undef LOGW
@@ -177,6 +189,129 @@ static int  s_eglClientVersion = 3;
 static struct retro_hw_render_callback s_hwRender{};
 static std::atomic<bool> s_hwRenderAccepted{false};
 static bool s_ctxResetCalled = false;
+
+// ---------------------------------------------------------------------------
+// SIGSEGV handler armor.
+//
+// flycast's fault_handler (installed by os_InstallFaultHandler during
+// retro_init) services SIGSEGVs caused by writes into write-protected RAM /
+// VRAM pages (dynarec code protection). If another component of the process
+// — EGL/GL driver init, another dlopen'ed libretro core, a crash-reporting
+// SDK, SDL's evdev handler, ... — overwrites the process-wide SIGSEGV
+// sigaction after retro_init, those protected-page writes no longer get the
+// bm_RamWriteAccess / bm_lockedWrite fixup: the process dies at the faulting
+// store (the addrspace::write32 + [anon:.bss] tombstone we chased).
+//
+// We can't edit the prebuilt core, but the core exports os_InstallFaultHandler
+// (dynsym, `_Z22os_InstallFaultHandlerv` @0x92e93c) — so we:
+//   1. dlsym it and RE-ASSERT the core's fault handler after load_game and
+//      after EGL context setup (the two windows most likely to clobber it).
+//   2. Optionally wrap it with our own SA_SIGINFO probe that logs the fault
+//      address + PC on the next crash, then forwards to the core handler
+//      (bm_RamWriteAccess etc. still run — behavior unchanged, we just add
+//      visibility). Logs are rate-limited; the probe is invisible otherwise.
+// ---------------------------------------------------------------------------
+typedef void (*os_install_fault_handler_t)(void);
+static os_install_fault_handler_t s_osInstallFaultHandler = nullptr;
+
+// Core's fault_handler address (dynsym `_Z13fault_handleriP7siginfoPv`) —
+// used to detect whether the process-wide SIGSEGV disposition is still the
+// core's handler, so we can re-wrap it with the probe WITHOUT re-running
+// os_InstallFaultHandler (which would chain fault_handler onto itself and
+// recurse forever when a fault is genuinely unhandled).
+static void (*s_faultHandlerFn)(int, siginfo_t*, void*) = nullptr;
+
+// Previous SIGSEGV disposition saved when we installed the probe.
+static struct sigaction s_prevSegvAction;
+static std::atomic<bool> s_segvProbeInstalled{false};
+
+// Rate-limit probe logs (a crashed/faulting game can SIGSEGV many times).
+static std::atomic<int> s_segvProbeLogs{8};
+
+// Forwarding probe: logs then dispatches to the core's fault_handler.
+// The signature matches SA_SIGINFO (sigaction on Android) so we can pass the
+// exact siginfo/ucontext straight through unchanged.
+static void segvProbeHandler(int sig, siginfo_t* si, void* ctx) {
+    if (s_segvProbeLogs.fetch_sub(1) > 0) {
+        uintptr_t pc = 0;
+#if defined(__aarch64__)
+        ucontext_t* uc = (ucontext_t*)ctx;
+        pc = uc->uc_mcontext.pc;
+#endif
+        LOGE("SIGSEGV probe: addr=%p si_code=%d pc=%#lx -> forwarding to core fault_handler",
+             si ? si->si_addr : nullptr, si ? si->si_code : -1, (unsigned long)pc);
+    }
+    // Hand off to whatever was installed before us — normally flycast's
+    // fault_handler, which performs bm_RamWriteAccess/rewrite fixups.
+    if (s_prevSegvAction.sa_sigaction != nullptr) {
+        s_prevSegvAction.sa_sigaction(sig, si, ctx);
+        return;
+    }
+    // Nothing before us: restore default so the crash stays observable.
+    if (s_prevSegvAction.sa_handler == SIG_DFL || s_prevSegvAction.sa_handler == SIG_IGN) {
+        signal(sig, SIG_DFL);
+        raise(sig);
+        return;
+    }
+    s_prevSegvAction.sa_handler(sig);
+}
+
+// Re-assert the core's fault_handler and (re)wrap it with the probe.
+//
+// Careful with ordering: os_InstallFaultHandler() saves the *current* SIGSEGV
+// disposition as its next_segv_handler and installs fault_handler. So it must
+// only be called while the current handler is NOT fault_handler — otherwise
+// the core would chain fault_handler onto itself and recurse forever once a
+// fault cannot be repaired. Our probe sits on top: SIGSEGV -> probe (logs) ->
+// fault_handler (fixes) -> core's next (any previous overwriter).
+//
+// `force` re-installs even when the probe looks present (used after EGL/GL
+// driver init, which is the most likely window for a sigaction clobber).
+static void armSegvHandler(bool force) {
+    if (!s_osInstallFaultHandler || !s_faultHandlerFn)
+        return;
+
+    // Current disposition.
+    struct sigaction cur{};
+    if (sigaction(SIGSEGV, nullptr, &cur) != 0)
+        return;
+
+    // Already fully armed (probe on top) and no force -> nothing to do.
+    if (!force && cur.sa_sigaction == segvProbeHandler)
+        return;
+
+    // If the current handler is one of ours (the probe), unwrap it so the
+    // following logic starts from the real underlying disposition.
+    if (cur.sa_sigaction == segvProbeHandler && s_segvProbeInstalled.load()) {
+        sigaction(SIGSEGV, &s_prevSegvAction, nullptr);
+        s_segvProbeInstalled.store(false);
+        if (sigaction(SIGSEGV, nullptr, &cur) != 0)
+            return;
+    }
+
+    // If the process-wide handler is not the core's fault_handler anymore,
+    // (re)assert it via the exported installer. That records whatever is
+    // currently installed as the core's next handler — chain preserved.
+    if (cur.sa_sigaction != s_faultHandlerFn) {
+        LOGW("sigaction(SIGSEGV) is %p, expected core fault_handler %p — "
+             "re-asserting os_InstallFaultHandler()",
+             (void*)cur.sa_sigaction, (void*)s_faultHandlerFn);
+        s_osInstallFaultHandler();
+    }
+
+    // Wrap the (now core) handler with our logging probe.
+    struct sigaction act{};
+    act.sa_sigaction = segvProbeHandler;
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = SA_SIGINFO;
+    if (sigaction(SIGSEGV, &act, &s_prevSegvAction) != 0) {
+        LOGE("sigaction(SIGSEGV) probe install failed: %s", strerror(errno));
+        return;
+    }
+    s_segvProbeInstalled.store(true);
+    s_segvProbeLogs.store(8);
+    LOGI("SIGSEGV armor armed (probe next=%p)", (void*)s_prevSegvAction.sa_sigaction);
+}
 
 // Core render target (our FBO) + compositor program.
 static GLuint s_fbo = 0;
@@ -353,6 +488,30 @@ static bool loadCoreLib() {
     RESOLVE(retro_set_input_state);
 
     #undef RESOLVE
+
+    // Optional: the core's SIGSEGV-handler installer (dynsym, C++-mangled).
+    // Used to re-assert fault_handler if something clobbers the process-wide
+    // SIGSEGV sigaction after retro_init (see header comment above).
+    s_osInstallFaultHandler = reinterpret_cast<os_install_fault_handler_t>(
+        dlsym(s_coreLib, "_Z22os_InstallFaultHandlerv"));
+    if (s_osInstallFaultHandler) {
+        LOGI("dlsym os_InstallFaultHandler OK");
+    } else {
+        LOGW("dlsym os_InstallFaultHandler failed: %s", dlerror());
+    }
+
+    // The core's fault_handler body (dynsym) — lets us detect whether the
+    // process-wide SIGSEGV disposition still points at it (vs. any other
+    // library that clobbered the sigaction) without re-running the installer
+    // (re-running it while fault_handler is current would chain it onto
+    // itself and recurse forever on an unhandled fault).
+    s_faultHandlerFn = reinterpret_cast<void (*)(int, siginfo_t*, void*)>(
+        dlsym(s_coreLib, "_Z13fault_handleriP7siginfoPv"));
+    if (s_faultHandlerFn) {
+        LOGI("dlsym fault_handler OK (%p)", (void*)s_faultHandlerFn);
+    } else {
+        LOGW("dlsym fault_handler failed: %s", dlerror());
+    }
 
     LOGI("All retro_* symbols resolved");
     return true;
@@ -648,6 +807,12 @@ static bool ensureEglContext(ANativeWindow* window) {
 
     LOGI("EGL context ready: ES%d %s", s_eglClientVersion,
          s_eglSurfaceIsWindow ? "window" : "pbuffer");
+
+    // GL/EGL driver init is the most likely thing to clobber the
+    // process-wide SIGSEGV sigaction after retro_init (the tombstone we
+    // chased had only write32 + an anon JIT frame — no fault_handler at
+    // all). Re-assert the core's handler right after the real context is up.
+    armSegvHandler(true);
 
     // GL state flycast expects: standard libretro HW render setup.
     if (!s_glObjectsValid) {
@@ -1094,6 +1259,11 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
         s_retro_init();
         s_loaded = true;
         LOGI("Flycast core initialized (API version %u)", s_retro_api_version());
+
+        // retro_init() installs the core's SIGSEGV handler (fault_handler,
+        // via os_InstallFaultHandler). Wrap it with the logging probe and
+        // confirm it's actually the process-wide disposition right now.
+        armSegvHandler(false);
     }
 
     if (s_gameLoaded) {
@@ -1137,6 +1307,12 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
 
     s_gameLoaded = true;
     s_lastRomPath = path;
+
+    // retro_load_game() runs the actual BIOS/disc boot path (and may pull in
+    // code-loading / memory-setup that touches signal handling). Re-assert
+    // the core's fault_handler in case anything during game load clobbered
+    // the process-wide SIGSEGV sigaction.
+    armSegvHandler(false);
 
     // 4 maple ports with the standard Dreamcast controller.
     if (s_retro_set_controller_port_device) {
@@ -1186,6 +1362,14 @@ void unload() {
             s_retro_unload_game();
             s_gameLoaded = false;
         }
+        // Unwrap our SIGSEGV probe BEFORE the core tears down: retro_deinit
+        // restores whatever was installed when retro_init ran, and our probe
+        // chain must not survive the core (or another core/loader loading
+        // later would hand a stale handler address to the kernel).
+        if (s_segvProbeInstalled.load()) {
+            sigaction(SIGSEGV, &s_prevSegvAction, nullptr);
+            s_segvProbeInstalled.store(false);
+        }
         s_retro_deinit();
         s_loaded = false;
     }
@@ -1233,6 +1417,11 @@ void stepFrame() {
         LOGE("ensureEglContext failed: %s", s_coreError.c_str());
         return;
     }
+
+    // Cheap guard: if anything replaced our SIGSEGV probe since the last
+    // frame (other than armSegvHandler's own unwrap/rewrap), re-arm so the
+    // core's fault_handler keeps repairing protected-page writes.
+    armSegvHandler(false);
 
     s_retro_run();
 
