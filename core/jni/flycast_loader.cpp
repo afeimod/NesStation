@@ -191,25 +191,34 @@ static std::atomic<bool> s_hwRenderAccepted{false};
 static bool s_ctxResetCalled = false;
 
 // ---------------------------------------------------------------------------
-// SIGSEGV handler armor.
+// SIGSEGV handler armor v2.
 //
-// flycast's fault_handler (installed by os_InstallFaultHandler during
-// retro_init) services SIGSEGVs caused by writes into write-protected RAM /
-// VRAM pages (dynarec code protection). If another component of the process
-// — EGL/GL driver init, another dlopen'ed libretro core, a crash-reporting
-// SDK, SDL's evdev handler, ... — overwrites the process-wide SIGSEGV
-// sigaction after retro_init, those protected-page writes no longer get the
-// bm_RamWriteAccess / bm_lockedWrite fixup: the process dies at the faulting
-// store (the addrspace::write32 + [anon:.bss] tombstone we chased).
+// Why this exists: flycast's fault_handler (installed by os_InstallFaultHandler
+// during retro_init) repairs SIGSEGVs caused by writes into write-protected
+// RAM / VRAM pages and on-demand FPCB pages (bm_RamWriteAccess /
+// VramLockedWrite / bm_lockedWrite). Those faults are PART OF THE DESIGN —
+// every DC game hits them constantly. If anything in the process replaces the
+// process-wide SIGSEGV sigaction after retro_init (EGL/GL driver init, SDL,
+// another libretro core, an OS/game-mode injected lib, ...), the very next
+// protected-page write kills the process at the faulting store: the
+// `addrspace::write32 ... / [anon:.bss]` two-frame tombstone.
 //
-// We can't edit the prebuilt core, but the core exports os_InstallFaultHandler
-// (dynsym, `_Z22os_InstallFaultHandlerv` @0x92e93c) — so we:
-//   1. dlsym it and RE-ASSERT the core's fault handler after load_game and
-//      after EGL context setup (the two windows most likely to clobber it).
-//   2. Optionally wrap it with our own SA_SIGINFO probe that logs the fault
-//      address + PC on the next crash, then forwards to the core handler
-//      (bm_RamWriteAccess etc. still run — behavior unchanged, we just add
-//      visibility). Logs are rate-limited; the probe is invisible otherwise.
+// We can't edit the prebuilt core, but it exports os_InstallFaultHandler
+// (dynsym `_Z22os_InstallFaultHandlerv`) and fault_handler
+// (dynsym `_Z13fault_handleriP7siginfoPv`) — so we:
+//   1. Verify the SIGSEGV chain at every checkpoint (after retro_init, after
+//      load_game, after EGL context creation, before EVERY retro_run):
+//      top of chain must be our probe and directly under it the core's
+//      fault_handler. Anything else → identify the clobberer in logcat
+//      (dladdr: library + offset) and rebuild the chain.
+//   2. The probe itself is ASYNC-SIGNAL-SAFE: it only stores {fault addr, PC}
+//      into a preallocated lock-free ring (NO logging / allocation / locks
+//      inside the signal handler — the previous version called
+//      __android_log_print in signal context, which is unsafe) and forwards
+//      the signal unchanged to the core's fault_handler.
+//   3. stepFrame() drains the ring OUTSIDE the signal context and logs the
+//      repair counters, so logcat shows that repairs happen — and when they
+//      stop, that is the moment something clobbered the chain.
 // ---------------------------------------------------------------------------
 typedef void (*os_install_fault_handler_t)(void);
 static os_install_fault_handler_t s_osInstallFaultHandler = nullptr;
@@ -221,39 +230,76 @@ static os_install_fault_handler_t s_osInstallFaultHandler = nullptr;
 // recurse forever when a fault is genuinely unhandled).
 static void (*s_faultHandlerFn)(int, siginfo_t*, void*) = nullptr;
 
-// Previous SIGSEGV disposition saved when we installed the probe.
+// Previous SIGSEGV disposition saved when we installed the probe (normally
+// the core's fault_handler; restored when the probe is unwrapped before core
+// teardown).
 static struct sigaction s_prevSegvAction;
 static std::atomic<bool> s_segvProbeInstalled{false};
 
-// Rate-limit probe logs (a crashed/faulting game can SIGSEGV many times).
-static std::atomic<int> s_segvProbeLogs{8};
+// Lock-free fault-record ring written by the signal handler (async-signal-
+// safe: preallocated, atomics only, 8 slots, newest wins on overflow).
+struct SegvFaultRecord {
+    std::atomic<uintptr_t> addr;
+    std::atomic<uintptr_t> pc;
+};
+static SegvFaultRecord s_segvRing[8];
+static std::atomic<unsigned> s_segvRingIdx{0};
+static std::atomic<int> s_segvPending{0};     // records not yet reported
+static std::atomic<int> s_segvTotal{0};       // repairs since process start
+static std::atomic<int> s_segvLoggedTotal{0}; // last total reported to logcat
 
-// Forwarding probe: logs then dispatches to the core's fault_handler.
-// The signature matches SA_SIGINFO (sigaction on Android) so we can pass the
-// exact siginfo/ucontext straight through unchanged.
+// Forwarding probe (SA_SIGINFO). STRICTLY async-signal-safe: no logging, no
+// allocation, no locks, no errno-visible calls on the normal path. Passes the
+// exact siginfo/ucontext straight through to the core's fault_handler.
 static void segvProbeHandler(int sig, siginfo_t* si, void* ctx) {
-    if (s_segvProbeLogs.fetch_sub(1) > 0) {
-        uintptr_t pc = 0;
+    const unsigned idx = s_segvRingIdx.fetch_add(1, std::memory_order_relaxed) & 7u;
+    s_segvRing[idx].addr.store(si ? (uintptr_t)si->si_addr : 0,
+                               std::memory_order_relaxed);
+    uintptr_t pc = 0;
 #if defined(__aarch64__)
-        ucontext_t* uc = (ucontext_t*)ctx;
-        pc = uc->uc_mcontext.pc;
+    if (ctx) pc = (uintptr_t)((ucontext_t*)ctx)->uc_mcontext.pc;
+#elif defined(__arm__)
+    if (ctx) pc = (uintptr_t)((ucontext_t*)ctx)->uc_mcontext.arm_pc;
+#elif defined(__x86_64__)
+    if (ctx) pc = (uintptr_t)((ucontext_t*)ctx)->uc_mcontext.gregs[REG_RIP];
 #endif
-        LOGE("SIGSEGV probe: addr=%p si_code=%d pc=%#lx -> forwarding to core fault_handler",
-             si ? si->si_addr : nullptr, si ? si->si_code : -1, (unsigned long)pc);
-    }
-    // Hand off to whatever was installed before us — normally flycast's
-    // fault_handler, which performs bm_RamWriteAccess/rewrite fixups.
-    if (s_prevSegvAction.sa_sigaction != nullptr) {
+    s_segvRing[idx].pc.store(pc, std::memory_order_relaxed);
+    s_segvTotal.fetch_add(1, std::memory_order_relaxed);
+    s_segvPending.fetch_add(1, std::memory_order_relaxed);
+
+    // Hand off to the saved disposition — normally flycast's fault_handler,
+    // which performs the bm_RamWriteAccess / VramLockedWrite / rewrite fixups.
+    if (s_prevSegvAction.sa_sigaction != nullptr &&
+        (s_prevSegvAction.sa_flags & SA_SIGINFO)) {
         s_prevSegvAction.sa_sigaction(sig, si, ctx);
         return;
     }
-    // Nothing before us: restore default so the crash stays observable.
-    if (s_prevSegvAction.sa_handler == SIG_DFL || s_prevSegvAction.sa_handler == SIG_IGN) {
-        signal(sig, SIG_DFL);
-        raise(sig);
+    // Underlying disposition was a plain handler (no SA_SIGINFO).
+    if (s_prevSegvAction.sa_handler != nullptr &&
+        s_prevSegvAction.sa_handler != SIG_DFL &&
+        s_prevSegvAction.sa_handler != SIG_IGN) {
+        s_prevSegvAction.sa_handler(sig);
         return;
     }
-    s_prevSegvAction.sa_handler(sig);
+    // Nothing under us: restore default so the crash stays observable.
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+// Identify a handler pointer (library + offset) in logcat. NOT signal-safe —
+// only call from regular (non-signal) context.
+static void logSigactionOwner(const char* what, void* fn) {
+    if (!fn) {
+        LOGW("SIGSEGV %s: <null/SIG_DFL>", what);
+        return;
+    }
+    Dl_info info{};
+    if (dladdr(fn, &info) && info.dli_fname) {
+        LOGW("SIGSEGV %s: %p (%s + %#lx)", what, fn, info.dli_fname,
+             (unsigned long)((uintptr_t)fn - (uintptr_t)info.dli_fbase));
+    } else {
+        LOGW("SIGSEGV %s: %p (unknown library)", what, fn);
+    }
 }
 
 // Re-assert the core's fault_handler and (re)wrap it with the probe.
@@ -262,8 +308,9 @@ static void segvProbeHandler(int sig, siginfo_t* si, void* ctx) {
 // disposition as its next_segv_handler and installs fault_handler. So it must
 // only be called while the current handler is NOT fault_handler — otherwise
 // the core would chain fault_handler onto itself and recurse forever once a
-// fault cannot be repaired. Our probe sits on top: SIGSEGV -> probe (logs) ->
-// fault_handler (fixes) -> core's next (any previous overwriter).
+// fault cannot be repaired. Our probe always sits on top:
+//   SIGSEGV -> probe (records, forwards) -> fault_handler (repairs) ->
+//   core's next (whatever was installed when the core last re-asserted).
 //
 // `force` re-installs even when the probe looks present (used after EGL/GL
 // driver init, which is the most likely window for a sigaction clobber).
@@ -276,13 +323,21 @@ static void armSegvHandler(bool force) {
     if (sigaction(SIGSEGV, nullptr, &cur) != 0)
         return;
 
-    // Already fully armed (probe on top) and no force -> nothing to do.
-    if (!force && cur.sa_sigaction == segvProbeHandler)
+    // Fully armed (probe on top) AND the chain below the probe intact and no
+    // force -> nothing to do. Checking the chain (not just the top) matters:
+    // a clobber-and-restore sequence can leave our saved prev pointing at a
+    // stale handler, which would swallow faults on the very next frame.
+    if (!force && cur.sa_sigaction == segvProbeHandler && s_segvProbeInstalled.load() &&
+        s_prevSegvAction.sa_sigaction == s_faultHandlerFn &&
+        (s_prevSegvAction.sa_flags & SA_SIGINFO))
         return;
 
     // If the current handler is one of ours (the probe), unwrap it so the
     // following logic starts from the real underlying disposition.
-    if (cur.sa_sigaction == segvProbeHandler && s_segvProbeInstalled.load()) {
+    if (cur.sa_sigaction == segvProbeHandler) {
+        if (s_prevSegvAction.sa_sigaction != s_faultHandlerFn)
+            logSigactionOwner("chain: handler under our probe was",
+                              (void*)s_prevSegvAction.sa_sigaction);
         sigaction(SIGSEGV, &s_prevSegvAction, nullptr);
         s_segvProbeInstalled.store(false);
         if (sigaction(SIGSEGV, nullptr, &cur) != 0)
@@ -290,16 +345,17 @@ static void armSegvHandler(bool force) {
     }
 
     // If the process-wide handler is not the core's fault_handler anymore,
+    // somebody clobbered it — identify the clobberer in logcat, then
     // (re)assert it via the exported installer. That records whatever is
     // currently installed as the core's next handler — chain preserved.
     if (cur.sa_sigaction != s_faultHandlerFn) {
-        LOGW("sigaction(SIGSEGV) is %p, expected core fault_handler %p — "
-             "re-asserting os_InstallFaultHandler()",
-             (void*)cur.sa_sigaction, (void*)s_faultHandlerFn);
+        logSigactionOwner("disposition was replaced by", (void*)cur.sa_sigaction);
+        LOGW("SIGSEGV armor: re-asserting core os_InstallFaultHandler() "
+             "(expected fault_handler %p)", (void*)s_faultHandlerFn);
         s_osInstallFaultHandler();
     }
 
-    // Wrap the (now core) handler with our logging probe.
+    // Wrap the (now core) handler with our signal-safe probe.
     struct sigaction act{};
     act.sa_sigaction = segvProbeHandler;
     sigemptyset(&act.sa_mask);
@@ -309,8 +365,30 @@ static void armSegvHandler(bool force) {
         return;
     }
     s_segvProbeInstalled.store(true);
-    s_segvProbeLogs.store(8);
-    LOGI("SIGSEGV armor armed (probe next=%p)", (void*)s_prevSegvAction.sa_sigaction);
+    LOGI("SIGSEGV armor armed: probe -> core fault_handler %p",
+         (void*)s_faultHandlerFn);
+}
+
+// Called from stepFrame AFTER retro_run — OUTSIDE any signal context — to
+// report how many protected-page faults the core handler repaired since the
+// previous frame. When these lines STOP appearing while the game still runs,
+// something clobbered the SIGSEGV chain and the next protected-page write
+// would have crashed (armor re-arms it before the next frame).
+static void drainSegvReports() {
+    int pending = s_segvPending.exchange(0, std::memory_order_acq_rel);
+    if (pending <= 0)
+        return;
+    const int total = s_segvTotal.load(std::memory_order_relaxed);
+    const int logged = s_segvLoggedTotal.load(std::memory_order_relaxed);
+    if (total < 8 || total - logged >= 128) {
+        s_segvLoggedTotal.store(total, std::memory_order_relaxed);
+        const unsigned last = (s_segvRingIdx.load(std::memory_order_relaxed) - 1) & 7u;
+        LOGI("SIGSEGV protected-page faults repaired: +%d (total %d), "
+             "last addr=%#lx pc=%#lx",
+             pending, total,
+             (unsigned long)s_segvRing[last].addr.load(std::memory_order_relaxed),
+             (unsigned long)s_segvRing[last].pc.load(std::memory_order_relaxed));
+    }
 }
 
 // Core render target (our FBO) + compositor program.
@@ -435,6 +513,27 @@ static bool loadCoreLib() {
     std::vector<std::string> candidates;
     if (!s_coreLibPath.empty()) candidates.push_back(s_coreLibPath);
     candidates.push_back("libflycast_libretro_android.so");
+
+    // --- vmem (fastmem) rescue -------------------------------------------------
+    // The core imports ASharedMemory_create as a WEAK symbol but does NOT link
+    // libandroid.so (DT_NEEDED is only libm/libdl/libc), and its fallback
+    // open("/dev/ashmem") is denied by SELinux for apps targeting API 30+.
+    // With neither available, virtmem::init() fails and the core falls back to
+    // malloc'ed buffers: every SH4 load/store then goes through the slow
+    // addrspace::read32/write32 helpers (the frame seen in the DC crash
+    // tombstone). bionic resolves symbols against the RTLD_GLOBAL group of the
+    // namespace (linker.cpp: SymbolLookupList(global_group, local_group)), so
+    // preloading the REAL libandroid.so into the global group before dlopen()
+    // lets the core's weak import bind and vmem/fastmem come back online.
+    // Harmless if it doesn't bind (core stays vmem-disabled, as before) — the
+    // core's own "nvmem is enabled/disabled" log line (tag flycastcore-rom)
+    // tells us which mode was actually chosen.
+    if (!dlopen("libandroid.so", RTLD_NOW | RTLD_GLOBAL))
+        LOGW("libandroid.so preload failed: %s (core vmem stays disabled)",
+             dlerror());
+    else
+        LOGI("libandroid.so preloaded RTLD_GLOBAL for core weak "
+             "ASharedMemory_create");
 
     const char* lastDlError = nullptr;
     for (const auto& name : candidates) {
@@ -1424,6 +1523,10 @@ void stepFrame() {
     armSegvHandler(false);
 
     s_retro_run();
+
+    // Report protected-page faults the core handler repaired during this
+    // frame (outside any signal context). See armor comment block above.
+    drainSegvReports();
 
     // Present: composite the core's FBO into the window and swap.
     if (s_frameReady && s_eglSurfaceIsWindow) {
