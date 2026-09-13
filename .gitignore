@@ -8,6 +8,8 @@ build/
 !ARMSX2-master/platforms/android/app/src/main/cpp/3rdparty/zstd/build/**
 !ARMSX2-master/platforms/android/app/src/main/cpp/3rdparty/lz4/build/
 !ARMSX2-master/platforms/android/app/src/main/cpp/3rdparty/lz4/build/**
+!core/flycast/core/deps/libchdr/deps/zstd-1.5.6/build/
+!core/flycast/core/deps/libchdr/deps/zstd-1.5.6/build/**
 local.properties
 gradle-app.setting
 .gradletasknamecache
