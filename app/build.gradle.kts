@@ -19,6 +19,32 @@ val stageArmsx2Resources = tasks.register<Copy>("stageArmsx2Resources") {
 // Stage before asset merging so the files land in the APK.
 tasks.named("preBuild") { dependsOn(stageArmsx2Resources) }
 
+// ---------------------------------------------------------------------------
+// Flycast core: build from source with NESSTATION_DC_SAFE_MEM patches
+// (dcfix8). The source lives in core/flycast/ and the build script produces
+// libflycast_libretro_android.so in app/src/main/jniLibs/<abi>/.
+// Skip with -PskipFlycastCore if NDK is unavailable.
+// ---------------------------------------------------------------------------
+val skipFlycastCore = (project.findProperty("skipFlycastCore") as String?)?.toBoolean() ?: false
+val flycastBuildScript = rootProject.file("core/flycast/scripts/build_android.sh")
+val buildFlycastCore = tasks.register("buildFlycastCore") {
+    description = "Build Flycast libretro core from source with SAFE_MEM patches"
+    group = "NesStation"
+    onlyIf {
+        !skipFlycastCore
+                && flycastBuildScript.exists()
+                && (System.getenv("ANDROID_HOME") != null || System.getenv("ANDROID_NDK_HOME") != null)
+    }
+    doLast {
+        val abiFilter = (project.findProperty("abiFilter") as String?)
+        val abi = if (abiFilter.isNullOrBlank()) "arm64-v8a" else abiFilter.split(",").first().trim()
+        project.exec {
+            commandLine("bash", flycastBuildScript.absolutePath, "--abi", abi)
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(buildFlycastCore) }
+
 android {
     namespace = "com.nesstation.app"
     compileSdk = 34
@@ -30,8 +56,8 @@ android {
         // ioctl(SIOCGIFCONF) 兼容实现，在 Android 沙箱里拿不到 wlan0 等接口。
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
-        versionName = "3.6.0"
+        versionCode = 11
+        versionName = "3.6.3-dcfix8"
         // NDK 必须 >= r28c(28.2.13676358)：ARMSX2 的 common/pcsx2 以 C++20 编译并用到
         // std::lexicographical_compare_three_way，而 r26 的 libc++ 快照没有该符号，
         // 会在编译 WindowInfo.cpp 时报 "no member named 'lexicographical_compare_three_way'".
