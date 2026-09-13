@@ -51,10 +51,28 @@ fi
 echo "NDK: $NDK_HOME"
 echo "ABI: $ABI"
 
+# --- CMake selection -------------------------------------------------------
+# Prefer the SDK-bundled CMake 3.22.1 (installed by the CI workflow via
+# sdkmanager) so the configure is deterministic across runner images.
+# Several vendored deps (zlib-1.3.1, websocketpp, ...) declare
+# cmake_minimum_required(<3.5), which CMake >= 4 refuses to configure.
+# If only CMake >= 4 is available, pass CMAKE_POLICY_VERSION_MINIMUM=3.5.
+CMAKE_BIN="cmake"
+SDK_CMAKE="${ANDROID_HOME:-}/cmake/3.22.1/bin/cmake"
+if [ -n "${ANDROID_HOME:-}" ] && [ -x "$SDK_CMAKE" ]; then
+    CMAKE_BIN="$SDK_CMAKE"
+fi
+CMAKE_MAJOR="$($CMAKE_BIN --version 2>/dev/null | head -n1 | sed -E 's/[a-zA-Z ]*([0-9]+)\..*/\1/')"
+CMAKE_POLICY_FLAG=()
+if [ "${CMAKE_MAJOR:-0}" -ge 4 ]; then
+    CMAKE_POLICY_FLAG=(-DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+fi
+echo "CMake: $CMAKE_BIN (major=${CMAKE_MAJOR:-unknown})"
+
 BUILD_DIR="$PROJECT_ROOT/build/flycast_core_${ABI}"
 mkdir -p "$BUILD_DIR"
 
-cmake -S "$FLYCAST_DIR" -B "$BUILD_DIR" \
+"$CMAKE_BIN" -S "$FLYCAST_DIR" -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$ABI" \
     -DANDROID_PLATFORM=android-24 \
@@ -62,18 +80,27 @@ cmake -S "$FLYCAST_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLIBRETRO=ON \
     -DUSE_GLES=ON \
-    -DUSE_VULKAN=OFF \
+    -DUSE_VULKAN=ON \
     -DUSE_DX9=OFF \
     -DUSE_DX11=OFF \
     -DUSE_BREAKPAD=OFF \
     -DUSE_LUA=OFF \
-    -DBUILD_TESTING=OFF
+    -DBUILD_TESTING=OFF \
+    "${CMAKE_POLICY_FLAG[@]}"
 
-cmake --build "$BUILD_DIR" --target flycast_libretro -j"$(nproc)"
+"$CMAKE_BIN" --build "$BUILD_DIR" --target flycast_libretro -j"$(nproc)"
 
-# The output shared library is named flycast_libretro.so; rename to match
-# the dlopen() name expected by flycast_loader.cpp.
-OUTPUT_LIB="$BUILD_DIR/libflycast_libretro.so"
+# The LIBRETRO=ON target sets CMAKE_SHARED_LIBRARY_PREFIX "" in flycast's
+# CMakeLists.txt, so the output is flycast_libretro.so (NO "lib" prefix).
+# Accept both layouts to stay robust across CMake versions.
+if [ -f "$BUILD_DIR/flycast_libretro.so" ]; then
+    OUTPUT_LIB="$BUILD_DIR/flycast_libretro.so"
+elif [ -f "$BUILD_DIR/libflycast_libretro.so" ]; then
+    OUTPUT_LIB="$BUILD_DIR/libflycast_libretro.so"
+else
+    echo "ERROR: flycast_libretro.so not found in $BUILD_DIR"
+    exit 1
+fi
 FINAL_NAME="libflycast_libretro_android.so"
 
 mkdir -p "$OUTPUT_DIR/$ABI"
