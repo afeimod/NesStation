@@ -1,46 +1,371 @@
-1789200362.991 10544 19865  7499 E flycast : Verify Failed  : (void*)bm_GetCode(block_ptr->addr) == CC_RW2RX((void*)block_ptr->code)
-1789200362.991 10544 19865  7499 E flycast :  in bm_DiscardBlock -> /home/z/work/NesStation/core/flycast/core/hw/sh4/dyna/blockmanager.cpp : 256
-1789200362.991 10544 19865  7499 E flycast : [COMMON] DEBUGBREAK!
-1789200362.994 10544 19865  7499 F libc    : Fatal signal 5 (SIGTRAP), code 1 (TRAP_BRKPT), fault addr 0x79cd239718 in tid 7499 (flycast-loop), pid 19865 (.nesstation.app)
-1789200363.138 10544 19865  7506 I flycast : [SH4] SB/HOLLY: System reset requested
-1789200363.364 10544 10869 10869 F DEBUG   : pid: 19865, tid: 7499, name: flycast-loop  >>> com.nesstation.app <<<
-1789200363.364 10544 10869 10869 F DEBUG   :       #00 pc 0000000000821718  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (os_DebugBreak()+40) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
-1789200363.364 10544 10869 10869 F DEBUG   :       #01 pc 00000000008cab30  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (bm_DiscardBlock(RuntimeBlockInfo*)+680) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
-1789200363.364 10544 10869 10869 F DEBUG   :       #02 pc 00000000008cc838  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (bm_RamWriteAccess(unsigned int)+352) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
-1789200363.364 10544 10869 10869 F DEBUG   :       #03 pc 00000000008ccf78  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (bm_PollDirtyRamPages()+300) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
-1789200363.364 10544 10869 10869 F DEBUG   :       #04 pc 0000000000818588  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (retro_run+88) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
-1789200363.364 10544 10869 10869 F DEBUG   :       #05 pc 0000000000033bf0  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!libflycastcore.so (offset 0x7d71000) (BuildId: 00a5684df130e7ace8bf5bc92678add78005bf3c)
-1789200363.491  1000  9121 10974 D DigestGenerator: digest=============com.nesstation.app XXbase.apk!flycast_libretro.so (offset XX) (os_DebugBreak()+) ()
-1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (bm_DiscardBlock(RuntimeBlockInfo*)+) ()
-1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (bm_RamWriteAccess(unsigned int)+) ()
-1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (bm_PollDirtyRamPages()+) ()
-1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (retro_run+) ()
-1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!libflycastcore.so (offset XX) ()
-1789200363.492  1000  9121 10974 D MiSightJni: MiSight: Java_com_miui_misight_MiSight_nativeSendEvent enter called. '{"Stacktrace":"#04 pc 0000000000818588  \/data\/app\/~~uBZcPTC9-GUsTxWL1WqeNg==\/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==\/base.apk!flycast_libretro.so (offset 0x66a1000) (retro_run+88) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)\n      #05 pc 0000000000033bf0  \/data\/app\/~~uBZcPTC9-GUsTxWL1WqeNg==\/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==\/base.apk!libflycastcore.so (offset 0x7d71000) (BuildId: 00a5684df130e7ace8bf5bc92678add78005bf3c)\n      #06 pc 000000000009cafc  \/system\/framework\/arm64\/boot.oat (art_jni_trampoline+108) (BuildId: 9951753ec09832b103fcdf4017254d9a702a2103)\n      #07 pc 0000000000209408  \/apex\/com.android.art\/lib64\/libart.so (nterp_helper+152) (BuildId: 7e0f54c1a3af240ecab90a8dbd11f478)\n      #08 pc 000000000080e900  \/data\/app\/~~uBZcPTC9-GUsTxWL1WqeNg==\/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==\/oat\/arm64\/base.vdex (com.nesstation.app.core.engine.d$b.invoke+184)\n      #09 pc 00000000002
-1789200363.492  1000  9121 10974 D MiEvent : flatten EventId 901001003 -t 1789200363 -paraList {"CrashType":"100000000","CurrentTime":1789200363000,"Digest":"0cbd03ddf09912e72781a9e3fe914e46","Keyword":"{\"vn\":\"3.6.3-dcfix8\",\"vc\":\"11\",\"isRoot\":false,\"count\":1,\"preInstalled\":false,\"unfold\":false,\"ram\":11,\"rom\":512}","PackageName":"com.nesstation.app","Stacktrace":"#04 pc 0000000000818588  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (retro_run+88) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)\n      #05 pc 0000000000033bf0  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!libflycastcore.so (offset 0x7d71000) (BuildId: 00a5684df130e7ace8bf5bc92678add78005bf3c)\n      #06 pc 000000000009cafc  /system/framework/arm64/boot.oat (art_jni_trampoline+108) (BuildId: 9951753ec09832b103fcdf4017254d9a702a2103)\n      #07 pc 0000000000209408  /apex/com.android.art/lib64/libart.so (nterp_helper+152) (BuildId: 7e0f54c1a3
-DEBUG: *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***
-DEBUG: Build fingerprint: 'Redmi/socrates/socrates:15/AQ3A.250226.002/OS3.0.5.0.VMKCNXM:user/release-keys'
-DEBUG: Revision: '0'
-DEBUG: ABI: 'arm64'
-DEBUG: Timestamp: 2026-09-12 16:07:45.297860696+0800
-DEBUG: Process uptime: 159s
-DEBUG: Cmdline: com.nesstation.app
-DEBUG: pid: 26040, tid: 32256, name: Flycast-emu  >>> com.nesstation.app <<<
-DEBUG: uid: 10544
-DEBUG: tagged_addr_ctrl: 0000000000000001 (PR_TAGGED_ADDR_ENABLE)
-DEBUG: pac_enabled_keys: 000000000000000f (PR_PAC_APIAKEY, PR_PAC_APIBKEY, PR_PAC_APDAKEY, PR_PAC_APDBKEY)
-DEBUG: signal 5 (SIGTRAP), code 1 (TRAP_BRKPT), fault addr 0x00000079c2c24718
-DEBUG:     x0  0000000000000001  x1  b400007c1628dd10  x2  00000079b188d168  x3  0000000000000003
-DEBUG:     x4  00000079b188d010  x5  0000000004d89388  x6  0000000000000010  x7  ffffff7fff7fffff
-DEBUG:     x8  e1ceba4adc609a80  x9  e1ceba4adc609a80  x10 000000000000001f  x11 fffffffffffffffd
-DEBUG:     x12 00000079b188d1a0  x13 0000000000000016  x14 00000079b188d250  x15 000005d94ec17d0e
-DEBUG:     x16 0000000000000001  x17 0000007d5a578a50  x18 00000079b0ed8000  x19 0000000000000000
-DEBUG:     x20 0000000000000000  x21 0000000000000000  x22 00000079b188fa80  x23 0000000000000003
-DEBUG:     x24 0000000000000000  x25 0000000000000000  x26 0000000000000003  x27 b400007c8635e2f0
-DEBUG:     x28 b4000079c2401e00  x29 00000079b188f480
-DEBUG:     lr  00000079c2c24718  sp  00000079b188f480  pc  00000079c2c24718  pst 0000000060001000
-DEBUG: 3 total frames
-DEBUG: backtrace:
-DEBUG:       #00 pc 0000000000821718  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (os_DebugBreak()+40) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
-DEBUG:       #01 pc 00000000008d4b2c  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (rdv_LinkBlock(unsigned char*, unsigned int)+1024) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
-DEBUG:       #02 pc 0000000000000114  [anon:.bss]
+2026-09-13T06:07:52.0362380Z ##[group]Run if [ -n "" ]; then
+2026-09-13T06:07:52.0362646Z [36;1mif [ -n "" ]; then[0m
+2026-09-13T06:07:52.0362956Z [36;1m  ./gradlew assembleRelease -PuseStubCore=false -PabiFilter="" --stacktrace[0m
+2026-09-13T06:07:52.0363279Z [36;1melse[0m
+2026-09-13T06:07:52.0363509Z [36;1m  ./gradlew assembleRelease -PuseStubCore=false --stacktrace[0m
+2026-09-13T06:07:52.0363782Z [36;1mfi[0m
+2026-09-13T06:07:52.0397276Z shell: /usr/bin/bash -e {0}
+2026-09-13T06:07:52.0397487Z env:
+2026-09-13T06:07:52.0397736Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.20-1/x64
+2026-09-13T06:07:52.0398126Z   JAVA_HOME_17_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.20-1/x64
+2026-09-13T06:07:52.0398490Z   ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/28.2.13676358
+2026-09-13T06:07:52.0398797Z   ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/28.2.13676358
+2026-09-13T06:07:52.0399050Z ##[endgroup]
+2026-09-13T06:07:52.5448709Z Starting a Gradle Daemon (subsequent builds will be faster)
+2026-09-13T06:08:43.7451009Z 
+2026-09-13T06:08:43.7505263Z > Configure project :app
+2026-09-13T06:08:43.7514953Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.7516582Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.7518030Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.7519397Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.7520833Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.7522101Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8440040Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8441390Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8442530Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8444048Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8445134Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8450800Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8460085Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8461341Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8462729Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8469811Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8470938Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8472068Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8473134Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8474722Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8475991Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8477103Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8478204Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8479282Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8480314Z WARNING: C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:43.8481418Z C/C++: Ignoring invalid ABI 'riscv64' found in ABI metadata file '/usr/local/lib/android/sdk/ndk/28.2.13676358/meta/abis.json'.
+2026-09-13T06:08:47.7441758Z Checking the license for package Android SDK Build-Tools 33.0.1 in /usr/local/lib/android/sdk/licenses
+2026-09-13T06:08:47.7443001Z License for package Android SDK Build-Tools 33.0.1 accepted.
+2026-09-13T06:08:47.7443801Z Preparing "Install Android SDK Build-Tools 33.0.1 v.33.0.1".
+2026-09-13T06:08:49.2438930Z "Install Android SDK Build-Tools 33.0.1 v.33.0.1" ready.
+2026-09-13T06:08:49.2439908Z Installing Android SDK Build-Tools 33.0.1 in /usr/local/lib/android/sdk/build-tools/33.0.1
+2026-09-13T06:08:49.2440727Z "Install Android SDK Build-Tools 33.0.1 v.33.0.1" complete.
+2026-09-13T06:08:49.5439290Z "Install Android SDK Build-Tools 33.0.1 v.33.0.1" finished.
+2026-09-13T06:08:50.0443666Z 
+2026-09-13T06:08:50.0444356Z > Task :dexlib:preBuild UP-TO-DATE
+2026-09-13T06:08:50.0444991Z > Task :dexlib:preReleaseBuild UP-TO-DATE
+2026-09-13T06:08:50.1444915Z > Task :app:buildKotlinToolingMetadata
+2026-09-13T06:08:50.1445325Z > Task :dexlib:mergeReleaseJniLibFolders
+2026-09-13T06:08:50.2442703Z > Task :dexlib:mergeReleaseNativeLibs NO-SOURCE
+2026-09-13T06:08:50.2443589Z > Task :dexlib:stripReleaseDebugSymbols NO-SOURCE
+2026-09-13T06:08:50.2444440Z > Task :dexlib:copyReleaseJniLibsProjectAndLocalJars
+2026-09-13T06:08:50.2445522Z > Task :dexlib:generateReleaseResValues
+2026-09-13T06:08:50.2446238Z > Task :dexlib:extractDeepLinksForAarRelease
+2026-09-13T06:08:50.2446814Z > Task :dexlib:generateReleaseResources
+2026-09-13T06:08:50.2447339Z > Task :dexlib:packageReleaseResources
+2026-09-13T06:08:50.8477672Z > Task :dexlib:javaPreCompileRelease
+2026-09-13T06:08:50.8516652Z > Task :dexlib:mergeReleaseShaders FROM-CACHE
+2026-09-13T06:08:50.8517697Z > Task :dexlib:compileReleaseShaders NO-SOURCE
+2026-09-13T06:08:50.8546529Z > Task :dexlib:generateReleaseAssets UP-TO-DATE
+2026-09-13T06:08:50.8554274Z > Task :dexlib:packageReleaseAssets FROM-CACHE
+2026-09-13T06:08:50.8554915Z > Task :dexlib:prepareLintJarForPublish
+2026-09-13T06:08:50.8555442Z > Task :dexlib:prepareReleaseArtProfile
+2026-09-13T06:08:50.8556175Z > Task :dexlib:processReleaseJavaRes NO-SOURCE
+2026-09-13T06:08:50.8556745Z > Task :dexlib:parseReleaseLocalResources
+2026-09-13T06:08:50.9438055Z > Task :dexlib:processReleaseManifest
+2026-09-13T06:08:50.9446214Z > Task :dexlib:writeReleaseAarMetadata
+2026-09-13T06:08:50.9446843Z > Task :dexlib:extractDeepLinksRelease
+2026-09-13T06:08:50.9447270Z > Task :dexlib:generateReleaseRFile
+2026-09-13T06:08:50.9447643Z > Task :dexlib:mergeReleaseJavaResource
+2026-09-13T06:08:51.3438950Z > Task :dexlib:compileReleaseLibraryResources
+2026-09-13T06:08:52.1438186Z 
+2026-09-13T06:08:52.1438668Z > Task :app:buildFlycastCore
+2026-09-13T06:08:52.1440754Z NDK: /usr/local/lib/android/sdk/ndk/28.2.13676358
+2026-09-13T06:08:52.1441158Z ABI: arm64-v8a
+2026-09-13T06:08:56.3438727Z -- The C compiler identification is Clang 19.0.1
+2026-09-13T06:08:56.6476761Z -- The CXX compiler identification is Clang 19.0.1
+2026-09-13T06:08:56.6509106Z -- Detecting C compiler ABI info
+2026-09-13T06:08:57.4444953Z 
+2026-09-13T06:08:57.4446969Z > Task :dexlib:extractReleaseAnnotations
+2026-09-13T06:09:00.0438205Z 
+2026-09-13T06:09:00.0466701Z > Task :app:buildFlycastCore
+2026-09-13T06:09:00.0496441Z -- Detecting C compiler ABI info - done
+2026-09-13T06:09:00.1496993Z -- Check for working C compiler: /usr/local/lib/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang - skipped
+2026-09-13T06:09:00.1532722Z -- Detecting C compile features
+2026-09-13T06:09:00.1566213Z -- Detecting C compile features - done
+2026-09-13T06:09:00.1596153Z -- Detecting CXX compiler ABI info
+2026-09-13T06:09:01.3467408Z -- Detecting CXX compiler ABI info - done
+2026-09-13T06:09:01.3468886Z -- Check for working CXX compiler: /usr/local/lib/android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ - skipped
+2026-09-13T06:09:01.3469918Z -- Detecting CXX compile features
+2026-09-13T06:09:01.3470559Z -- Detecting CXX compile features - done
+2026-09-13T06:09:01.9440582Z -- Target architecture: arm64
+2026-09-13T06:09:01.9466457Z -- Found Git: /usr/bin/git (found version "2.55.0")
+2026-09-13T06:09:03.4457902Z -- Found OpenMP_C: -fopenmp=libomp (found version "5.1")
+2026-09-13T06:09:03.5456815Z -- Found OpenMP_CXX: -fopenmp=libomp (found version "5.1")
+2026-09-13T06:09:03.5457806Z -- Found OpenMP: TRUE (found version "5.1")
+2026-09-13T06:09:03.6463256Z Note: Some input files use unchecked or unsafe operations.
+2026-09-13T06:09:03.6463660Z 
+2026-09-13T06:09:03.6466220Z Note: Recompile with -Xlint:unchecked for details.
+2026-09-13T06:09:03.6466651Z > Task :dexlib:compileReleaseJavaWithJavac
+2026-09-13T06:09:03.6467204Z 
+2026-09-13T06:09:03.6467631Z > Task :dexlib:mergeReleaseGeneratedProguardFiles
+2026-09-13T06:09:03.6486555Z > Task :dexlib:mergeReleaseConsumerProguardFiles
+2026-09-13T06:09:03.8445213Z > Task :dexlib:syncReleaseLibJars
+2026-09-13T06:09:03.8446465Z > Task :dexlib:bundleReleaseLocalLintAar
+2026-09-13T06:09:03.9438424Z > Task :dexlib:writeReleaseLintModelMetadata
+2026-09-13T06:09:03.9476998Z > Task :dexlib:copyReleaseJniLibsProjectOnly
+2026-09-13T06:09:03.9492455Z > Task :dexlib:bundleLibCompileToJarRelease
+2026-09-13T06:09:03.9506404Z > Task :dexlib:exportReleaseConsumerProguardFiles
+2026-09-13T06:09:03.9556469Z > Task :dexlib:bundleLibRuntimeToJarRelease
+2026-09-13T06:09:04.0439076Z > Task :dexlib:bundleReleaseAar
+2026-09-13T06:09:04.0445916Z > Task :dexlib:createFullJarRelease
+2026-09-13T06:09:04.0446305Z > Task :dexlib:mapReleaseSourceSetPaths
+2026-09-13T06:09:04.1462121Z > Task :dexlib:mergeReleaseResources
+2026-09-13T06:09:04.3438938Z > Task :dexlib:verifyReleaseResources
+2026-09-13T06:09:04.3439293Z > Task :dexlib:assembleRelease
+2026-09-13T06:09:04.7457893Z CMake Deprecation Warning at core/deps/glm/CMakeLists.txt:1 (cmake_minimum_required):
+2026-09-13T06:09:04.7476666Z   Compatibility with CMake < 3.10 will be removed from a future version of
+2026-09-13T06:09:04.7482500Z 
+2026-09-13T06:09:04.7485761Z   CMake.
+2026-09-13T06:09:04.7488405Z 
+2026-09-13T06:09:04.7494314Z   Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+2026-09-13T06:09:04.7500495Z   to tell CMake that the project requires at least <min> but has been updated
+2026-09-13T06:09:04.7519671Z   to work with policies introduced by <max> or earlier.
+2026-09-13T06:09:04.7524898Z 
+2026-09-13T06:09:04.7526183Z 
+2026-09-13T06:09:04.7530273Z CMake Deprecation Warning at core/deps/glm/CMakeLists.txt:2 (cmake_policy):
+2026-09-13T06:09:04.7560851Z > Task :app:buildFlycastCore FAILED
+2026-09-13T06:09:04.7576500Z   Compatibility with CMake < 3.10 will be removed from a future version of
+2026-09-13T06:09:04.7577040Z -- xxHash build type: Release
+2026-09-13T06:09:04.7595388Z   CMake.
+2026-09-13T06:09:04.7606072Z 
+2026-09-13T06:09:04.7606249Z -- Architecture: x86_64
+2026-09-13T06:09:04.7606773Z   Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+2026-09-13T06:09:04.7607863Z   to tell CMake that the project requires at least <min> but has been updated
+2026-09-13T06:09:04.7608417Z   to work with policies introduced by <max> or earlier.
+2026-09-13T06:09:04.7608710Z 
+2026-09-13T06:09:04.7608716Z 
+2026-09-13T06:09:04.7608891Z CMake Error at CMakeLists.txt:608 (add_subdirectory):
+2026-09-13T06:09:04.7609304Z   add_subdirectory given source
+2026-09-13T06:09:04.7609761Z   "core/deps/libchdr/deps/zstd-1.5.6/build/cmake" which is not an existing
+2026-09-13T06:09:04.7610263Z   directory.
+2026-09-13T06:09:04.7610400Z 
+2026-09-13T06:09:04.7610406Z 
+2026-09-13T06:09:04.7610716Z CMake Deprecation Warning at core/deps/libchdr/CMakeLists.txt:1 (cmake_minimum_required):
+2026-09-13T06:09:04.7611398Z   Compatibility with CMake < 3.10 will be removed from a future version of
+2026-09-13T06:09:04.7611840Z   CMake.
+2026-09-13T06:09:04.7611970Z 
+2026-09-13T06:09:04.7612205Z   Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+2026-09-13T06:09:04.7612815Z   to tell CMake that the project requires at least <min> but has been updated
+2026-09-13T06:09:04.7613356Z   to work with policies introduced by <max> or earlier.
+2026-09-13T06:09:04.7613636Z 
+2026-09-13T06:09:04.7613642Z 
+2026-09-13T06:09:04.7613849Z CMake Error at core/deps/libchdr/CMakeLists.txt:58 (find_package):
+2026-09-13T06:09:04.7614399Z   By not providing "Findzstd.cmake" in CMAKE_MODULE_PATH this project has
+2026-09-13T06:09:04.7614989Z   asked CMake to find a package configuration file provided by "zstd", but
+2026-09-13T06:09:04.7615422Z   CMake did not find one.
+2026-09-13T06:09:04.7615748Z 
+2026-09-13T06:09:04.7615976Z   Could not find a package configuration file provided by "zstd" with any of
+2026-09-13T06:09:04.7616412Z   the following names:
+2026-09-13T06:09:04.7616581Z 
+2026-09-13T06:09:04.7616684Z     zstdConfig.cmake
+2026-09-13T06:09:04.7616938Z     zstd-config.cmake
+2026-09-13T06:09:04.7617142Z 
+2026-09-13T06:09:04.7617354Z   Add the installation prefix of "zstd" to CMAKE_PREFIX_PATH or set
+2026-09-13T06:09:04.7617900Z   "zstd_DIR" to a directory containing one of the above files.  If "zstd"
+2026-09-13T06:09:04.7618430Z   provides a separate development package or SDK, be sure it has been
+2026-09-13T06:09:04.7618867Z   installed.
+2026-09-13T06:09:04.7619010Z 
+2026-09-13T06:09:04.7619016Z 
+2026-09-13T06:09:04.7619021Z 
+2026-09-13T06:09:04.7619150Z FAILURE: Build failed with an exception.
+2026-09-13T06:09:04.7619638Z 
+2026-09-13T06:09:04.7619740Z * What went wrong:
+2026-09-13T06:09:04.7620048Z Execution failed for task ':app:buildFlycastCore'.
+2026-09-13T06:09:04.7620501Z > Process 'command 'bash'' finished with non-zero exit value 1
+2026-09-13T06:09:04.7620797Z 
+2026-09-13T06:09:04.7620894Z * Try:
+2026-09-13T06:09:04.7621200Z > Run with --info or --debug option to get more log output.
+2026-09-13T06:09:04.7621591Z > Run with --scan to get full insights.
+2026-09-13T06:09:04.7621954Z > Get more help at https://help.gradle.org.
+2026-09-13T06:09:04.7622215Z 
+2026-09-13T06:09:04.7622318Z * Exception is:
+2026-09-13T06:09:04.7622840Z org.gradle.api.tasks.TaskExecutionException: Execution failed for task ':app:buildFlycastCore'.
+2026-09-13T06:09:04.7623990Z 	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.lambda$executeIfValid$1(ExecuteActionsTaskExecuter.java:130)
+2026-09-13T06:09:04.7624956Z 	at org.gradle.internal.Try$Failure.ifSuccessfulOrElse(Try.java:282)
+2026-09-13T06:09:04.7626102Z 	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:128)
+2026-09-13T06:09:04.7627324Z 	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:116)
+2026-09-13T06:09:04.7628533Z 	at org.gradle.api.internal.tasks.execution.FinalizePropertiesTaskExecuter.execute(FinalizePropertiesTaskExecuter.java:46)
+2026-09-13T06:09:04.7629745Z 	at org.gradle.api.internal.tasks.execution.ResolveTaskExecutionModeExecuter.execute(ResolveTaskExecutionModeExecuter.java:51)
+2026-09-13T06:09:04.7630824Z 	at org.gradle.api.internal.tasks.execution.SkipTaskWithNoActionsExecuter.execute(SkipTaskWithNoActionsExecuter.java:57)
+2026-09-13T06:09:04.7632005Z 	at org.gradle.api.internal.tasks.execution.SkipOnlyIfTaskExecuter.execute(SkipOnlyIfTaskExecuter.java:74)
+2026-09-13T06:09:04.7632932Z 	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
+2026-09-13T06:09:04.7633933Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
+2026-09-13T06:09:04.7634863Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
+2026-09-13T06:09:04.7636173Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
+2026-09-13T06:09:04.7637233Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:200)
+2026-09-13T06:09:04.7638407Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:195)
+2026-09-13T06:09:04.7639483Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+2026-09-13T06:09:04.7640379Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.7641348Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+2026-09-13T06:09:04.7642265Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.7643157Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+2026-09-13T06:09:04.7644062Z 	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+2026-09-13T06:09:04.7644969Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
+2026-09-13T06:09:04.7645937Z 	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:42)
+2026-09-13T06:09:04.7646868Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:331)
+2026-09-13T06:09:04.7648023Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:318)
+2026-09-13T06:09:04.7649370Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.lambda$execute$0(DefaultTaskExecutionGraph.java:314)
+2026-09-13T06:09:04.7650422Z 	at org.gradle.internal.operations.CurrentBuildOperationRef.with(CurrentBuildOperationRef.java:80)
+2026-09-13T06:09:04.7651413Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:314)
+2026-09-13T06:09:04.7652596Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
+2026-09-13T06:09:04.7653609Z 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
+2026-09-13T06:09:04.7654408Z 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
+2026-09-13T06:09:04.7655205Z 	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+2026-09-13T06:09:04.7656227Z 	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
+2026-09-13T06:09:04.7657110Z Caused by: org.gradle.process.internal.ExecException: Process 'command 'bash'' finished with non-zero exit value 1
+2026-09-13T06:09:04.7658064Z 	at org.gradle.process.internal.DefaultExecHandle$ExecResultImpl.assertNormalExitValue(DefaultExecHandle.java:442)
+2026-09-13T06:09:04.7658974Z 	at org.gradle.process.internal.DefaultExecAction.execute(DefaultExecAction.java:38)
+2026-09-13T06:09:04.7660013Z 	at org.gradle.process.internal.DefaultExecActionFactory.exec(DefaultExecActionFactory.java:202)
+2026-09-13T06:09:04.7660813Z 	at org.gradle.api.internal.project.DefaultProject.exec(DefaultProject.java:1229)
+2026-09-13T06:09:04.7661435Z 	at Build_gradle$buildFlycastCore$1$2.execute(build.gradle.kts:41)
+2026-09-13T06:09:04.7661989Z 	at Build_gradle$buildFlycastCore$1$2.execute(build.gradle.kts:38)
+2026-09-13T06:09:04.7662618Z 	at org.gradle.api.internal.AbstractTask$TaskActionWrapper.execute(AbstractTask.java:831)
+2026-09-13T06:09:04.7663318Z 	at org.gradle.api.internal.AbstractTask$TaskActionWrapper.execute(AbstractTask.java:804)
+2026-09-13T06:09:04.7663996Z 	at org.gradle.api.internal.tasks.execution.TaskExecution$3.run(TaskExecution.java:244)
+2026-09-13T06:09:04.7664787Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:29)
+2026-09-13T06:09:04.7665845Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:26)
+2026-09-13T06:09:04.7666766Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+2026-09-13T06:09:04.7667676Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.7668589Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+2026-09-13T06:09:04.7669494Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.7670371Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.run(DefaultBuildOperationRunner.java:47)
+2026-09-13T06:09:04.7671267Z 	at org.gradle.internal.operations.DefaultBuildOperationExecutor.run(DefaultBuildOperationExecutor.java:68)
+2026-09-13T06:09:04.7672107Z 	at org.gradle.api.internal.tasks.execution.TaskExecution.executeAction(TaskExecution.java:229)
+2026-09-13T06:09:04.7672911Z 	at org.gradle.api.internal.tasks.execution.TaskExecution.executeActions(TaskExecution.java:212)
+2026-09-13T06:09:04.7673804Z 	at org.gradle.api.internal.tasks.execution.TaskExecution.executeWithPreviousOutputFiles(TaskExecution.java:195)
+2026-09-13T06:09:04.7674651Z 	at org.gradle.api.internal.tasks.execution.TaskExecution.execute(TaskExecution.java:162)
+2026-09-13T06:09:04.7675356Z 	at org.gradle.internal.execution.steps.ExecuteStep.executeInternal(ExecuteStep.java:105)
+2026-09-13T06:09:04.7676408Z 	at org.gradle.internal.execution.steps.ExecuteStep.access$000(ExecuteStep.java:44)
+2026-09-13T06:09:04.7677050Z 	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:59)
+2026-09-13T06:09:04.7677655Z 	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:56)
+2026-09-13T06:09:04.7678544Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:200)
+2026-09-13T06:09:04.7679727Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:195)
+2026-09-13T06:09:04.7680781Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+2026-09-13T06:09:04.7681706Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.7682633Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+2026-09-13T06:09:04.7683557Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.7684457Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+2026-09-13T06:09:04.7685366Z 	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+2026-09-13T06:09:04.7686297Z 	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:56)
+2026-09-13T06:09:04.7687162Z 	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:44)
+2026-09-13T06:09:04.7687880Z 	at org.gradle.internal.execution.steps.CancelExecutionStep.execute(CancelExecutionStep.java:41)
+2026-09-13T06:09:04.7688707Z 	at org.gradle.internal.execution.steps.TimeoutStep.executeWithoutTimeout(TimeoutStep.java:74)
+2026-09-13T06:09:04.7708405Z 	at org.gradle.internal.execution.steps.TimeoutStep.execute(TimeoutStep.java:55)
+2026-09-13T06:09:04.7709277Z 	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:50)
+2026-09-13T06:09:04.7710261Z 	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:28)
+2026-09-13T06:09:04.7711239Z 	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:67)
+2026-09-13T06:09:04.7712173Z 	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:37)
+2026-09-13T06:09:04.7713157Z 	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:61)
+2026-09-13T06:09:04.7714161Z 	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:26)
+2026-09-13T06:09:04.7715222Z 	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:67)
+2026-09-13T06:09:04.7716481Z 	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:45)
+2026-09-13T06:09:04.7717491Z 	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:40)
+2026-09-13T06:09:04.7718368Z 	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:29)
+2026-09-13T06:09:04.7719236Z 	at org.gradle.internal.execution.steps.BuildCacheStep.executeWithoutCache(BuildCacheStep.java:189)
+2026-09-13T06:09:04.7720240Z 	at org.gradle.internal.execution.steps.BuildCacheStep.lambda$execute$1(BuildCacheStep.java:75)
+2026-09-13T06:09:04.7720855Z 	at org.gradle.internal.Either$Right.fold(Either.java:175)
+2026-09-13T06:09:04.7721390Z 	at org.gradle.internal.execution.caching.CachingState.fold(CachingState.java:62)
+2026-09-13T06:09:04.7722061Z 	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:73)
+2026-09-13T06:09:04.7723006Z 	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:48)
+2026-09-13T06:09:04.7723758Z 	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:46)
+2026-09-13T06:09:04.7724370Z 	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:35)
+2026-09-13T06:09:04.7725026Z 	at org.gradle.internal.execution.steps.SkipUpToDateStep.executeBecause(SkipUpToDateStep.java:76)
+2026-09-13T06:09:04.7725753Z 	at org.gradle.internal.execution.steps.SkipUpToDateStep.lambda$execute$2(SkipUpToDateStep.java:54)
+2026-09-13T06:09:04.7726325Z 	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:54)
+2026-09-13T06:09:04.7726817Z 	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:36)
+2026-09-13T06:09:04.7727461Z 	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:37)
+2026-09-13T06:09:04.7728256Z 	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:27)
+2026-09-13T06:09:04.7729052Z 	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:49)
+2026-09-13T06:09:04.7729850Z 	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:27)
+2026-09-13T06:09:04.7730594Z 	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:71)
+2026-09-13T06:09:04.7731425Z 	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:39)
+2026-09-13T06:09:04.7732035Z 	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:65)
+2026-09-13T06:09:04.7732550Z 	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:36)
+2026-09-13T06:09:04.7733041Z 	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:106)
+2026-09-13T06:09:04.7733493Z 	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:55)
+2026-09-13T06:09:04.7734123Z 	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:64)
+2026-09-13T06:09:04.7734926Z 	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:43)
+2026-09-13T06:09:04.7735848Z 	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.executeWithNonEmptySources(AbstractSkipEmptyWorkStep.java:125)
+2026-09-13T06:09:04.7736551Z 	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:56)
+2026-09-13T06:09:04.7737160Z 	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:36)
+2026-09-13T06:09:04.7737858Z 	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsStartedStep.execute(MarkSnapshottingInputsStartedStep.java:38)
+2026-09-13T06:09:04.7738600Z 	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:36)
+2026-09-13T06:09:04.7739309Z 	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:23)
+2026-09-13T06:09:04.7739955Z 	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:75)
+2026-09-13T06:09:04.7740538Z 	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:41)
+2026-09-13T06:09:04.7741166Z 	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.lambda$execute$0(AssignMutableWorkspaceStep.java:35)
+2026-09-13T06:09:04.7741770Z 	at org.gradle.api.internal.tasks.execution.TaskExecution$4.withWorkspace(TaskExecution.java:289)
+2026-09-13T06:09:04.7742467Z 	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:31)
+2026-09-13T06:09:04.7743087Z 	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:22)
+2026-09-13T06:09:04.7743654Z 	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:40)
+2026-09-13T06:09:04.7744169Z 	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:23)
+2026-09-13T06:09:04.7744857Z 	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.lambda$execute$2(ExecuteWorkBuildOperationFiringStep.java:67)
+2026-09-13T06:09:04.7745770Z 	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:67)
+2026-09-13T06:09:04.7746532Z 	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:39)
+2026-09-13T06:09:04.7747192Z 	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:46)
+2026-09-13T06:09:04.7747691Z 	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:34)
+2026-09-13T06:09:04.7748162Z 	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:48)
+2026-09-13T06:09:04.7748597Z 	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:35)
+2026-09-13T06:09:04.7749099Z 	at org.gradle.internal.execution.impl.DefaultExecutionEngine$1.execute(DefaultExecutionEngine.java:61)
+2026-09-13T06:09:04.7749690Z -- Found PkgConfig: /usr/bin/pkg-config (found version "1.8.1")
+2026-09-13T06:09:04.7749985Z -- Looking for sys/types.h
+2026-09-13T06:09:04.7750193Z -- Looking for sys/types.h - found
+2026-09-13T06:09:04.7750402Z -- Looking for stdint.h
+2026-09-13T06:09:04.7750590Z -- Looking for stdint.h - found
+2026-09-13T06:09:04.7750786Z -- Looking for stddef.h
+2026-09-13T06:09:04.7750964Z -- Looking for stddef.h - found
+2026-09-13T06:09:04.7751158Z -- Check size of off64_t
+2026-09-13T06:09:04.7751338Z -- Check size of off64_t - done
+2026-09-13T06:09:04.7751521Z -- Looking for fseeko
+2026-09-13T06:09:04.7751703Z -- Looking for fseeko - found
+2026-09-13T06:09:04.7751889Z -- Looking for unistd.h
+2026-09-13T06:09:04.7752069Z -- Looking for unistd.h - found
+2026-09-13T06:09:04.7752305Z -- Configuring incomplete, errors occurred!
+2026-09-13T06:09:04.8439283Z 	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:127)
+2026-09-13T06:09:04.8440441Z 	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:116)
+2026-09-13T06:09:04.8441642Z 	at org.gradle.api.internal.tasks.execution.FinalizePropertiesTaskExecuter.execute(FinalizePropertiesTaskExecuter.java:46)
+2026-09-13T06:09:04.8442847Z 	at org.gradle.api.internal.tasks.execution.ResolveTaskExecutionModeExecuter.execute(ResolveTaskExecutionModeExecuter.java:51)
+2026-09-13T06:09:04.8444086Z 	at org.gradle.api.internal.tasks.execution.SkipTaskWithNoActionsExecuter.execute(SkipTaskWithNoActionsExecuter.java:57)
+2026-09-13T06:09:04.8445158Z 	at org.gradle.api.internal.tasks.execution.SkipOnlyIfTaskExecuter.execute(SkipOnlyIfTaskExecuter.java:74)
+2026-09-13T06:09:04.8446340Z 	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
+2026-09-13T06:09:04.8447401Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
+2026-09-13T06:09:04.8449058Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
+2026-09-13T06:09:04.8450219Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
+2026-09-13T06:09:04.8451383Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:200)
+2026-09-13T06:09:04.8453025Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:195)
+2026-09-13T06:09:04.8453735Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+2026-09-13T06:09:04.8454355Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.8454974Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+2026-09-13T06:09:04.8455732Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+2026-09-13T06:09:04.8456470Z 	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+2026-09-13T06:09:04.8457085Z 	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+2026-09-13T06:09:04.8457705Z 	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
+2026-09-13T06:09:04.8458265Z 	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:42)
+2026-09-13T06:09:04.8458899Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:331)
+2026-09-13T06:09:04.8459623Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:318)
+2026-09-13T06:09:04.8460408Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.lambda$execute$0(DefaultTaskExecutionGraph.java:314)
+2026-09-13T06:09:04.8461309Z 	at org.gradle.internal.operations.CurrentBuildOperationRef.with(CurrentBuildOperationRef.java:80)
+2026-09-13T06:09:04.8461987Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:314)
+2026-09-13T06:09:04.8462786Z 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
+2026-09-13T06:09:04.8463458Z 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
+2026-09-13T06:09:04.8463997Z 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
+2026-09-13T06:09:04.8464543Z 	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+2026-09-13T06:09:04.8465096Z 	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
+2026-09-13T06:09:04.8465397Z 
+2026-09-13T06:09:04.8465404Z 
+2026-09-13T06:09:04.8465485Z BUILD FAILED in 1m 12s
+2026-09-13T06:09:04.8465697Z 
+2026-09-13T06:09:04.8465911Z Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+2026-09-13T06:09:04.8466177Z 
+2026-09-13T06:09:04.8466489Z You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+2026-09-13T06:09:04.8466872Z 
+2026-09-13T06:09:04.8467237Z For more on this, please refer to https://docs.gradle.org/8.7/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+2026-09-13T06:09:04.8467741Z 35 actionable tasks: 33 executed, 2 from cache
+2026-09-13T06:09:05.2906848Z ##[error]Process completed with exit code 1.
