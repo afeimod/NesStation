@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.22.1)
 project("nesstation-core" C CXX ASM)
 
+# ---------------------------------------------------------------------------
+# dcfix6: AGP 会无条件向 CMAKE_C(XX)_FLAGS 注入 -g。PS2 核心(ARMSX2)等子工程的
+# 目标还会叠加各自 flags，导致 libemucore_4k.so 等携带完整 DWARF 达到 300MB+，
+# 中间产物与 APK 体积爆炸。这里在 add_subdirectory 之前剥掉 -g：
+# release 产物由 AGP 的 strip 流程按需处理符号表，不需要源码级 DWARF。
+# ---------------------------------------------------------------------------
+string(REPLACE " -g " " " CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ")
+string(REPLACE " -g " " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ")
+string(STRIP "${CMAKE_C_FLAGS}" CMAKE_C_FLAGS)
+string(STRIP "${CMAKE_CXX_FLAGS}" CMAKE_CXX_FLAGS)
+
+
 # ASM 必须在顶层 configure 时启用：melonDS / mGBA 等子工程通过
 # add_subdirectory 加入并各自 enable_language(ASM)，CMake 3.22 + Ninja
 # 在生成阶段会因未注册 ASM 编译规则而报

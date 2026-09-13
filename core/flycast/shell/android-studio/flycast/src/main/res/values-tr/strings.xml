@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="OK">Tamam</string>
+    <string name="storage_error">Depolama Hatası</string>
+    <string name="folder_permissions">Bu klasöre erişim sağlanamıyor.\n Lütfen başka bir tane deneyin.</string>
+    <string name="file_manager_not_found">Dosya Yöneticisi bulunamadı</string>
+    <string name="no_file_manager_android10">Cihazınızda uygun bir dosya yöneticisi bulunamadı.\nLütfen Depolama Erişim Çerçevesi ile uyumlu bir dosya yöneticisi yükleyin</string>
+    <string name="no_file_manager_android9">Cihazınızda uygun bir dosya yöneticisi bulunamadı.\nLütfen bir dosya yöneticisi yükleyin veya genel ayarlarda \'SAF Dosya Seçiciyi Kullan\' seçeneğini devre dışı bırakmayı deneyin</string>
+    <string name="select_an_export_folder">Bir dışa aktarma klasörü seçin</string>
+    <string name="exporting_home_folder">Ev klasörü dışa aktarılıyor</string>
+    <string name="select_an_import_folder">Bir içe aktarma klasörü seçin</string>
+    <string name="importing_home_folder">Ev klasörü içe aktarılıyor</string>
+    <string name="flycast_error">Flycast Hatası</string>
+    <string name="init_failed_message">Başlatma başarısız oldu. Lütfen tekrar deneyin veya yeniden yükleyin.\n\nHata: </string>
+    <string name="exit">Çıkış</string>
+    <string name="copying">Kopyalanıyor</string>
+</resources>

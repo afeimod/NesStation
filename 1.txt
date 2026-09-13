@@ -1,0 +1,46 @@
+1789200362.991 10544 19865  7499 E flycast : Verify Failed  : (void*)bm_GetCode(block_ptr->addr) == CC_RW2RX((void*)block_ptr->code)
+1789200362.991 10544 19865  7499 E flycast :  in bm_DiscardBlock -> /home/z/work/NesStation/core/flycast/core/hw/sh4/dyna/blockmanager.cpp : 256
+1789200362.991 10544 19865  7499 E flycast : [COMMON] DEBUGBREAK!
+1789200362.994 10544 19865  7499 F libc    : Fatal signal 5 (SIGTRAP), code 1 (TRAP_BRKPT), fault addr 0x79cd239718 in tid 7499 (flycast-loop), pid 19865 (.nesstation.app)
+1789200363.138 10544 19865  7506 I flycast : [SH4] SB/HOLLY: System reset requested
+1789200363.364 10544 10869 10869 F DEBUG   : pid: 19865, tid: 7499, name: flycast-loop  >>> com.nesstation.app <<<
+1789200363.364 10544 10869 10869 F DEBUG   :       #00 pc 0000000000821718  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (os_DebugBreak()+40) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
+1789200363.364 10544 10869 10869 F DEBUG   :       #01 pc 00000000008cab30  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (bm_DiscardBlock(RuntimeBlockInfo*)+680) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
+1789200363.364 10544 10869 10869 F DEBUG   :       #02 pc 00000000008cc838  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (bm_RamWriteAccess(unsigned int)+352) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
+1789200363.364 10544 10869 10869 F DEBUG   :       #03 pc 00000000008ccf78  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (bm_PollDirtyRamPages()+300) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
+1789200363.364 10544 10869 10869 F DEBUG   :       #04 pc 0000000000818588  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (retro_run+88) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
+1789200363.364 10544 10869 10869 F DEBUG   :       #05 pc 0000000000033bf0  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!libflycastcore.so (offset 0x7d71000) (BuildId: 00a5684df130e7ace8bf5bc92678add78005bf3c)
+1789200363.491  1000  9121 10974 D DigestGenerator: digest=============com.nesstation.app XXbase.apk!flycast_libretro.so (offset XX) (os_DebugBreak()+) ()
+1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (bm_DiscardBlock(RuntimeBlockInfo*)+) ()
+1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (bm_RamWriteAccess(unsigned int)+) ()
+1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (bm_PollDirtyRamPages()+) ()
+1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!flycast_libretro.so (offset XX) (retro_run+) ()
+1789200363.491  1000  9121 10974 D DigestGenerator:  XXbase.apk!libflycastcore.so (offset XX) ()
+1789200363.492  1000  9121 10974 D MiSightJni: MiSight: Java_com_miui_misight_MiSight_nativeSendEvent enter called. '{"Stacktrace":"#04 pc 0000000000818588  \/data\/app\/~~uBZcPTC9-GUsTxWL1WqeNg==\/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==\/base.apk!flycast_libretro.so (offset 0x66a1000) (retro_run+88) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)\n      #05 pc 0000000000033bf0  \/data\/app\/~~uBZcPTC9-GUsTxWL1WqeNg==\/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==\/base.apk!libflycastcore.so (offset 0x7d71000) (BuildId: 00a5684df130e7ace8bf5bc92678add78005bf3c)\n      #06 pc 000000000009cafc  \/system\/framework\/arm64\/boot.oat (art_jni_trampoline+108) (BuildId: 9951753ec09832b103fcdf4017254d9a702a2103)\n      #07 pc 0000000000209408  \/apex\/com.android.art\/lib64\/libart.so (nterp_helper+152) (BuildId: 7e0f54c1a3af240ecab90a8dbd11f478)\n      #08 pc 000000000080e900  \/data\/app\/~~uBZcPTC9-GUsTxWL1WqeNg==\/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==\/oat\/arm64\/base.vdex (com.nesstation.app.core.engine.d$b.invoke+184)\n      #09 pc 00000000002
+1789200363.492  1000  9121 10974 D MiEvent : flatten EventId 901001003 -t 1789200363 -paraList {"CrashType":"100000000","CurrentTime":1789200363000,"Digest":"0cbd03ddf09912e72781a9e3fe914e46","Keyword":"{\"vn\":\"3.6.3-dcfix8\",\"vc\":\"11\",\"isRoot\":false,\"count\":1,\"preInstalled\":false,\"unfold\":false,\"ram\":11,\"rom\":512}","PackageName":"com.nesstation.app","Stacktrace":"#04 pc 0000000000818588  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (retro_run+88) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)\n      #05 pc 0000000000033bf0  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!libflycastcore.so (offset 0x7d71000) (BuildId: 00a5684df130e7ace8bf5bc92678add78005bf3c)\n      #06 pc 000000000009cafc  /system/framework/arm64/boot.oat (art_jni_trampoline+108) (BuildId: 9951753ec09832b103fcdf4017254d9a702a2103)\n      #07 pc 0000000000209408  /apex/com.android.art/lib64/libart.so (nterp_helper+152) (BuildId: 7e0f54c1a3
+DEBUG: *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***
+DEBUG: Build fingerprint: 'Redmi/socrates/socrates:15/AQ3A.250226.002/OS3.0.5.0.VMKCNXM:user/release-keys'
+DEBUG: Revision: '0'
+DEBUG: ABI: 'arm64'
+DEBUG: Timestamp: 2026-09-12 16:07:45.297860696+0800
+DEBUG: Process uptime: 159s
+DEBUG: Cmdline: com.nesstation.app
+DEBUG: pid: 26040, tid: 32256, name: Flycast-emu  >>> com.nesstation.app <<<
+DEBUG: uid: 10544
+DEBUG: tagged_addr_ctrl: 0000000000000001 (PR_TAGGED_ADDR_ENABLE)
+DEBUG: pac_enabled_keys: 000000000000000f (PR_PAC_APIAKEY, PR_PAC_APIBKEY, PR_PAC_APDAKEY, PR_PAC_APDBKEY)
+DEBUG: signal 5 (SIGTRAP), code 1 (TRAP_BRKPT), fault addr 0x00000079c2c24718
+DEBUG:     x0  0000000000000001  x1  b400007c1628dd10  x2  00000079b188d168  x3  0000000000000003
+DEBUG:     x4  00000079b188d010  x5  0000000004d89388  x6  0000000000000010  x7  ffffff7fff7fffff
+DEBUG:     x8  e1ceba4adc609a80  x9  e1ceba4adc609a80  x10 000000000000001f  x11 fffffffffffffffd
+DEBUG:     x12 00000079b188d1a0  x13 0000000000000016  x14 00000079b188d250  x15 000005d94ec17d0e
+DEBUG:     x16 0000000000000001  x17 0000007d5a578a50  x18 00000079b0ed8000  x19 0000000000000000
+DEBUG:     x20 0000000000000000  x21 0000000000000000  x22 00000079b188fa80  x23 0000000000000003
+DEBUG:     x24 0000000000000000  x25 0000000000000000  x26 0000000000000003  x27 b400007c8635e2f0
+DEBUG:     x28 b4000079c2401e00  x29 00000079b188f480
+DEBUG:     lr  00000079c2c24718  sp  00000079b188f480  pc  00000079c2c24718  pst 0000000060001000
+DEBUG: 3 total frames
+DEBUG: backtrace:
+DEBUG:       #00 pc 0000000000821718  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (os_DebugBreak()+40) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
+DEBUG:       #01 pc 00000000008d4b2c  /data/app/~~uBZcPTC9-GUsTxWL1WqeNg==/com.nesstation.app-dKH75LqwJyM-bZkxtPM1Dw==/base.apk!flycast_libretro.so (offset 0x66a1000) (rdv_LinkBlock(unsigned char*, unsigned int)+1024) (BuildId: 008bb2e17c5ece2099bc0260d359976b79ed0a06)
+DEBUG:       #02 pc 0000000000000114  [anon:.bss]
