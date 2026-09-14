@@ -1469,7 +1469,10 @@ fun EmulatorScreen(
                     android.util.Log.w("EmulatorScreen", "iNES patch failed: ${e.message}")
                 }
             }
-            val ok = if (platform == GamePlatform.JAVA) {
+            // NDS（melonDS / DraStic 激烈）与 JAVA 一样有重 IO / native 阻塞的
+            // loadRom：DraStic 的 startGame 在主线程同步执行会卡死 5s+ 触发
+            // ANR 闪退（红米实测 Input dispatching timed out），必须移出主线程。
+            val ok = if (platform == GamePlatform.JAVA || platform == GamePlatform.NDS) {
                 withContext(Dispatchers.IO) {
                     engine.loadRom(romFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
                 }

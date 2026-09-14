@@ -409,6 +409,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             DraSticJNI.applyConfig(packConfig(sound = true, fastForward = false, ffwdSpeed = 2))
 
             android.util.Log.i(TAG, "startGame: rom=${effectiveRom.name} (${effectiveRom.length()}B)")
+            val startT0 = System.currentTimeMillis()
             val ok = DraSticJNI.startGame(
                 effectiveRom.absolutePath,
                 -1,                       // 不自动读档
@@ -417,6 +418,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 false,
                 -1L                       // 自定义时钟关闭
             )
+            android.util.Log.i(TAG, "startGame returned=$ok in ${System.currentTimeMillis() - startT0}ms")
             if (!ok) {
                 lastErrorMsg = "DraStic 无法加载 ROM（文件损坏或不受支持）"
                 return false
