@@ -131,6 +131,46 @@ app/src/main/jniLibs/arm64-v8a/
 └── libdrastic_cpu.so     # CPU 探测（getCpuType 返回 3 = ARMv8a → 加载 arm64 主库）
 ```
 
+### 4b. 运行时系统文件（重要 —— 缺失会闪退）
+
+DraStic 原生库**不是自包含的**：原版 APK 在首次运行时把 assets 装进
+存储根，原生层在 `startGame` 时按虚拟路径（`DraStic/` 前缀）读取。
+本项目把同样的一份资产捆在 `app/src/main/assets/drastic/`，由
+`DraSticEngine.ensureDrasticSystemFiles()` 在首次 loadRom 时安装：
+
+```
+<filesDir>/drastic/system/                # 虚拟根 "DraStic/"
+├── system/drastic_bios_arm7.bin          # ← 硬性依赖！替代 BIOS（ARM7）
+├── system/drastic_bios_arm9.bin          # ← 硬性依赖！替代 BIOS（ARM9）
+├── game_database.xml                      # 每游戏兼容性配置数据库
+├── usrcheat.dat                           # 金手指数据库
+├── drastic_bios.zip                       # 供原版“安装 BIOS”UI（保持布局）
+├── config/LC_default.dat                 # 横竖屏配置默认值
+└── backup/ savestates/ unzip_cache/ input_record/
+    cheats/ slot2/ microphone/ scripts/ users/   # 原版 e0() 的 11 个子目录
+
+<filesDir>/drastic/user/                  # 虚拟根 "User/"
+├── savestates/ config/ backup/ cheats/   # 原版 AddUser.f() 子目录
+└── usrcheat.dat                           # 每用户金手指库（AddUser.e 语义）
+```
+
+**闪退根因记录（Redmi K60 Ultra / Dimensity 9200+ / Android 15 实测）**：
+选激烈核心后 `SIGSEGV in siglongjmp+400, fault addr 0xfffffffffffffff0`
+（主线程）。逆向验证的完整因果链：
+
+1. 原生层经 `DraSticPathCache.open("DraStic/system/drastic_bios_arm7.bin")`
+   读 BIOS —— 文件缺失；
+2. 旧版简化实现的 open() 对缺失读文件返回 **null**，而原版 File 后端
+   （jadx 反编译 h0.b.e()）**无论文件是否存在都返回句柄**，原生层对
+   返回值不判空 → 触发未测试过的错误分支；
+3. 该错误分支用 **未初始化的 jmp_buf 调 longjmp**（capstone 反汇编定位
+   到两处调用点，env 指向状态块 +0x3b2f800，其 setjmp 要到模拟线程主
+   循环才执行）→ siglongjmp 恢复垃圾 SP/PC → 闪退。
+
+修复 = 安装全部系统文件（本节）+ `open()` 读模式永不返回 null（对齐
+原版语义）。更新捆绑的 game_database/usrcheat 时递增
+`DRASTIC_ASSET_VERSION` 即可触发重装。
+
 ### 5. 混淆保护
 
 `app/proguard-rules.pro` 新增 `-keep class com.dsemu.drastic.** { *; }` ——
@@ -174,17 +214,37 @@ release 构建的 R8 看不到原生层对这些类的反射引用，不 keep �
   app/src/main/jniLibs/arm64-v8a/libdrastic_arm64.so   # 64 位主核心
   app/src/main/jniLibs/arm64-v8a/libdrastic_cpu.so     # 64 位 CPU 探测
 
+新增运行时资产 (6):
+  app/src/main/assets/drastic/{drastic_bios_arm7,drastic_bios_arm9}.bin
+  app/src/main/assets/drastic/{game_database.xml,usrcheat.dat,LC_default.dat,drastic_bios.zip}
+  （提取自用户提供的 r2.6.0.4a arm64 APK assets，首次 loadRom 安装）
+
 修改 (4):
   app/src/main/java/com/dsemu/drastic/DraSticJNI.kt
     （getCpuType 返回 3 = ARMv8a → 加载 drastic_arm64；文档更新）
   app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt
-    （probeAvailability 接受 CPU_TYPE_ARMv8a；不可用文案更新）
+    （probeAvailability 接受 CPU_TYPE_ARMv8a；不可用文案更新；
+     新增 ensureDrasticSystemFiles() 系统资产安装；versionCode 64→109；
+     全链路日志面包屑）
   app/src/main/java/com/nesstation/app/ui/emulator/NdsCorePickerDialog.kt
     （去掉“32 位”副标题与 32 位构建提示）
   app/src/main/java/com/nesstation/app/NesApp.kt
     （注册注释更新）
   README_DRASTIC.md
-    （ABI 章节改写为双 ABI 支持）
+    （ABI 章节改写为双 ABI 支持；新增 4b 运行时系统文件章节）
+```
+
+### 闪退修复（第二次迭代，基于真机日志逆向）
+
+```
+修改 (2):
+  app/src/main/java/com/dsemu/drastic/filesystem/DraSticPathCache.kt
+    （open() 读模式永不返回 null —— 对齐原版 h0.b.e() 语义，原生不判空；
+     resolveCandidates 多候选解析：DraStic/system/x ↔ sys/x 布局互为兜底；
+     写模式恒用精确路径）
+  app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt
+    （ensureDrasticSystemFiles：安装 BIOS/数据库/金手指 + 11+4 子目录，
+     资产版本标记控制重装，安装失败则带清晰错误信息退出而非闪退）
 ```
 
 ## 五、构建

@@ -24,6 +24,24 @@ import java.io.File
  *   3. "User/xxx"               → userDir/xxx（存档/即时存档所在）
  *   4. 其他相对路径（兜底）      → userDir/xxx
  *
+ * ## 读模式语义（关键，与原版严格一致）
+ *
+ * 原版 File 后端（jadx 反编译 h0.b.e()）对读模式**无论文件是否存在都返回
+ * 句柄**（filePath 指向解析出的真实路径），文件不存在时由原生侧 fopen
+ * 失败自行处理（可选文件如真实 nds_bios_*.bin 缺失时走内置回退）。
+ * 本类同样**永不返回 null** —— 原生层对 open() 结果不做判空（原版从不
+ * 返回 null），返回 null 会导致 JNI 读取字段时空指针解引用，或触发
+ * 原生错误分支以未初始化的 jmp_buf 调 longjmp → siglongjmp 处
+ * SIGSEGV 闪退（Redmi K60 Ultra 上选激烈核心闪退的根因之一）。
+ *
+ * ## 布局候选回退
+ *
+ * 原版系统目录内还有二级结构（system/、config/、users/ 子目录）。为容忍
+ * 不同版本原生库的路径构造差异，读模式按候选序列取第一个存在的文件：
+ * "DraStic/system/x" 会依次尝试 systemDir/system/x → systemDir/x；
+ * "DraStic/x" 会依次尝试 systemDir/x → systemDir/system/x。写模式恒用
+ * 精确路径（保证回读一致性）。
+ *
  * 所有方法 synchronized —— 原生可能从多个线程（模拟线程/输入线程）回调。
  *
  * 另附一个**写路径观察器**：open() 以写模式打开时把虚拟路径记录下来，
@@ -86,19 +104,34 @@ object DraSticPathCache {
     @Synchronized
     fun writePaths(): List<String> = ArrayList(writeLog)
 
-    /** 把虚拟路径解析为真实文件。open/remove/rename 共用的解析内核。 */
-    private fun resolve(virtualPath: String): File {
-        romMap[virtualPath]?.let { return it }
+    /** 把虚拟路径解析为候选真实文件列表（读模式按序取第一个存在的；写模式取首个=精确路径）。 */
+    private fun resolveCandidates(virtualPath: String): List<File> {
+        romMap[virtualPath]?.let { return listOf(it) }
         val sys = systemDir
         val usr = userDir
-        return when {
-            virtualPath.startsWith("/") -> File(virtualPath)
-            virtualPath.startsWith("DraStic/") && sys != null ->
-                File(sys, virtualPath.removePrefix("DraStic/"))
+        val out = ArrayList<File>(2)
+        when {
+            virtualPath.startsWith("/") -> out.add(File(virtualPath))
+            virtualPath.startsWith("DraStic/") && sys != null -> {
+                val rest = virtualPath.removePrefix("DraStic/")
+                out.add(File(sys, rest))                       // 精确映射（与原版一致）
+                if (rest.startsWith("system/")) {
+                    out.add(File(sys, rest.removePrefix("system/")))  // 布局兜底：→ sys/x
+                } else {
+                    out.add(File(sys, "system/$rest"))                // 布局兜底：→ sys/system/x
+                }
+            }
             virtualPath.startsWith("User/") && usr != null ->
-                File(usr, virtualPath.removePrefix("User/"))
-            else -> if (usr != null) File(usr, virtualPath) else File(virtualPath)
+                out.add(File(usr, virtualPath.removePrefix("User/")))
+            else -> out.add(if (usr != null) File(usr, virtualPath) else File(virtualPath))
         }
+        return out
+    }
+
+    /** 解析虚拟路径：优先已存在的候选，否则取首个（精确路径）。open/remove/rename 共用的解析内核。 */
+    private fun resolve(virtualPath: String): File {
+        val candidates = resolveCandidates(virtualPath)
+        return candidates.firstOrNull { it.exists() } ?: candidates[0]
     }
 
     // ------------------------------------------------------------------
@@ -109,7 +142,9 @@ object DraSticPathCache {
      * 原生以 fopen 风格请求打开文件。
      * @param mode 原版模式串（"r"/"w"/"r+"/"w+"/"b" 变体），与原版一样
      *             忽略其中的 "b"
-     * @return 文件句柄；文件不存在时按原版语义返回 null（由调用方自检）
+     * @return 文件句柄。**读模式与写模式都永不返回 null**（对齐原版
+     *         h0.b.e() 语义：不存在时也返回句柄，由原生侧 fopen 失败
+     *         自行处理 —— 原生不判空，返回 null 会直接闪退）。
      */
     @JvmStatic
     @Synchronized
@@ -118,14 +153,19 @@ object DraSticPathCache {
         val isWrite = normalized.contains('w') || normalized.contains("r+")
         if (isWrite) writeLog.add(virtualPath)
 
-        val real = resolve(virtualPath)
+        val candidates = resolveCandidates(virtualPath)
+        val real = if (isWrite) {
+            candidates[0]  // 写模式：精确路径（确保回读一致）
+        } else {
+            // 读模式：按候选序取第一个存在的；都不存在时取精确路径
+            // （句柄仍返回，原生 fopen 失败自行处理 —— 同原版）
+            candidates.firstOrNull { it.isFile } ?: candidates[0]
+        }
         if (isWrite) {
             // 写模式：确保父目录存在（原版 Provider 语义），避免深层路径首次写入失败
             real.parentFile?.mkdirs()
-            return NativePathHandle(real)
         }
-        // 读模式：不存在时返回 null（原生按 fopen 失败处理）
-        return if (real.isFile) NativePathHandle(real) else null
+        return NativePathHandle(real)
     }
 
     /** 原生请求删除文件。 */

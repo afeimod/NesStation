@@ -8,6 +8,8 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
+private const val TAG = "DraSticEngine"
+
 /**
  * DraStic（激烈）NDS 核心引擎 —— 与 [NdsEngine]（melonDS）并列的第二个
  * NDS 核心，启动时由玩家在核心选择对话框里二选一。
@@ -92,9 +94,22 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         /** DraStic 触摸激活标志（updateInput arg1 的 bit31）。 */
         private const val DS_TOUCH_FLAG = 0x80000000.toInt()
 
-        /** 原版 onInit 传的 versionCode —— 仅用于原生数据迁移判断，
-         *  全新安装无历史数据，取一个不会触发任何迁移分支的高值即可。 */
-        private const val DRASTIC_VERSION_CODE = 64
+        /** 原版 onInit 传的 versionCode —— jadx 反编译确认原版传自身 PackageInfo
+         *  .versionCode（r2.6.0.4a arm64 APK = 109），与其保持一致可让
+         *  “全新安装”的数据迁移路径与原版完全同构。 */
+        private const val DRASTIC_VERSION_CODE = 109
+
+        /** 原版首次运行在系统目录创建的子目录（DraSticActivity.e0() + f0()）。 */
+        private val SYSTEM_SUBDIRS = arrayOf(
+            "backup", "savestates", "config", "unzip_cache", "system",
+            "input_record", "cheats", "slot2", "microphone", "scripts", "users"
+        )
+
+        /** 原版用户目录子目录（AddUser.f()）。 */
+        private val USER_SUBDIRS = arrayOf("savestates", "config", "backup", "cheats")
+
+        /** 捆绑系统资产版本：更新 APK 内 game_database/usrcheat 时递增以触发重装。 */
+        private const val DRASTIC_ASSET_VERSION = 1
 
         /** 原版默认音量（_Volume 0..10 → setAudioVolume ×10）。 */
         private const val DEFAULT_VOLUME = 100
@@ -240,12 +255,81 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             val ctx = appContext
             // 反汇编确认 onInit 只消费 versionCode 与 sdkInt；对象参数传
             // Application 上下文（永不被销毁，无泄漏风险）。
+            android.util.Log.i(TAG, "onInit(versionCode=$DRASTIC_VERSION_CODE, sdk=${Build.VERSION.SDK_INT})")
             DraSticJNI.onInit(ctx, DRASTIC_VERSION_CODE, Build.VERSION.SDK_INT)
             nativeInitialized = true
             return true
         } catch (e: Throwable) {
-            android.util.Log.e("DraSticEngine", "onInit failed", e)
+            android.util.Log.e(TAG, "onInit failed", e)
             return false
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 系统文件安装（对应原版 DraSticActivity.c0() 首次运行安装例程）
+    // ------------------------------------------------------------------
+
+    /**
+     * 安装 DraStic 运行时系统文件 —— 原版 APK 的 assets 在首次运行时
+     * 装入存储根，缺一不可（jadx 反编译 DraSticActivity/i0/j0/m0/h0/e0
+     * 逐项核对）：
+     *
+     *  - `system/drastic_bios_{arm7,arm9}.bin` —— DraStic 自带的替代
+     *    BIOS（**硬性依赖**：缺失时 startGame 的原生错误分支以未初始化
+     *    的 jmp_buf 调 longjmp → siglongjmp 处 SIGSEGV 直接闪退）
+     *  - `game_database.xml` —— 每游戏兼容性配置数据库（startGame 时按
+     *    ROM 条目查询）
+     *  - `usrcheat.dat` —— 金手指数据库（系统根 + 用户目录各一份，
+     *    对齐原版 AddUser.e 语义）
+     *  - `config/LC_default.dat` —— 横竖屏配置默认值
+     *  - `drastic_bios.zip` —— 供原版"安装 BIOS"UI 使用（保持原版布局）
+     *  - 11 个系统子目录 + 4 个用户子目录（backup/savestates/config/
+     *    unzip_cache/system/input_record/cheats/slot2/microphone/scripts/
+     *    users）
+     *
+     * 幂等：已存在的文件不重拷；game_database/usrcheat 由资产版本标记
+     * （sysDir/.asset_version）控制重装，更新捆绑资产时递增
+     * [DRASTIC_ASSET_VERSION] 即可。
+     */
+    private fun ensureDrasticSystemFiles(ctx: Context, sysDir: File, usrDir: File): Boolean {
+        return try {
+            for (d in SYSTEM_SUBDIRS) File(sysDir, d).mkdirs()
+            for (d in USER_SUBDIRS) File(usrDir, d).mkdirs()
+
+            val versionMarker = File(sysDir, ".asset_version")
+            val reinstall = !versionMarker.isFile ||
+                versionMarker.readText().trim() != DRASTIC_ASSET_VERSION.toString()
+            if (reinstall) {
+                android.util.Log.i(TAG, "installing drastic system assets (v$DRASTIC_ASSET_VERSION)…")
+                copyAsset(ctx, "game_database.xml", File(sysDir, "game_database.xml"), overwrite = true)
+                copyAsset(ctx, "usrcheat.dat", File(sysDir, "usrcheat.dat"), overwrite = true)
+                copyAsset(ctx, "usrcheat.dat", File(usrDir, "usrcheat.dat"), overwrite = true)
+                versionMarker.writeText(DRASTIC_ASSET_VERSION.toString())
+            }
+
+            // BIOS 与 LC_default：恒为"缺失才装"（用户可能自行替换过）
+            copyAsset(ctx, "drastic_bios_arm7.bin", File(sysDir, "system/drastic_bios_arm7.bin"), overwrite = false)
+            copyAsset(ctx, "drastic_bios_arm9.bin", File(sysDir, "system/drastic_bios_arm9.bin"), overwrite = false)
+            copyAsset(ctx, "drastic_bios.zip", File(sysDir, "drastic_bios.zip"), overwrite = false)
+            copyAsset(ctx, "LC_default.dat", File(sysDir, "config/LC_default.dat"), overwrite = false)
+
+            val ready = File(sysDir, "system/drastic_bios_arm7.bin").isFile &&
+                File(sysDir, "system/drastic_bios_arm9.bin").isFile &&
+                File(sysDir, "game_database.xml").isFile
+            android.util.Log.i(TAG, "drastic system files ready=$ready (sysDir=${sysDir.absolutePath})")
+            ready
+        } catch (e: Throwable) {
+            android.util.Log.e(TAG, "install drastic system files failed", e)
+            false
+        }
+    }
+
+    /** 从 APK assets/drastic/ 复制单个文件（幂等，按需覆盖）。 */
+    private fun copyAsset(ctx: Context, assetName: String, dst: File, overwrite: Boolean) {
+        if (!overwrite && dst.isFile && dst.length() > 0) return
+        dst.parentFile?.mkdirs()
+        ctx.assets.open("drastic/$assetName").use { input ->
+            dst.outputStream().use { output -> input.copyTo(output) }
         }
     }
 
@@ -286,6 +370,15 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         val usrDir = File(drasticRoot, "user").apply { mkdirs() }
         DraSticPathCache.setBaseDirs(sysDir, usrDir)
 
+        // 安装原版首次运行的系统文件（BIOS / 游戏数据库 / 金手指库 / 目录结构）。
+        // 缺失时 startGame 会走入原生错误分支 —— 以未初始化的 jmp_buf 调
+        // longjmp → siglongjmp 处 SIGSEGV 闪退（64 位设备实测复现）。
+        if (!ensureDrasticSystemFiles(ctx, sysDir, usrDir)) {
+            lastErrorMsg = "DraStic 系统文件安装失败（存储空间不足或 APK 资产缺失）"
+            android.util.Log.e(TAG, "ensureDrasticSystemFiles failed")
+            return false
+        }
+
         // content:// 缓解：SAF 导入的 ROM 会复制成共享的 temp_rom.<ext>
         // —— 若照此启动，所有这类游戏会共享同一套 DraStic 存档基名。
         // 复制成 <filesDir>/drastic/roms/<gameId>.<ext> 保证每游戏独立。
@@ -315,6 +408,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             DraSticJNI.setAutosaveInterval(0)
             DraSticJNI.applyConfig(packConfig(sound = true, fastForward = false, ffwdSpeed = 2))
 
+            android.util.Log.i(TAG, "startGame: rom=${effectiveRom.name} (${effectiveRom.length()}B)")
             val ok = DraSticJNI.startGame(
                 effectiveRom.absolutePath,
                 -1,                       // 不自动读档
