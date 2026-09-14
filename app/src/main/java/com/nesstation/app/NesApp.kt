@@ -98,6 +98,17 @@ class NesApp : Application() {
             com.nesstation.app.core.jni.NdsNative.appContext = this
             NdsEngine.ensureLoaded()
         }
+        tryInit("DraSticEngine")       {
+            // DraStic（激烈）NDS core —— 与 melonDS 并列的第二个 NDS 核心，
+            // 启动游戏时由玩家在核心选择对话框里二选一。
+            // libdrastic*.so 只有 armeabi-v7a（32 位）：64 位进程加载失败
+            // → probeAvailability 返回不可用，UI 禁用该选项（不崩溃）。
+            // 提前在启动时探测并缓存结果，对话框弹出时无需再等库加载。
+            com.nesstation.app.core.engine.DraSticEngine.get().also { engine ->
+                engine.appContext = this
+                engine.probeAvailability()
+            }
+        }
         tryInit("FdsBios")            { ensureFdsBios() }
         tryInit("FbNeoBios")          { ensureFbNeoBios() }
         tryInit("GenesisBios")        { ensureGenesisBios() }

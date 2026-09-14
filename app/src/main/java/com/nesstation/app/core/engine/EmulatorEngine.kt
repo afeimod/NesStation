@@ -225,6 +225,10 @@ interface EmulatorEngine {
          * MD     -> GenesisEngine (Genesis-Plus-GX — MD/SMS/GG/SG/Mega-CD)
          * PCE    -> PceEngine (Geargrafx — PC-Engine/TurboGrafx-16/SuperGrafx/PCE-CD)
          * NDS    -> NdsEngine (melonDS — Nintendo DS / DSi)
+         *           NOTE: NDS 是双核心平台 —— 启动时由玩家在
+         *           NdsCorePickerDialog 里二选一（"melonds" 走本工厂返回
+         *           NdsEngine；"drastic" 由 EmulatorScreen 直接取
+         *           [DraSticEngine.get]）。本工厂保持只返回 melonDS。
          * PSX    -> PsxEngine (PCSX-ReARMed — Sony PlayStation 1)
          * PS2    -> Psx2Engine (PCEE2 — PCSX2 — Sony PlayStation 2)
          */

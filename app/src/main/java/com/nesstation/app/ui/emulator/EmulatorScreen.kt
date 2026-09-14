@@ -808,9 +808,34 @@ fun EmulatorScreen(
      */
     netplayController: com.nesstation.app.battle.NetplayController? = null
 ) {
-    val engine = remember { EmulatorEngine.forPlatform(game.platform) }
     val platform = game.platform
     val context = LocalContext.current
+
+    // === NDS 双核心选择（melonDS / DraStic 激烈） ===
+    // 启动 NDS 游戏时先弹核心选择对话框，二选一后才创建引擎 / 加载 ROM
+    // （见 NdsCorePickerDialog）。选择只影响本次会话：
+    //   · "melonds" → NdsEngine（默认，支持联机 / DSi / OpenGL / 放大滤镜）
+    //   · "drastic" → DraSticEngine（高性能核心，仅 32 位 ARM 进程可用）
+    // 联机对战入口固定 melonDS —— DraStic 是推模型核心（模拟循环在原生
+    // 线程内），无法接入 frameHook 帧同步，跳过选择直接进对战。
+    var ndsCoreChoice by remember { mutableStateOf<String?>(null) }
+    if (platform == GamePlatform.NDS && netplayController == null && ndsCoreChoice == null) {
+        NdsCorePickerDialog(
+            gameTitle = game.title,
+            onSelect = { ndsCoreChoice = it },
+            onCancel = onExit
+        )
+        // 选择完成前不组合游戏界面（引擎尚未确定，不加载 ROM）
+        return
+    }
+
+    val engine = remember(ndsCoreChoice) {
+        if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
+            com.nesstation.app.core.engine.DraSticEngine.get()
+        } else {
+            EmulatorEngine.forPlatform(game.platform)
+        }
+    }
     // 用于在非协程回调（如菜单"重置"按钮）里启动协程，把 J2ME 重新加载
     // 这类重 IO 移出主线程——reset() 内部会调 loadRom()，MicroLoader 的
     // clearDirectory/MD5/dexopt 在主线程执行会卡死 5s+ 触发 ANR，
@@ -2076,7 +2101,7 @@ fun EmulatorScreen(
                     // 换算成游戏视图局部坐标后走与 onTouch 相同的映射。
                     onUnhandledTouch = if (platform == GamePlatform.NDS) {
                         { rootPos, action ->
-                            val ndsEngine = engine as? com.nesstation.app.core.engine.NdsEngine
+                            val ndsEngine = engine as? com.nesstation.app.core.engine.NdsCoreEngine
                             if (ndsEngine != null) {
                                 if (action == android.view.MotionEvent.ACTION_UP ||
                                     action == android.view.MotionEvent.ACTION_CANCEL) {
@@ -2084,20 +2109,33 @@ fun EmulatorScreen(
                                     ndsEngine.setTouchInput(0, 0, false)
                                     ndsEngine.setTouchInputDirect(0, 0, false)
                                 } else {
-                                    if (padLayout.videoScale == "custom") {
-                                        // 自由布局：NdsDualScreenView 是 fillMaxSize，
-                                        // 根坐标减去视图位置即视图局部坐标。
+                                    // DraStic 的游戏视图恒为 NdsDualScreenView
+                                    // （画布渲染）—— 任何缩放模式都按"下屏
+                                    // 目标矩形直接映射"处理，与自由布局同路。
+                                    val isCanvasMode = padLayout.videoScale == "custom" ||
+                                        engine is com.nesstation.app.core.engine.DraSticEngine
+                                    if (isCanvasMode) {
+                                        // 画布路径：NdsDualScreenView（custom 时
+                                        // fillMaxSize，DraStic 标准模式带宽高比
+                                        // 约束），根坐标减视图位置得局部坐标。
                                         val vw = gameViewSize.width.coerceAtLeast(1)
                                         val vh = gameViewSize.height.coerceAtLeast(1)
                                         val lx = rootPos.x - gameViewPosInRoot.x
                                         val ly = rootPos.y - gameViewPosInRoot.y
+                                        // 画布路径的下屏矩形：custom 用编辑器
+                                        // 矩形，DraStic 标准模式按布局派生半屏
+                                        val bottomRect = if (padLayout.videoScale == "custom") {
+                                            ndsBottomRect
+                                        } else {
+                                            ndsLayoutRects(padLayout.ndsScreenLayout).second
+                                        }
                                         if (lx >= 0 && ly >= 0 && lx < vw && ly < vh) {
                                             // 触点在视图内 → 判断是否落在下屏矩形
                                             val bottomDst = androidx.compose.ui.geometry.Rect(
-                                                gameViewPosInRoot.x + ndsBottomRect[0] * vw,
-                                                gameViewPosInRoot.y + ndsBottomRect[1] * vh,
-                                                gameViewPosInRoot.x + ndsBottomRect[2] * vw,
-                                                gameViewPosInRoot.y + ndsBottomRect[3] * vh
+                                                gameViewPosInRoot.x + bottomRect[0] * vw,
+                                                gameViewPosInRoot.y + bottomRect[1] * vh,
+                                                gameViewPosInRoot.x + bottomRect[2] * vw,
+                                                gameViewPosInRoot.y + bottomRect[3] * vh
                                             )
                                             if (bottomDst.contains(rootPos)) {
                                                 val t = ((rootPos.x - bottomDst.left) / bottomDst.width).coerceIn(0f, 1f)
@@ -3354,17 +3392,51 @@ private fun GameSurfaceView(
         videoScale
     }
     BoxWithConstraints(modifier = modifier, contentAlignment = contentAlignment) {
-        // NDS 双屏自由布局：videoScale == "custom" 时投屏改为 NdsDualScreenView，
-        // 从 engine.frameBuffer 按布局切出上/下屏绘制到两个独立矩形；不做 native
-        // surface blit（engine 不设置 surface，cb_video 的 blit 会因 window 为空跳过）。
+        // NDS 画布渲染（两种情形都改投 NdsDualScreenView，从 engine.frameBuffer
+        // 按布局切出上/下屏绘制到两个独立矩形；不做 native surface blit）：
+        //   1. videoScale == "custom"（melonDS / DraStic 通用）：自由布局编辑器
+        //      矩形 + fillMaxSize；
+        //   2. DraStic 引擎（任何缩放模式）：无 ANativeWindow blit 能力，
+        //      恒走画布 —— 标准模式按屏幕布局派生半屏矩形，外层仍套
+        //      effectiveVideoScale 的布局原生宽高比（2:3/8:3/4:3），每个屏幕
+        //      各自保持 4:3 等比。
+        val isDrasticCanvas = platform == GamePlatform.NDS && !isCustom &&
+            engine is com.nesstation.app.core.engine.DraSticEngine
         val isNdsCustom = platform == GamePlatform.NDS && isCustom
-        if (isNdsCustom) {
+        if (isNdsCustom || isDrasticCanvas) {
+            // 画布路径的上/下屏目标矩形：custom 用编辑器矩形，DraStic 标准
+            // 模式按布局派生（bottomRect 即触摸热区）
+            val canvasTopRect: FloatArray
+            val canvasBottomRect: FloatArray
+            if (isNdsCustom) {
+                canvasTopRect = ndsTopRect
+                canvasBottomRect = ndsBottomRect
+            } else {
+                val (t, b) = ndsLayoutRects(ndsScreenLayout)
+                canvasTopRect = t
+                canvasBottomRect = b
+            }
+            // custom 模式视图铺满（矩形自带定位）；DraStic 标准模式套布局
+            // 原生宽高比（与 SurfaceView 分支相同的 when 逻辑，见下方）
+            val canvasModifier = if (isNdsCustom) {
+                Modifier.fillMaxSize()
+            } else {
+                when (effectiveVideoScale) {
+                    "4:3" -> Modifier.aspectRatio(4f / 3f)
+                    "2:3" -> Modifier.aspectRatio(2f / 3f)   // NDS 上下双屏 (256x384)
+                    "8:3" -> Modifier.aspectRatio(8f / 3f)   // NDS 左右双屏 (512x192)
+                    "3:2" -> Modifier.aspectRatio(3f / 2f)
+                    "8:7" -> Modifier.aspectRatio(8f / 7f)
+                    "16:9" -> Modifier.aspectRatio(16f / 9f)
+                    else -> Modifier.fillMaxSize()
+                }
+            }
             AndroidView(
                 factory = { ctx ->
                     NdsDualScreenView(ctx).apply {
                         this.uiBlocked = uiBlocked
                         this.videoFilter = videoFilter
-                        setRects(ndsTopRect, ndsBottomRect)
+                        setRects(canvasTopRect, canvasBottomRect)
                         // 设置焦点以便接收物理手柄 / 键盘按键
                         isFocusable = true
                         isFocusableInTouchMode = true
@@ -3402,11 +3474,19 @@ private fun GameSurfaceView(
                     }
                 },
                 update = { v ->
-                    v.engine = engine as? com.nesstation.app.core.engine.NdsEngine
-                    v.screenLayout = ndsScreenLayout
+                    v.engine = engine as? com.nesstation.app.core.engine.NdsCoreEngine
+                    // 视图切片布局：melonDS 的合成帧按 melonds_screen_layout
+                    // 排列（视图需按布局取源区域）；DraStic 的合成帧恒为
+                    // "上屏在前"（256x384 固定），切片布局固定 Top/Bottom，
+                    // 屏幕位置改由目标矩形（canvasTop/BottomRect）表达。
+                    v.screenLayout = if (engine is com.nesstation.app.core.engine.DraSticEngine) {
+                        "Top/Bottom"
+                    } else {
+                        ndsScreenLayout
+                    }
                     v.uiBlocked = uiBlocked
                     v.videoFilter = videoFilter
-                    v.setRects(ndsTopRect, ndsBottomRect)
+                    v.setRects(canvasTopRect, canvasBottomRect)
                     // 与 SurfaceView 分支相同：uiBlocked 变化/重连焦点时修正按键状态
                     if (uiBlocked && gamepadBitsHolder[0] != 0) {
                         gamepadBitsHolder[0] = 0
@@ -3418,7 +3498,7 @@ private fun GameSurfaceView(
                         v.requestFocus()
                     }
                 },
-                modifier = Modifier.fillMaxSize().then(gameViewTracker)
+                modifier = canvasModifier.then(gameViewTracker)
             )
         } else {
         val surfaceModifier = when (effectiveVideoScale) {
@@ -3479,7 +3559,7 @@ private fun GameSurfaceView(
                     // 保留旧的 POINTER 归一化路径。
                     if (platform == GamePlatform.NDS) {
                         setOnTouchListener { v, event ->
-                            val ndsEngine = (engine as? com.nesstation.app.core.engine.NdsEngine) ?: return@setOnTouchListener false
+                            val ndsEngine = (engine as? com.nesstation.app.core.engine.NdsCoreEngine) ?: return@setOnTouchListener false
                             handleNdsTouch(ndsEngine, event, ndsScreenLayout, ndsScreenGapPx, ndsOpenGl, v.width, v.height)
                         }
                     }
@@ -3586,7 +3666,7 @@ private fun GameSurfaceView(
                 // instance changed (defensive — normally it's the same engine).
                 if (platform == GamePlatform.NDS) {
                     sv.setOnTouchListener { v, event ->
-                        val ndsEngine = (engine as? com.nesstation.app.core.engine.NdsEngine) ?: return@setOnTouchListener false
+                        val ndsEngine = (engine as? com.nesstation.app.core.engine.NdsCoreEngine) ?: return@setOnTouchListener false
                         handleNdsTouch(ndsEngine, event, ndsScreenLayout, ndsScreenGapPx, ndsOpenGl, v.width, v.height)
                     }
                 }
@@ -3625,8 +3705,35 @@ private fun GameSurfaceView(
 //   - 虚拟手柄覆盖层的转发（手柄可见时 Compose 命中测试拦截了视图的
 //     事件，见 OnScreenController.onUnhandledTouch）
 // ---------------------------------------------------------------------------
+// NDS 画布渲染路径（DraStic / 自由布局）的屏幕布局 → 目标矩形推导。
+//
+// DraStic 引擎的渲染恒走 NdsDualScreenView（画布）：custom 模式用编辑器
+// 自由矩形，其余缩放模式按布局把上下两屏各占视图的一半（无 gap ——
+// DraStic 合成帧 256x384 本身无 gap 行，切片推导 screenH=192、gap=0）。
+// 外层容器仍套布局原生宽高比（2:3 / 8:3 / 4:3，见 GameSurfaceView 的
+// effectiveVideoScale），因此每个屏幕各自保持 4:3 等比。
+// 返回 (topRect, bottomRect)：归一化 0..1 [left, top, right, bottom]，
+// bottomRect 即触摸热区（"Top Only" 时为空矩形 → 无触摸）。
+// ---------------------------------------------------------------------------
+internal fun ndsLayoutRects(screenLayout: String): Pair<FloatArray, FloatArray> {
+    val empty = floatArrayOf(0f, 0f, 1f, 0f)
+    val full = floatArrayOf(0f, 0f, 1f, 1f)
+    val topHalf = floatArrayOf(0f, 0f, 1f, 0.5f)
+    val bottomHalf = floatArrayOf(0f, 0.5f, 1f, 1f)
+    val leftHalf = floatArrayOf(0f, 0f, 0.5f, 1f)
+    val rightHalf = floatArrayOf(0.5f, 0f, 1f, 1f)
+    return when (screenLayout) {
+        "Bottom/Top" -> bottomHalf to topHalf          // 下屏显示在上半
+        "Left/Right" -> leftHalf to rightHalf          // 上屏左、下屏右
+        "Right/Left" -> rightHalf to leftHalf          // 上屏右、下屏左
+        "Top Only" -> full to empty                     // 仅上屏（无触摸区）
+        "Bottom Only" -> empty to full                  // 仅下屏（全屏触摸）
+        else -> topHalf to bottomHalf                   // Top/Bottom 及 Hybrid 兜底
+    }
+}
+
 private fun mapNormalizedToDsTouch(
-    ndsEngine: com.nesstation.app.core.engine.NdsEngine,
+    ndsEngine: com.nesstation.app.core.engine.NdsCoreEngine,
     nx: Float,
     ny: Float,
     screenLayout: String,
@@ -3676,7 +3783,7 @@ private fun mapNormalizedToDsTouch(
 }
 
 private fun handleNdsTouch(
-    ndsEngine: com.nesstation.app.core.engine.NdsEngine,
+    ndsEngine: com.nesstation.app.core.engine.NdsCoreEngine,
     event: MotionEvent,
     screenLayout: String,
     screenGapPx: Int,
@@ -8942,6 +9049,8 @@ private fun SettingsPanel(
                 Text("NDS / DSi (melonDS) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 Spacer(Modifier.size(6.dp))
+                Text("启动 NDS 游戏时会先选择核心（melonDS / DraStic 激烈）。「屏幕排列」对两个核心都生效；其余选项仅对 melonDS —— DraStic 核心自带优化配置。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 Text("melonDS 0.9.3 内置 FreeBIOS，无需 BIOS 文件即可直接运行游戏。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 Text("如需使用真实 BIOS，请将其放入系统目录（下方「NDS BIOS 管理」）。",

@@ -137,3 +137,11 @@
 -keep class * implements com.google.gson.JsonDeserializer {
   <init>();
 }
+
+# ─── DraStic（激烈）NDS 核心 JNI 契约 ─────────────────────────────────────
+# libdrastic*.so 通过 JNI 符号名（Java_com_dsemu_drastic_DraSticJNI_*）与
+# GetStaticMethodID/GetFieldID 字符串名（DraSticPathCache.open/remove/rename、
+# NativePathHandle.filePath/fileFd/fileName）查找这些类 —— R8 看不到原生
+# 引用，不 keep 会在 release 构建被裁剪/混淆，运行时抛 NoSuchMethodError /
+# UnsatisfiedLinkError（NDS 选 DraStic 核心启动闪退）。整个包 keep。
+-keep class com.dsemu.drastic.** { *; }

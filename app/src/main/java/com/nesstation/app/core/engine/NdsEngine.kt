@@ -36,7 +36,7 @@ import kotlin.concurrent.thread
  * internally. The state is stored in atomics on the native side and
  * read by the core on each frame.
  */
-class NdsEngine private constructor() : EmulatorEngine {
+class NdsEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     /**
      * NDS frame buffer as presented to the dual-screen custom-layout view.
@@ -200,15 +200,15 @@ class NdsEngine private constructor() : EmulatorEngine {
 
     /** Width of the frame stored in [frameBuffer] (custom-layout mode: the
      *  filter-upscaled width when an upscale filter is active). */
-    fun filteredVideoWidth(): Int = if (isLoaded) NdsNative.filteredVideoWidth() else 256
+    override fun filteredVideoWidth(): Int = if (isLoaded) NdsNative.filteredVideoWidth() else 256
 
     /** Height of the frame stored in [frameBuffer] (custom-layout mode: the
      *  filter-upscaled height when an upscale filter is active). */
-    fun filteredVideoHeight(): Int = if (isLoaded) NdsNative.filteredVideoHeight() else 384
+    override fun filteredVideoHeight(): Int = if (isLoaded) NdsNative.filteredVideoHeight() else 384
 
     /** Monotonic core frame counter — NdsDualScreenView uses it to skip
      *  redundant redraws on high-refresh displays. */
-    fun frameStamp(): Long = if (isLoaded) NdsNative.frameStamp() else 0L
+    override fun frameStamp(): Long = if (isLoaded) NdsNative.frameStamp() else 0L
 
     override fun setVideoFilter(filter: Int) = NdsNative.setVideoFilter(filter)
     override fun setHighQualityScaling(enabled: Boolean) = NdsNative.setHighQualityScaling(enabled)
@@ -331,7 +331,7 @@ class NdsEngine private constructor() : EmulatorEngine {
      * @param y Normalized Y (0..0xFFFF, maps to 0..191 by the core).
      * @param pressed true = touching, false = released.
      */
-    fun setTouchInput(x: Int, y: Int, pressed: Boolean) = NdsNative.setTouchInput(x, y, pressed)
+    override fun setTouchInput(x: Int, y: Int, pressed: Boolean) = NdsNative.setTouchInput(x, y, pressed)
 
     /**
      * Set touchscreen input with DIRECT bottom-screen pixel coordinates —
@@ -341,7 +341,7 @@ class NdsEngine private constructor() : EmulatorEngine {
      * @param y Bottom-screen pixel Y (0..191).
      * @param pressed true = touching, false = released.
      */
-    fun setTouchInputDirect(x: Int, y: Int, pressed: Boolean) = NdsNative.setTouchInputDirect(x, y, pressed)
+    override fun setTouchInputDirect(x: Int, y: Int, pressed: Boolean) = NdsNative.setTouchInputDirect(x, y, pressed)
     override fun setRegion(region: Int) = NdsNative.setRegion(region)
     override fun setSampleRate(rate: Int) = NdsNative.setSampleRate(rate)
     override fun saveState(slot: Int, dst: File): Boolean = NdsNative.saveState(slot, dst.absolutePath)

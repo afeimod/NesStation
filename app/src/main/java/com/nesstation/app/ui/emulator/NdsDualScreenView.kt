@@ -14,7 +14,7 @@ import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.View
-import com.nesstation.app.core.engine.NdsEngine
+import com.nesstation.app.core.engine.NdsCoreEngine
 
 /**
  * 共享的滤镜图案生成器 —— 与 EmulatorScreen.FilterOverlay 使用完全相同的
@@ -88,8 +88,9 @@ internal object NdsFilterPatterns {
  *
  * 参照 melonDS 官方 Android 布局模型：上屏 / 下屏是两个独立组件，各占一个
  * 独立矩形，可分别缩放/移动。melonDS libretro 核心在 `melonds_screen_layout`
- * 选中布局内把两屏合成到**一个**帧缓冲；本视图直接从 [NdsEngine.frameBuffer]
- * 按布局切出上屏/下屏源区域，绘制到两个目标矩形。
+ * 选中布局内把两屏合成到**一个**帧缓冲；DraStic 引擎则由渲染线程把
+ * getScreenBuffers 的两屏合成为 256x384。两者都从
+ * [NdsCoreEngine.frameBuffer] 按布局切出上屏/下屏源区域，绘制到两个目标矩形。
  *
  * - 全局滤镜（"自由布局下滤镜失效"修复）：
  *   - 叠加类滤镜（扫描线 / CRT / 点阵）在绘制完两屏后，把与
@@ -97,13 +98,15 @@ internal object NdsFilterPatterns {
  *     绘制边缘暗角）。
  *   - 放大类滤镜（HQ2X / HQ4X / XBR）由原生层在 cb_video 中处理 —— 无
  *     surface 时滤镜结果写入 s_filteredFrame，Kotlin 端通过
- *     [NdsEngine.frameBuffer] / [NdsEngine.filteredVideoWidth] 拉取放大后的
+ *     [NdsCoreEngine.frameBuffer] / [NdsCoreEngine.filteredVideoWidth] 拉取放大后的
  *     合成帧，切片比例不变（2x/4x 等比放大），绘制路径完全一致。
+ *     （DraStic 引擎不支持放大型滤镜 —— frameBuffer 恒为 256x384 原生帧，
+ *     叠加型滤镜 scanline/crt/dot 仍在本视图绘制。）
  * - 触摸（官方 melonDS 架构）：触点位于下屏目标矩形内时，直接把触点线性
- *   映射为 DS 下屏像素坐标 (0..255, 0..191) 并调用 [NdsEngine.setTouchInputDirect]。
+ *   映射为 DS 下屏像素坐标 (0..255, 0..191) 并调用 [NdsCoreEngine.setTouchInputDirect]。
  *   不再经过"合成帧归一化坐标"的间接层 —— 自由布局 / 屏幕间距 / GL gap /
  *   任何布局都不会影响映射。上屏内点击释放触摸。
- * - 刷新：通过 Choreographer 在 VSync 上轮询 [NdsEngine.frameStamp]，
+ * - 刷新：通过 Choreographer 在 VSync 上轮询 [NdsCoreEngine.frameStamp]，
  *   仅在新帧到达时 invalidate() —— 90/120Hz 屏幕上不再做 2 倍冗余绘制。
  */
 class NdsDualScreenView @JvmOverloads constructor(
@@ -112,8 +115,8 @@ class NdsDualScreenView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    /** 需要渲染的 NDS 引擎（可能随 GameSurfaceView 重建而重新注入）。 */
-    var engine: NdsEngine? = null
+    /** 需要渲染的 NDS 引擎（melonDS [NdsCoreEngine] 或 DraStic 引擎，可能随 GameSurfaceView 重建而重新注入）。 */
+    var engine: NdsCoreEngine? = null
 
     /** 核心当前合成布局："Top/Bottom" | "Bottom/Top" | "Left/Right" | "Right/Left" | "Top Only" | "Bottom Only"。 */
     var screenLayout: String = "Top/Bottom"
