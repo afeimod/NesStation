@@ -1018,6 +1018,8 @@ fun EmulatorScreen(
                    padLayout.gbcColorPreset, padLayout.gbaColorPreset,
                    padLayout.gbaFrameskipType, padLayout.gbaForceRTC,
                    padLayout.gbaAllowOpposite,
+                   // GBA 音频选项（低通滤波已接线到核心，改动需即时生效）
+                   padLayout.gbaAudioLowPass, padLayout.gbaAudioLowPassRange,
                    // DOSBox-Pure options — trigger applyCoreOptions when changed
                    padLayout.dosMachine, padLayout.dosCycles, padLayout.dosCyclesMax,
                    padLayout.dosSbType, padLayout.dosSbAdlibMode, padLayout.dosSbAdlibEmu,
@@ -3001,7 +3003,15 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("mgba_frameskip", layout.gbaFrameskipCount)
             engine.setCoreOption("mgba_frameskip_type", layout.gbaFrameskipType)
             engine.setCoreOption("mgba_frameskip_threshold", layout.gbaFrameskipThreshold)
-            // Audio: do NOT set any audio options. Let mGBA use its built-in defaults.
+            // Audio — wire the in-app toggles to the core so they actually
+            // take effect. Defaults live in gba_loader.cpp
+            // initDefaultOptions() and mirror the mGBA engine's own defaults
+            // (low-pass filter DISABLED, range 60). The old build hard-coded
+            // the filter to enabled/50 natively while never applying these
+            // options, which made GBA audio sound muffled and gave users no
+            // way to turn it off.
+            engine.setCoreOption("mgba_audio_low_pass_filter", layout.gbaAudioLowPass)
+            engine.setCoreOption("mgba_audio_low_pass_range", layout.gbaAudioLowPassRange)
             engine.setCoreOption("mgba_sgb_borders", layout.gbSgbBorders)
             engine.setCoreOption("mgba_gba_forceRTC", layout.gbaForceRTC)
             engine.setCoreOption("mgba_allow_opposite_directions", layout.gbaAllowOpposite)

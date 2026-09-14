@@ -175,8 +175,8 @@ class PadLayout {
     var gbaColorPreset: String = "default"           // default | various presets
     var gbaFrameBlending: String = "OFF"             // OFF | ON | fast
     var gbaAudioResampler: String = "sinc"         // sinc | nearest | cosine | cubic
-    var gbaAudioLowPass: String = "enabled"          // disabled | enabled
-    var gbaAudioLowPassRange: String = "50"          // 0-100 (50 = balanced for GBA)
+    var gbaAudioLowPass: String = "disabled"         // disabled | enabled (mGBA engine default: disabled)
+    var gbaAudioLowPassRange: String = "60"          // 0-100 (mGBA engine default: 60)
     var gbaFrameskipType: String = "disabled"        // disabled | auto | fixed
     var gbaFrameskipCount: String = "0"              // 0-10
     var gbaSolarSensor: String = "0"                 // 0-10
@@ -1456,8 +1456,27 @@ object PadLayoutStore {
             gbaColorPreset = p.getString("gba_color_preset", "default") ?: "default"
             gbaFrameBlending = p.getString("gba_frame_blending", "OFF") ?: "OFF"
             gbaAudioResampler = p.getString("gba_audio_resampler", "sinc") ?: "sinc"
-            gbaAudioLowPass = p.getString("gba_audio_low_pass", "enabled") ?: "enabled"
-            gbaAudioLowPassRange = p.getString("gba_audio_low_pass_range", "50") ?: "50"
+            gbaAudioLowPass = p.getString("gba_audio_low_pass", "disabled") ?: "disabled"
+            gbaAudioLowPassRange = p.getString("gba_audio_low_pass_range", "60") ?: "60"
+            // One-time migration (GBA audio fix): old builds hard-coded mGBA's
+            // low-pass filter to enabled/50 in the native layer while the
+            // in-app toggles were never wired to the core — so a stored
+            // "enabled"/"50" pair can only be the old hard-coded default,
+            // never an actual user choice. Reset it to the mGBA engine's own
+            // default (disabled/60) exactly once, so GBA audio is no longer
+            // muffled after upgrade. The filter can still be turned back on
+            // in settings — and it now genuinely takes effect.
+            if (p.getInt("gba_audio_lowpass_migrated", 0) < 1) {
+                if (gbaAudioLowPass == "enabled" && gbaAudioLowPassRange == "50") {
+                    gbaAudioLowPass = "disabled"
+                    gbaAudioLowPassRange = "60"
+                }
+                p.edit()
+                    .putString("gba_audio_low_pass", gbaAudioLowPass)
+                    .putString("gba_audio_low_pass_range", gbaAudioLowPassRange)
+                    .putInt("gba_audio_lowpass_migrated", 1)
+                    .apply()
+            }
             gbaFrameskipType = p.getString("gba_frameskip_type", "disabled") ?: "disabled"
             gbaFrameskipCount = p.getString("gba_frameskip_count", "0") ?: "0"
             gbaSolarSensor = p.getString("gba_solar_sensor", "0") ?: "0"

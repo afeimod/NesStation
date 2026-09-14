@@ -181,14 +181,19 @@ static void initDefaultOptions() {
     s_options["mgba_frameskip_threshold"]       = "33";
 
     // --- Audio ---
-    // Enable the low-pass filter to smooth high-frequency aliasing artifacts
-    // in GBA audio. The GBA's 8-bit/4-bit audio sources produce harsh
-    // high-frequency content that benefits from gentle low-pass filtering.
-    // This matches the mGBA Android reference project behavior.
-    // The low-pass range of 40-60 is a good balance between clarity and
-    // smoothness for GBA audio.
-    s_options["mgba_audio_low_pass_filter"]          = "enabled";
-    s_options["mgba_audio_low_pass_range"]            = "50";
+    // Use the mGBA engine's OWN audio defaults — mGBA's built-in default is a
+    // DISABLED low-pass filter (see libretro_core_options.h: default
+    // "mgba_audio_low_pass_filter" = "disabled", "mgba_audio_low_pass_range"
+    // = "60"). Forcing the filter enabled here was making GBA audio sound
+    // muffled/dull: the filter is a single-pole IIR (6 dB/octave), and at
+    // range 50 with the core's 32768 Hz output its cutoff sits at only ~5 kHz,
+    // rolling off virtually all high-frequency content.
+    // The in-app Settings ("低通滤波" / "低通滤波范围") are now wired through
+    // setCoreOption() in EmulatorScreen.applyCoreOptions, so users can still
+    // enable the filter explicitly — but by default GBA audio uses the
+    // engine's built-in sound output untouched.
+    s_options["mgba_audio_low_pass_filter"]          = "disabled";
+    s_options["mgba_audio_low_pass_range"]           = "60";
 
     // --- GBA RTC ---
     s_options["mgba_gba_forceRTC"]              = "disabled";
@@ -299,8 +304,9 @@ static bool cb_environment(unsigned cmd, void* data) {
                     LOGI("Sample rate changed: %d -> %d, reinitializing resampler",
                          s_sampleRate, newRate);
                     s_sampleRate = newRate;
-                    // Default audio — passthrough, no TV-mode resampling.
-                    s_resampler.init(s_sampleRate, s_sampleRate);
+                    // Keep resampling to Android's native 48000 Hz output
+                    // rate (same as the initial load path below).
+                    s_resampler.init(s_sampleRate, TARGET_SAMPLE_RATE);
                 }
             }
             return true;
@@ -614,12 +620,16 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
     s_audio.reset();
     s_newFrame.store(false);
 
-    // Default audio output — pure passthrough (src == dst), no TV-mode
-    // 48kHz forced resampling. AudioTrack opens at the core's own rate and
-    // AudioFlinger performs standard device-rate conversion when needed.
-    s_resampler.init(s_sampleRate, s_sampleRate);
-    LOGI("Audio passthrough: %d Hz (ratio=%.6f)",
-         s_sampleRate, s_resampler.ratio);
+    // Resample the core's native output rate (32768 Hz for GB/GBC/GBA) to
+    // Android's native 48000 Hz via the shared AudioResampler, so AudioTrack
+    // never opens at an odd rate. Opening AudioTrack directly at 32768 Hz
+    // forces AudioFlinger to resample with its low-quality path, producing
+    // pitch errors, crackling, and muffled audio (see the TARGET_SAMPLE_RATE
+    // note at the top of this file). This matches the mGBA Android reference
+    // project, which outputs at 48000 Hz through Oboe.
+    s_resampler.init(s_sampleRate, TARGET_SAMPLE_RATE);
+    LOGI("Audio output: core %d Hz -> target %d Hz (ratio=%.6f)",
+         s_sampleRate, TARGET_SAMPLE_RATE, s_resampler.ratio);
 
     LOGI("ROM loaded: %s  rate=%d  fps=%.2f  region=%d  geom=%ux%u  max=%ux%u",
          path.c_str(), s_sampleRate, av.timing.fps, s_region,
@@ -697,9 +707,13 @@ int readAudio(int16_t* out, int maxFrames) {
     return s_resampler.readResampled(s_audio, out, maxFrames);
 }
 
-int audioSampleRate() { return s_sampleRate; }
+// Rate the Android AudioTrack should be opened at. readAudio() resamples the
+// core's native rate (32768 Hz) up to TARGET_SAMPLE_RATE (48000 Hz), so the
+// output stream runs at 48000 Hz — same convention as the NES/FCEUmm core
+// (rom_loader.cpp), whose audioSampleRate() also reports the AudioTrack rate.
+int audioSampleRate() { return TARGET_SAMPLE_RATE; }
 
-int audioTargetSampleRate() { return s_sampleRate; }  // default audio == core rate
+int audioTargetSampleRate() { return TARGET_SAMPLE_RATE; }
 
 void setControllerInput(int port, uint16_t bits) {
     if (port == 0)      s_pad1.store(bits, std::memory_order_relaxed);

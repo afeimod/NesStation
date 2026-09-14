@@ -14,18 +14,24 @@ import kotlin.concurrent.thread
  *
  * Architecture:
  *   - Emulation thread: runs game frames, renders to surface, paces to 60fps
- *   - Audio thread: reads from the native ring buffer (core-rate
- *     passthrough — no resampling), writes to AudioTrack with BLOCKING mode (prevents sample
+ *   - Audio thread: reads resampled audio from the native ring buffer and
+ *     writes to AudioTrack with BLOCKING mode (prevents sample
  *     drops / crackling)
  *
- * Audio pipeline (fixed):
+ * Audio pipeline:
  *   mGBA core (32768 Hz) → libretro callback → AudioRingBuffer
- *     → readAudio() JNI → AudioTrack (core's own sample rate)
+ *     → native AudioResampler (32768 → 48000 Hz, in gba_loader.cpp)
+ *     → readAudio() JNI → AudioTrack (48000 Hz = Android native rate)
  *
- * Default audio output: AudioTrack opens at the core's own sample rate —
- * no TV-mode special handling anywhere (gba_loader.cpp passthrough).
- * Previously, AudioTrack was created at 32768 Hz, which caused poor-quality
- * resampling in AudioFlinger (pitch errors, crackling, muffled audio).
+ * audioSampleRate() reports the rate AudioTrack should be opened at
+ * (48000 Hz), matching the NES/FCEUmm core convention. Resampling happens
+ * natively BEFORE AudioTrack so AudioFlinger never applies its low-quality
+ * conversion path (which caused pitch errors, crackling and muffled audio).
+ *
+ * The mGBA engine's built-in audio defaults are used: the core's low-pass
+ * filter defaults to DISABLED (mGBA upstream default) — forcing it on made
+ * GBA audio sound muffled. The in-app "低通滤波" settings are wired to the
+ * core via setCoreOption() in EmulatorScreen.applyCoreOptions.
  *
  * GBA button bit layout (10 buttons):
  *   bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right
@@ -88,9 +94,10 @@ class GbaEngine private constructor() : EmulatorEngine {
 
         GbaNative.setFastForward(_ffSpeed)
 
-        // Default audio — open the AudioTrack at the core's own sample rate
-        // (no TV-mode 48kHz special handling; AudioFlinger handles any
-        // device-rate conversion with its standard high-quality path).
+        // Open AudioTrack at Android's native 48000 Hz. The native layer
+        // (gba_loader.cpp) resamples the mGBA core's 32768 Hz output up to
+        // 48000 Hz before handing samples over, so AudioFlinger never has
+        // to resample a non-native stream (poor quality on TV boxes).
         val rate = GbaNative.audioSampleRate().takeIf { it > 0 } ?: 48000
         startAudio(rate)
 
@@ -238,9 +245,9 @@ class GbaEngine private constructor() : EmulatorEngine {
         }
 
         // Dedicated audio thread with BLOCKING writes.
-        // The native readAudio() returns samples at the core's own rate
-        // by the AudioResampler in gba_loader.cpp. Blocking write paces the
-        // loop at the hardware sample rate.
+        // The native readAudio() returns 48000 Hz samples (resampled from the
+        // core's 32768 Hz by the AudioResampler in gba_loader.cpp). Blocking
+        // write paces the loop at the hardware sample rate.
         audioRunning.set(true)
         audioThread = thread(name = "gba-audio-loop", isDaemon = true) {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
