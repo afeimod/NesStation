@@ -752,18 +752,41 @@ fun CoreSettingsPanel(
                 }
             }
             GamePlatform.NDS -> item {
-                SettingsSection("NDS / DSi (melonDS)") {
-                    DropdownRow("主机模式",
-                        listOf("DS" to "DS", "DSi" to "DSi"),
-                        padLayout.ndsConsoleMode
-                    ) { updateLayout(padLayout.copy {ndsConsoleMode = it}) }
-                    DropdownRow("屏幕布局",
+                // === NDS 双核心设置分离（melonDS / DraStic 激烈互不掺杂） ===
+                // 三个区域：双核心通用（视图层实现，选任一核心都生效）、
+                // melonDS 专属（仅选 melonDS 运行时读取）、激烈专属（仅选
+                // 激烈运行时读取）。applyCoreOptions 已按引擎类型分流，
+                // 两个核心的选项绝不交叉下发。
+                SettingsSection("NDS 通用 · 双核心共用") {
+                    DropdownRow("屏幕排列",
                         listOf("Top/Bottom" to "上下排列", "Bottom/Top" to "下上排列",
                                "Left/Right" to "左右排列", "Right/Left" to "右左排列",
                                "Top Only" to "仅上方屏", "Bottom Only" to "仅下方屏",
                                "Hybrid Top" to "混合(上屏大)", "Hybrid Bottom" to "混合(下屏大)"),
                         padLayout.ndsScreenLayout
                     ) { updateLayout(padLayout.copy {ndsScreenLayout = it}) }
+                    Text(
+                        "启动 NDS 游戏时会先选择核心（melonDS / 激烈二选一）。" +
+                        "「屏幕排列」由前端视图层实现，对两个核心都生效；" +
+                        "画面缩放、滤镜、遮罩等画质设置在「设置 → 画面」中全局配置。" +
+                        "下方两个专属区域的设置互相独立：选哪个核心运行，就只读取对应区域的值。",
+                        color = Color(0xFF4A5568), fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                    Text(
+                        "存档方式为全局设置（所有核心通用），位于「设置 → 存储 → 存档方式」" +
+                        "（NDS 写 .sav 兼容官方 melonDS，其他核心写 .srm）。",
+                        color = Color(0xFF4A5568), fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                }
+                SettingsSection("melonDS 专属") {
+                    DropdownRow("主机模式",
+                        listOf("DS" to "DS", "DSi" to "DSi"),
+                        padLayout.ndsConsoleMode
+                    ) { updateLayout(padLayout.copy {ndsConsoleMode = it}) }
                     DropdownRow("屏幕间距",
                         (0..20).map { it.toString() to "${it}px" },
                         padLayout.ndsScreenGap
@@ -788,15 +811,6 @@ fun CoreSettingsPanel(
                         listOf("Toggle" to "切换", "Hold" to "按住"),
                         padLayout.ndsSwapscreenMode
                     ) { updateLayout(padLayout.copy {ndsSwapscreenMode = it}) }
-                    // NDS 存档方式已升级为全局设置（所有核心通用）：
-                    // 位于 设置 → 存储 → 存档方式。
-                    Text(
-                        "存档方式现已移至「设置 → 存储 → 存档方式」，对所有核心生效" +
-                        "（NDS 写 .sav 兼容官方 melonDS，其他核心写 .srm）。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp,
-                        lineHeight = 15.sp,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                    )
                     DropdownRow("OpenGL 渲染器",
                         listOf("enabled" to "开启(硬件加速,推荐)", "disabled" to "关闭(软件渲染)"),
                         padLayout.ndsOpenGlRenderer
@@ -869,18 +883,19 @@ fun CoreSettingsPanel(
                         padLayout.ndsUseFwSettings
                     ) { updateLayout(padLayout.copy {ndsUseFwSettings = it}) }
                 }
-                // DraStic（激烈）核心 —— 与 melonDS 并存，选项独立。
-                // 激烈核心为推模型原生渲染（Canvas + OpenSL 音频），下方这些
-                // 前瞻仅影响激烈核心；选 melonDS 时会忽略这些值。
-                SettingsSection("DraStic (激烈)") {
+                // DraStic（激烈）核心专属设置 —— 与 melonDS 完全独立。
+                // 激烈核心为原生推模型（模拟主循环 + OpenSL 音频 + Canvas 渲染），
+                // 下方选项仅在选择激烈核心运行时生效；选 melonDS 时整区忽略。
+                SettingsSection("DraStic（激烈）专属") {
                     DropdownRow("音量",
                         (0..100).step(10)
                             .map { it.toString() to (if (it == 0) "静音" else "$it%") },
                         padLayout.ndsDrasticVolume
                     ) { updateLayout(padLayout.copy {ndsDrasticVolume = it}) }
                     Text(
-                        "激烈核心其余画面/音频选项由原生内置，暂不开放；" +
-                        "画面缩放、布局与滤镜仍用上方通用 NDS 设置。",
+                        "以上设置仅在启动 NDS 游戏时选择「DraStic（激烈）」核心后生效，" +
+                        "melonDS 核心完全忽略（反之亦然，两套核心互不读取对方设置）。" +
+                        "激烈核心的模拟参数（内部渲染优化、帧同步策略等）由原生核心自动管理。",
                         color = Color(0xFF4A5568), fontSize = 11.sp,
                         lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)

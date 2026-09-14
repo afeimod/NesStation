@@ -3140,39 +3140,51 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("geargrafx_up_down_allowed", layout.pceAllowUpDown)
         }
         GamePlatform.NDS -> {
-            // melonDS core options — keys/values must match the prebuilt
-            // melonDS libretro core (v1.1, libretro_core_options.h).
-            engine.setCoreOption("melonds_boot_directly", "enabled")   // jump straight into the game, not the grey FW menu
-            engine.setCoreOption("melonds_console_mode", layout.ndsConsoleMode)   // "DS" | "DSi"
-            engine.setCoreOption("melonds_screen_layout", layout.ndsScreenLayout) // "Top/Bottom" | "Bottom/Top" | "Left/Right" | ...
-            // OpenGL 渲染器：启用后分辨率缩放生效，3D 渲染使用硬件加速
-            engine.setCoreOption("melonds_opengl_renderer", layout.ndsOpenGlRenderer) // "enabled" | "disabled"
-            // OpenGL 内部分辨率：仅 OpenGL 渲染器生效，值格式 "1x native (256x192)" .. "8x native (2048x1536)"
-            engine.setCoreOption("melonds_opengl_resolution", layout.ndsResolution)
-            // OpenGL 多边形优化：改善多边形分割，减少图形错误
-            engine.setCoreOption("melonds_opengl_better_polygons", layout.ndsOpenGlBetterPolygons)
-            // OpenGL 纹理过滤：nearest(锐利) | linear(平滑)
-            engine.setCoreOption("melonds_opengl_filtering", layout.ndsOpenGlFiltering)
-            // 当 OpenGL 渲染器启用时，核心会自动禁用软件线程渲染器，所以这里不再设置
-            // melonds_threaded_renderer
-            engine.setCoreOption("melonds_touch_mode", layout.ndsTouchMode)       // "Mouse" | "Touch" | "Joystick"
-            engine.setCoreOption("melonds_dsi_sdcard", layout.ndsDsiSdcard)
-            engine.setCoreOption("melonds_randomize_mac_address", layout.ndsRandomizeMac)
-            engine.setCoreOption("melonds_jit_enable", layout.ndsJitEnable)
-            engine.setCoreOption("melonds_audio_interpolation", layout.ndsAudioInterpolation)
-            engine.setCoreOption("melonds_use_fw_settings", layout.ndsUseFwSettings)
-            engine.setCoreOption("melonds_screen_gap", layout.ndsScreenGap)
-            engine.setCoreOption("melonds_swapscreen_mode", layout.ndsSwapscreenMode)
-            engine.setCoreOption("melonds_mic_input", layout.ndsMicInput)
-            engine.setCoreOption("melonds_language", layout.ndsLanguage)
-            engine.setCoreOption("melonds_audio_bitrate", layout.ndsAudioBitrate)
-            engine.setCoreOption("melonds_jit_block_size", layout.ndsJitBlockSize)
-            engine.setCoreOption("melonds_jit_fast_memory", layout.ndsJitFastMemory)
-            engine.setCoreOption("melonds_jit_branch_optimisations", layout.ndsJitBranchOptimisations)
-            engine.setCoreOption("melonds_jit_literal_optimisations", layout.ndsJitLiteralOptimisations)
-            engine.setCoreOption("melonds_hybrid_small_screen", layout.ndsHybridSmallScreen)
-            // DraStic（激烈）专属选项：melonDS 原生忽略未知键，激烈核心据此设置音量
-            engine.setCoreOption("drastic_volume", layout.ndsDrasticVolume)
+            // === NDS 双核心设置严格隔离 ===
+            // melonDS 与 DraStic（激烈）是两套完全独立的核心，选项互不通用：
+            // 选激烈核心时只下发 drastic_* 专属键；选 melonDS 时只下发
+            // melonds_* 键 —— 两种核心的设置绝不交叉下发，互不干扰。
+            // 屏幕排列（ndsScreenLayout）等"前端层"设置由视图层消费，
+            // 对两个核心都生效，不经过 setCoreOption 交叉传递。
+            if (engine is com.nesstation.app.core.engine.DraSticEngine) {
+                // ---- DraStic（激烈）专属 ----
+                // 音量 0..100（DraSticEngine.setCoreOption 识别此键并转发
+                // DraSticJNI.setAudioVolume）
+                engine.setCoreOption("drastic_volume", layout.ndsDrasticVolume)
+            } else {
+                // ---- melonDS 专属 ----
+                // keys/values must match the prebuilt melonDS libretro core
+                // (v1.1, libretro_core_options.h).
+                engine.setCoreOption("melonds_boot_directly", "enabled")   // jump straight into the game, not the grey FW menu
+                engine.setCoreOption("melonds_console_mode", layout.ndsConsoleMode)   // "DS" | "DSi"
+                engine.setCoreOption("melonds_screen_layout", layout.ndsScreenLayout) // "Top/Bottom" | "Bottom/Top" | "Left/Right" | ...
+                // OpenGL 渲染器：启用后分辨率缩放生效，3D 渲染使用硬件加速
+                engine.setCoreOption("melonds_opengl_renderer", layout.ndsOpenGlRenderer) // "enabled" | "disabled"
+                // OpenGL 内部分辨率：仅 OpenGL 渲染器生效，值格式 "1x native (256x192)" .. "8x native (2048x1536)"
+                engine.setCoreOption("melonds_opengl_resolution", layout.ndsResolution)
+                // OpenGL 多边形优化：改善多边形分割，减少图形错误
+                engine.setCoreOption("melonds_opengl_better_polygons", layout.ndsOpenGlBetterPolygons)
+                // OpenGL 纹理过滤：nearest(锐利) | linear(平滑)
+                engine.setCoreOption("melonds_opengl_filtering", layout.ndsOpenGlFiltering)
+                // 当 OpenGL 渲染器启用时，核心会自动禁用软件线程渲染器，所以这里不再设置
+                // melonds_threaded_renderer
+                engine.setCoreOption("melonds_touch_mode", layout.ndsTouchMode)       // "Mouse" | "Touch" | "Joystick"
+                engine.setCoreOption("melonds_dsi_sdcard", layout.ndsDsiSdcard)
+                engine.setCoreOption("melonds_randomize_mac_address", layout.ndsRandomizeMac)
+                engine.setCoreOption("melonds_jit_enable", layout.ndsJitEnable)
+                engine.setCoreOption("melonds_audio_interpolation", layout.ndsAudioInterpolation)
+                engine.setCoreOption("melonds_use_fw_settings", layout.ndsUseFwSettings)
+                engine.setCoreOption("melonds_screen_gap", layout.ndsScreenGap)
+                engine.setCoreOption("melonds_swapscreen_mode", layout.ndsSwapscreenMode)
+                engine.setCoreOption("melonds_mic_input", layout.ndsMicInput)
+                engine.setCoreOption("melonds_language", layout.ndsLanguage)
+                engine.setCoreOption("melonds_audio_bitrate", layout.ndsAudioBitrate)
+                engine.setCoreOption("melonds_jit_block_size", layout.ndsJitBlockSize)
+                engine.setCoreOption("melonds_jit_fast_memory", layout.ndsJitFastMemory)
+                engine.setCoreOption("melonds_jit_branch_optimisations", layout.ndsJitBranchOptimisations)
+                engine.setCoreOption("melonds_jit_literal_optimisations", layout.ndsJitLiteralOptimisations)
+                engine.setCoreOption("melonds_hybrid_small_screen", layout.ndsHybridSmallScreen)
+            }
         }
         GamePlatform.PSX -> {
             // PCSX-ReARMed core options — keys/values verified against the
@@ -9051,25 +9063,14 @@ private fun SettingsPanel(
                 PceBiosImportSection()
             }
             GamePlatform.NDS -> {
-                Text("NDS / DSi (melonDS) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                Text("NDS 专属设置（双核心）", color = Color(0xFFFFD66B), fontSize = 13.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 Spacer(Modifier.size(6.dp))
-                Text("启动 NDS 游戏时会先选择核心（melonDS / DraStic 激烈）。「屏幕排列」对两个核心都生效；其余选项仅对 melonDS —— DraStic 核心自带优化配置。",
-                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
-                Text("melonDS 0.9.3 内置 FreeBIOS，无需 BIOS 文件即可直接运行游戏。",
-                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
-                Text("如需使用真实 BIOS，请将其放入系统目录（下方「NDS BIOS 管理」）。",
+                Text("启动 NDS 游戏时会先选择核心（melonDS / 激烈二选一）。设置分三区：「通用」对两个核心都生效；「melonDS 专属」与「激烈专属」互相独立 —— 选哪个核心运行就只读取对应区域的值，两套核心绝不共用设置。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
 
                 Spacer(Modifier.size(6.dp))
-                Text("系统", color = Color(0xFF8899AA), fontSize = 11.sp)
-                DropdownSetting("主机模式",
-                    listOf("DS" to "DS", "DSi" to "DSi"),
-                    padLayout.ndsConsoleMode
-                ) { onLayoutChange(padLayout.copy {ndsConsoleMode = it}) }
-
-                Spacer(Modifier.size(4.dp))
-                Text("屏幕布局", color = Color(0xFF8899AA), fontSize = 11.sp)
+                Text("通用（双核心）", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("屏幕排列",
                     listOf("Top/Bottom" to "上下排列(上屏在上)",
                            "Bottom/Top" to "下上排列(下屏在上)",
@@ -9081,6 +9082,40 @@ private fun SettingsPanel(
                            "Hybrid Bottom" to "混合(下屏大)"),
                     padLayout.ndsScreenLayout
                 ) { onLayoutChange(padLayout.copy {ndsScreenLayout = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("存档", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // 全局存档方式切换（所有核心通用，与 设置→存储 里的全局选项是同一份配置）：
+                //   nesstation   → NesStation 统一存档目录：saves/<gameId>.sav(.srm)
+                //                  每游戏独立文件，content:// URI 复制到 temp_rom.<ext>
+                //                  也不会被覆盖。
+                //   core_builtin → ROM 同目录同名存档（NDS = 官方 melonDS APK 的
+                //                  <ROM名>.sav；其他核心 = <ROM名>.srm）。
+                //                  ROM 目录不可写时自动回退到应用内部目录。
+                DropdownSetting("存档方式(全局)",
+                    listOf(
+                        "nesstation" to "NesStation (统一存档目录)",
+                        "core_builtin" to "ROM 同目录同名 (.sav/.srm)"
+                    ),
+                    padLayout.globalSaveMode
+                ) { onLayoutChange(padLayout.copy {globalSaveMode = it}) }
+                Text("对全部核心生效（NDS 写 .sav 兼容官方 melonDS，其他核心写 .srm）。切换后需重进游戏。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
+
+                Spacer(Modifier.size(12.dp))
+                Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0x33FFFFFF)))
+                Spacer(Modifier.size(8.dp))
+                Text("melonDS 专属", color = Color(0xFFFFD66B), fontSize = 12.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Text("以下选项仅在启动时选择 melonDS 核心运行时生效；选激烈核心时完全忽略。melonDS 0.9.3 内置 FreeBIOS，无需 BIOS 文件即可直接运行游戏；如需真实 BIOS，见下方「NDS BIOS 管理」。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
+
+                Spacer(Modifier.size(6.dp))
+                Text("系统", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("主机模式",
+                    listOf("DS" to "DS", "DSi" to "DSi"),
+                    padLayout.ndsConsoleMode
+                ) { onLayoutChange(padLayout.copy {ndsConsoleMode = it}) }
 
                 DropdownSetting("屏幕间距",
                     (0..20).map { it.toString() to "${it}px" },
@@ -9117,25 +9152,6 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {ndsSwapscreenMode = it}) }
 
                 Spacer(Modifier.size(4.dp))
-                Text("存档", color = Color(0xFF8899AA), fontSize = 11.sp)
-                // 全局存档方式切换（所有核心通用，与 设置→存储 里的全局选项是同一份配置）：
-                //   nesstation   → NesStation 统一存档目录：saves/<gameId>.sav(.srm)
-                //                  每游戏独立文件，content:// URI 复制到 temp_rom.<ext>
-                //                  也不会被覆盖。
-                //   core_builtin → ROM 同目录同名存档（NDS = 官方 melonDS APK 的
-                //                  <ROM名>.sav；其他核心 = <ROM名>.srm）。
-                //                  ROM 目录不可写时自动回退到应用内部目录。
-                DropdownSetting("存档方式(全局)",
-                    listOf(
-                        "nesstation" to "NesStation (统一存档目录)",
-                        "core_builtin" to "ROM 同目录同名 (.sav/.srm)"
-                    ),
-                    padLayout.globalSaveMode
-                ) { onLayoutChange(padLayout.copy {globalSaveMode = it}) }
-                Text("对全部核心生效（NDS 写 .sav 兼容官方 melonDS，其他核心写 .srm）。切换后需重进游戏。",
-                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
-
-                Spacer(Modifier.size(4.dp))
                 Text("性能/音频", color = Color(0xFF8899AA), fontSize = 11.sp)
                 // GL 硬件加速渲染器开关：官方 melonDS APK 默认开启（参考实现）。
                 // 启用后 3D 渲染走 OpenGL 硬件加速，卡顿大幅降低；分辨率缩放
@@ -9146,7 +9162,6 @@ private fun SettingsPanel(
                            "disabled" to "软件渲染 (兼容模式)"),
                     padLayout.ndsOpenGlRenderer
                 ) { onLayoutChange(padLayout.copy {ndsOpenGlRenderer = it}) }
-
                 DropdownSetting("3D 渲染分辨率",
                     (1..8).map { it.toString() to "${it}x native (${256*it}x${192*it})" },
                     padLayout.ndsResolution
@@ -9208,10 +9223,23 @@ private fun SettingsPanel(
                 Spacer(Modifier.size(12.dp))
                 Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0x33FFFFFF)))
                 Spacer(Modifier.size(8.dp))
-                Text("NDS BIOS 管理", color = Color(0xFFFFD66B), fontSize = 14.sp,
+                Text("NDS BIOS 管理 (melonDS)", color = Color(0xFFFFD66B), fontSize = 14.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 Spacer(Modifier.size(4.dp))
                 NdsBiosImportSection()
+
+                Spacer(Modifier.size(12.dp))
+                Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0x33FFFFFF)))
+                Spacer(Modifier.size(8.dp))
+                Text("DraStic（激烈）专属", color = Color(0xFFFFD66B), fontSize = 12.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Text("以下选项仅在启动时选择激烈核心运行时生效；选 melonDS 核心时完全忽略。激烈核心自带替代 BIOS，无需导入。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
+                DropdownSetting("音量",
+                    (0..100).step(10)
+                        .map { it.toString() to (if (it == 0) "静音" else "$it%") },
+                    padLayout.ndsDrasticVolume
+                ) { onLayoutChange(padLayout.copy {ndsDrasticVolume = it}) }
             }
             GamePlatform.PSX -> {
                 Text("PSX/PlayStation 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
