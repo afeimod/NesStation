@@ -29,11 +29,14 @@ import kotlin.concurrent.thread
  * [setPad1] 负责 libretro→DraStic 的位重排，[pushInput] 保证按键与触摸
  * 状态合并成一个完整的 updateInput 调用（两状态都缓存在引擎里）。
  *
- * ## ABI 前提
- * libdrastic*.so 仅有 armeabi-v7a（32 位）版本。默认多 ABI 构建在 64 位
- * 设备上以 arm64 进程运行 → 无法加载 → [probeAvailability] 报告不可用，
- * UI 禁用 DraStic 选项。构建 32 位专用包：`./gradlew assembleRelease
- * -PabiFilter=armeabi-v7a`。
+ * ## ABI 支持（双 ABI）
+ * libdrastic*.so 同时提供 armeabi-v7a（32 位：drastic / drastic_compat）
+ * 与 arm64-v8a（64 位：drastic_arm64）两套原生库，两套主库导出完全相同的
+ * 72 个 JNI 符号，引擎层代码无需感知 ABI 差异。
+ * 默认多 ABI 构建下：64 位设备以 arm64 进程运行并加载 drastic_arm64，
+ * 32 位设备（或 -PabiFilter=armeabi-v7a 构建）加载 drastic/compat；
+ * 仅 x86/x86_64 进程无库可用（[probeAvailability] 报告不可用，UI 禁用
+ * DraStic 选项，不影响选 melonDS 游玩）。
  *
  * ## 存档
  * 电池存档（.dsv）与即时存档（.dss 槽 0-8，9 为快速槽）全部由原生经
@@ -122,7 +125,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     @Volatile
     private var probedAvailability: Availability? = null
 
-    /** 触发 DraSticJNI 类初始化（加载 drastic_cpu + drastic/compat）并返回可用性。 */
+    /** 触发 DraSticJNI 类初始化（加载 drastic_cpu + 主库）并返回可用性。 */
     fun probeAvailability(): Availability {
         probedAvailability?.let { return it }
         val result = try {
@@ -130,12 +133,13 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             if (DraSticJNI.JniStartupError) {
                 Availability(
                     false,
-                    "libdrastic 加载失败（当前进程非 32 位 ARM）。\n" +
-                        "DraStic 核心仅含 armeabi-v7a 库，需要 32 位进程。\n" +
-                        "请用 -PabiFilter=armeabi-v7a 构建 32 位 APK。"
+                    "libdrastic 加载失败（当前进程非 ARM，或库缺失）\n" +
+                        "DraStic 仅提供 ARM 库（32 位 + 64 位）；" +
+                        "x86 / x86_64 设备不可用。"
                 )
             } else if (DraSticJNI.JniCpuType != DraSticJNI.CPU_TYPE_ARMv7a_NEON &&
-                DraSticJNI.JniCpuType != DraSticJNI.CPU_TYPE_ARMv7a_TEGRA2
+                DraSticJNI.JniCpuType != DraSticJNI.CPU_TYPE_ARMv7a_TEGRA2 &&
+                DraSticJNI.JniCpuType != DraSticJNI.CPU_TYPE_ARMv8a
             ) {
                 Availability(false, "设备 CPU 不受支持 (cpuType=${DraSticJNI.JniCpuType})")
             } else {

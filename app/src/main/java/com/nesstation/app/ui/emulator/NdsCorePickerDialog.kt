@@ -37,13 +37,13 @@ import com.nesstation.app.core.engine.DraSticEngine
  *  - **melonDS**（默认）：高精度开源核心，支持 DSi / OpenGL 渲染器 /
  *    放大滤镜 / 联机对战帧同步；
  *  - **DraStic（激烈）**：商用级性能核心，帧率与兼容性表现出色，
- *    仅含 32 位 ARM 库。
+ *    同时提供 32 位（armeabi-v7a）与 64 位（arm64-v8a）原生库。
  *
  * 每次启动 NDS 游戏时弹出本对话框二选一（联机对战入口固定 melonDS，
  * 不经过本对话框）。
  *
- * DraStic 不可用时（64 位进程无法加载 32 位库 —— 默认多 ABI 构建），
- * 对应选项显示禁用态与原因 / 构建提示，避免用户选后黑屏。
+ * DraStic 不可用时（x86 / x86_64 进程无 ARM 库，或设备 CPU 不受支持），
+ * 对应选项显示禁用态与原因，避免用户选后黑屏。
  */
 @Composable
 fun NdsCorePickerDialog(
@@ -96,7 +96,7 @@ fun NdsCorePickerDialog(
 
                 CoreOptionCard(
                     title = "DraStic（激烈）",
-                    subtitle = "高性能核心 · 32 位",
+                    subtitle = "高性能核心",
                     description = if (availability.available) {
                         "商用级性能与兼容性，自带声音输出；即时存档位于" +
                             "DraStic 专属槽位。"
@@ -110,9 +110,9 @@ fun NdsCorePickerDialog(
 
                 if (!availability.available) {
                     Text(
-                        text = "提示：默认构建在 64 位设备上以 64 位进程运行，" +
-                            "无法加载 32 位的 DraStic 库。构建 32 位专用包：" +
-                            "./gradlew assembleRelease -PabiFilter=armeabi-v7a",
+                        text = "提示：DraStic 仅提供 ARM 库（含 32/64 位），" +
+                            "x86 / x86_64 设备无法使用；ARM 设备上无需" +
+                            "特殊构建参数，默认包即可运行。",
                         fontSize = 11.sp,
                         color = Color(0xFF9AA4B2),
                         lineHeight = 15.sp

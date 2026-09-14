@@ -1,7 +1,9 @@
 # NesStation · DraStic（激烈）NDS 双核心集成说明
 
 本次移植把 **DraStic（激烈）** r2.6.0.4a 的 NDS 模拟核心接入 NesStation，
-成为 NDS 游戏启动时可选择的第二个核心（与原有 melonDS 并列二选一）。
+成为 NDS 游戏启动时可选择的第二个核心（与原有 melonDS 并列二选一）；
+并已补齐 **arm64-v8a（64 位）原生库**（提取自用户提供的 64 位专用 APK），
+默认多 ABI 构建下 64 位设备可直接选用 DraStic，不再需要 32 位专用包。
 
 ```
 启动 NDS 游戏
@@ -38,23 +40,32 @@
 NesStation 槽位 UI 会同时在该游戏存档目录里镜像一份 `.state`
 （即真实 `.dss` 的副本），便于查看槽位占用与手动备份。
 
-## 二、ABI 前提（重要）
+## 二、ABI 支持（双 ABI，64 位原生支持）
 
-DraStic 核心只提供 **armeabi-v7a（32 位）** 原生库（用户上传的
-r2.6.0.4a APK 即为 32 位专用版）。因此：
+DraStic 核心同时提供 **armeabi-v7a（32 位）** 与 **arm64-v8a（64 位）**
+两套原生库（分别提取自用户提供的 r2.6.0.4a 两个架构专用 APK）：
 
-- **默认构建**（armeabi-v7a + arm64-v8a + x86_64）在 64 位设备上以
-  **64 位进程**运行 → 无法加载 32 位 libdrastic → 选择对话框中
-  DraStic 选项自动置灰，并显示原因（不影响选 melonDS 玩）。
-- **32 位专用构建**可完整启用 DraStic：
+```
+app/src/main/jniLibs/
+├── armeabi-v7a/                  # 32 位
+│   ├── libdrastic.so             #   主核心（ARMv7a+NEON）
+│   ├── libdrastic_compat.so      #   Tegra2 兼容核心
+│   └── libdrastic_cpu.so         #   CPU 探测（返回 0/1）
+└── arm64-v8a/                    # 64 位
+    ├── libdrastic_arm64.so       #   主核心（ARMv8a）
+    └── libdrastic_cpu.so         #   CPU 探测（返回 3）
+```
 
-  ```bash
-  # 32 位 APK（DraStic 可用；PS2/ARMSX2 等 64 位核心不可用）
-  ./gradlew assembleRelease -PabiFilter=armeabi-v7a
-  ```
-
-  32 位包在支持 32 位的 64 位设备上同样可运行（较新的纯 64 位设备
-  如 Pixel 7+ 不支持 32 位，属设备限制）。
+- **默认构建**（armeabi-v7a + arm64-v8a + x86_64）：64 位设备以 arm64
+  进程运行 → 加载 `drastic_arm64`，DraStic 选项可用；32 位设备以 32
+  位进程运行 → 加载 `drastic`/`drastic_compat`，同样可用。
+- 两套主库导出**完全相同的 72 个 JNI 符号**（符号级比对验证），JNI
+  契约、输入位布局、调用时序完全一致 —— 引擎层代码无需感知 ABI 差异。
+- 64 位无 `drastic_compat`（Tegra2 仅存在于 32 位时代，无需兼容）。
+- **x86 / x86_64 设备**：DraStic 无 x86 库，选项自动置灰并显示原因
+  （不影响选 melonDS 游玩）。
+- 32 位专用构建（`-PabiFilter=armeabi-v7a`）仍然可用：较新的纯 64
+  位设备（如 Pixel 7+）不支持 32 位，属设备限制。
 
 ## 三、技术架构（移植要点）
 
@@ -98,7 +109,7 @@ Kotlin 重写了三个契约类，包名/类名/方法签名/字段名与原版*
 ### 3. UI 层（`ui/emulator/`）
 
 - `NdsCorePickerDialog.kt` —— 启动时核心选择对话框（DraStic 不可用时
-  置灰 + 原因 + 构建提示）
+  置灰 + 原因；仅 x86 / CPU 不受支持的场景会出现）
 - `EmulatorScreen.kt`：
   - 引擎创建前插入选择门（联机对战跳过、固定 melonDS）
   - 所有 NDS 触摸路径改走 `NdsCoreEngine` 接口
@@ -111,9 +122,13 @@ Kotlin 重写了三个契约类，包名/类名/方法签名/字段名与原版*
 
 ```
 app/src/main/jniLibs/armeabi-v7a/
-├── libdrastic.so         # 主核心（NEON）
-├── libdrastic_compat.so  # Tegra2 兼容核心
-└── libdrastic_cpu.so     # CPU 探测（getCpuType 决定加载上面哪个）
+├── libdrastic.so         # 主核心（NEON，32 位）
+├── libdrastic_compat.so  # Tegra2 兼容核心（仅 32 位）
+└── libdrastic_cpu.so     # CPU 探测（getCpuType 返回 0/1 → 加载上面两库）
+
+app/src/main/jniLibs/arm64-v8a/
+├── libdrastic_arm64.so   # 主核心（64 位；与 32 位库导出相同的 72 个 JNI 符号）
+└── libdrastic_cpu.so     # CPU 探测（getCpuType 返回 3 = ARMv8a → 加载 arm64 主库）
 ```
 
 ### 5. 混淆保护
@@ -152,18 +167,38 @@ release 构建的 R8 看不到原生层对这些类的反射引用，不 keep �
   app/src/main/jniLibs/armeabi-v7a/{libdrastic,libdrastic_compat,libdrastic_cpu}.so
 ```
 
+### 64 位补齐（本次追加）
+
+```
+新增原生库 (2):
+  app/src/main/jniLibs/arm64-v8a/libdrastic_arm64.so   # 64 位主核心
+  app/src/main/jniLibs/arm64-v8a/libdrastic_cpu.so     # 64 位 CPU 探测
+
+修改 (4):
+  app/src/main/java/com/dsemu/drastic/DraSticJNI.kt
+    （getCpuType 返回 3 = ARMv8a → 加载 drastic_arm64；文档更新）
+  app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt
+    （probeAvailability 接受 CPU_TYPE_ARMv8a；不可用文案更新）
+  app/src/main/java/com/nesstation/app/ui/emulator/NdsCorePickerDialog.kt
+    （去掉“32 位”副标题与 32 位构建提示）
+  app/src/main/java/com/nesstation/app/NesApp.kt
+    （注册注释更新）
+  README_DRASTIC.md
+    （ABI 章节改写为双 ABI 支持）
+```
+
 ## 五、构建
 
 ```bash
-# 常规构建（64 位设备上 DraStic 选项置灰）
+# 常规构建（32/64 位 ARM 设备上 DraStic 均可用；x86_64 设备置灰）
 ./gradlew assembleRelease
 
-# 32 位构建（DraStic 完整可用）
+# 32 位构建（可选，兼容仅支持 32 位的老设备）
 ./gradlew assembleRelease -PabiFilter=armeabi-v7a
 ```
 
-无需额外配置 —— 原生库已置于 `jniLibs`，混淆规则已就位，
-NesApp 启动时自动注册探测。
+无需额外配置 —— 双 ABI 原生库已置于 `jniLibs`，混淆规则已就位，
+NesApp 启动时自动注册探测（按进程 ABI 加载对应库）。
 
 ## 六、法律提示
 

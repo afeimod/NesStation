@@ -13,15 +13,25 @@ import androidx.annotation.Keep
  * proguard 规则防混淆，本项目在 proguard-rules.pro 中同样 keep 整个包。
  *
  * 库加载顺序（与原版一致，不能颠倒）：
- *  1. System.loadLibrary("drastic_cpu")   —— 18KB 的 CPU 探测库
+ *  1. System.loadLibrary("drastic_cpu")   —— ~10KB 的 CPU 探测库
  *  2. getCpuType()：0 = ARMv7a+NEON  → loadLibrary("drastic")
  *                   1 = Tegra2 兼容   → loadLibrary("drastic_compat")
- *                   其余 = 不支持（64 位进程 / x86 上直接加载失败）
+ *                   3 = ARMv8a (64位) → loadLibrary("drastic_arm64")
+ *                   其余 = 不支持（x86 / 不识别的 CPU）
  *
- * 这些 .so 只有 armeabi-v7a（32 位）版本 —— 64 位进程无法加载。
- * NesStation 默认构建含 arm64-v8a，会在 64 位设备上以 64 位进程运行，
- * 此时 DraStic 不可用（DraSticEngine.probeAvailability 会报告原因，
- * UI 禁用该选项并提示用 -PabiFilter=armeabi-v7a 构建 32 位包）。
+ * 这些 .so 同时提供 armeabi-v7a（32 位：drastic / drastic_compat）与
+ * arm64-v8a（64 位：drastic_arm64，无 Tegra2 兼容版 —— Tegra2 仅 32 位）
+ * 两套版本。32/64 位进程各自加载对应 ABI 目录下的 drastic_cpu 完成探测：
+ *  - 32 位进程：drastic_cpu 返回 0/1 → 加载 drastic / drastic_compat；
+ *  - 64 位进程：drastic_cpu 返回 3（内部探测命中 arm64 特征）→ 加载
+ *    drastic_arm64。
+ * 两套主库导出**完全相同的 72 个 JNI 符号**（已符号级比对验证），
+ * JNI 契约、位布局、调用时序完全一致，上层引擎代码无需区分 ABI。
+ * 仅 x86 / x86_64 进程因库缺失在类初始化时失败（DraStic 无 x86 版）。
+ *
+ * NesStation 默认构建含 arm64-v8a + armeabi-v7a，64 位设备上 DraStic
+ * 以原生 64 位运行（DraSticEngine.probeAvailability 报告可用）；若某
+ * 设备 CPU 不受支持则 UI 禁用该选项并显示原因。
  *
  * 语义注释中标 [反汇编] 的条目来自对 libdrastic.so 的 capstone 反汇编验证，
  * 标 [反编译] 的来自 jadx 对原版 classes.dex 的反编译 —— 两者交叉确认。
@@ -53,6 +63,7 @@ object DraSticJNI {
             val lib = when (cpuType) {
                 CPU_TYPE_ARMv7a_NEON -> "drastic"
                 CPU_TYPE_ARMv7a_TEGRA2 -> "drastic_compat"
+                CPU_TYPE_ARMv8a -> "drastic_arm64"
                 else -> null
             }
             if (lib != null) {
@@ -312,8 +323,11 @@ object DraSticJNI {
     // ---- CPU 探测（libdrastic_cpu.so） ----
 
     /**
-     * 探测当前进程 CPU 类型。仅在 32 位 ARM 进程返回 0/1；
-     * 64 位进程因 drastic_cpu 库缺失会在类初始化时直接失败。
+     * 探测当前进程 CPU 类型。
+     *  - 32 位 ARM 进程返回 0/1（NEON / Tegra2）；
+     *  - 64 位 ARM 进程返回 3（ARMv8a —— 反汇编验证：内部探测命中 arm64
+     *    特征（返回 4）时映射为 3，否则 -1）；
+     *  - x86 / x86_64 进程因 drastic_cpu 库缺失在类初始化时直接失败。
      */
     @JvmStatic external fun getCpuType(): Int
 }

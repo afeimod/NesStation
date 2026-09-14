@@ -815,7 +815,7 @@ fun EmulatorScreen(
     // 启动 NDS 游戏时先弹核心选择对话框，二选一后才创建引擎 / 加载 ROM
     // （见 NdsCorePickerDialog）。选择只影响本次会话：
     //   · "melonds" → NdsEngine（默认，支持联机 / DSi / OpenGL / 放大滤镜）
-    //   · "drastic" → DraSticEngine（高性能核心，仅 32 位 ARM 进程可用）
+    //   · "drastic" → DraSticEngine（高性能核心，32/64 位 ARM 进程可用）
     // 联机对战入口固定 melonDS —— DraStic 是推模型核心（模拟循环在原生
     // 线程内），无法接入 frameHook 帧同步，跳过选择直接进对战。
     var ndsCoreChoice by remember { mutableStateOf<String?>(null) }
