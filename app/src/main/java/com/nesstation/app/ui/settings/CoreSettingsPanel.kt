@@ -869,6 +869,23 @@ fun CoreSettingsPanel(
                         padLayout.ndsUseFwSettings
                     ) { updateLayout(padLayout.copy {ndsUseFwSettings = it}) }
                 }
+                // DraStic（激烈）核心 —— 与 melonDS 并存，选项独立。
+                // 激烈核心为推模型原生渲染（Canvas + OpenSL 音频），下方这些
+                // 前瞻仅影响激烈核心；选 melonDS 时会忽略这些值。
+                SettingsSection("DraStic (激烈)") {
+                    DropdownRow("音量",
+                        (0..100).step(10)
+                            .map { it.toString() to (if (it == 0) "静音" else "$it%") },
+                        padLayout.ndsDrasticVolume
+                    ) { updateLayout(padLayout.copy {ndsDrasticVolume = it}) }
+                    Text(
+                        "激烈核心其余画面/音频选项由原生内置，暂不开放；" +
+                        "画面缩放、布局与滤镜仍用上方通用 NDS 设置。",
+                        color = Color(0xFF4A5568), fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                }
             }
             GamePlatform.PSX -> item {
                 // 键名/取值已对照预编译 libpcsx_rearmed_libretro_android.so

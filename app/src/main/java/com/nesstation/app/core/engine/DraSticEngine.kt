@@ -114,6 +114,9 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         /** 原版默认音量（_Volume 0..10 → setAudioVolume ×10）。 */
         private const val DEFAULT_VOLUME = 100
 
+        /** startGame 看门狗超时：原生卡死时不再无限停在"正在加载"。 */
+        private const val START_TIMEOUT_MS = 15_000L
+
         /**
          * 打包 DraStic 配置位域（复刻原版 f0.h.n()，默认值取原版首次
          * 安装时的出厂设置；0 之外的位全部关闭，仅开声音）：
@@ -248,7 +251,12 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     /** onInit 是否已执行过（进程内只需一次）。 */
     private var nativeInitialized = false
 
+    /** startGame 看门狗超时后置位：原生可能处于未知状态，禁止再碰它。 */
+    @Volatile
+    private var nativePoisoned = false
+
     private fun ensureNativeInit(): Boolean {
+        if (nativePoisoned) return false
         if (nativeInitialized) return true
         if (DraSticJNI.JniStartupError) return false
         try {
@@ -343,6 +351,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         saveDir: String,
         onFrame: () -> Unit
     ): Boolean = synchronized(lifecycleLock) {
+        if (nativePoisoned) {
+            lastErrorMsg = "DraStic 原生在上一次启动中超时卡死，当前进程已禁用。请重启应用后再试。"
+            return false
+        }
         val availability = probeAvailability()
         if (!availability.available) {
             lastErrorMsg = availability.reason ?: "DraStic 不可用"
@@ -399,40 +411,32 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
         romFileBase = effectiveRom.nameWithoutExtension
 
+        // 预启动配置。ROM 以真实绝对路径传入（startGame 的路径最终会回到
+        // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
         try {
-            // ROM 以真实绝对路径传入（startGame 的路径最终会回到
-            // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
             DraSticPathCache.changeRom(effectiveRom.absolutePath, effectiveRom)
 
             DraSticJNI.setAudioVolume(DEFAULT_VOLUME)
             DraSticJNI.setAutosaveInterval(0)
             DraSticJNI.applyConfig(packConfig(sound = true, fastForward = false, ffwdSpeed = 2))
-
-            android.util.Log.i(TAG, "startGame: rom=${effectiveRom.name} (${effectiveRom.length()}B)")
-            val startT0 = System.currentTimeMillis()
-            val ok = DraSticJNI.startGame(
-                effectiveRom.absolutePath,
-                -1,                       // 不自动读档
-                packConfig(sound = true, fastForward = false, ffwdSpeed = 2),
-                0,
-                false,
-                -1L                       // 自定义时钟关闭
-            )
-            android.util.Log.i(TAG, "startGame returned=$ok in ${System.currentTimeMillis() - startT0}ms")
-            if (!ok) {
-                lastErrorMsg = "DraStic 无法加载 ROM（文件损坏或不受支持）"
-                return false
-            }
         } catch (e: Throwable) {
             lastErrorMsg = "DraStic 启动异常: ${e.message}"
-            android.util.Log.e("DraSticEngine", "startGame failed", e)
+            android.util.Log.e("DraSticEngine", "pre-start config failed", e)
             return false
         }
 
-        isLoaded = true
-        lastErrorMsg = ""
+        // 推模型核心：原版 DraStic 的渲染循环在 startGame 之前就已常驻，
+        // startGame 返回前原生可能等待前端开始消费帧/响应重绘。若沿用旧的
+        // "先 startGame 再启动渲染线程"顺序，startGame 无消费者可等时会一直
+        // 阻塞 → loadRom 永不返回 → UI 永远停在"正在加载"（声音正常 = 模拟
+        // 线程已在跑）。因此先把渲染消费线程启动起来再调 startGame。
+        // waitScreen / getScreenBuffers 在核心未就绪时内部直接返回
+        // （反汇编确认有空指针守护），提前启动安全。
+        isLoaded = false
         paused = false
         running.set(true)
+        val started = java.util.concurrent.atomic.AtomicBoolean(false)
+        val startOk = java.util.concurrent.atomic.AtomicBoolean(false)
 
         renderThread = thread(name = "drastic-render", isDaemon = true) {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
@@ -442,6 +446,16 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                     // 还有保底 signal —— 暂停/退出时不会永久卡死）
                     DraSticJNI.waitScreen()
                     if (!running.get()) break
+                    if (!started.get()) {
+                        // startGame 尚未返回：waitScreen 立即返回（核心未
+                        // 就绪的空指针守卫），这里让步等待避免忙等烧 CPU。
+                        try {
+                            Thread.sleep(2)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
+                        continue
+                    }
                     if (paused) continue
 
                     DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
@@ -457,6 +471,79 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 }
             }
         }
+
+        // startGame 放独立 daemon 线程 + 看门狗：原生若在前端握手上卡死也
+        // 不会让 loadRom 的调用方（IO 协程）无限等待，超时直接报错退出，
+        // 彻底杜绝"永久正在加载"。
+        val startThread = thread(name = "drastic-start", isDaemon = true) {
+            try {
+                val startT0 = System.currentTimeMillis()
+                android.util.Log.i(TAG, "startGame: rom=${effectiveRom.name} (${effectiveRom.length()}B)")
+                val ok = DraSticJNI.startGame(
+                    effectiveRom.absolutePath,
+                    -1,                       // 不自动读档
+                    packConfig(sound = true, fastForward = false, ffwdSpeed = 2),
+                    0,
+                    false,
+                    -1L                       // 自定义时钟关闭
+                )
+                val cost = System.currentTimeMillis() - startT0
+                android.util.Log.i(TAG, "startGame returned=$ok in ${cost}ms")
+                startOk.set(ok)
+                started.set(true)
+                if (!ok) {
+                    lastErrorMsg = "DraStic 无法加载 ROM（文件损坏或不受支持）"
+                } else if (cost > 3000) {
+                    android.util.Log.w(TAG, "startGame took ${cost}ms — 渲染消费线程前置后已明显改善")
+                }
+            } catch (e: Throwable) {
+                startOk.set(false)
+                started.set(true)
+                lastErrorMsg = "DraStic 启动异常: ${e.message}"
+                android.util.Log.e("DraSticEngine", "startGame failed", e)
+            }
+        }
+
+        // 等待 startGame 返回（看门狗）；超时则视为原生卡死
+        startThread.join(START_TIMEOUT_MS)
+        if (!started.get()) {
+            android.util.Log.e(TAG, "startGame TIMEOUT after ${START_TIMEOUT_MS}ms — 原生未返回，禁止后续原生调用")
+            lastErrorMsg = "DraStic 核心启动超时（原生未在 ${START_TIMEOUT_MS / 1000}s 内返回）。" +
+                "当前版本建议改用 melonDS 核心；如必须用激烈，请抓取 logcat 提交诊断。"
+            // 只停 JVM 侧线程，不碰可能卡住的原生状态：
+            // 渲染线程此时处于 !started 让步睡眠分支（核心未建立），
+            // running=false 即可退出；即使极端阻塞在 waitScreen 也是
+            // daemon 线程，不影响进程退出。绝不并发调用原生函数。
+            nativePoisoned = true
+            running.set(false)
+            renderThread?.let { t ->
+                try {
+                    t.join(500)
+                } catch (_: InterruptedException) {
+                }
+            }
+            renderThread = null
+            return false
+        }
+        if (!startOk.get()) {
+            running.set(false)
+            // 唤醒可能阻塞在 waitScreen 的渲染线程（原生已就绪，waitScreen 会阻塞）
+            renderThread?.let { t ->
+                try {
+                    DraSticJNI.signalScreen()
+                } catch (_: Throwable) {
+                }
+                try {
+                    t.join(500)
+                } catch (_: InterruptedException) {
+                }
+            }
+            renderThread = null
+            return false
+        }
+
+        isLoaded = true
+        lastErrorMsg = ""
         return true
     }
 
@@ -606,7 +693,8 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             touchPressed = false
             touchX = 0
             touchY = 0
-            if (nativeInitialized && !DraSticJNI.JniStartupError) {
+            // 看门狗超时后原生可能仍卡在 startGame，绝不能再并发碰它
+            if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
                 DraSticJNI.updateInput(0, 0, 0)
             }
         } catch (_: Throwable) {
@@ -614,7 +702,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
         // 原版顺序：pauseSystem(1) → quitSystem() → (等待) → releaseSystem()
         try {
-            if (nativeInitialized && !DraSticJNI.JniStartupError) {
+            if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
                 DraSticJNI.pauseSystem(1)
                 DraSticJNI.quitSystem()
             }
@@ -626,7 +714,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         // 渲染线程可能永远阻塞在已释放的 condvar 上（quitSystem 后原生
         // 模拟/保底 50ms 信号循环可能随之停止）。
         try {
-            if (nativeInitialized && !DraSticJNI.JniStartupError) {
+            if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
                 DraSticJNI.signalScreen()
             }
         } catch (_: Throwable) {
@@ -643,7 +731,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         renderThread = null
 
         try {
-            if (nativeInitialized && !DraSticJNI.JniStartupError) {
+            if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
                 DraSticJNI.releaseSystem()
             }
         } catch (_: Throwable) {

@@ -454,6 +454,12 @@ class PadLayout {
     var ndsJitBranchOptimisations: String = "enabled"    // enabled | disabled
     var ndsJitLiteralOptimisations: String = "enabled"   // enabled | disabled
     var ndsHybridSmallScreen: String = "Bottom"          // Bottom | Top | Duplicate
+
+    // === DraStic（激烈）核心 ===
+    // 仅激烈核心生效（melonDS 忽略）。drastic_volume 取值 0..100，
+    // 运行时经 DraSticEngine.setCoreOption → DraSticJNI.setAudioVolume 应用。
+    var ndsDrasticVolume: String = "100"
+
     // === NDS 双屏独立布局 (videoScale == "custom" 时生效) ===
     // 参照 melonDS 官方 Android 布局模型：上屏 / 下屏各占一个独立矩形，
     // 可分别拖动 4 角调整大小、拖动矩形内部移动位置。归一化 0..1，横竖屏分开保存。
@@ -923,6 +929,7 @@ class PadLayout {
         ndsAudioInterpolation = another.ndsAudioInterpolation
         ndsUseFwSettings = another.ndsUseFwSettings
         ndsSaveMode = another.ndsSaveMode
+        ndsDrasticVolume = another.ndsDrasticVolume
         ndsTopLayoutLeft = another.ndsTopLayoutLeft
         ndsTopLayoutTop = another.ndsTopLayoutTop
         ndsTopLayoutRight = another.ndsTopLayoutRight
@@ -1683,6 +1690,9 @@ object PadLayoutStore {
             ndsAudioInterpolation = p.getString("nds_audio_interpolation", "Cosine") ?: "Cosine"
             ndsUseFwSettings = p.getString("nds_use_fw_settings", "disabled") ?: "disabled"
             ndsSaveMode = p.getString("nds_save_mode", "nesstation") ?: "nesstation"
+            // DraStic（激烈）核心：音量 0..100
+            ndsDrasticVolume = (p.getString("nds_drastic_volume", "100") ?: "100")
+                .toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "100"
             // 全局存档方式迁移：老版本只有 nds_save_mode（NDS 独有），
             // 升级后继承用户已选的 NDS 存档方式作为全局默认。
             globalSaveMode = p.getString("global_save_mode", null)
@@ -2193,6 +2203,7 @@ object PadLayoutStore {
             putString("nds_audio_interpolation", layout.ndsAudioInterpolation)
             putString("nds_use_fw_settings", layout.ndsUseFwSettings)
             putString("nds_save_mode", layout.ndsSaveMode)   // legacy (NDS-only), 迁移到 global_save_mode
+            putString("nds_drastic_volume", layout.ndsDrasticVolume)   // DraStic（激烈）核心
             putString("global_save_mode", layout.globalSaveMode)
             // === 主页个性化 ===
             putString("home_bg_uri", layout.homeBackgroundUri)

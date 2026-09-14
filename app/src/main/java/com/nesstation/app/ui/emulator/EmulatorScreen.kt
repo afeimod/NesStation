@@ -3171,6 +3171,8 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("melonds_jit_branch_optimisations", layout.ndsJitBranchOptimisations)
             engine.setCoreOption("melonds_jit_literal_optimisations", layout.ndsJitLiteralOptimisations)
             engine.setCoreOption("melonds_hybrid_small_screen", layout.ndsHybridSmallScreen)
+            // DraStic（激烈）专属选项：melonDS 原生忽略未知键，激烈核心据此设置音量
+            engine.setCoreOption("drastic_volume", layout.ndsDrasticVolume)
         }
         GamePlatform.PSX -> {
             // PCSX-ReARMed core options — keys/values verified against the
