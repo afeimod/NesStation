@@ -1416,7 +1416,7 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
 }
 
 /** Scan common directories for ROM files (requires storage permission) */
-private fun scanForRoms(context: android.content.Context): List<Pair<String, String>> {
+internal fun scanForRoms(context: android.content.Context): List<Pair<String, String>> {
     val results = mutableListOf<Pair<String, String>>()
     val dirs = mutableListOf<File>()
     if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q || Environment.isExternalStorageManager()) {

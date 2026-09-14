@@ -1,17 +1,30 @@
 package com.nesstation.app.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavType
@@ -22,10 +35,12 @@ import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.JavaGameStore
 import com.nesstation.app.core.storage.PadLayoutStore
+import com.nesstation.app.core.storage.PlatformDetector
 import com.nesstation.app.core.storage.RomStore
 import com.nesstation.app.ui.emulator.EmulatorScreen
 import com.nesstation.app.ui.home.HomeScreen
 import com.nesstation.app.ui.library.LibraryScreen
+import com.nesstation.app.ui.library.scanForRoms
 import com.nesstation.app.ui.settings.KeyMapScreen
 import com.nesstation.app.ui.settings.SettingsScreen
 import com.nesstation.app.ui.tv.TvHomeScreen
@@ -38,6 +53,10 @@ import com.nesstation.app.ui.battle.BattleMatchScreen
 import com.nesstation.app.ui.battle.BattleScreen
 import com.nesstation.app.ui.online.OnlineGamesScreen
 import com.nesstation.app.ui.online.WebGameScreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 object Routes {
     const val HOME = "home"
@@ -100,6 +119,171 @@ fun NesApp(nav: androidx.navigation.NavHostController) {
     } else {
         PhoneNavHost(nav = nav, games = games, reloadGames = reloadGames)
     }
+
+    // 首次启动：弹窗引导用户授予存储权限（手机 / TV 通用）
+    FirstLaunchStoragePrompt()
+}
+
+// ===== 首次启动存储权限引导 =====
+
+private const val APP_PREFS_NAME = "nesstation_app_prefs"
+private const val KEY_STORAGE_PERMISSION_PROMPTED = "storage_permission_prompted"
+
+/** 存储权限是否已就绪：Android 11+ 检查“所有文件访问”，更低版本检查 READ_EXTERNAL_STORAGE */
+private fun storagePermissionReady(ctx: Context): Boolean =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+    } else {
+        ContextCompat.checkSelfPermission(
+            ctx, Manifest.permission.READ_EXTERNAL_STORAGE
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+/**
+ * 首次启动弹窗：引导用户授予存储权限（手机 / TV 通用）。
+ *
+ * 只在首次启动时出现一次（SharedPreferences 标记，清除应用数据后重新计数）：
+ *  - 用户点「去授权」：Android 11+ 跳转系统“所有文件访问权限”页面；
+ *    Android 10 及以下直接弹系统运行时权限对话框。
+ *  - 用户点「暂不」或点外部取消：不再自动弹出，之后仍可在游戏库页面
+ *    （顶部的权限提示横幅）或系统设置中授权。
+ *  - 用户授权成功后：自动扫描常见目录的 ROM 并入库（与游戏库的
+ *    「去授权」流程同一套扫描逻辑），Toast 报告扫描结果。
+ */
+@Composable
+private fun FirstLaunchStoragePrompt() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showPrompt by remember { mutableStateOf(false) }
+    // 用户点过「去授权」后：等待权限就绪（从系统授权页/权限弹窗返回时检查）
+    var awaitingGrant by remember { mutableStateOf(false) }
+    // 防止 ON_RESUME 与权限回调同时触发导致重复扫描
+    var scanStarted by remember { mutableStateOf(false) }
+
+    fun scanAndImportOnce() {
+        if (scanStarted) return
+        scanStarted = true
+        scope.launch {
+            val added = runScanImport(ctx)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    ctx,
+                    if (added > 0) "已自动扫描到 $added 个游戏文件"
+                    else "存储权限已授予，未在常见目录找到游戏文件，可手动「导入ROM」",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    // Android 10 及以下：运行时权限请求（READ + WRITE，WRITE 在 manifest 里 maxSdk=29）
+    val runtimeLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        if (result.values.any { it }) scanAndImportOnce()
+    }
+
+    // 从系统授权页面返回后：权限就绪则自动扫描一次。
+    // 返回前台时 NesApp 的 ON_RESUME 监听会重新 loadAllGames，扫描入库
+    // 的 ROM 会直接出现在主页/游戏库，无需手动刷新。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && awaitingGrant) {
+                if (storagePermissionReady(ctx)) {
+                    awaitingGrant = false
+                    scanAndImportOnce()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(Unit) {
+        val prefs = ctx.getSharedPreferences(APP_PREFS_NAME, Context.MODE_PRIVATE)
+        // 只提示一次：无论用户是否授权，首次启动后都不再自动弹出
+        if (prefs.getBoolean(KEY_STORAGE_PERMISSION_PROMPTED, false)) {
+            return@LaunchedEffect
+        }
+        prefs.edit().putBoolean(KEY_STORAGE_PERMISSION_PROMPTED, true).apply()
+        // 权限已就绪（如覆盖升级且此前已授权过）则不打扰用户
+        if (!storagePermissionReady(ctx)) {
+            showPrompt = true
+        }
+    }
+
+    if (!showPrompt) return
+
+    AlertDialog(
+        onDismissRequest = { showPrompt = false },
+        title = { Text("需要存储权限") },
+        text = {
+            Text(
+                "NesStation 需要存储权限来扫描本地游戏ROM、读取封面和保存游戏进度。\n\n" +
+                    "点击「去授权」并在接下来的页面中允许访问，应用会自动扫描您设备中的游戏文件。\n\n" +
+                    "您也可以选择「暂不」，之后通过「导入ROM」按钮或系统文件选择器导入游戏。"
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                showPrompt = false
+                awaitingGrant = true
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    // Android 11+：跳转系统“所有文件访问权限”页面
+                    try {
+                        val intent = Intent(
+                            android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
+                        ).apply {
+                            data = Uri.parse("package:${ctx.packageName}")
+                        }
+                        ctx.startActivity(intent)
+                    } catch (_: Exception) {
+                        try {
+                            ctx.startActivity(
+                                Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                            )
+                        } catch (_: Exception) {
+                            // 部分 TV 盒子两个 action 都不响应，给出兜底提示
+                            awaitingGrant = false
+                            Toast.makeText(
+                                ctx, "无法打开授权页面，请到系统设置中手动开启存储权限",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                } else {
+                    // Android 10 及以下：READ / WRITE 运行时权限弹窗
+                    runtimeLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                        )
+                    )
+                }
+            }) { Text("去授权") }
+        },
+        dismissButton = {
+            TextButton(onClick = { showPrompt = false }) { Text("暂不") }
+        }
+    )
+}
+
+/**
+ * 首次授权成功后的自动扫描：与游戏库「去授权」流程走同一套
+ * [scanForRoms] 扫描 + [RomStore.add] 入库逻辑（RomStore.add 按 romPath
+ * 去重，重复添加不会产生重复条目）。返回新增的游戏数量。
+ */
+private suspend fun runScanImport(ctx: Context): Int = withContext(Dispatchers.IO) {
+    var added = 0
+    try {
+        scanForRoms(ctx).forEach { (name, path) ->
+            val platform = PlatformDetector.detectFromFile(File(path))
+            RomStore.add(ctx, name.substringBeforeLast('.'), path, platform)
+            added++
+        }
+    } catch (_: Exception) { }
+    added
 }
 
 @Composable
