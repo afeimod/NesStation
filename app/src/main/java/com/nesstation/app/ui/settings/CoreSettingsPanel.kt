@@ -924,10 +924,12 @@ fun CoreSettingsPanel(
                     // 视频滤镜（原版 _CurrentFx）：.dfx 着色器链（fxLoad → fxRender）。
                     // 列表来自 APK 捆绑的 assets/drastic/shaders/（整合版 130+ 滤镜），
                     // 仅 GL 显示路径生效；fxLoad 失败自动回退无滤镜渲染。
-                    val drasticFilterOptions = remember {
-                        val ctx = LocalContext.current
+                    // 注意：LocalContext.current 是 @Composable 调用，必须在 remember
+                    // 之外求值（计算块内不允许 Composable 调用，否则编译失败）。
+                    val filterCtx = LocalContext.current
+                    val drasticFilterOptions = remember(filterCtx) {
                         val installed = try {
-                            ctx.assets.list("drastic/shaders")
+                            filterCtx.assets.list("drastic/shaders")
                                 ?.filter { it.endsWith(".dfx", ignoreCase = true) }
                                 ?.map { it.removeSuffix(".dfx") }
                                 ?.sorted()
