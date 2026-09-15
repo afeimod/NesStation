@@ -103,3 +103,94 @@ NDS 平台有两个**完全不同**的核心（melonDS 拉模型 / DraStic 推�
 3. 选 melonDS 运行同一游戏 → 改 melonDS 专属设置（如 JIT）→ 重进游戏切激烈核心 → 确认激烈行为不受 melonDS 设置影响。
 4. 游戏内菜单 → NDS 专属设置 → 确认"激烈专属"区音量调节即时生效。
 5. logcat 过滤 `DraSticEngine`：应看到 `startGame: rom=… — 进入原生模拟主循环`，退出时看到 `startGame returned=true after …ms（游戏会话结束）`。
+
+---
+
+# 第二轮修复：完善激烈设置 + 高清渲染 + GL 加速显示
+
+修复版本：基于仓库 HEAD（`cf94f302 修激烈核心加载`）源码。
+本轮解决两个问题：
+1. **激烈设置只有音量一项** —— 补全完整设置面板（画面渲染 / 音频 / 性能 / 存档）；
+2. **渲染问题（特别是 3D 游戏）** —— 新增 2x 高清渲染（config bit41）与
+   OpenGL 加速显示路径（原生 renderFrame 纹理上传 + GPU 双四边形绘制）。
+
+## 一、config 位域完整解码（反汇编逐位验证）
+
+对 `startGame` / `applyConfig` / 全局解包函数（0x17c58，applyConfig 与模拟
+初始化共用）三处交叉验证，确认 `config` 位域中与设置相关的位：
+
+| 位 | 语义 | 验证依据 |
+| --- | --- | --- |
+| bit31 | 声音启用 | !bit31 写入音频引擎 0x3c9b048 的跳过音频标志 |
+| bit29 | 快进激活 | 解包函数 gate：bit29=0 时帧间隔字段清零 |
+| bits12-15 | 快进时显示帧间隔（µs 表 [100000,33333,25000,16666,12500,5000]） | 0x1070c0 表查找，>5 为 0（不限） |
+| bits8-9 | 音频缓冲档位（(4,1470)/(4,2940)/(3,5880)/(4,5880) 采样） | 音频初始化 0x1d760 表对 |
+| bit23 | 帧格式：0=RGBA8888，1=RGBA4444 | getScreenBuffers 分支 + glTexSubImage2D 的 format/type 常量（0x1908/0x1401 vs 0x1907/0x8363） |
+| bit41 | 高清渲染（2x=512×384） | 解包 → core+0x8aaf8 → GPU 引擎 setResolution(0x1cde4)：状态位决定 (state+1)×256×(state+1)×192 的上传尺寸；帧池每屏 0xC0000 字节 = 恰好 512×384×4 |
+| bits37-38 | 快进倍率（表 [2,4,8,16] → float 写 0x143ec0） | applyConfig 尾跳 0x1d728 的表查找 |
+| bit50 | 存档格式 0=.sav / 1=.dsv | 备份扩展名字符串选择（0x10ede4 '.sav' vs 0x10edf7 '.dsv'） |
+
+## 二、GL 加速显示路径（DraSticGlView，新文件）
+
+原生 `renderFrame(tex1, tex2, portrait)`（0x1ceac）已完整解码：
+1. 帧池互斥锁下读取双缓冲状态与分辨率档；
+2. `glBindTexture(tex1)` → 脏标记时 `glTexSubImage2D`（上传 (state+1)×256
+   × (state+1)×192 的帧池数据）→ `glDrawArrays(GL_TRIANGLE_STRIP, 0, 6)`；
+3. tex2≠0 时同样流程画第二个四边形（first=6），结束后清脏标记。
+
+原生只做"上传 + 按当前绑定的顶点属性绘制"—— 着色器、顶点缓冲、视口由
+调用方准备（GLES 状态在上下文内持续生效）。因此 DraSticGlView：
+- 自带 ES2 程序（12 顶点双四边形：上屏 0..5 / 下屏 6..11，支持全部屏幕布局
+  与自定义矩形）；
+- 专用 EGL(GL ES2) 线程，每帧 `renderFrame(topTex, bottomTex, false)` +
+  `eglSwapBuffers`（垂直同步自然节流，与原版 app 的 GLSurfaceView
+  onDrawFrame 调用模型一致）；
+- 帧池数据为 RGBA 字节序（经 getScreenBuffers 的掩码运算数学验证），
+  GL_RGBA/GL_UNSIGNED_BYTE 上传色彩正确；
+- 双线性/最近邻纹理过滤可切换；16 位模式按原生期望分配
+  GL_UNSIGNED_SHORT_4_4_4_4_REV；
+- 帧消费接管：GL 激活时引擎渲染线程跳过 ~500KB/帧的 CPU 拷贝（截图改由
+  captureFrame 直接拉取）；
+- EGL 失败自动回退画布路径；触摸/物理按键路由与 NdsDualScreenView 同构。
+
+**重要约束**：画布路径的 getScreenBuffers 固定按 256×192 读取 —— 高清
+（512×384 帧池）下会裁切为左上 1/4。因此**高清渲染强制走 GL 显示**
+（GameSurfaceView 中 useDrasticGl = displayMode=="gl" || hdRender）。
+
+## 三、设置补全（设置面板 + 游戏内快捷菜单）
+
+「DraStic（激烈）专属 · 画面渲染」：高清渲染(2x)、显示方式(GL/画布)、
+画面平滑滤波(双线性/最近邻)、色彩深度(32/16 位)。
+「DraStic（激烈）专属 · 音频/性能/存档」：音量、声音开关、音频延迟(4 档)、
+快进倍率(2x/4x/8x/16x)、存档格式(.sav/.dsv)。
+所有键经 `applyCoreOptions → setCoreOption("drastic_*")` 只发给激烈引擎
+（melonDS 绝不读取）；音量/声音/延迟/快进运行中即时生效，高清/色彩深度/
+存档格式经会话快照（loadRom 拍照）下次进游戏完全生效。
+
+## 四、修改文件清单
+
+- `app/src/main/java/com/nesstation/app/ui/emulator/DraSticGlView.kt`（新增）
+- `app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt`
+- `app/src/main/java/com/nesstation/app/ui/emulator/EmulatorScreen.kt`
+- `app/src/main/java/com/nesstation/app/ui/settings/CoreSettingsPanel.kt`
+- `app/src/main/java/com/nesstation/app/core/storage/PadLayoutStore.kt`
+- `app/src/main/java/com/nesstation/app/ui/emulator/NdsCorePickerDialog.kt`
+
+## 五、验证
+
+- 修改文件全部通过 Kotlin 2.0 编译器语法级校验（与修改前错误轮廓逐类对比：
+  仅新增与既有 DropdownSetting 模式相同的 7 处 classpath 级联推断错误，
+  无真实语法/语义错误）。
+- 位域布局经 Python 模拟 packConfig 断言逐位验证。
+
+### 建议真机验证步骤
+
+1. 进 3D 游戏（如马力欧赛车 / 塞尔达）→ 画面应为 512×384 高清渲染
+   （对比关闭高清时的 256×192 锯齿感）。
+2. 切换「画面平滑滤波」双线性/最近邻 → 观察缩放平滑度变化。
+3. 游戏内菜单改「声音」「音频延迟」「快进倍率」→ 立即生效；
+   改「高清渲染」→ 重进游戏生效。
+4. 切「显示方式」画布（先关高清）→ 画布路径仍可正常游玩。
+5. 截图功能（GL 模式下 captureFrame 直接拉取）→ 截图完整。
+6. logcat 过滤 `DraSticGlView`：EGL 正常时无 error；异常时应看到
+   "EGL init failed" 并自动回退画布。

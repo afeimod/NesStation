@@ -133,18 +133,48 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         private const val BOOT_TIMEOUT_MS = 20_000L
 
         /**
-         * 打包 DraStic 配置位域（复刻原版 f0.h.n()，默认值取原版首次
-         * 安装时的出厂设置；0 之外的位全部关闭，仅开声音）：
-         *  bit31   = 声音启用（_SoundEnabled，默认开）
-         *  bit29   = 快进激活状态（V，运行中随 setFastForward 翻转）
-         *  bits12-15 = 快进速度（_FfwdSpeed，默认 2x）
-         *  其余位（作弊/麦克风/帧跳过/Slot2/线程数等）保持 0 = 关闭/自动
+         * 打包 DraStic 配置位域（复刻原版 f0.h.n()，位布局经
+         * libdrastic_arm64.so 反汇编逐位验证 —— startGame/applyConfig/
+         * 全局解包函数 0x17c58 三处交叉确认）：
+         *
+         *  bit31     = 声音启用（_SoundEnabled，默认开；!bit31 写入音频
+         *              引擎 0x3c9b048 的"跳过音频"标志）
+         *  bit29     = 快进激活状态（V，运行中随 setFastForward 翻转）
+         *  bits12-15 = 快进时的显示帧间隔表索引（0x1070c0：
+         *              [100000,33333,25000,16666,12500,5000]µs；
+         *              bit29=0 时该字段清零=正常帧率）
+         *  bits8-9   = 音频缓冲档位（4 档：缓冲数×采样数
+         *              (4,1470)/(4,2940)/(3,5880)/(4,5880)，越大延迟越高）
+         *  bit23     = 帧缓冲色彩格式：0=RGBA8888，1=RGBA4444
+         *              （getScreenBuffers 的转换分支 + glTexSubImage2D 的
+         *              format/type 常量 0x1908/0x1401 vs 0x1907/0x8363）
+         *  bit41     = 高清渲染（2x）：屏幕分辨率状态位 → 512×384
+         *              （setResolution 0x1cde4 + renderFrame 上传宽度
+         *              (state+1)*256；帧池每屏 0xC0000 字节恰好等于
+         *              512×384×4 —— 帧池就是按 2x 容量分配的）
+         *  bits37-38 = 快进倍率表索引（0x10a080：[2,4,8,16] → float）
+         *  bit50     = 存档格式：0=.sav（裸格式），1=.dsv（melonDS 格式）
+         *  其余位（作弊/麦克风/Slot2/输入过滤等）保持 0 = 关闭/自动
          */
-        private fun packConfig(sound: Boolean, fastForward: Boolean, ffwdSpeed: Int): Long {
+        private fun packConfig(
+            sound: Boolean,
+            fastForward: Boolean,
+            ffwdSpeed: Int,
+            audioLatency: Int = 0,
+            videoFormat16: Boolean = false,
+            hdRender: Boolean = false,
+            ffwdMultiplier: Int = 0,
+            saveDsv: Boolean = false
+        ): Long {
             var cfg = 0L
             if (sound) cfg = cfg or 0x80000000L
             if (fastForward) cfg = cfg or 0x20000000L
             cfg = cfg or ((ffwdSpeed.coerceIn(0, 15).toLong()) shl 12)
+            cfg = cfg or ((audioLatency.coerceIn(0, 3).toLong()) shl 8)
+            if (videoFormat16) cfg = cfg or 0x800000L          // bit 23
+            if (hdRender) cfg = cfg or (1L shl 41)             // bit 41
+            cfg = cfg or ((ffwdMultiplier.coerceIn(0, 3).toLong()) shl 37)  // bits 37-38
+            if (saveDsv) cfg = cfg or (1L shl 50)              // bit 50
             return cfg
         }
 
@@ -223,6 +253,70 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     /** App context —— 引擎初始化（onInit 上下文 / 目录定位）用。 */
     @Volatile
     var appContext: Context? = null
+
+    // ---- 激烈核心用户设置缓存（setCoreOption 在 loadRom 前后都可更新） ----
+    // 这些设置打包进 startGame/applyConfig 的 config 位域（见 packConfig）。
+    // loadRom 之前缓存的值会在 startGame 时生效；游戏运行期间修改的
+    // 会通过 applyConfig 热更新（原生解包函数 0x17c58 立即消费新位域）。
+
+    /** 声音开关（bit31）。 */
+    @Volatile
+    var optSound: Boolean = true
+
+    /** 高清渲染 2x（bit41）。 */
+    @Volatile
+    var optHdRender: Boolean = false
+
+    /** 16 位色彩格式（bit23）；false = 32 位 RGBA8888。 */
+    @Volatile
+    var optVideoFormat16: Boolean = false
+
+    /** 音频延迟档位 0..3（bits8-9）。 */
+    @Volatile
+    var optAudioLatency: Int = 0
+
+    /** 快进倍率索引 0..3 = 2x/4x/8x/16x（bits37-38）。 */
+    @Volatile
+    var optFfwdMultiplier: Int = 0
+
+    /** 存档格式 .dsv（bit50）；false = 裸 .sav。 */
+    @Volatile
+    var optSaveDsv: Boolean = false
+
+    // ---- 会话快照（loadRom 时从用户偏好拍下，决定原生 GPU 初始化） ----
+    // bit41（高清）与 bit23（色彩格式）在 startGame 时进入原生 GPU 引导，
+    // 决定帧池的上传尺寸与像素格式；GL 显示视图也按这两个快照分配纹理。
+    // 游戏运行中改设置只入 opt* 偏好，下次进游戏生效 —— 避免视图/原生
+    // 两侧尺寸格式不一致导致上传错位。
+
+    /** 本局游戏的高清渲染快照（loadRom 时拍下）。 */
+    @Volatile
+    var activeHdRender: Boolean = false
+        private set
+
+    /** 本局游戏的 16 位色彩格式快照（loadRom 时拍下）。 */
+    @Volatile
+    var activeVideoFormat16: Boolean = false
+        private set
+
+    /** GL 显示路径已接管帧消费（DraSticGlView 置位）：
+     * 渲染消费线程跳过 getScreenBuffers 的 CPU 帧拷贝（约 500KB/帧），
+     * 仅维持帧计数与就绪握手；截图改由 captureFrame 直接拉取。 */
+    @Volatile
+    var glDisplayActive: Boolean = false
+
+    /** 用会话快照 + 快进状态打包完整 config（热更新用，保证尺寸/格式位
+     *  与当前会话的原生状态一致）。 */
+    private fun currentConfig(fastForward: Boolean): Long = packConfig(
+        sound = optSound,
+        fastForward = fastForward,
+        ffwdSpeed = 2,                       // 快进时显示帧间隔档（40fps 显示上限）
+        audioLatency = optAudioLatency,
+        videoFormat16 = activeVideoFormat16,
+        hdRender = activeHdRender,
+        ffwdMultiplier = if (fastForward) optFfwdMultiplier else 0,
+        saveDsv = optSaveDsv
+    )
 
     // ---- 输入缓存（按键与触摸必须合并成一次 updateInput 调用） ----
 
@@ -437,12 +531,15 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
         // 预启动配置。ROM 以真实绝对路径传入（startGame 的路径最终会回到
         // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
+        // 先拍会话快照（原生 GPU 初始化与 GL 视图纹理分配都以此为准）。
+        activeHdRender = optHdRender
+        activeVideoFormat16 = optVideoFormat16
         try {
             DraSticPathCache.changeRom(effectiveRom.absolutePath, effectiveRom)
 
             DraSticJNI.setAudioVolume(DEFAULT_VOLUME)
             DraSticJNI.setAutosaveInterval(0)
-            DraSticJNI.applyConfig(packConfig(sound = true, fastForward = false, ffwdSpeed = 2))
+            DraSticJNI.applyConfig(currentConfig(fastForward = false))
         } catch (e: Throwable) {
             lastErrorMsg = "DraStic 启动异常: ${e.message}"
             android.util.Log.e("DraSticEngine", "pre-start config failed", e)
@@ -479,10 +576,14 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                     if (!running.get()) break
                     if (paused) continue
 
-                    DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
-                    // 合成：上屏在前、下屏在后（256×384）
-                    System.arraycopy(topBuf, 0, frameBuffer, 0, topBuf.size)
-                    System.arraycopy(bottomBuf, 0, frameBuffer, topBuf.size, bottomBuf.size)
+                    if (!glDisplayActive) {
+                        // 画布路径：搬运帧到 frameBuffer（截图/存档缩略图用）。
+                        // GL 路径：跳过约 500KB/帧的 CPU 拷贝，GL 线程直接消费帧池。
+                        DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                        // 合成：上屏在前、下屏在后（256×384）
+                        System.arraycopy(topBuf, 0, frameBuffer, 0, topBuf.size)
+                        System.arraycopy(bottomBuf, 0, frameBuffer, topBuf.size, bottomBuf.size)
+                    }
                     frameCount++
                     onFrame()
                 }
@@ -504,7 +605,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 ok = DraSticJNI.startGame(
                     effectiveRom.absolutePath,
                     -1,                       // 不自动读档
-                    packConfig(sound = true, fastForward = false, ffwdSpeed = 2),
+                    currentConfig(fastForward = false),
                     0,
                     false,
                     -1L                       // 自定义时钟关闭
@@ -606,13 +707,35 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
     }
 
+    /** NesStation 快进倍速 → DraStic 倍率索引（bits37-38，表 [2,4,8,16]）。
+     * 表内倍速精确映射；表外倍速（3x/6x）回落到用户的激烈快进倍率设置。 */
+    private fun ffwdMultiplierIndex(speed: Int): Int = when (speed) {
+        2 -> 0
+        4 -> 1
+        8 -> 2
+        16 -> 3
+        else -> optFfwdMultiplier.coerceIn(0, 3)
+    }
+
     override fun setFastForward(speed: Int) {
         if (!isLoaded) return
         val active = speed > 0
-        // 映射 NesStation 倍速（2/4/6/8/16）到 DraStic _FfwdSpeed（2..15）
-        val ffwd = if (active) speed.coerceIn(2, 15) else 2
+        // NesStation 倍速 → DraStic 倍率索引（bits37-38，表 [2,4,8,16]）。
+        // bits12-15 的显示帧间隔档保持 2（快进时 40fps 显示上限，防止
+        // 显示线程拖慢模拟）。尺寸/格式位用会话快照，不随快进翻转。
         try {
-            DraSticJNI.applyConfig(packConfig(sound = true, fastForward = active, ffwdSpeed = ffwd))
+            DraSticJNI.applyConfig(
+                packConfig(
+                    sound = optSound,
+                    fastForward = active,
+                    ffwdSpeed = 2,
+                    audioLatency = optAudioLatency,
+                    videoFormat16 = activeVideoFormat16,
+                    hdRender = activeHdRender,
+                    ffwdMultiplier = if (active) ffwdMultiplierIndex(speed) else optFfwdMultiplier,
+                    saveDsv = optSaveDsv
+                )
+            )
         } catch (e: Throwable) {
             android.util.Log.w("DraSticEngine", "applyConfig(ff) failed", e)
         }
@@ -856,15 +979,52 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     }
 
     override fun setCoreOption(key: String, value: String) {
-        // melonds_* 选项对 DraStic 无意义；预留 drastic 专属键：
-        // "drastic_volume" → 0..100
-        if (key == "drastic_volume") {
-            value.toIntOrNull()?.let {
-                try {
-                    DraSticJNI.setAudioVolume(it.coerceIn(0, 100))
-                } catch (_: Throwable) {
+        // melonds_* 选项对 DraStic 无意义；drastic_* 专属键在此消费。
+        // 立即生效的部分（音量）直接转发；位域类设置先入缓存 ——
+        // 游戏未启动时随 startGame 生效，已启动时经 applyConfig 热更新。
+        when (key) {
+            "drastic_volume" -> {
+                value.toIntOrNull()?.let {
+                    try {
+                        DraSticJNI.setAudioVolume(it.coerceIn(0, 100))
+                    } catch (_: Throwable) {
+                    }
                 }
             }
+            "drastic_sound" -> {
+                optSound = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_hd_render" -> {
+                optHdRender = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_video_format" -> {
+                optVideoFormat16 = value == "16"
+                applyOptionsHot()
+            }
+            "drastic_audio_latency" -> {
+                optAudioLatency = value.toIntOrNull()?.coerceIn(0, 3) ?: 0
+                applyOptionsHot()
+            }
+            "drastic_ffwd_speed" -> {
+                // 用户设置快进倍率：0..3 → 2x/4x/8x/16x（仅快进激活时生效）
+                optFfwdMultiplier = value.toIntOrNull()?.coerceIn(0, 3) ?: 0
+            }
+            "drastic_save_format" -> {
+                optSaveDsv = value == "dsv"
+                applyOptionsHot()
+            }
+        }
+    }
+
+    /** 游戏运行中热更新位域设置（未加载时仅入缓存，startGame 时生效）。 */
+    private fun applyOptionsHot() {
+        if (!isLoaded) return
+        try {
+            DraSticJNI.applyConfig(currentConfig(fastForward = false))
+        } catch (e: Throwable) {
+            android.util.Log.w("DraSticEngine", "applyConfig(options) failed", e)
         }
     }
 
@@ -896,9 +1056,19 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     override fun captureFrame(): FrameCapture? {
         if (!isLoaded) return null
         return try {
-            // waitScreen 短暂等待确保拿到完整帧（截图时游戏通常已暂停）
-            val out = frameBuffer.copyOf()
-            FrameCapture(out, 256, 384)
+            if (glDisplayActive) {
+                // GL 路径：渲染消费线程不搬运帧，截图时直接拉取当前帧
+                // （getScreenBuffers 恒为 256×192×2 输出，与分辨率档无关）
+                val top = IntArray(256 * 192)
+                val bottom = IntArray(256 * 192)
+                DraSticJNI.getScreenBuffers(top, bottom)
+                val out = IntArray(256 * 384)
+                System.arraycopy(top, 0, out, 0, top.size)
+                System.arraycopy(bottom, 0, out, top.size, bottom.size)
+                FrameCapture(out, 256, 384)
+            } else {
+                FrameCapture(frameBuffer.copyOf(), 256, 384)
+            }
         } catch (e: Throwable) {
             null
         }

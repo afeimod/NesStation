@@ -96,10 +96,10 @@ fun NdsCorePickerDialog(
 
                 CoreOptionCard(
                     title = "DraStic（激烈）",
-                    subtitle = "高性能核心",
+                    subtitle = "高性能核心 · 高清渲染",
                     description = if (availability.available) {
-                        "商用级性能与兼容性，自带声音输出；即时存档位于" +
-                            "DraStic 专属槽位。"
+                        "商用级性能与兼容性；支持 2x 高清渲染、GL 加速显示、" +
+                            "快进与即时存档（DraStic 专属槽位）。"
                     } else {
                         (availability.reason ?: "当前进程不可用") +
                             "\n（选 melonDS 继续游戏）"

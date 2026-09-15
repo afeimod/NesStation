@@ -884,18 +884,78 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {ndsUseFwSettings = it}) }
                 }
                 // DraStic（激烈）核心专属设置 —— 与 melonDS 完全独立。
-                // 激烈核心为原生推模型（模拟主循环 + OpenSL 音频 + Canvas 渲染），
+                // 激烈核心为原生推模型（模拟主循环 + OpenSL 音频 + GL/Canvas 渲染），
                 // 下方选项仅在选择激烈核心运行时生效；选 melonDS 时整区忽略。
-                SettingsSection("DraStic（激烈）专属") {
+                // 所有 config 位域经 libdrastic_arm64.so 反汇编逐位验证。
+                SettingsSection("DraStic（激烈）专属 · 画面渲染") {
+                    // 高清渲染 = config bit41：原生以 512×384（2x）内部分辨率渲染。
+                    // GL 显示路径按 2x 纹理上传 —— 3D 游戏画面细腻度提升最直观。
+                    DropdownRow("高清渲染 (2x 分辨率)",
+                        listOf("enabled" to "开启 512×384 (推荐, 3D游戏必开)",
+                               "disabled" to "关闭 256×192 (原生分辨率)"),
+                        padLayout.ndsDrasticHdRender
+                    ) { updateLayout(padLayout.copy {ndsDrasticHdRender = it}) }
+                    Text(
+                        "开启后内部分辨率翻倍（256×192 → 512×384），画面细节与 3D 模型边缘显著改善。" +
+                        "需重进游戏完全生效；高清模式自动使用 GL 显示路径。低端设备若帧率下降可关闭。",
+                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                    DropdownRow("显示方式",
+                        listOf("gl" to "GL 加速 (推荐, 双线性平滑)",
+                               "canvas" to "画布位图 (兼容模式)"),
+                        padLayout.ndsDrasticDisplayMode
+                    ) { updateLayout(padLayout.copy {ndsDrasticDisplayMode = it}) }
+                    Text(
+                        "GL 加速：原生 renderFrame 直接把帧池上传为 GPU 纹理绘制，" +
+                        "零位图拷贝、支持高清纹理与双线性缩放；EGL 异常时自动回退画布。" +
+                        "画布：传统位图路径，兼容性兜底。",
+                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
+                    DropdownRow("画面平滑滤波",
+                        listOf("enabled" to "双线性 (平滑)", "disabled" to "最近邻 (锐利像素)"),
+                        padLayout.ndsDrasticSmoothFilter
+                    ) { updateLayout(padLayout.copy {ndsDrasticSmoothFilter = it}) }
+                    // 色彩深度 = config bit23：32 位 RGBA8888 / 16 位 RGBA4444
+                    DropdownRow("色彩深度",
+                        listOf("32" to "32位 RGBA8888 (最佳质量)",
+                               "16" to "16位 RGBA4444 (省带宽)"),
+                        padLayout.ndsDrasticVideoFormat
+                    ) { updateLayout(padLayout.copy {ndsDrasticVideoFormat = it}) }
+                }
+                SettingsSection("DraStic（激烈）专属 · 音频 / 性能 / 存档") {
                     DropdownRow("音量",
                         (0..100).step(10)
                             .map { it.toString() to (if (it == 0) "静音" else "$it%") },
                         padLayout.ndsDrasticVolume
                     ) { updateLayout(padLayout.copy {ndsDrasticVolume = it}) }
+                    // 声音开关 = config bit31
+                    DropdownRow("声音",
+                        listOf("enabled" to "开启", "disabled" to "关闭"),
+                        padLayout.ndsDrasticSound
+                    ) { updateLayout(padLayout.copy {ndsDrasticSound = it}) }
+                    // 音频延迟 = config bits8-9（4 档缓冲）
+                    DropdownRow("音频延迟",
+                        listOf("0" to "最低 (即时反馈)", "1" to "低 (推荐)",
+                               "2" to "中 (抗卡音)", "3" to "高 (最强抗卡音)"),
+                        padLayout.ndsDrasticAudioLatency
+                    ) { updateLayout(padLayout.copy {ndsDrasticAudioLatency = it}) }
+                    // 快进倍率 = config bits37-38（表 [2,4,8,16]）
+                    DropdownRow("快进倍率",
+                        listOf("0" to "2x", "1" to "4x", "2" to "8x", "3" to "16x"),
+                        padLayout.ndsDrasticFfwdSpeed
+                    ) { updateLayout(padLayout.copy {ndsDrasticFfwdSpeed = it}) }
+                    // 存档格式 = config bit50
+                    DropdownRow("存档格式",
+                        listOf("sav" to ".sav 裸格式 (兼容性最好)",
+                               "dsv" to ".dsv melonDS格式 (可互换)"),
+                        padLayout.ndsDrasticSaveFormat
+                    ) { updateLayout(padLayout.copy {ndsDrasticSaveFormat = it}) }
                     Text(
                         "以上设置仅在启动 NDS 游戏时选择「DraStic（激烈）」核心后生效，" +
                         "melonDS 核心完全忽略（反之亦然，两套核心互不读取对方设置）。" +
-                        "激烈核心的模拟参数（内部渲染优化、帧同步策略等）由原生核心自动管理。",
+                        "声音/延迟/快进运行中即时生效；高清渲染、色彩深度与存档格式需重进游戏。",
                         color = Color(0xFF4A5568), fontSize = 11.sp,
                         lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)

@@ -460,6 +460,42 @@ class PadLayout {
     // 运行时经 DraSticEngine.setCoreOption → DraSticJNI.setAudioVolume 应用。
     var ndsDrasticVolume: String = "100"
 
+    // 以下激烈核心设置均来自对 libdrastic_arm64.so 的逐位反汇编验证
+    // （config 位域布局见 DraSticEngine.packConfig 的注释）。
+
+    // 声音开关（config bit31，1=开启）。
+    var ndsDrasticSound: String = "enabled"
+
+    // 高清渲染 / 硬件渲染（config bit41）：开启后原生以 512×384（2x）
+    // 内部分辨率渲染并走 GL 纹理上传路径；关闭则 256×192 软件路径。
+    // 需配合 GL 显示视图（DraSticGlView）。3D 游戏建议开启。
+    var ndsDrasticHdRender: String = "enabled"
+
+    // 画面色彩深度（config bit23）："32"=RGBA8888（默认，质量最佳），
+    // "16"=RGBA4444（省带宽，色彩略降）。部分低端机可切 16 位提升性能。
+    var ndsDrasticVideoFormat: String = "32"
+
+    // 音频延迟档位（config bits 8-9：0..3）。0=最低延迟，3=最大缓冲。
+    // 延迟越高越不容易卡音，但操作反馈变慢。
+    var ndsDrasticAudioLatency: String = "1"
+
+    // 快进倍率索引（bits 37-38：0..3 → 2x/4x/8x/16x）。表外倍速
+    // （3x/6x 等）回落到此处设置的倍率。
+    var ndsDrasticFfwdSpeed: String = "0"
+
+    // 存档格式（config bit50）："sav"=裸 .sav（兼容性最好），
+    // "dsv"=melonDS .dsv（带头信息，可与官方 melonDS 互换）。
+    var ndsDrasticSaveFormat: String = "sav"
+
+    // 显示平滑滤波（GL 纹理过滤，视图层实现，不入 config）：
+    // enabled=双线性（平滑），disabled=最近邻（像素锐利）。
+    var ndsDrasticSmoothFilter: String = "enabled"
+
+    // 显示方式（视图层选择）："gl"=OpenGL 加速显示（默认，双线性缩放 +
+    // 原生纹理上传路径），"canvas"=画布位图路径（传统行为，兼容兑底）。
+    // EGL 初始化失败时自动回退 canvas。
+    var ndsDrasticDisplayMode: String = "gl"
+
     // === NDS 双屏独立布局 (videoScale == "custom" 时生效) ===
     // 参照 melonDS 官方 Android 布局模型：上屏 / 下屏各占一个独立矩形，
     // 可分别拖动 4 角调整大小、拖动矩形内部移动位置。归一化 0..1，横竖屏分开保存。
@@ -930,6 +966,14 @@ class PadLayout {
         ndsUseFwSettings = another.ndsUseFwSettings
         ndsSaveMode = another.ndsSaveMode
         ndsDrasticVolume = another.ndsDrasticVolume
+        ndsDrasticSound = another.ndsDrasticSound
+        ndsDrasticHdRender = another.ndsDrasticHdRender
+        ndsDrasticVideoFormat = another.ndsDrasticVideoFormat
+        ndsDrasticAudioLatency = another.ndsDrasticAudioLatency
+        ndsDrasticFfwdSpeed = another.ndsDrasticFfwdSpeed
+        ndsDrasticSaveFormat = another.ndsDrasticSaveFormat
+        ndsDrasticSmoothFilter = another.ndsDrasticSmoothFilter
+        ndsDrasticDisplayMode = another.ndsDrasticDisplayMode
         ndsTopLayoutLeft = another.ndsTopLayoutLeft
         ndsTopLayoutTop = another.ndsTopLayoutTop
         ndsTopLayoutRight = another.ndsTopLayoutRight
@@ -1693,6 +1737,17 @@ object PadLayoutStore {
             // DraStic（激烈）核心：音量 0..100
             ndsDrasticVolume = (p.getString("nds_drastic_volume", "100") ?: "100")
                 .toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "100"
+            // DraStic 其余设置（均为字符串枚举，非法值回退默认）
+            ndsDrasticSound = p.getString("nds_drastic_sound", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
+            ndsDrasticHdRender = p.getString("nds_drastic_hd_render", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
+            ndsDrasticVideoFormat = p.getString("nds_drastic_video_format", "32")?.takeIf { it == "32" || it == "16" } ?: "32"
+            ndsDrasticAudioLatency = (p.getString("nds_drastic_audio_latency", "1") ?: "1")
+                .toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "1"
+            ndsDrasticFfwdSpeed = (p.getString("nds_drastic_ffwd_speed", "0") ?: "0")
+                .toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "0"
+            ndsDrasticSaveFormat = p.getString("nds_drastic_save_format", "sav")?.takeIf { it == "sav" || it == "dsv" } ?: "sav"
+            ndsDrasticSmoothFilter = p.getString("nds_drastic_smooth_filter", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
+            ndsDrasticDisplayMode = p.getString("nds_drastic_display_mode", "gl")?.takeIf { it == "gl" || it == "canvas" } ?: "gl"
             // 全局存档方式迁移：老版本只有 nds_save_mode（NDS 独有），
             // 升级后继承用户已选的 NDS 存档方式作为全局默认。
             globalSaveMode = p.getString("global_save_mode", null)
@@ -2204,6 +2259,14 @@ object PadLayoutStore {
             putString("nds_use_fw_settings", layout.ndsUseFwSettings)
             putString("nds_save_mode", layout.ndsSaveMode)   // legacy (NDS-only), 迁移到 global_save_mode
             putString("nds_drastic_volume", layout.ndsDrasticVolume)   // DraStic（激烈）核心
+            putString("nds_drastic_sound", layout.ndsDrasticSound)
+            putString("nds_drastic_hd_render", layout.ndsDrasticHdRender)
+            putString("nds_drastic_video_format", layout.ndsDrasticVideoFormat)
+            putString("nds_drastic_audio_latency", layout.ndsDrasticAudioLatency)
+            putString("nds_drastic_ffwd_speed", layout.ndsDrasticFfwdSpeed)
+            putString("nds_drastic_save_format", layout.ndsDrasticSaveFormat)
+            putString("nds_drastic_smooth_filter", layout.ndsDrasticSmoothFilter)
+            putString("nds_drastic_display_mode", layout.ndsDrasticDisplayMode)
             putString("global_save_mode", layout.globalSaveMode)
             // === 主页个性化 ===
             putString("home_bg_uri", layout.homeBackgroundUri)

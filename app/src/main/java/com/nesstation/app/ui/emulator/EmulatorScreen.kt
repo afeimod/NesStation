@@ -1925,6 +1925,9 @@ fun EmulatorScreen(
                     ndsScreenLayout = padLayout.ndsScreenLayout,
                     ndsScreenGapPx = padLayout.ndsScreenGap.toIntOrNull()?.coerceIn(0, 20) ?: 0,
                     ndsOpenGl = padLayout.ndsOpenGlRenderer == "enabled",
+                    drasticDisplayMode = padLayout.ndsDrasticDisplayMode,
+                    drasticHdRender = padLayout.ndsDrasticHdRender == "enabled",
+                    drasticSmoothFilter = padLayout.ndsDrasticSmoothFilter == "enabled",
                     ndsTopRect = ndsTopRect,
                     ndsBottomRect = ndsBottomRect,
                     gameViewTracker = gameViewTracker,
@@ -2112,9 +2115,11 @@ fun EmulatorScreen(
                                     ndsEngine.setTouchInput(0, 0, false)
                                     ndsEngine.setTouchInputDirect(0, 0, false)
                                 } else {
-                                    // DraStic 的游戏视图恒为 NdsDualScreenView
-                                    // （画布渲染）—— 任何缩放模式都按"下屏
-                                    // 目标矩形直接映射"处理，与自由布局同路。
+                                    // DraStic 的游戏视图为 NdsDualScreenView
+                                    // （画布模式）或 DraSticGlView（GL 模式）——
+                                    // 两者几何同构（同样的布局矩形/宽高比约束），
+                                    // 任何缩放模式都按"下屏目标矩形直接映射"
+                                    // 处理，与自由布局同路。
                                     val isCanvasMode = padLayout.videoScale == "custom" ||
                                         engine is com.nesstation.app.core.engine.DraSticEngine
                                     if (isCanvasMode) {
@@ -3148,9 +3153,17 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             // 对两个核心都生效，不经过 setCoreOption 交叉传递。
             if (engine is com.nesstation.app.core.engine.DraSticEngine) {
                 // ---- DraStic（激烈）专属 ----
-                // 音量 0..100（DraSticEngine.setCoreOption 识别此键并转发
-                // DraSticJNI.setAudioVolume）
+                // 所有 drastic_* 键由 DraSticEngine.setCoreOption 消费：
+                // 音量立即生效；位域设置（声音/高清/格式/延迟/存档格式）在
+                // startGame 时打包进 config，运行中修改经 applyConfig 热更新
+                // （高清渲染与色彩格式重启游戏后完全生效）。
                 engine.setCoreOption("drastic_volume", layout.ndsDrasticVolume)
+                engine.setCoreOption("drastic_sound", layout.ndsDrasticSound)
+                engine.setCoreOption("drastic_hd_render", layout.ndsDrasticHdRender)
+                engine.setCoreOption("drastic_video_format", layout.ndsDrasticVideoFormat)
+                engine.setCoreOption("drastic_audio_latency", layout.ndsDrasticAudioLatency)
+                engine.setCoreOption("drastic_ffwd_speed", layout.ndsDrasticFfwdSpeed)
+                engine.setCoreOption("drastic_save_format", layout.ndsDrasticSaveFormat)
             } else {
                 // ---- melonDS 专属 ----
                 // keys/values must match the prebuilt melonDS libretro core
@@ -3373,6 +3386,14 @@ private fun GameSurfaceView(
     ndsScreenGapPx: Int = 0,
     // NDS OpenGL 渲染器是否启用（GL 合成帧固定 256x386，含 2px gap）
     ndsOpenGl: Boolean = false,
+    // DraStic（激烈）显示方式："gl"=OpenGL 加速显示（默认），"canvas"=画布。
+    // GL 路径 EGL 失败时自动回退画布。
+    drasticDisplayMode: String = "gl",
+    // DraStic 高清渲染（bit41）是否开启 —— 开启时强制 GL 显示路径
+    // （画布路径的 getScreenBuffers 固定读 256×192，高清帧池下会裁切）。
+    drasticHdRender: Boolean = false,
+    // DraStic GL 显示的纹理平滑滤波（true=双线性）。
+    drasticSmoothFilter: Boolean = true,
     // 追踪游戏视图在窗口中位置/尺寸的 Modifier（onGloballyPositioned）。
     // 声明在 EmulatorScreen 中，游戏视图两个分支（NdsDualScreenView /
     // SurfaceView）都要挂上，供手柄覆盖层的 GAME_AREA 触摸转发换算坐标。
@@ -3380,6 +3401,14 @@ private fun GameSurfaceView(
 ) {
     val ctx = LocalContext.current
     val isCustom = videoScale == "custom"
+    // DraStic（激烈）核心的 GL 加速显示路径（EGL 失败自动回退画布）。
+    // 高清渲染（bit41）时强制走 GL：原生帧池变为 512×384，而画布路径的
+    // getScreenBuffers 固定按 256×192 读取（会只取到左上四分之一）。
+    val isDrasticEngine = platform == GamePlatform.NDS &&
+        engine is com.nesstation.app.core.engine.DraSticEngine
+    val drasticGlFailed = remember { mutableStateOf(false) }
+    val useDrasticGl = isDrasticEngine &&
+        (drasticDisplayMode == "gl" || drasticHdRender) && !drasticGlFailed.value
     // In custom layout mode the user controls position/size directly, so the
     // surface is anchored top-start and moved via offset; otherwise align the
     // game to top (portrait) or center (landscape).
@@ -3417,9 +3446,12 @@ private fun GameSurfaceView(
         //      恒走画布 —— 标准模式按屏幕布局派生半屏矩形，外层仍套
         //      effectiveVideoScale 的布局原生宽高比（2:3/8:3/4:3），每个屏幕
         //      各自保持 4:3 等比。
+        // DraStic 例外：显示方式为 GL（默认）时走 DraSticGlView —— 原生
+        // renderFrame 直接上传帧池到 GL 纹理并绘制（支持 2x 高清纹理），
+        // 画布路径仅在 GL 关闭或 EGL 失败时使用。
         val isDrasticCanvas = platform == GamePlatform.NDS && !isCustom &&
-            engine is com.nesstation.app.core.engine.DraSticEngine
-        val isNdsCustom = platform == GamePlatform.NDS && isCustom
+            engine is com.nesstation.app.core.engine.DraSticEngine && !useDrasticGl
+        val isNdsCustom = platform == GamePlatform.NDS && isCustom && !useDrasticGl
         if (isNdsCustom || isDrasticCanvas) {
             // 画布路径的上/下屏目标矩形：custom 用编辑器矩形，DraStic 标准
             // 模式按布局派生（bottomRect 即触摸热区）
@@ -3516,6 +3548,109 @@ private fun GameSurfaceView(
                     }
                 },
                 modifier = canvasModifier.then(gameViewTracker)
+            )
+        } else if (useDrasticGl) {
+            // === DraStic GL 加速显示路径 ===
+            // DraSticGlView：专用 EGL/GL 线程，每帧 DraSticJNI.renderFrame
+            // 上传帧池（高清模式 512×384）到两张屏幕纹理并绘制双四边形。
+            // 布局与画布路径同构（custom 自由矩形 / 标准布局宽高比）。
+            val glTopRect: FloatArray
+            val glBottomRect: FloatArray
+            if (isCustom) {
+                glTopRect = ndsTopRect
+                glBottomRect = ndsBottomRect
+            } else {
+                val (t, b) = ndsLayoutRects(ndsScreenLayout)
+                glTopRect = t
+                glBottomRect = b
+            }
+            val glModifier = if (isCustom) {
+                Modifier.fillMaxSize()
+            } else {
+                when (effectiveVideoScale) {
+                    "4:3" -> Modifier.aspectRatio(4f / 3f)
+                    "2:3" -> Modifier.aspectRatio(2f / 3f)   // NDS 上下双屏 (256x384)
+                    "8:3" -> Modifier.aspectRatio(8f / 3f)   // NDS 左右双屏 (512x192)
+                    "3:2" -> Modifier.aspectRatio(3f / 2f)
+                    "8:7" -> Modifier.aspectRatio(8f / 7f)
+                    "16:9" -> Modifier.aspectRatio(16f / 9f)
+                    else -> Modifier.fillMaxSize()
+                }
+            }
+            AndroidView(
+                factory = { ctx ->
+                    DraSticGlView(ctx).apply {
+                        // 设置焦点以便接收物理手柄 / 键盘按键
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        requestFocus()
+                        // EGL 失败自动回退画布路径（重组后 isDrasticCanvas 命中）。
+                        // 注：若同时开启了高清渲染，画布显示为高清帧的左上
+                        // 1/4（getScreenBuffers 固定 256×192 读取）—— 在设置中
+                        // 关闭高清渲染并重进游戏即可恢复完整画面。
+                        onGlFailed = { drasticGlFailed.value = true }
+                        // 物理按键路由（与画布分支一致）
+                        setOnKeyListener { v, keyCode, event ->
+                            if (uiBlocked) {
+                                false
+                            } else {
+                                val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
+                                if (bits != 0) {
+                                    when (event.action) {
+                                        KeyEvent.ACTION_DOWN -> {
+                                            gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
+                                            routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                                            true
+                                        }
+                                        KeyEvent.ACTION_UP -> {
+                                            gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
+                                            routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                } else if (event.action == KeyEvent.ACTION_DOWN &&
+                                           (keyCode == KeyEvent.KEYCODE_MENU ||
+                                            keyCode == KeyEvent.KEYCODE_BACK)) {
+                                    onMenuToggle()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                        }
+                    }
+                },
+                update = { v ->
+                    v.engine = engine as? com.nesstation.app.core.engine.DraSticEngine
+                    v.screenLayout = ndsScreenLayout
+                    v.uiBlocked = uiBlocked
+                    v.smoothFilter = drasticSmoothFilter
+                    if (isCustom) {
+                        v.customTopRect = glTopRect
+                        v.customBottomRect = glBottomRect
+                    } else {
+                        v.customTopRect = null
+                        v.customBottomRect = null
+                    }
+                    v.notifyLayoutChanged()
+                    // 与画布分支相同：uiBlocked 变化时修正按键状态
+                    if (uiBlocked && gamepadBitsHolder[0] != 0) {
+                        gamepadBitsHolder[0] = 0
+                        routePadBits(engine, currentPlayer, 0, netplayController, platform)
+                    }
+                    if (!uiBlocked) {
+                        v.isFocusable = true
+                        v.isFocusableInTouchMode = true
+                        v.requestFocus()
+                    }
+                },
+                onRelease = { v ->
+                    // 释放引擎引用前先撤销 GL 帧消费接管（画布路径恢复搬运）
+                    v.engine?.glDisplayActive = false
+                    v.engine = null
+                },
+                modifier = glModifier.then(gameViewTracker)
             )
         } else {
         val surfaceModifier = when (effectiveVideoScale) {
@@ -9233,13 +9368,70 @@ private fun SettingsPanel(
                 Spacer(Modifier.size(8.dp))
                 Text("DraStic（激烈）专属", color = Color(0xFFFFD66B), fontSize = 12.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                Text("以下选项仅在启动时选择激烈核心运行时生效；选 melonDS 核心时完全忽略。激烈核心自带替代 BIOS，无需导入。",
+                Text("以下选项仅在启动时选择激烈核心运行时生效；选 melonDS 核心时完全忽略。激烈核心自带替代 BIOS，无需导入。所有选项经反汇编原生库逐位验证。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
+
+                Spacer(Modifier.size(6.dp))
+                Text("画面渲染", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // 高清渲染 = config bit41：原生以 512×384（2x）内部分辨率渲染，
+                // GL 显示路径按 2x 纹理上传 —— 3D 游戏画面细腻度提升最直观。
+                DropdownSetting("高清渲染 (2x 分辨率)",
+                    listOf("enabled" to "开启 512×384 (推荐, 3D游戏必开)",
+                           "disabled" to "关闭 256×192 (原生分辨率)"),
+                    padLayout.ndsDrasticHdRender
+                ) { onLayoutChange(padLayout.copy {ndsDrasticHdRender = it}) }
+                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏完全生效。高清模式自动使用 GL 显示路径。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
+                // 显示方式：GL 加速显示路径（原生 renderFrame 纹理上传 + GPU 绘制）
+                DropdownSetting("显示方式",
+                    listOf("gl" to "GL 加速 (推荐, 双线性平滑)",
+                           "canvas" to "画布位图 (兼容模式)"),
+                    padLayout.ndsDrasticDisplayMode
+                ) { onLayoutChange(padLayout.copy {ndsDrasticDisplayMode = it}) }
+                DropdownSetting("画面平滑滤波",
+                    listOf("enabled" to "双线性 (平滑)", "disabled" to "最近邻 (锐利像素)"),
+                    padLayout.ndsDrasticSmoothFilter
+                ) { onLayoutChange(padLayout.copy {ndsDrasticSmoothFilter = it}) }
+                // 色彩深度 = config bit23
+                DropdownSetting("色彩深度",
+                    listOf("32" to "32位 RGBA8888 (最佳质量)",
+                           "16" to "16位 RGBA4444 (省带宽)"),
+                    padLayout.ndsDrasticVideoFormat
+                ) { onLayoutChange(padLayout.copy {ndsDrasticVideoFormat = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("音量",
                     (0..100).step(10)
                         .map { it.toString() to (if (it == 0) "静音" else "$it%") },
                     padLayout.ndsDrasticVolume
                 ) { onLayoutChange(padLayout.copy {ndsDrasticVolume = it}) }
+                DropdownSetting("声音",
+                    listOf("enabled" to "开启", "disabled" to "关闭"),
+                    padLayout.ndsDrasticSound
+                ) { onLayoutChange(padLayout.copy {ndsDrasticSound = it}) }
+                // 音频延迟 = config bits8-9（4 档缓冲）
+                DropdownSetting("音频延迟",
+                    listOf("0" to "最低 (即时反馈)", "1" to "低 (推荐)",
+                           "2" to "中 (抗卡音)", "3" to "高 (最强抗卡音)"),
+                    padLayout.ndsDrasticAudioLatency
+                ) { onLayoutChange(padLayout.copy {ndsDrasticAudioLatency = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("性能 / 存档", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // 快进倍率 = config bits37-38（表 [2,4,8,16]）
+                DropdownSetting("快进倍率",
+                    listOf("0" to "2x", "1" to "4x", "2" to "8x", "3" to "16x"),
+                    padLayout.ndsDrasticFfwdSpeed
+                ) { onLayoutChange(padLayout.copy {ndsDrasticFfwdSpeed = it}) }
+                // 存档格式 = config bit50
+                DropdownSetting("存档格式",
+                    listOf("sav" to ".sav 裸格式 (兼容性最好)",
+                           "dsv" to ".dsv melonDS格式 (可互换)"),
+                    padLayout.ndsDrasticSaveFormat
+                ) { onLayoutChange(padLayout.copy {ndsDrasticSaveFormat = it}) }
+                Text("存档格式决定 .sav 文件结构：裸格式通用于各类 NDS 模拟器；dsv 带头信息可与官方 melonDS 直接互换。切换后需重进游戏。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
             }
             GamePlatform.PSX -> {
                 Text("PSX/PlayStation 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
