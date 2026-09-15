@@ -460,30 +460,24 @@ class PadLayout {
     // 运行时经 DraSticEngine.setCoreOption → DraSticJNI.setAudioVolume 应用。
     var ndsDrasticVolume: String = "100"
 
-    // 以下激烈核心设置均来自对 libdrastic_arm64.so 的逐位反汇编验证
-    // （config 位域布局见 DraSticEngine.packConfig 的注释）。
+    // 以下激烈核心设置均来自对 libdrastic_arm64.so 的逐指令反汇编验证
+    // （config 位域布局与消费链路见 DraSticEngine.packConfig 的注释）。
+    // 默认值 = 已在真机验证可正常显示画面的配置字（bit31 声音开，
+    // 其余位全 0）——不默认开启任何未经验证的位。
 
     // 声音开关（config bit31，1=开启）。
     var ndsDrasticSound: String = "enabled"
 
-    // 高清渲染 / 硬件渲染（config bit41）：开启后原生以 512×384（2x）
-    // 内部分辨率渲染并走 GL 纹理上传路径；关闭则 256×192 软件路径。
-    // 需配合 GL 显示视图（DraSticGlView）。3D 游戏建议开启。
-    var ndsDrasticHdRender: String = "enabled"
-
-    // 画面色彩深度（config bit23）："32"=RGBA8888（默认，质量最佳），
-    // "16"=RGBA4444（省带宽，色彩略降）。部分低端机可切 16 位提升性能。
-    var ndsDrasticVideoFormat: String = "32"
-
-    // 音频延迟档位（config bits 8-9：0..3）。0=最低延迟，3=最大缓冲。
-    // 延迟越高越不容易卡音，但操作反馈变慢。
-    var ndsDrasticAudioLatency: String = "1"
+    // 高清渲染（config bit41）：开启后原生以 512×384（2x）内部分辨率渲染
+    // 并强制 GL 显示路径；关闭则 256×192（与验证可用的默认配置一致）。
+    // 需重进游戏生效（分辨率在 startGame 路径初始化）。
+    var ndsDrasticHdRender: String = "disabled"
 
     // 快进倍率索引（bits 37-38：0..3 → 2x/4x/8x/16x）。表外倍速
     // （3x/6x 等）回落到此处设置的倍率。
     var ndsDrasticFfwdSpeed: String = "0"
 
-    // 存档格式（config bit50）："sav"=裸 .sav（兼容性最好），
+    // 存档格式（config bit50）："sav"=裸 .sav（默认），
     // "dsv"=melonDS .dsv（带头信息，可与官方 melonDS 互换）。
     var ndsDrasticSaveFormat: String = "sav"
 
@@ -491,9 +485,10 @@ class PadLayout {
     // enabled=双线性（平滑），disabled=最近邻（像素锐利）。
     var ndsDrasticSmoothFilter: String = "enabled"
 
-    // 显示方式（视图层选择）："gl"=OpenGL 加速显示（默认，双线性缩放 +
-    // 原生纹理上传路径），"canvas"=画布位图路径（传统行为，兼容兑底）。
-    // EGL 初始化失败时自动回退 canvas。
+    // 显示方式（视图层选择）："gl"=OpenGL 加速显示（默认，复刻原版 App
+    // 的 renderFrame 显示路径：原生纹理上传 + 双缓冲读 + GPU 绘制，
+    // 3D 游戏无撕裂），"canvas"=画布位图路径（传统行为）。
+    // EGL 初始化失败时自动回退 canvas（并自动降回 1x 分辨率）。
     var ndsDrasticDisplayMode: String = "gl"
 
     // === NDS 双屏独立布局 (videoScale == "custom" 时生效) ===
@@ -968,8 +963,6 @@ class PadLayout {
         ndsDrasticVolume = another.ndsDrasticVolume
         ndsDrasticSound = another.ndsDrasticSound
         ndsDrasticHdRender = another.ndsDrasticHdRender
-        ndsDrasticVideoFormat = another.ndsDrasticVideoFormat
-        ndsDrasticAudioLatency = another.ndsDrasticAudioLatency
         ndsDrasticFfwdSpeed = another.ndsDrasticFfwdSpeed
         ndsDrasticSaveFormat = another.ndsDrasticSaveFormat
         ndsDrasticSmoothFilter = another.ndsDrasticSmoothFilter
@@ -1740,9 +1733,6 @@ object PadLayoutStore {
             // DraStic 其余设置（均为字符串枚举，非法值回退默认）
             ndsDrasticSound = p.getString("nds_drastic_sound", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
             ndsDrasticHdRender = p.getString("nds_drastic_hd_render", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
-            ndsDrasticVideoFormat = p.getString("nds_drastic_video_format", "32")?.takeIf { it == "32" || it == "16" } ?: "32"
-            ndsDrasticAudioLatency = (p.getString("nds_drastic_audio_latency", "1") ?: "1")
-                .toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "1"
             ndsDrasticFfwdSpeed = (p.getString("nds_drastic_ffwd_speed", "0") ?: "0")
                 .toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "0"
             ndsDrasticSaveFormat = p.getString("nds_drastic_save_format", "sav")?.takeIf { it == "sav" || it == "dsv" } ?: "sav"
@@ -2261,8 +2251,6 @@ object PadLayoutStore {
             putString("nds_drastic_volume", layout.ndsDrasticVolume)   // DraStic（激烈）核心
             putString("nds_drastic_sound", layout.ndsDrasticSound)
             putString("nds_drastic_hd_render", layout.ndsDrasticHdRender)
-            putString("nds_drastic_video_format", layout.ndsDrasticVideoFormat)
-            putString("nds_drastic_audio_latency", layout.ndsDrasticAudioLatency)
             putString("nds_drastic_ffwd_speed", layout.ndsDrasticFfwdSpeed)
             putString("nds_drastic_save_format", layout.ndsDrasticSaveFormat)
             putString("nds_drastic_smooth_filter", layout.ndsDrasticSmoothFilter)

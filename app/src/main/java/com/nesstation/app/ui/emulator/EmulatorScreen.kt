@@ -3160,8 +3160,6 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
                 engine.setCoreOption("drastic_volume", layout.ndsDrasticVolume)
                 engine.setCoreOption("drastic_sound", layout.ndsDrasticSound)
                 engine.setCoreOption("drastic_hd_render", layout.ndsDrasticHdRender)
-                engine.setCoreOption("drastic_video_format", layout.ndsDrasticVideoFormat)
-                engine.setCoreOption("drastic_audio_latency", layout.ndsDrasticAudioLatency)
                 engine.setCoreOption("drastic_ffwd_speed", layout.ndsDrasticFfwdSpeed)
                 engine.setCoreOption("drastic_save_format", layout.ndsDrasticSaveFormat)
             } else {
@@ -3584,11 +3582,15 @@ private fun GameSurfaceView(
                         isFocusable = true
                         isFocusableInTouchMode = true
                         requestFocus()
-                        // EGL 失败自动回退画布路径（重组后 isDrasticCanvas 命中）。
-                        // 注：若同时开启了高清渲染，画布显示为高清帧的左上
-                        // 1/4（getScreenBuffers 固定 256×192 读取）—— 在设置中
-                        // 关闭高清渲染并重进游戏即可恢复完整画面。
-                        onGlFailed = { drasticGlFailed.value = true }
+                        // EGL/GL 失败自动回退画布路径（重组后 isDrasticCanvas 命中）。
+                        // 若高清渲染开着，同时把原生分辨率降回 1x —— 画布路径的
+                        // getScreenBuffers 固定按 256×192 读取，高清帧池下只能取
+                        // 到左上 1/4；revertHdForCanvasFallback 立即热更新位域。
+                        onGlFailed = {
+                            drasticGlFailed.value = true
+                            (engine as? com.nesstation.app.core.engine.DraSticEngine)
+                                ?.revertHdForCanvasFallback()
+                        }
                         // 物理按键路由（与画布分支一致）
                         setOnKeyListener { v, keyCode, event ->
                             if (uiBlocked) {
@@ -9376,11 +9378,11 @@ private fun SettingsPanel(
                 // 高清渲染 = config bit41：原生以 512×384（2x）内部分辨率渲染，
                 // GL 显示路径按 2x 纹理上传 —— 3D 游戏画面细腻度提升最直观。
                 DropdownSetting("高清渲染 (2x 分辨率)",
-                    listOf("enabled" to "开启 512×384 (推荐, 3D游戏必开)",
-                           "disabled" to "关闭 256×192 (原生分辨率)"),
+                    listOf("disabled" to "关闭 256×192 (默认, 原生分辨率)",
+                           "enabled" to "开启 512×384 (2x 高清)"),
                     padLayout.ndsDrasticHdRender
                 ) { onLayoutChange(padLayout.copy {ndsDrasticHdRender = it}) }
-                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏完全生效。高清模式自动使用 GL 显示路径。",
+                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 // 显示方式：GL 加速显示路径（原生 renderFrame 纹理上传 + GPU 绘制）
                 DropdownSetting("显示方式",
@@ -9392,12 +9394,6 @@ private fun SettingsPanel(
                     listOf("enabled" to "双线性 (平滑)", "disabled" to "最近邻 (锐利像素)"),
                     padLayout.ndsDrasticSmoothFilter
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSmoothFilter = it}) }
-                // 色彩深度 = config bit23
-                DropdownSetting("色彩深度",
-                    listOf("32" to "32位 RGBA8888 (最佳质量)",
-                           "16" to "16位 RGBA4444 (省带宽)"),
-                    padLayout.ndsDrasticVideoFormat
-                ) { onLayoutChange(padLayout.copy {ndsDrasticVideoFormat = it}) }
 
                 Spacer(Modifier.size(4.dp))
                 Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -9410,12 +9406,6 @@ private fun SettingsPanel(
                     listOf("enabled" to "开启", "disabled" to "关闭"),
                     padLayout.ndsDrasticSound
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSound = it}) }
-                // 音频延迟 = config bits8-9（4 档缓冲）
-                DropdownSetting("音频延迟",
-                    listOf("0" to "最低 (即时反馈)", "1" to "低 (推荐)",
-                           "2" to "中 (抗卡音)", "3" to "高 (最强抗卡音)"),
-                    padLayout.ndsDrasticAudioLatency
-                ) { onLayoutChange(padLayout.copy {ndsDrasticAudioLatency = it}) }
 
                 Spacer(Modifier.size(4.dp))
                 Text("性能 / 存档", color = Color(0xFF8899AA), fontSize = 11.sp)

@@ -104,72 +104,98 @@ NDS 平台有两个**完全不同**的核心（melonDS 拉模型 / DraStic 推�
 4. 游戏内菜单 → NDS 专属设置 → 确认"激烈专属"区音量调节即时生效。
 5. logcat 过滤 `DraSticEngine`：应看到 `startGame: rom=… — 进入原生模拟主循环`，退出时看到 `startGame returned=true after …ms（游戏会话结束）`。
 
+
 ---
 
-# 第二轮修复：完善激烈设置 + 高清渲染 + GL 加速显示
+# 第二轮修复：完善激烈设置 + 高清渲染 + GL 加速显示（第三轮返工修正版）
 
-修复版本：基于仓库 HEAD（`cf94f302 修激烈核心加载`）源码。
-本轮解决两个问题：
-1. **激烈设置只有音量一项** —— 补全完整设置面板（画面渲染 / 音频 / 性能 / 存档）；
-2. **渲染问题（特别是 3D 游戏）** —— 新增 2x 高清渲染（config bit41）与
-   OpenGL 加速显示路径（原生 renderFrame 纹理上传 + GPU 双四边形绘制）。
+修复版本：基于仓库 HEAD（`cf94f302 修激烈核心加载`）。
+第二轮初版曾引入"彻底黑屏有声音"回归 —— 第三轮（本次）已定位根因并返工，
+以下为**修正后的最终实现说明**（含回归根因分析，供后续维护参考）。
 
-## 一、config 位域完整解码（反汇编逐位验证）
+## 〇、黑屏回归根因（第三轮定位，务必引以为戒）
 
-对 `startGame` / `applyConfig` / 全局解包函数（0x17c58，applyConfig 与模拟
-初始化共用）三处交叉验证，确认 `config` 位域中与设置相关的位：
+第二轮初版的 GL 显示视图黑屏，反汇编复核后确认有两个致命错误：
 
-| 位 | 语义 | 验证依据 |
+1. **顶点图元/顶点序错误**：原生 renderFrame 的绘制调用是
+   `glDrawArrays(GL_TRIANGLES, first, 6)`（w0=4=GL_TRIANGLES，
+   first=0 与 6 各一次），而初版按 TRIANGLE_STRIP 组织顶点，且
+   `px = floatArrayOf(l, r, l, b, b, b)` 第 4 个元素误用纵坐标 b 当
+   横坐标 —— 两个三角形全部退化为零面积，**什么都画不出来 → 纯黑屏**
+   （模拟与音频在原生线程继续跑 → "有声音"）。
+2. **默认值激进**：初版把"高清渲染"默认设为开启 + 强制 GL 路径 ——
+   任何未经真机验证的默认路径变成全量用户的默认体验。
+
+修正原则（本轮起强制执行）：
+- **默认配置字 = 已在真机验证可正常显示画面的字**（bit31 声音开，
+  其余位全 0）；一切新设置默认关闭/取保守值。
+- 顶点布局严格按原生 draw 调用契约：GL_TRIANGLES + 每屏 6 顶点
+  两个三角形（v0=(l,t) v1=(r,t) v2=(l,b) + v3=(r,t) v4=(r,b) v5=(l,b)）。
+- 未逐指令验证消费链路的位一律不进设置面板（原"色彩深度 bit23 /
+  音频延迟 bits8-9"两项已移除：16 位 REV 类型非 GLES 核心合法，
+  bits8-9 消费点未能复核）。
+
+## 一、config 位域解码（反汇编逐指令验证，含消费链路）
+
+对 `applyConfig(0x1a4a0)` → 解包器（0x17c58）→ 各消费点全链路验证：
+
+| 位 | 语义 | 消费链路（验证依据） |
 | --- | --- | --- |
-| bit31 | 声音启用 | !bit31 写入音频引擎 0x3c9b048 的跳过音频标志 |
-| bit29 | 快进激活 | 解包函数 gate：bit29=0 时帧间隔字段清零 |
-| bits12-15 | 快进时显示帧间隔（µs 表 [100000,33333,25000,16666,12500,5000]） | 0x1070c0 表查找，>5 为 0（不限） |
-| bits8-9 | 音频缓冲档位（(4,1470)/(4,2940)/(3,5880)/(4,5880) 采样） | 音频初始化 0x1d760 表对 |
-| bit23 | 帧格式：0=RGBA8888，1=RGBA4444 | getScreenBuffers 分支 + glTexSubImage2D 的 format/type 常量（0x1908/0x1401 vs 0x1907/0x8363） |
-| bit41 | 高清渲染（2x=512×384） | 解包 → core+0x8aaf8 → GPU 引擎 setResolution(0x1cde4)：状态位决定 (state+1)×256×(state+1)×192 的上传尺寸；帧池每屏 0xC0000 字节 = 恰好 512×384×4 |
-| bits37-38 | 快进倍率（表 [2,4,8,16] → float 写 0x143ec0） | applyConfig 尾跳 0x1d728 的表查找 |
-| bit50 | 存档格式 0=.sav / 1=.dsv | 备份扩展名字符串选择（0x10ede4 '.sav' vs 0x10edf7 '.dsv'） |
+| bit31 | 声音启用 | 解包器 → [cfg+0x460]；音频引擎跳过标志 |
+| bit29 | 快进激活 | 解包器 gate：bit29=0 时帧间隔字段清零 |
+| bits12-15 | 快进时显示帧间隔（µs 表 [100000,33333,25000,16666,12500,5000]，仅 ≤5 有效） | 0x1070c0 表查找 → [cfg+0x48c]；固定用 2（40fps 显示上限） |
+| bit41 | 高清渲染（2x=512×384） | 解包器 SIMD 提取 → [cfg+0x4a0]（=core+0x8aaf8）→ startGame 路径读出 → setResolution(0x1cde4) 写两屏分辨率档 → renderFrame 上传 (scale+1)×256 × (scale+1)×192；帧池每屏 0xC0000 = 512×384×4 |
+| bits37-38 | 快进倍率（表 [2,4,8,16]，索引钳位 0..3） | applyConfig 尾跳 0x1d728 读 0x10a080 表 → float 写 [0x143ec0] |
+| bit50 | 存档格式 0=.sav / 1=.dsv | 解包器 → [cfg+0x4b8]；备份扩展名选择 |
+| bit23 | 帧格式 0=RGBA8888 / 1=RGBA4444（**不暴露**） | applyConfig 直接测试 → bpp 字节 → sub_1cbc0 写 GL format/type（0x1908/0x1401 vs 0x1907/0x8363） |
 
-## 二、GL 加速显示路径（DraSticGlView，新文件）
+## 二、GL 加速显示路径（DraSticGlView，修正版）
 
-原生 `renderFrame(tex1, tex2, portrait)`（0x1ceac）已完整解码：
-1. 帧池互斥锁下读取双缓冲状态与分辨率档；
-2. `glBindTexture(tex1)` → 脏标记时 `glTexSubImage2D`（上传 (state+1)×256
-   × (state+1)×192 的帧池数据）→ `glDrawArrays(GL_TRIANGLE_STRIP, 0, 6)`；
-3. tex2≠0 时同样流程画第二个四边形（first=6），结束后清脏标记。
+原生 `renderFrame(tex1, tex2, portrait)`（0x1ceac）完整契约（逐指令）：
+1. 帧池存在性检查：[video+0x950]（=memalign(16, 0x300000) 的返回指针
+   存储；onInit 时分配，JNI_OnUnload 释放并清零）为 0 直接返回；
+2. 池互斥锁（video+0x98c）下快取【另一档】（~当前写入档）缓冲指针与
+   两屏分辨率档 —— GL 路径读的是**上一块已完成帧**，不与模拟线程竞争；
+3. `glBindTexture(tex1)` → 脏标记（+0x988 bit0）置位时
+   `glTexSubImage2D`（format/type 由 bit23 路径写入 +0x960/+0x964）；
+4. **`glDrawArrays(GL_TRIANGLES, 0, 6)`** 绘制屏 A；tex2≠0 时
+   `glDrawArrays(GL_TRIANGLES, 6, 6)` 绘制屏 B；结束后清脏字节。
 
-原生只做"上传 + 按当前绑定的顶点属性绘制"—— 着色器、顶点缓冲、视口由
-调用方准备（GLES 状态在上下文内持续生效）。因此 DraSticGlView：
-- 自带 ES2 程序（12 顶点双四边形：上屏 0..5 / 下屏 6..11，支持全部屏幕布局
-  与自定义矩形）；
-- 专用 EGL(GL ES2) 线程，每帧 `renderFrame(topTex, bottomTex, false)` +
-  `eglSwapBuffers`（垂直同步自然节流，与原版 app 的 GLSurfaceView
-  onDrawFrame 调用模型一致）；
-- 帧池数据为 RGBA 字节序（经 getScreenBuffers 的掩码运算数学验证），
-  GL_RGBA/GL_UNSIGNED_BYTE 上传色彩正确；
-- 双线性/最近邻纹理过滤可切换；16 位模式按原生期望分配
-  GL_UNSIGNED_SHORT_4_4_4_4_REV；
-- 帧消费接管：GL 激活时引擎渲染线程跳过 ~500KB/帧的 CPU 拷贝（截图改由
-  captureFrame 直接拉取）；
-- EGL 失败自动回退画布路径；触摸/物理按键路由与 NdsDualScreenView 同构。
+原生只做"上传 + 按当前绑定的顶点属性绘制"—— 着色器、VBO、视口由
+调用方准备（与原版 App 的 GLSurfaceView onDrawFrame 模型一致）。
+DraSticGlView（修正版）：
+- 自带 ES2 程序 + 12 顶点 VBO，**每屏 6 顶点 = 两个三角形拼矩形**
+  （契约核心，见上）；支持全部屏幕布局与自定义矩形；
+- 专用 EGL(ES2) 线程，每帧 `renderFrame(topTex, bottomTex, false)` +
+  `eglSwapBuffers`（垂直同步自然节流；脏标记保证只上传新帧）；
+- 纹理恒为 32 位 GL_RGBA/GL_UNSIGNED_BYTE（与原生 32 位上传常量一致）；
+- 帧消费接管：GL 激活时引擎渲染线程跳过 ~500KB/帧 CPU 拷贝
+  （waitScreen 就绪握手保留；截图改由 captureFrame 直接拉取）；
+- EGL/GL 失败自动回退画布，并调 `revertHdForCanvasFallback()` 立即把
+  原生分辨率降回 1x（画布 getScreenBuffers 固定读 256×192）；
+- 触摸/物理按键路由与 NdsDualScreenView 同构。
 
-**重要约束**：画布路径的 getScreenBuffers 固定按 256×192 读取 —— 高清
-（512×384 帧池）下会裁切为左上 1/4。因此**高清渲染强制走 GL 显示**
-（GameSurfaceView 中 useDrasticGl = displayMode=="gl" || hdRender）。
+**为什么 GL 是默认显示路径**（= 原版 App 的显示方式）：
+画布路径的 getScreenBuffers（sub_1cd18）**不加锁读当前写入档**的帧池
+—— 3D 游戏全屏每帧刷新时会出现瞬时撕裂（"3D 游戏渲染问题大"的根因）；
+GL 路径在互斥锁下读另一档已完成帧，画面干净，且为高清渲染的前置条件。
 
-## 三、设置补全（设置面板 + 游戏内快捷菜单）
+**重要约束**：高清（bit41）下帧池为 512×384，画布固定读 256×192 →
+裁切为左上 1/4。因此高清渲染强制走 GL 显示；GL 失败时自动降回 1x。
 
-「DraStic（激烈）专属 · 画面渲染」：高清渲染(2x)、显示方式(GL/画布)、
-画面平滑滤波(双线性/最近邻)、色彩深度(32/16 位)。
-「DraStic（激烈）专属 · 音频/性能/存档」：音量、声音开关、音频延迟(4 档)、
+## 三、设置面板（全部经反汇编验证的项目）
+
+「DraStic（激烈）专属 · 画面渲染」：高清渲染(2x，默认关)、
+显示方式(GL/画布，默认 GL)、画面平滑滤波(双线性/最近邻)。
+「DraStic（激烈）专属 · 音频/性能/存档」：音量、声音开关(bit31)、
 快进倍率(2x/4x/8x/16x)、存档格式(.sav/.dsv)。
 所有键经 `applyCoreOptions → setCoreOption("drastic_*")` 只发给激烈引擎
-（melonDS 绝不读取）；音量/声音/延迟/快进运行中即时生效，高清/色彩深度/
-存档格式经会话快照（loadRom 拍照）下次进游戏完全生效。
+（melonDS 绝不读取）；声音/快进运行中即时生效，高清/存档格式经会话快照
+（loadRom 拍照）下次进游戏生效。
 
 ## 四、修改文件清单
 
-- `app/src/main/java/com/nesstation/app/ui/emulator/DraSticGlView.kt`（新增）
+- `app/src/main/java/com/nesstation/app/ui/emulator/DraSticGlView.kt`（新增，修正版）
 - `app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt`
 - `app/src/main/java/com/nesstation/app/ui/emulator/EmulatorScreen.kt`
 - `app/src/main/java/com/nesstation/app/ui/settings/CoreSettingsPanel.kt`
@@ -178,19 +204,22 @@ NDS 平台有两个**完全不同**的核心（melonDS 拉模型 / DraStic 推�
 
 ## 五、验证
 
-- 修改文件全部通过 Kotlin 2.0 编译器语法级校验（与修改前错误轮廓逐类对比：
-  仅新增与既有 DropdownSetting 模式相同的 7 处 classpath 级联推断错误，
-  无真实语法/语义错误）。
-- 位域布局经 Python 模拟 packConfig 断言逐位验证。
+- 修改文件全部通过 Kotlin 2.0 编译器语法级校验：与 HEAD 基线逐类对比，
+  错误轮廓完全一致（仅行号平移的 classpath 级联；DraSticGlView 的
+  全部错误均为 android/Compose 未解析级联），**无真实语法/语义错误**。
+- packConfig 位布局经 Python 断言逐位验证。
+- 顶点布局人工复核：GL_TRIANGLES 三角 1 (l,t)(r,t)(l,b) + 三角 2
+  (r,t)(r,b)(l,b)，与原生 first=0/6、count=6 两次 draw 严格对应。
 
 ### 建议真机验证步骤
 
-1. 进 3D 游戏（如马力欧赛车 / 塞尔达）→ 画面应为 512×384 高清渲染
-   （对比关闭高清时的 256×192 锯齿感）。
-2. 切换「画面平滑滤波」双线性/最近邻 → 观察缩放平滑度变化。
-3. 游戏内菜单改「声音」「音频延迟」「快进倍率」→ 立即生效；
-   改「高清渲染」→ 重进游戏生效。
-4. 切「显示方式」画布（先关高清）→ 画布路径仍可正常游玩。
-5. 截图功能（GL 模式下 captureFrame 直接拉取）→ 截图完整。
-6. logcat 过滤 `DraSticGlView`：EGL 正常时无 error；异常时应看到
-   "EGL init failed" 并自动回退画布。
+1. 默认设置直接进 3D 游戏（马力欧赛车/塞尔达）→ 画面应正常显示
+   （GL 路径 1x；如有撕裂对比切换显示方式=画布观察差异）。
+2. 开「高清渲染 (2x 分辨率)」→ 重进游戏 → 画面应为 512×384 高清
+   （3D 模型边缘明显细腻）。
+3. 切「画面平滑滤波」双线性/最近邻 → 缩放平滑度变化。
+4. 游戏内菜单改「声音」「快进倍率」→ 立即生效。
+5. 切「显示方式」画布（先关高清）→ 画布路径正常游玩（1x 全画面）。
+6. 截图（GL 模式 captureFrame 直接拉取）→ 截图完整。
+7. logcat 过滤 `DraSticGlView`：EGL 正常时无 error；异常时看到
+   "EGL init failed" 并自动回退画布 + 降回 1x。

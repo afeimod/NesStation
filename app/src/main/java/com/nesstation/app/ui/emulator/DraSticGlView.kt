@@ -21,31 +21,38 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * DraStic（激烈）核心的 OpenGL 显示视图。
+ * DraStic（激烈）核心的 OpenGL 显示视图 —— 复刻原版 App 的显示路径。
  *
- * ## 渲染架构（与原生库的反汇编验证一致）
- * 原生库把每帧画面写入双缓冲帧池（0x3f2d1f8，每屏 0xC0000 字节 —— 恰好是
- * 512×384×4，即帧池按 2x 高清容量分配），并置脏标记。原生 renderFrame
- * (0x1ceac) 的行为：
- *  1. 池互斥锁下读取双缓冲状态与分辨率档（(state+1)×256 × (state+1)×192，
- *     state 来自 config bit41 —— 高清渲染开关）；
- *  2. 对屏幕 A：glBindTexture(tex1) → 有脏标记时 glTexSubImage2D 上传帧池
- *     数据（32 位模式 format=GL_RGBA(0x1908)/type=GL_UNSIGNED_BYTE(0x1401)；
- *     16 位模式 format=GL_RGBA(0x1907)/type=0x8363）→ glDrawArrays
- *     (GL_TRIANGLE_STRIP, first=0, count=6)；
- *  3. 对屏幕 B（tex2≠0）：同样流程，first=6；结束后清脏标记。
+ * ## 原生渲染契约（libdrastic_arm64.so 逐指令反汇编验证）
+ * 帧池：双缓冲，各 0x180000 字节（两屏 × 0xC0000 = 512×384×4，按 2x 容量
+ * 预分配）；缓冲指针存 video_state+0/+8，当前写入档存 +0x958。
+ * 原生 renderFrame(0x1ceac) 每次调用的行为：
+ *  1. 池互斥锁（+0x98c）下快取【另一档】缓冲指针与两屏分辨率档
+ *     （+0x968 双字，由 config bit41 经 setResolution 写入：
+ *     0→256×192，1→512×384）；
+ *  2. 屏 A：glBindTexture(tex1) → 脏标记（+0x988 bit0）置位时
+ *     glTexSubImage2D 上传（宽=(scale+1)×256、高=(scale+1)×192；
+ *     32 位模式 format=GL_RGBA(0x1908)/type=GL_UNSIGNED_BYTE(0x1401)，
+ *     由 applyConfig 的 bit23 路径写入 +0x960/+0x964）；
+ *  3. 【glDrawArrays(GL_TRIANGLES, first=0,  count=6)】绘制屏 A；
+ *  4. tex2≠0 时同样流程绘制屏 B：first=6, count=6；结束后清脏字节。
  *
- * 原生只做"上传 + 按当前绑定的顶点属性绘制"—— 着色器程序、顶点缓冲、
- * 视口全部由调用方（本视图）准备，GLES 状态在上下文内持续生效，因此
- * 本视图自带 ES2 程序与 12 顶点双四边形缓冲：
- *  - 顶点 0..5 = 上屏四边形（TRIANGLE_STRIP + 2 个退化顶点，覆盖恰好一个矩形）
- *  - 顶点 6..11 = 下屏四边形
- *  - 位置随屏幕布局（上下/下上/左右/右左/单屏/自定义矩形）实时更新
+ * 原生只做"上传 + 按当前绑定的顶点属性绘制"，不绑定程序/不设顶点指针
+ * —— 着色器、VBO、视口全部由调用方（本视图）准备，与原版 App 的
+ * GLSurfaceView 调用模型一致。
  *
- * 帧循环不调 waitScreen（不与引擎内部的渲染消费线程竞争条件变量）：
- * eglSwapBuffers 的垂直同步提供 ~60fps 的自然节流，renderFrame 的脏
- * 标记机制保证只上传新帧 —— 与原生 app 的 GLSurfaceView onDrawFrame
- * 调用模型完全一致。
+ * ### 顶点布局（契约核心）
+ * 原生绘制图元是 GL_TRIANGLES（w0=4，非 TRIANGLE_STRIP）：
+ *  - 顶点 0..5 = 屏 A：两个三角形拼成矩形
+ *    v0=(l,t) v1=(r,t) v2=(l,b) | v3=(r,t) v4=(r,b) v5=(l,b)
+ *  - 顶点 6..11 = 屏 B：同样两个三角形
+ * 位置随屏幕布局（上下/下上/左右/右左/单屏/自定义矩形）实时更新。
+ *
+ * ### 帧同步
+ * 帧循环不调 waitScreen：eglSwapBuffers 的垂直同步提供自然节流，
+ * renderFrame 的脏标记机制保证只上传新帧（上传后清标记，无新帧时仅
+ * 重绘既有纹理）——与原版 App 的 onDrawFrame 模型完全一致。
+ * 引擎侧的渲染消费线程继续 waitScreen 维持就绪握手。
  *
  * 触摸输入复刻 NdsDualScreenView：下屏矩形内线性映射为 DS 触点
  * (0..255, 0..191)，矩形外释放。
@@ -62,9 +69,6 @@ class DraSticGlView @JvmOverloads constructor(
         private const val SCREEN_H_1X = 192
         private const val SCREEN_W_2X = 512
         private const val SCREEN_H_2X = 384
-
-        /** GL_UNSIGNED_SHORT_4_4_4_4_REV（0x8363）—— 16 位模式的原生上传类型。 */
-        private const val TYPE_UNSIGNED_SHORT_4444_REV = 0x8363
 
         private const val VS_SRC = """
             attribute vec2 aPos;
@@ -132,7 +136,6 @@ class DraSticGlView @JvmOverloads constructor(
     private var texBottom = 0
     private var texW = SCREEN_W_1X
     private var texH = SCREEN_H_1X
-    private var texAllocated16 = false
 
     /** 12 顶点 × (pos2 + uv2)，GL 线程内更新。 */
     private val vertexData = FloatArray(12 * 4)
@@ -361,10 +364,11 @@ class DraSticGlView @JvmOverloads constructor(
         return sh
     }
 
-    /** 按引擎会话快照（activeHdRender/activeVideoFormat16）分配两张屏幕纹理。 */
+    /** 按引擎会话快照（activeHdRender）分配两张屏幕纹理。
+     * 恒为 32 位 GL_RGBA/UNSIGNED_BYTE（与原生 32 位上传常量一致；
+     * 16 位格式不提供 —— 其 REV 类型组合非 ES 核心合法）。 */
     private fun allocTextures(eng: DraSticEngine) {
         val hd = eng.activeHdRender
-        val fmt16 = eng.activeVideoFormat16
         texW = if (hd) SCREEN_W_2X else SCREEN_W_1X
         texH = if (hd) SCREEN_H_2X else SCREEN_H_1X
         for (tex in intArrayOf(texTop, texBottom)) {
@@ -375,11 +379,10 @@ class DraSticGlView @JvmOverloads constructor(
             GLES20.glTexImage2D(
                 GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, texW, texH, 0,
                 GLES20.GL_RGBA,
-                if (fmt16) TYPE_UNSIGNED_SHORT_4444_REV else GLES20.GL_UNSIGNED_BYTE,
+                GLES20.GL_UNSIGNED_BYTE,
                 null
             )
         }
-        texAllocated16 = fmt16
         GLES20.glGetError() // 清理可能的分配错误残留
     }
 
@@ -492,10 +495,12 @@ class DraSticGlView @JvmOverloads constructor(
         GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, vertexData.size * 4, vertexBuf)
     }
 
-    /** 写入一个 6 顶点四边形（TRIANGLE_STRIP + 2 个退化顶点）。 */
+    /** 写入一个 6 顶点四边形（GL_TRIANGLES：两个三角形拼成矩形）。
+     * 顶点序与原生 draw 调用严格对应：first=0/6、count=6、图元 GL_TRIANGLES
+     * （原生 renderFrame 两次 glDrawArrays 均为 w0=4=GL_TRIANGLES）。 */
     private fun putQuad(base: Int, rect: FloatArray?) {
         if (rect == null) {
-            // 无此屏：全部折叠到原点（零面积，不产生像素）
+            // 无此屏：全部折叠到同一点（零面积三角形，不产生像素）
             for (i in 0 until 6) {
                 vertexData[(base + i) * 4] = -1f
                 vertexData[(base + i) * 4 + 1] = -1f
@@ -509,13 +514,14 @@ class DraSticGlView @JvmOverloads constructor(
         val r = rect[2] * 2f - 1f
         val t = 1f - rect[1] * 2f
         val b = 1f - rect[3] * 2f
-        // 三角带顶点序：(l,t)(r,t)(l,b)(r,b) + 2 个重复退化
-        val px = floatArrayOf(l, r, l, b, b, b)
-        val py = floatArrayOf(t, t, t, b, b, b)
-        // UV：纹理 v=0 对应帧池数据的第 0 行（画面顶部），直接映射到
-        // 屏幕矩形顶部（无需翻转）
-        val u = floatArrayOf(0f, 1f, 0f, 1f, 1f, 1f)
-        val v = floatArrayOf(0f, 0f, 1f, 1f, 1f, 1f)
+        // GL_TRIANGLES 两个三角形拼成矩形（与原生 first/count 契约一致）：
+        //   三角 1 = v0(l,t) v1(r,t) v2(l,b)
+        //   三角 2 = v3(r,t) v4(r,b) v5(l,b)
+        val px = floatArrayOf(l, r, l, r, r, l)
+        val py = floatArrayOf(t, t, b, t, b, b)
+        // UV：纹理 v=0 对应帧池数据的第 0 行（画面顶部）→ 屏幕矩形顶部
+        val u = floatArrayOf(0f, 1f, 0f, 1f, 1f, 0f)
+        val v = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f)
         for (i in 0 until 6) {
             vertexData[(base + i) * 4] = px[i]
             vertexData[(base + i) * 4 + 1] = py[i]
