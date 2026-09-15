@@ -27,7 +27,7 @@
 | 屏幕排列（上下/下上/左右/右左/单屏） | ✅ | ✅ |
 | 自由布局（拖动两屏位置/大小） | ✅ | ✅ |
 | 叠加滤镜（扫描线/CRT/点阵） | ✅ | ✅（视图层绘制） |
-| 放大滤镜（HQ2X/HQ4X/XBR） | ✅ | ❌（核心无此能力） |
+| 放大滤镜（HQ2X/HQ4X/XBR 等 130+ .dfx） | ✅ | ✅（第四轮：复刻原版 fxLoad/fxSetup/fxRender 滤镜管线，GL 显示路径） |
 | 即时存档（10 槽） | ✅ | ✅（DraStic 原生槽位，同时镜像到 NesStation 槽位文件） |
 | 快进 | ✅ | ✅（2..15 倍映射） |
 | 软重置 | ✅ | ✅ |
@@ -35,7 +35,12 @@
 | 联机对战 | ✅ | ❌（推模型核心，无法帧同步 —— 入口自动固定 melonDS） |
 | DSi 模式 / OpenGL 渲染器 | ✅ | ❌（核心自带优化配置） |
 
-**存档位置**：DraStic 的电池存档（.dsv）与即时存档（.dss）保存在
+**存档位置**（第四轮起与全局存档方式对齐）：电池存档（.sav/.dsv）由
+`DraSticPathCache.setBatterySaveTarget` 重定向到 NesStation 全局存档位置
+（"nesstation" 模式 = `<filesDir>/saves/<gameId>.sav`；"core_builtin" 模式 =
+ROM 同目录 `<ROM名>.sav`），与 melonDS / 官方 melonDS APK 直接互换
+（默认裸 .sav 格式，config bit50=1）；旧版私有 .dsv 首次进游戏时自动迁移
+（剥 0x50 字节头写入全局 .sav）。即时存档（.dss）仍保存在
 `<内部存储>/Android/data/com.nesstation.app/files/drastic/user/`；
 NesStation 槽位 UI 会同时在该游戏存档目录里镜像一份 `.state`
 （即真实 `.dss` 的副本），便于查看槽位占用与手动备份。

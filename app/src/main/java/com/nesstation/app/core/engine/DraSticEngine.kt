@@ -118,8 +118,15 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         /** 原版用户目录子目录（AddUser.f()）。 */
         private val USER_SUBDIRS = arrayOf("savestates", "config", "backup", "cheats")
 
-        /** 捆绑系统资产版本：更新 APK 内 game_database/usrcheat 时递增以触发重装。 */
-        private const val DRASTIC_ASSET_VERSION = 1
+        /**
+         * 捆绑系统资产版本：更新 APK 内 game_database/usrcheat/shaders 时递增
+         * 以触发重装。v2 = 新增 240 个滤镜着色器（assets/drastic/shaders/，
+         * 提取自激烈整合版 APK）。
+         */
+        private const val DRASTIC_ASSET_VERSION = 2
+
+        /** .dsv 文件头长度（DraStic 私有格式，头部后即裸 .sav 数据）。 */
+        private const val DSV_HEADER_SIZE = 0x50
 
         /** 原版默认音量（_Volume 0..10 → setAudioVolume ×10）。 */
         private const val DEFAULT_VOLUME = 100
@@ -179,8 +186,14 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
          *  bit47 = 安全跳帧（_FrameskipSafe，默认关）
          *  bit48 = 预解压 ROM 到内存（_PreloadRoms，默认关）
          *  bit49 = 混合渲染（_Blend，默认关）
-         *  bit50 = 存档格式（_RawSavFormat：0=.sav 带头 1=.dsv，默认 .sav）
+         *  bit50 = 裸 .sav 存档格式（_RawSavFormat：反汇编备份路径选择
+         *          csel x3, .dsv, .sav（eq）确认：0=写 .dsv（DraStic 私有带头
+         *          格式）1=写裸 .sav。NesStation 默认 1 —— 与全局 .sav 存档
+         *          （melonDS / 官方 melonDS APK）直接互换，见全局存档方式）
          *  bit 4 / 10-11 / 20-22 / 33-34 高位 / 51-63 = 恒 0（原版同）
+         *
+         * 滤镜（_CurrentFx）不在位域内：原版经 DraSticJNI.fxLoad(路径) 加载
+         * .dfx 着色器链（jadx f0.h.g()），由 GL 显示视图在会话开始时调用。
          */
         private fun packConfig(
             frameskipType: Int = 0,
@@ -209,7 +222,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             frameskipSafe: Boolean = false,
             preloadRoms: Boolean = false,
             blend: Boolean = false,
-            saveDsv: Boolean = false
+            rawSav: Boolean = true
         ): Long {
             var cfg = (frameskipValue.coerceIn(0, 15).toLong()) or          // bits 0-3
                 ((frameskipType.coerceIn(0, 7).toLong()) shl 5) or          // bits 5-7
@@ -237,7 +250,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             if (frameskipSafe) cfg = cfg or (1L shl 47)
             if (preloadRoms) cfg = cfg or (1L shl 48)
             if (blend) cfg = cfg or (1L shl 49)
-            if (saveDsv) cfg = cfg or (1L shl 50)
+            if (rawSav) cfg = cfg or (1L shl 50)
             return cfg
         }
 
@@ -254,6 +267,23 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 cores >= 4 -> 3
                 cores >= 2 -> 2
                 else -> 1
+            }
+        }
+
+        /**
+         * 已安装的视频滤镜列表（<sysDir>/shaders/ 下的 .dfx 文件名，不含扩展名，
+         * 已排序；"none" 由调用方自行追加在首位）。设置页滤镜下拉数据源。
+         */
+        fun installedFilters(appCtx: Context?): List<String> {
+            val ctx = appCtx ?: return emptyList()
+            return try {
+                val dir = File(ctx.filesDir, "drastic/system/shaders")
+                val entries = dir.listFiles() ?: return emptyList()
+                entries.filter { f -> f.isFile && f.name.endsWith(".dfx", ignoreCase = true) }
+                    .map { f -> f.name.removeSuffix(".dfx") }
+                    .sorted()
+            } catch (_: Throwable) {
+                emptyList()
             }
         }
 
@@ -328,6 +358,20 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     @Volatile
     private var frameCount = 0L
+
+    /** loadRom 传入的每帧回调（FPS 统计）；GL 接管后由 [notifyGlFrame] 触发。 */
+    @Volatile
+    private var frameCallback: (() -> Unit)? = null
+
+    /**
+     * GL 显示线程每消费一帧（waitScreen 返回 + 渲染后）调用：
+     * 维持 frameCount 与 FPS 回调 —— 与原版“GL 线程 waitScreen + 渲染”
+     * 的同步模型配套（问题 3 修复的引擎侧 counterpart）。
+     */
+    fun notifyGlFrame() {
+        frameCount++
+        frameCallback?.invoke()
+    }
 
     /** App context —— 引擎初始化（onInit 上下文 / 目录定位）用。 */
     @Volatile
@@ -431,9 +475,20 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     @Volatile
     var optShowFps: Boolean = false
 
-    /** 存档格式 .dsv（bit50，_RawSavFormat）；false = 裸 .sav。 */
+    /** 裸 .sav 存档格式（bit50，_RawSavFormat）。
+     *  true（默认）= 裸 .sav：与全局存档方式（melonDS / 官方 melonDS APK）
+     *  直接互换；false = .dsv（DraStic 私有带头格式，仅激烈核心互认）。 */
     @Volatile
-    var optSaveDsv: Boolean = false
+    var optRawSav: Boolean = true
+
+    /**
+     * 视频滤镜（原版 _CurrentFx）：assets/drastic/shaders/ 内 .dfx 着色器链
+     * 的文件名（不含扩展名），"none" = 不加载滤镜（原生 renderFrame 直绘）。
+     * 由 DraSticGlView 在 GL 线程会话开始时经 DraSticJNI.fxLoad 加载；
+     * 运行中修改后下一次 fxLoad 检查点生效（原版同样如此）。
+     */
+    @Volatile
+    var optFilter: String = "none"
 
     /** 模拟线程数：0=自动（按核数 1/2/3），1-8=强制（原版 threads.cfg 语义）。 */
     @Volatile
@@ -494,7 +549,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         frameskipSafe = optFrameskipSafe,
         preloadRoms = optPreloadRoms,
         blend = false,
-        saveDsv = optSaveDsv
+        rawSav = optRawSav
     )
 
     /** GL 显示失败回退画布时调用：立即把原生渲染分辨率降回 1x（bit41=0），
@@ -633,6 +688,9 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             copyAsset(ctx, "drastic_bios.zip", File(sysDir, "drastic_bios.zip"), overwrite = false)
             copyAsset(ctx, "LC_default.dat", File(sysDir, "config/LC_default.dat"), overwrite = false)
 
+            // 滤镜着色器（原版 k0() 语义：缺失才装；fxLoad 按名读取）
+            ensureShadersInstalled(ctx, sysDir)
+
             val ready = File(sysDir, "system/drastic_bios_arm7.bin").isFile &&
                 File(sysDir, "system/drastic_bios_arm9.bin").isFile &&
                 File(sysDir, "game_database.xml").isFile
@@ -650,6 +708,66 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         dst.parentFile?.mkdirs()
         ctx.assets.open("drastic/$assetName").use { input ->
             dst.outputStream().use { output -> input.copyTo(output) }
+        }
+    }
+
+    /**
+     * 递归安装 assets/drastic/shaders/ 滤镜着色器到 <sysDir>/shaders/。
+     *
+     * 原版首次运行把 assets/shaders 整目录装入系统根（jadx DraSticActivity.k0()
+     * → g0("shaders", ...)），原生 fxLoad 按虚拟路径 DraStic/shaders/<名>.dfx
+     * 经 PathCache 读取 —— 缺失时 fxLoad 报错、滤镜不可用。整合版 APK 共
+     * 240 个文件（130+ 滤镜 .dfx + .dsd 着色器定义 + fxaa/smaa 头文件）。
+     * 幂等：文件存在即跳过（用户可自行替换/新增 .dfx 实现滤镜热扩展）。
+     */
+    private fun ensureShadersInstalled(ctx: Context, sysDir: File) {
+        return try {
+            val names = ctx.assets.list("drastic/shaders") ?: return
+            val dstRoot = File(sysDir, "shaders")
+            for (name in names) {
+                val dst = File(dstRoot, name)
+                val sub = ctx.assets.list("drastic/shaders/$name")
+                if (sub != null && sub.isNotEmpty()) {
+                    // 子目录（fxaa / smaa 头文件）：递归安装
+                    dst.mkdirs()
+                    for (f in sub) {
+                        copyAsset(ctx, "shaders/$name/$f", File(dst, f), overwrite = false)
+                    }
+                } else {
+                    copyAsset(ctx, "shaders/$name", dst, overwrite = false)
+                }
+            }
+        } catch (e: Throwable) {
+            // 滤镜安装失败不阻塞启动 —— 原生 fxLoad 失败自动回退无滤镜渲染
+            android.util.Log.w(TAG, "install shaders failed", e)
+        }
+    }
+
+    /**
+     * 旧版私有 .dsv 存档迁移（一次性）：全局 .sav 不存在、旧 DraStic 私有
+     * 目录里有 <基名>.dsv 时，剥掉 0x50 字节头写入全局 .sav —— 老用户升级
+     * 后进度不丢。迁移后原 .dsv 保留不动（可回退旧版本/其它前端）。
+     */
+    private fun migrateLegacyDsv(globalDir: File, base: String?, usrDir: File) {
+        if (base.isNullOrBlank()) return
+        return try {
+            val globalSav = File(globalDir, "$base.sav")
+            if (globalSav.isFile && globalSav.length() > 0) return
+            val legacy = File(usrDir, "backup/$base.dsv")
+            if (!legacy.isFile || legacy.length() <= DSV_HEADER_SIZE) return
+            legacy.inputStream().use { input ->
+                val header = ByteArray(DSV_HEADER_SIZE)
+                var read = 0
+                while (read < DSV_HEADER_SIZE) {
+                    val n = input.read(header, read, DSV_HEADER_SIZE - read)
+                    if (n < 0) return
+                    read += n
+                }
+                globalSav.outputStream().use { output -> input.copyTo(output) }
+            }
+            android.util.Log.i(TAG, "migrated legacy .dsv → global .sav (${globalSav.length()}B): $base")
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "migrate legacy dsv failed", e)
         }
     }
 
@@ -723,6 +841,22 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
         romFileBase = effectiveRom.nameWithoutExtension
 
+        // ---- 全局 sav 存档识别（问题 2 修复）----
+        // 原生把电池存档固定写到 User/backup/<ROM基名>.sav|.dsv（虚拟路径），
+        // PathCache 现将其重定向到 NesStation 全局存档位置（loadRom 的 saveDir
+        // 参数已按"全局存档方式"解析：nesstation = <filesDir>/saves/，
+        // core_builtin = ROM 同目录）。存档基名 = setSaveName 的值（nesstation
+        // 模式 = game.id；core_builtin = ROM 名）—— 与 melonDS 完全同源，
+        // 切核心互认存档。存档格式默认裸 .sav（bit50=1，与 melonDS 兼容）。
+        val batteryDir = File(saveDir).apply { mkdirs() }
+        val batteryBase = saveNameOverride ?: romFileBase
+        DraSticPathCache.setBatterySaveTarget(batteryDir, batteryBase)
+        migrateLegacyDsv(batteryDir, batteryBase, usrDir)
+
+        // 新会话开始：撤销上一局的 GL 接管标记，让渲染消费线程恢复帧搬运
+        // （引导期 frameCount 由它驱动；GL 视图在 isLoaded 后重新接管）。
+        glDisplayActive = false
+
         // 预启动配置。ROM 以真实绝对路径传入（startGame 的路径最终会回到
         // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
         // 先拍会话快照（原生分辨率初始化与 GL 视图纹理分配都以此为准）。
@@ -759,30 +893,41 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         running.set(true)
         gameEnded.set(false)
         gameResult.set(false)
+        frameCallback = onFrame
 
         // 渲染消费线程（帧搬运）。waitScreen 为原生 condvar 等待：核心建立
         // 之前它阻塞在零初始化的 mutex/cond 上（pthread_*_INITIALIZER
         // 语义，安全）；首帧信号到达后开始搬运。getScreenBuffers 未就绪时
         // 有空指针守卫，被提前唤醒也不会读坏内存。
+        //
+        // ★ 帧同步所有权（问题 3 修复）：原版 App 的 GL 线程每帧先
+        // waitScreen() 再渲染 —— 消费与模拟严格同步。GL 显示接管
+        // （glDisplayActive）后本线程【停等 waitScreen】（否则两个等待者
+        // 互偷 pthread_cond_signal，双路径都丢帧），由 GL 线程经
+        // [notifyGlFrame] 维持 frameCount。画布路径保持本线程全速搬运。
         renderThread = thread(name = "drastic-render", isDaemon = true) {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
             try {
                 while (running.get()) {
+                    // GL 显示接管期间驻车（轮询退出条件，不碰原生 condvar）
+                    if (glDisplayActive) {
+                        Thread.sleep(16)
+                        continue
+                    }
                     // 阻塞到下一帧就绪（原生每帧 signal）
                     DraSticJNI.waitScreen()
                     if (!running.get()) break
                     if (paused) continue
+                    if (glDisplayActive) continue // 恰在唤醒间隙被接管：丢弃本次
 
-                    if (!glDisplayActive) {
-                        // 画布路径：搬运帧到 frameBuffer（截图/存档缩略图用）。
-                        // GL 路径：跳过约 500KB/帧的 CPU 拷贝，GL 线程直接消费帧池。
-                        DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
-                        // 合成：上屏在前、下屏在后（256×384）
-                        System.arraycopy(topBuf, 0, frameBuffer, 0, topBuf.size)
-                        System.arraycopy(bottomBuf, 0, frameBuffer, topBuf.size, bottomBuf.size)
-                    }
+                    // 画布路径：搬运帧到 frameBuffer（截图/存档缩略图用）。
+                    // GL 路径：跳过约 500KB/帧的 CPU 拷贝，GL 线程直接消费帧池。
+                    DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                    // 合成：上屏在前、下屏在后（256×384）
+                    System.arraycopy(topBuf, 0, frameBuffer, 0, topBuf.size)
+                    System.arraycopy(bottomBuf, 0, frameBuffer, topBuf.size, bottomBuf.size)
                     frameCount++
-                    onFrame()
+                    frameCallback?.invoke()
                 }
             } catch (e: Throwable) {
                 if (running.get()) {
@@ -1177,8 +1322,16 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 applyOptionsHot()
             }
             "drastic_save_format" -> {
-                optSaveDsv = value == "dsv"
+                // "sav" = 裸 .sav（bit50=1，默认；与全局存档互认）
+                // "dsv" = DraStic 私有 .dsv（bit50=0）
+                // ★ 历史版本此处映射写反（选 dsv 实际写 .sav），已纠正。
+                optRawSav = value != "dsv"
                 applyOptionsHot()
+            }
+            "drastic_filter" -> {
+                // 滤镜名（assets/drastic/shaders/<名>.dfx）；"none" = 不加载。
+                // GL 视图在每帧的 fxLoad 检查点比对后重载，无需热更新位域。
+                optFilter = value.takeIf { it.isNotBlank() } ?: "none"
             }
             "drastic_frameskip_type" -> {
                 optFrameskipType = value.toIntOrNull()?.coerceIn(0, 2) ?: 0
@@ -1300,7 +1453,9 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     override fun setVideoFilter(filter: Int) {
         // 叠加型滤镜（scanline/crt/dot）由 NdsDualScreenView 视图层绘制；
-        // 放大型（HQ2X 等）为 melonDS 原生特性，DraStic 不支持，忽略
+        // 放大型滤镜（HQ2X/XBR 等 .dfx 着色器链）走原版 fxLoad/fxSetup/fxRender
+        // 管线（设置键 drastic_filter，GL 显示路径消费），此处 int 型通用滤镜
+        // 入口保持忽略。
     }
 
     override fun setHighQualityScaling(enabled: Boolean) {

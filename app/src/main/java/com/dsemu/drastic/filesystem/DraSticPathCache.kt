@@ -62,8 +62,38 @@ object DraSticPathCache {
     /** ROM 虚拟名 → 真实文件的映射（原版 changeRom）。 */
     private val romMap = HashMap<String, File>()
 
+    /**
+     * 电池存档（.sav/.dsv）全局重定向目标。
+     *
+     * 原生把电池存档路径固定构造为 `User/backup/<ROM基名>.sav|.dsv`（反汇编
+     * libdrastic_arm64.so："%s%cbackup%c%s.sav"/"%s%cbackup%c%s.dsv"，基名取自
+     * changeRom 注册的 ROM）。NesStation 的"全局存档方式"要求所有核心共用
+     * 同一份 .sav（nesstation 模式 = <filesDir>/saves/<gameId>.sav；core_builtin
+     * 模式 = ROM 同目录 <ROM名>.sav，与官方 melonDS APK 兼容）。
+     *
+     * 设置本目标后，`User/backup/` 下的 .sav 与 .dsv 一律优先解析到
+     * `<dir>/<base>.<ext>` —— 读写同一份全局存档文件，切核心互认存档。
+     * 标准候选保留在映射目标之后作为读兜底（全局文件缺失时仍可读旧档）。
+     */
+    @Volatile
+    private var batterySaveDir: File? = null
+
+    @Volatile
+    private var batterySaveBase: String? = null
+
     /** open() 写模式观察日志（saveState 前清空，事后取最近写入路径）。 */
     private val writeLog = ArrayList<String>()
+
+    /**
+     * 设置电池存档全局重定向目标（loadRom 时调用）。
+     * @param dir 全局存档目录（null = 关闭重定向，走原版默认 User/backup/）
+     * @param base 全局存档基名（不含扩展名；null = 沿用 ROM 基名）
+     */
+    @Synchronized
+    fun setBatterySaveTarget(dir: File?, base: String?) {
+        batterySaveDir = dir?.apply { mkdirs() }
+        batterySaveBase = base?.takeIf { it.isNotBlank() }
+    }
 
     /**
      * 设置基目录。必须在 startGame 之前调用。会确保目录存在。
@@ -109,7 +139,7 @@ object DraSticPathCache {
         romMap[virtualPath]?.let { return listOf(it) }
         val sys = systemDir
         val usr = userDir
-        val out = ArrayList<File>(2)
+        val out = ArrayList<File>(3)
         when {
             virtualPath.startsWith("/") -> out.add(File(virtualPath))
             virtualPath.startsWith("DraStic/") && sys != null -> {
@@ -121,8 +151,22 @@ object DraSticPathCache {
                     out.add(File(sys, "system/$rest"))                // 布局兜底：→ sys/system/x
                 }
             }
-            virtualPath.startsWith("User/") && usr != null ->
+            virtualPath.startsWith("User/") && usr != null -> {
+                // 电池存档全局重定向（"全局 sav 存档"识别的核心）：
+                // User/backup/<任意基名>.sav|.dsv → <全局目录>/<全局基名>.<扩展名>
+                if (virtualPath.startsWith("User/backup/")) {
+                    val name = virtualPath.removePrefix("User/backup/")
+                    val dot = name.lastIndexOf('.')
+                    if (dot > 0 && batterySaveDir != null) {
+                        val ext = name.substring(dot + 1).lowercase()
+                        if (ext == "sav" || ext == "dsv") {
+                            val base = batterySaveBase ?: name.substring(0, dot)
+                            out.add(File(batterySaveDir, "$base.$ext"))
+                        }
+                    }
+                }
                 out.add(File(usr, virtualPath.removePrefix("User/")))
+            }
             else -> out.add(if (usr != null) File(usr, virtualPath) else File(virtualPath))
         }
         return out

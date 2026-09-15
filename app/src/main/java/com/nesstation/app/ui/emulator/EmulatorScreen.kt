@@ -3161,6 +3161,9 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
                 engine.setCoreOption("drastic_sound", layout.ndsDrasticSound)
                 engine.setCoreOption("drastic_hd_render", layout.ndsDrasticHdRender)
                 engine.setCoreOption("drastic_save_format", layout.ndsDrasticSaveFormat)
+                // 滤镜（原版 _CurrentFx）：GL 视图在帧循环检查点经 fxLoad 应用；
+                // "none" = 不加载滤镜（renderFrame 直绘）。
+                engine.setCoreOption("drastic_filter", layout.ndsDrasticFilter)
                 val fsTypeKey: String = when (layout.ndsDrasticFrameskipType) {
                     "manual" -> "1"; "auto" -> "2"; else -> "0"
                 }
@@ -9423,6 +9426,26 @@ private fun SettingsPanel(
                     listOf("enabled" to "双线性 (平滑)", "disabled" to "最近邻 (锐利像素)"),
                     padLayout.ndsDrasticSmoothFilter
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSmoothFilter = it}) }
+                // 视频滤镜（原版 _CurrentFx）：.dfx 着色器链，仅 GL 显示路径生效。
+                // 与设置页同一份配置；游戏内切换下一帧生效（fxLoad 检查点重载）。
+                val inGameFilterOptions = remember {
+                    val installed = try {
+                        context.assets.list("drastic/shaders")
+                            ?.filter { it.endsWith(".dfx", ignoreCase = true) }
+                            ?.map { it.removeSuffix(".dfx") }
+                            ?.sorted()
+                            ?: emptyList()
+                    } catch (_: Throwable) {
+                        emptyList()
+                    }
+                    listOf("none" to "关闭 (原生直绘)") + installed.map { it to it }
+                }
+                DropdownSetting("视频滤镜 (放大/扫描线/CRT)",
+                    inGameFilterOptions,
+                    padLayout.ndsDrasticFilter
+                ) { onLayoutChange(padLayout.copy {ndsDrasticFilter = it}) }
+                Text("复刻原版滤镜管线（fxLoad .dfx 着色器链）：HQ2X/XBR/扫描线/CRT 等逐帧滤镜。仅 GL 显示路径生效；加载失败自动回退原生直绘。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 // 跳帧 = bits5-7 / bits0-3 / bit47
                 DropdownSetting("跳帧 (Frameskip)",
                     listOf("none" to "关闭 (默认, 满帧渲染)",
@@ -9543,13 +9566,13 @@ private fun SettingsPanel(
                            "900" to "15 分钟", "1800" to "30 分钟"),
                     padLayout.ndsDrasticAutosave
                 ) { onLayoutChange(padLayout.copy {ndsDrasticAutosave = it}) }
-                // 存档格式 = config bit50
+                // 存档格式 = config bit50（反汇编 csel 确认：1=.sav 裸格式 0=.dsv）
                 DropdownSetting("存档格式",
-                    listOf("sav" to ".sav 裸格式 (兼容性最好)",
-                           "dsv" to ".dsv melonDS格式 (可互换)"),
+                    listOf("sav" to ".sav 裸格式 (默认, 全局存档互认)",
+                           "dsv" to ".dsv 激烈私有格式 (仅激烈核心互认)"),
                     padLayout.ndsDrasticSaveFormat
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSaveFormat = it}) }
-                Text("存档格式决定 .sav 文件结构：裸格式通用于各类 NDS 模拟器；dsv 带头信息可与官方 melonDS 直接互换。切换后需重进游戏。",
+                Text("裸 .sav 与全局存档方式（melonDS / 官方 melonDS APK）直接互换，切核心不丢进度；.dsv 为激烈私有带头格式。存档文件位置由「存档方式(全局)」决定。切换后需重进游戏。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
             }
             GamePlatform.PSX -> {

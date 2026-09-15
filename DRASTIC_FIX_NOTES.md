@@ -327,3 +327,138 @@ _FfwdSpeed（bits12-15，仅 bit29 激活时查 0x1070c0 表）。
 5. 「音频延迟」低/极高切换听爆音差异；对麦克风吹气（《心跳》类游戏）验证
    麦克风灵敏度。
 6. 快进（按住快进键）→ 按「快进速率」设定的倍速走。
+
+---
+
+# 第四轮修复：全局滤镜识别 + 全局 sav 存档识别 + 多线程 3D 渲染修复
+
+修复版本：基于仓库 HEAD（`8b53caae 修激烈渲染`）。
+参考基准：原版 **DraStic r2.6.0.4a (109) arm64 APK**（jadx 反编译 classes.dex +
+libdrastic_arm64.so 反汇编，两路证据交叉验证）+ 激烈整合版 APK（240 个
+滤镜着色器资产）。
+
+## 〇、三个问题的根因
+
+### 问题 1：激烈核心没有识别全局滤镜
+
+**滤镜根本不在 config 位域里。** 原版把滤镜（_CurrentFx，默认 "Linear"）
+通过三条专用 JNI 挂接（jadx DraSticGlView$j + DraSticExtGlView）：
+
+| JNI | 原版调用点 | 语义（反汇编逐指令） |
+| --- | --- | --- |
+| `fxLoad(path, 0, 2208)` | onSurfaceCreated → d() | 加载 `DraStic/shaders/<名>.dfx`（虚拟路径经 PathCache 解析到系统目录）；参数 = VBO 内 a_vertex_coordinate / a_texture_coordinate 数据的起始字节（存 ctx+0x468/0x470，draw_screen 里作 glVertexAttribPointer 的 offset） |
+| `fxSetup(srcW, srcH, 0, 0, sw, sh)` | onSurfaceChanged | 帧纹理尺寸 + 最终 pass 视口（存 ctx+0x484..0x490） |
+| `fxRender(tex1, tex2, 0, 6, 18, wA, hA, wB, hB, portrait)` | onDrawFrame | 帧池上传（同 renderFrame，互斥锁 + 另一档）→ 按 pass 链绘制：中间 pass（带 FBO）画顶点 18-23（全屏四边形），最终 pass 画顶点 0-5 / 6-11（两屏四边形，glViewport = fxSetup 视口），u_target_size = (wA,hA)/(wB,hB)（csel + glUniform2f 验证） |
+
+NesStation 此前从未调用这三个函数 —— 滤镜能力存在但管线没接。
+共享 VBO 顶点四边形布局（原版字节级，48B/四边形）：
+
+```
+0(顶点0-5)=上屏  48(6-11)=下屏  96(12-17)=全屏  144(18-23)=全屏(fx中间pass)
+192(24-29)=暂停背景  240(30-35)=FPS  2208=UV四边形×6（fxLoad 的 uvOff 指向这里）
+```
+
+修复：DraSticGlView 重构为原版契约 —— 4096B 非交错 VBO、会话开始
+`fxLoad("DraStic/shaders/<名>.dfx", 0, 2208)`、帧循环
+`fxSetup(texW,texH,0,0,w,h)`（尺寸变化时重发）+ `fxRender(...)`；
+滤镜列表来自 APK 捆绑的整合版 240 个着色器资产（130+ 滤镜，
+`ensureShadersInstalled` 装入 `<sysDir>/shaders/`）；设置页/游戏内菜单
+新增「视频滤镜」下拉（none = 原生直绘；fxLoad 失败自动回退，
+与原版 shader error toast 后回退的行为一致）。
+
+### 问题 2：激烈核心没有识别全局 sav 等存档
+
+原生把电池存档路径固定构造为 `User/backup/<ROM基名>.sav|.dsv`（反汇编
+`"%s%cbackup%c%s.sav"` / `"%s%cbackup%c%s.dsv"`，基名取自 changeRom 注册
+的 ROM），此前恒落到激烈私有目录 `files/drastic/user/backup/`，从不读
+NesStation 的全局存档。且「存档格式」设置映射写反（选 .dsv 实际写 .sav，
+反汇编 `csel x3, .dsv, .sav, eq` 确认 bit50=0 → .dsv、bit50=1 → .sav）。
+
+修复（三层）：
+1. **路径重定向**：`DraSticPathCache.setBatterySaveTarget(dir, base)` ——
+   `User/backup/` 下的 .sav/.dsv 一律优先解析到全局存档位置
+   （"nesstation" 模式 = `<filesDir>/saves/<gameId>.sav`；"core_builtin"
+   模式 = ROM 同目录 `<ROM名>.sav`，与 melonDS 完全同源，切核心互认）。
+2. **格式默认值纠正**：bit50（_RawSavFormat）默认 1 = 裸 .sav（与
+   melonDS / 官方 melonDS APK 兼容）；设置映射纠正（"sav"→bit50=1）。
+3. **旧档迁移**：`migrateLegacyDsv` —— 全局 .sav 缺失且旧私有目录有
+   `<基名>.dsv` 时，剥 0x50 字节头一次性写入全局 .sav（老用户进度不丢）。
+
+### 问题 3：激烈核心多线程 3D 渲染有问题（原版正常）
+
+原版 GL 线程的帧消费模型（DraSticGlView$j.onDrawFrame 反汇编）：
+
+```
+frameInfo = getFrameInfo()            // 低16位 = 模拟主循环帧计数器 0x14c4b0
+if (frameInfo & 0xffff) == 0:
+    waitScreen()                      // 阻塞等模拟线程 pthread_cond_signal
+    fxRender(...) / renderFrame(...)  // 上传 + 绘制（一次性消费新帧）
+```
+
+NesStation 此前：GL 线程【异步】高频调 renderFrame（脏标记去重），
+而引擎渲染线程【独占】waitScreen —— 两个偏差叠加：
+1. 消费与模拟不同步：多线程 3D（bit28）的帧冲刷是"异步分段 + 上一帧
+   补拷贝"（0x59bb4 末尾 memcpy 0x30000 补丁在翻帧后进行），异步消费
+   会读到补拷贝中间态 → 画面错乱（原版因同步消费而正常）；
+2. 若两边同时 waitScreen，pthread_cond_signal 只唤醒一个等待者 ——
+   两个消费者互偷信号，双路径各丢一半帧。
+
+修复：GL 线程成为**唯一** waitScreen 消费者，逐字复刻原版模型：
+- glLoop 增加帧同步门（getFrameInfo 低16位==0 → waitScreen → 渲染 →
+  `eng.notifyGlFrame()` 维持 frameCount/FPS 回调）；
+- 引擎渲染线程在 `glDisplayActive`（GL 接管）后驻车（不再 waitScreen），
+  画布路径行为不变；loadRom 时重置 glDisplayActive 保证新会话引导期
+  仍由渲染线程驱动首帧握手；
+- 快进批次（计数器>0）期间不重绘不清屏，保持上一帧画面（与原版一致）。
+
+## 修改文件清单
+
+```
+新增资产:
+  app/src/main/assets/drastic/shaders/        # 整合版 240 个滤镜着色器（130+ .dfx/.dsd + fxaa/smaa 头文件）
+
+修改 (6):
+  app/src/main/java/com/nesstation/app/ui/emulator/DraSticGlView.kt
+    （VBO 重构为原版非交错布局 + fxLoad/fxSetup/fxRender 滤镜管线 +
+     帧同步门逐字复刻原版 + 滤镜热切换检查点）
+  app/src/main/java/com/dsemu/drastic/filesystem/DraSticPathCache.kt
+    （电池存档全局重定向 setBatterySaveTarget + User/backup/.sav|.dsv 候选优先）
+  app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt
+    （bit50 语义纠正 + optRawSav 默认 .sav + optFilter + drastic_filter/
+     drastic_save_format 键 + 全局存档重定向接线 + .dsv 迁移 +
+     shaders 资产递归安装 + notifyGlFrame + 渲染线程 GL 接管驻车 +
+     installedFilters()）
+  app/src/main/java/com/nesstation/app/core/storage/PadLayoutStore.kt
+    （ndsDrasticFilter 字段 + copy + 读写）
+  app/src/main/java/com/nesstation/app/ui/settings/CoreSettingsPanel.kt
+    （激烈专属区新增「视频滤镜」下拉，列表来自捆绑 assets）
+  app/src/main/java/com/nesstation/app/ui/emulator/EmulatorScreen.kt
+    （applyCoreOptions 下发 drastic_filter；游戏内菜单新增滤镜下拉；
+     存档格式选项文案纠正）
+```
+
+## 验证
+
+- 六个修改文件用 kotlinc 2.0.21 与 HEAD 基线逐类对比：错误轮廓完全一致
+  （全部为脱离 Android/Compose classpath 的预期级联），无语法/结构错误。
+- fx 契约关键结论均有双路证据（smali + libdrastic_arm64.so 反汇编）：
+  fxLoad 参数（GetStringUTFChars → fx_load(path, video+0x208, 0, 2208)）、
+  draw_screen 顶点选择（csel：FBO!=0 → first=18，FBO==0 → first=0/6）、
+  属性指针（stride=0，offset = ctx+0x468/0x470 = fxLoad 参数）、
+  u_target_size（glUniform2f(wA,hA)/(wB,hB)）、
+  存档格式位（csel x3, .dsv, .sav, eq ← [cfg+0x30] bit50）。
+
+### 建议真机验证步骤
+
+1. 设置 → 激烈专属 → 「视频滤镜」选 HQ2X / XBR / 扫描线等 → 进 3D 游戏
+   → 画面应有明显滤镜效果（GL 路径）；选「关闭」恢复原生直绘。
+2. 游戏内菜单切换滤镜 → 下一帧生效，无需重进。
+3. melonDS 玩一段 → 存档 → 切激烈核心进同一游戏 → 进度应无缝继承
+   （全局存档方式 = nesstation 时存档在 saves/<gameId>.sav，两核心同文件）。
+4. 激烈核心玩一段 → 存档 → 检查 saves/ 目录 .sav 修改时间已更新；
+   再用 melonDS 读档验证互认。
+5. 旧版本（本轮之前）玩过的游戏：激烈私有目录里有 <基名>.dsv →
+   首次进游戏自动迁移为全局 .sav（logcat 过滤 DraSticEngine 可见 migrated）。
+6. 开「多线程 3D」→ 3D 大作（马力欧赛车/塞尔达）画面应完整无错乱
+   （帧同步修复后与原版行为一致）；开关对比性能差异。
+7. 高清渲染 + 滤镜组合 → 512×384 帧纹理经滤镜链放大，效果与原版一致。

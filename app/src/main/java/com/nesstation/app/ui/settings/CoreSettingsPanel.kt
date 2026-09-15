@@ -7,8 +7,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -919,6 +921,33 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "双线性 (平滑)", "disabled" to "最近邻 (锐利像素)"),
                         padLayout.ndsDrasticSmoothFilter
                     ) { updateLayout(padLayout.copy {ndsDrasticSmoothFilter = it}) }
+                    // 视频滤镜（原版 _CurrentFx）：.dfx 着色器链（fxLoad → fxRender）。
+                    // 列表来自 APK 捆绑的 assets/drastic/shaders/（整合版 130+ 滤镜），
+                    // 仅 GL 显示路径生效；fxLoad 失败自动回退无滤镜渲染。
+                    val drasticFilterOptions = remember {
+                        val ctx = LocalContext.current
+                        val installed = try {
+                            ctx.assets.list("drastic/shaders")
+                                ?.filter { it.endsWith(".dfx", ignoreCase = true) }
+                                ?.map { it.removeSuffix(".dfx") }
+                                ?.sorted()
+                                ?: emptyList()
+                        } catch (_: Throwable) {
+                            emptyList()
+                        }
+                        listOf("none" to "关闭 (原生直绘)") + installed.map { it to it }
+                    }
+                    DropdownRow("视频滤镜 (放大/扫描线/CRT)",
+                        drasticFilterOptions,
+                        padLayout.ndsDrasticFilter
+                    ) { updateLayout(padLayout.copy {ndsDrasticFilter = it}) }
+                    Text(
+                        "复刻原版滤镜管线：原生 fxLoad 加载 .dfx 着色器链（HQ2X/XBR/扫描线/CRT 等）" +
+                        "逐帧放大渲染。仅 GL 显示路径生效；fxLoad 失败时自动回退原生直绘；" +
+                        "游戏运行中切换下一帧生效。",
+                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    )
                     // 跳帧类型 = config bits5-7（_FrameskipType）
                     DropdownRow("跳帧 (Frameskip)",
                         listOf("none" to "关闭 (默认, 满帧渲染)",

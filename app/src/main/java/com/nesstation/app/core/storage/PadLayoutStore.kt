@@ -551,9 +551,13 @@ class PadLayout {
     // 自动存档间隔秒：0=关 / 300 / 900 / 1800（原版 _AutosaveMode 语义）。
     var ndsDrasticAutosave: String = "0"
 
-    // 存档格式（config bit50，_RawSavFormat）："sav"=裸 .sav（默认），
-    // "dsv"=melonDS .dsv（带头信息，可与官方 melonDS 互换）。
+    // 存档格式（config bit50，_RawSavFormat）："sav"=裸 .sav（默认，
+    // 与全局存档方式 / melonDS 直接互换），"dsv"=DraStic 私有带头格式。
     var ndsDrasticSaveFormat: String = "sav"
+
+    // 视频滤镜（原版 _CurrentFx）：assets/drastic/shaders/ 内 .dfx 着色器链
+    // 文件名，"none" = 不加载。GL 显示路径经 fxLoad/fxSetup/fxRender 应用。
+    var ndsDrasticFilter: String = "none"
 
     // 显示平滑滤波（GL 纹理过滤，视图层实现，不入 config）：
     // enabled=双线性（平滑），disabled=最近邻（像素锐利）。
@@ -1061,6 +1065,7 @@ class PadLayout {
         ndsDrasticThreads = another.ndsDrasticThreads
         ndsDrasticAutosave = another.ndsDrasticAutosave
         ndsDrasticSaveFormat = another.ndsDrasticSaveFormat
+        ndsDrasticFilter = another.ndsDrasticFilter
         ndsDrasticSmoothFilter = another.ndsDrasticSmoothFilter
         ndsDrasticDisplayMode = another.ndsDrasticDisplayMode
         ndsTopLayoutLeft = another.ndsTopLayoutLeft
@@ -1867,6 +1872,7 @@ object PadLayoutStore {
                 .toIntOrNull()?.coerceIn(0, 8)?.toString() ?: "0"
             ndsDrasticAutosave = dr("nds_drastic_autosave", "0", setOf("0", "300", "900", "1800"))
             ndsDrasticSaveFormat = dr("nds_drastic_save_format", "sav", setOf("sav", "dsv"))
+            ndsDrasticFilter = p.getString("nds_drastic_filter", "none")?.takeIf { it.isNotBlank() } ?: "none"
             ndsDrasticSmoothFilter = dr("nds_drastic_smooth_filter", "enabled", setOf("enabled", "disabled"))
             ndsDrasticDisplayMode = dr("nds_drastic_display_mode", "gl", setOf("gl", "canvas"))
             // 全局存档方式迁移：老版本只有 nds_save_mode（NDS 独有），
@@ -2406,6 +2412,7 @@ object PadLayoutStore {
             putString("nds_drastic_threads", layout.ndsDrasticThreads)
             putString("nds_drastic_autosave", layout.ndsDrasticAutosave)
             putString("nds_drastic_save_format", layout.ndsDrasticSaveFormat)
+            putString("nds_drastic_filter", layout.ndsDrasticFilter)
             putString("nds_drastic_smooth_filter", layout.ndsDrasticSmoothFilter)
             putString("nds_drastic_display_mode", layout.ndsDrasticDisplayMode)
             putString("global_save_mode", layout.globalSaveMode)

@@ -19,43 +19,53 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import kotlin.math.roundToInt
 
 /**
- * DraStic（激烈）核心的 OpenGL 显示视图 —— 复刻原版 App 的显示路径。
+ * DraStic（激烈）核心的 OpenGL 显示视图 —— 复刻原版 App 的显示路径
+ * （含滤镜管线，第四轮修复：全局滤镜 + 帧同步对齐）。
  *
  * ## 原生渲染契约（libdrastic_arm64.so 逐指令反汇编验证）
  * 帧池：双缓冲，各 0x180000 字节（两屏 × 0xC0000 = 512×384×4，按 2x 容量
  * 预分配）；缓冲指针存 video_state+0/+8，当前写入档存 +0x958。
- * 原生 renderFrame(0x1ceac) 每次调用的行为：
- *  1. 池互斥锁（+0x98c）下快取【另一档】缓冲指针与两屏分辨率档
- *     （+0x968 双字，由 config bit41 经 setResolution 写入：
- *     0→256×192，1→512×384）；
- *  2. 屏 A：glBindTexture(tex1) → 脏标记（+0x988 bit0）置位时
- *     glTexSubImage2D 上传（宽=(scale+1)×256、高=(scale+1)×192；
- *     32 位模式 format=GL_RGBA(0x1908)/type=GL_UNSIGNED_BYTE(0x1401)，
- *     由 applyConfig 的 bit23 路径写入 +0x960/+0x964）；
- *  3. 【glDrawArrays(GL_TRIANGLES, first=0,  count=6)】绘制屏 A；
- *  4. tex2≠0 时同样流程绘制屏 B：first=6, count=6；结束后清脏字节。
  *
- * 原生只做"上传 + 按当前绑定的顶点属性绘制"，不绑定程序/不设顶点指针
- * —— 着色器、VBO、视口全部由调用方（本视图）准备，与原版 App 的
- * GLSurfaceView 调用模型一致。
+ * ### 帧同步（问题 3 修复 —— 与原版 onDrawFrame 逐字对齐）
+ * 原版 GL 线程每帧：`getFrameInfo()` 低 16 位（模拟主循环 0x14c4b0 帧计数
+ * 器）== 0 时 → `waitScreen()`（阻塞等模拟线程 signal）→ `fxRender`/`renderFrame`
+ * 上传 + 绘制。本视图完全复刻该模型：
+ *  1. GL 线程成为唯一的 waitScreen 消费者（引擎渲染线程在 GL 接管后驻车，
+ *     不再互偷 pthread_cond_signal —— 两个等待者会各拿一半信号，双路径都丢帧）；
+ *  2. 消费与模拟严格同步后，多线程 3D（bit28）的"异步分段 + 上一帧补拷贝"
+ *     帧冲刷不再被异步读到中间态 —— 画面错乱消失，与原版一致。
  *
- * ### 顶点布局（契约核心）
- * 原生绘制图元是 GL_TRIANGLES（w0=4，非 TRIANGLE_STRIP）：
- *  - 顶点 0..5 = 屏 A：两个三角形拼成矩形
- *    v0=(l,t) v1=(r,t) v2=(l,b) | v3=(r,t) v4=(r,b) v5=(l,b)
- *  - 顶点 6..11 = 屏 B：同样两个三角形
- * 位置随屏幕布局（上下/下上/左右/右左/单屏/自定义矩形）实时更新。
+ * ### 滤镜管线（问题 1 修复 —— 原版 DraSticGlView$j 契约复刻）
+ * 原版通过三条 JNI 挂接 .dfx 着色器链（滤镜不在 config 位域内）：
+ *  - `fxLoad(path, vOff, uvOff)`：加载 "DraStic/shaders/<名>.dfx"
+ *    （虚拟路径经 PathCache 解析到 <sysDir>/shaders/），vOff/uvOff = 共享
+ *    VBO 内 a_vertex_coordinate / a_texture_coordinate 数据的起始字节；
+ *  - `fxSetup(srcW, srcH, x, y, sw, sh)`：帧纹理尺寸 + 最终 pass 视口；
+ *  - `fxRender(tex1, tex2, vertA, vertB, vertFull, wA, hA, wB, hB, portrait)`：
+ *    上传帧池 → 按 pass 链绘制：中间 pass（带 FBO）画顶点 18-23（全屏
+ *    四边形），最终 pass（FBO=0）画顶点 0-5 / 6-11（两屏四边形，
+ *    glViewport = fxSetup 的 (x,y,sw,sh)），u_target_size = (wA,hA)/(wB,hB)
+ *    （两屏目标矩形像素尺寸，反汇编 csel + glUniform2f 确认）。
+ * 共享 VBO 布局（与原版字节级一致，positions 2 float/顶点、UV 同构分离）：
  *
- * ### 帧同步
- * 帧循环不调 waitScreen：eglSwapBuffers 的垂直同步提供自然节流，
- * renderFrame 的脏标记机制保证只上传新帧（上传后清标记，无新帧时仅
- * 重绘既有纹理）——与原版 App 的 onDrawFrame 模型完全一致。
- * 引擎侧的渲染消费线程继续 waitScreen 维持就绪握手。
+ * ```
+ *  字节 0    顶点 0-5   上屏位置四边形（布局变化时重传）
+ *  字节 48   顶点 6-11  下屏位置四边形
+ *  字节 96   顶点 12-17 全屏四边形（静态）
+ *  字节 144  顶点 18-23 全屏四边形（静态；fx 中间 pass 绘制 first=18）
+ *  字节 192  顶点 24-29 暂停背景四边形（静态）
+ *  字节 240  顶点 30-35 FPS 叠加四边形（本前端不用，置零）
+ *  字节 2208 UV 四边形 ×6（静态全 [0..1]；fxLoad 的 uvOff 指向这里）
+ * ```
+ * 滤镜 = "none" 或 fxLoad 失败时回退原生 renderFrame 直绘（同一 VBO 布局：
+ * renderFrame 只做上传 + glDrawArrays，着色器/指针由调用方准备）。
  *
- * 触摸输入复刻 NdsDualScreenView：下屏矩形内线性映射为 DS 触点
- * (0..255, 0..191)，矩形外释放。
+ * ### 触摸输入
+ * 复刻 NdsDualScreenView：下屏矩形内线性映射为 DS 触点 (0..255, 0..191)，
+ * 矩形外释放。
  */
 class DraSticGlView @JvmOverloads constructor(
     context: Context
@@ -69,6 +79,16 @@ class DraSticGlView @JvmOverloads constructor(
         private const val SCREEN_H_1X = 192
         private const val SCREEN_W_2X = 512
         private const val SCREEN_H_2X = 384
+
+        // ---- 共享 VBO 布局（原版字节级契约，见类文档） ----
+        private const val VBO_SIZE = 4096
+        private const val VBO_UV_OFFSET = 2208      // fxLoad 的 uvOff 参数
+        private const val QUAD_FLOATS = 12          // 6 顶点 × 2 float
+        private const val QUAD_BYTES = QUAD_FLOATS * 4
+        private const val OFF_POS_TOP = 0           // 顶点 0-5：上屏
+        private const val OFF_POS_BOTTOM = 48       // 顶点 6-11：下屏
+        private const val OFF_POS_FULL = 96         // 顶点 12-17：全屏
+        private const val OFF_POS_FULL2 = 144       // 顶点 18-23：全屏（fx 中间 pass）
 
         private const val VS_SRC = """
             attribute vec2 aPos;
@@ -137,10 +157,24 @@ class DraSticGlView @JvmOverloads constructor(
     private var texW = SCREEN_W_1X
     private var texH = SCREEN_H_1X
 
-    /** 12 顶点 × (pos2 + uv2)，GL 线程内更新。 */
-    private val vertexData = FloatArray(12 * 4)
-    private val vertexBuf: FloatBuffer = ByteBuffer
-        .allocateDirect(12 * 4 * 4)
+    // ---- 滤镜（fx）状态（仅 GL 线程访问） ----
+    /** 当前已请求加载的滤镜名（含 "none"；与引擎 optFilter 比对触发重载）。 */
+    private var fxWanted: String? = null
+    /** fxLoad 成功 → 帧循环走 fxRender 滤镜路径。 */
+    private var fxUsable = false
+
+    /** 两屏位置四边形（GL 线程内更新；原版顶点序：两个三角形拼矩形）。 */
+    private val posData = FloatArray(QUAD_FLOATS * 2)
+    private val posBuf: FloatBuffer = ByteBuffer
+        .allocateDirect(QUAD_FLOATS * 2 * 4)
+        .order(ByteOrder.nativeOrder())
+        .asFloatBuffer()
+    private val fullQuadBuf: FloatBuffer = ByteBuffer
+        .allocateDirect(QUAD_BYTES)
+        .order(ByteOrder.nativeOrder())
+        .asFloatBuffer()
+    private val uvQuadsBuf: FloatBuffer = ByteBuffer
+        .allocateDirect(QUAD_BYTES * 6)
         .order(ByteOrder.nativeOrder())
         .asFloatBuffer()
 
@@ -252,7 +286,6 @@ class DraSticGlView @JvmOverloads constructor(
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
             EGL14.eglDestroySurface(eglDisplay, eglSurface)
             eglSurface = EGL14.EGL_NO_SURFACE
-            EGL14.eglDestroyContext(eglDisplay, eglContext)
             eglContext = EGL14.EGL_NO_CONTEXT
             return false
         }
@@ -282,7 +315,7 @@ class DraSticGlView @JvmOverloads constructor(
     }
 
     private fun glInitResources(): Boolean {
-        // 着色器程序
+        // 着色器程序（无滤镜路径用；滤镜路径的程序由原生 fxLoad/每 pass 自建）
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, VS_SRC) ?: return false
         val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, FS_SRC) ?: run {
             GLES20.glDeleteShader(vs); return false
@@ -307,16 +340,15 @@ class DraSticGlView @JvmOverloads constructor(
         val uTex = GLES20.glGetUniformLocation(prog, "uTex")
         GLES20.glUniform1i(uTex, 0)
 
-        // 顶点缓冲（12 顶点双四边形）
+        // 共享顶点缓冲（非交错布局：位置四边形 0-287B，UV 四边形 2208B 起）
         val vbos = IntArray(1)
         GLES20.glGenBuffers(1, vbos, 0)
         vbo = vbos[0]
-        vertexBuf.clear()
-        vertexBuf.put(vertexData).flip()
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
         GLES20.glBufferData(
-            GLES20.GL_ARRAY_BUFFER, vertexData.size * 4, vertexBuf, GLES20.GL_DYNAMIC_DRAW
+            GLES20.GL_ARRAY_BUFFER, VBO_SIZE, null, GLES20.GL_DYNAMIC_DRAW
         )
+        uploadStaticVertices()
 
         // 纹理（尺寸 / 格式随后按引擎配置分配）
         val texs = IntArray(2)
@@ -328,6 +360,57 @@ class DraSticGlView @JvmOverloads constructor(
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         return true
+    }
+
+    /** 上传静态顶点数据：全屏四边形 ×2 + 暂停背景四边形 + 全零 FPS 四边形
+     *  + UV 四边形 ×6（2208B 起，fxLoad 的 uvOff 指向这里）。
+     *  全部与原版 onSurfaceCreated / c() 逐字节同构。 */
+    private fun uploadStaticVertices() {
+        // 全屏 NDC 四边形（原版：{-1,1, -1,-1, 1,-1, -1,1, 1,-1, 1,1}）
+        val full = floatArrayOf(-1f, 1f, -1f, -1f, 1f, -1f, -1f, 1f, 1f, -1f, 1f, 1f)
+        fullQuadBuf.clear()
+        fullQuadBuf.put(full).flip()
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, OFF_POS_FULL, QUAD_BYTES, fullQuadBuf)
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, OFF_POS_FULL2, QUAD_BYTES, fullQuadBuf)
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, OFF_POS_FULL2 + QUAD_BYTES, QUAD_BYTES, fullQuadBuf)
+        // FPS 叠加四边形（顶点 30-35）：本前端不画原生 FPS，置零
+        val zeros = FloatArray(QUAD_FLOATS)
+        fullQuadBuf.clear()
+        fullQuadBuf.put(zeros).flip()
+        GLES20.glBufferSubData(
+            GLES20.GL_ARRAY_BUFFER, OFF_POS_FULL2 + QUAD_BYTES * 2, QUAD_BYTES, fullQuadBuf
+        )
+        // UV 四边形 ×6：全 [0..1]（原版 c()：v0(0,0) v1(0,1) v2(1,1) v3(0,0) v4(1,1) v5(1,0)）
+        val uvQuad = floatArrayOf(0f, 0f, 0f, 1f, 1f, 1f, 0f, 0f, 1f, 1f, 1f, 0f)
+        val uvs = FloatArray(QUAD_FLOATS * 6)
+        for (q in 0 until 6) System.arraycopy(uvQuad, 0, uvs, q * QUAD_FLOATS, QUAD_FLOATS)
+        uvQuadsBuf.clear()
+        uvQuadsBuf.put(uvs).flip()
+        GLES20.glBufferSubData(
+            GLES20.GL_ARRAY_BUFFER, VBO_UV_OFFSET, QUAD_BYTES * 6, uvQuadsBuf
+        )
+        GLES20.glGetError() // 清理可能的残留错误
+    }
+
+    /** 按引擎会话快照（activeHdRender）分配两张屏幕纹理。
+     * 恒为 32 位 GL_RGBA/UNSIGNED_BYTE（与原生 32 位上传常量一致）。 */
+    private fun allocTextures(eng: DraSticEngine) {
+        val hd = eng.activeHdRender
+        texW = if (hd) SCREEN_W_2X else SCREEN_W_1X
+        texH = if (hd) SCREEN_H_2X else SCREEN_H_1X
+        for (tex in intArrayOf(texTop, texBottom)) {
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            applyTexFilter()
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, texW, texH, 0,
+                GLES20.GL_RGBA,
+                GLES20.GL_UNSIGNED_BYTE,
+                null
+            )
+        }
+        GLES20.glGetError() // 清理可能的分配错误残留
     }
 
     private fun glReleaseResources() {
@@ -364,28 +447,6 @@ class DraSticGlView @JvmOverloads constructor(
         return sh
     }
 
-    /** 按引擎会话快照（activeHdRender）分配两张屏幕纹理。
-     * 恒为 32 位 GL_RGBA/UNSIGNED_BYTE（与原生 32 位上传常量一致；
-     * 16 位格式不提供 —— 其 REV 类型组合非 ES 核心合法）。 */
-    private fun allocTextures(eng: DraSticEngine) {
-        val hd = eng.activeHdRender
-        texW = if (hd) SCREEN_W_2X else SCREEN_W_1X
-        texH = if (hd) SCREEN_H_2X else SCREEN_H_1X
-        for (tex in intArrayOf(texTop, texBottom)) {
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-            applyTexFilter()
-            GLES20.glTexImage2D(
-                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, texW, texH, 0,
-                GLES20.GL_RGBA,
-                GLES20.GL_UNSIGNED_BYTE,
-                null
-            )
-        }
-        GLES20.glGetError() // 清理可能的分配错误残留
-    }
-
     /** 平滑/最近邻纹理过滤（NPOT 纹理只允许非 mipmap 过滤）。 */
     private fun applyTexFilter() {
         val f = if (smoothFilter) GLES20.GL_LINEAR else GLES20.GL_NEAREST
@@ -394,12 +455,57 @@ class DraSticGlView @JvmOverloads constructor(
     }
 
     // ------------------------------------------------------------------
-    // 帧循环
+    // 滤镜管线（原版 fxLoad / fxSetup / fxRender 契约）
+    // ------------------------------------------------------------------
+
+    /** 滤镜检查点：引擎 optFilter 与已加载名不一致时重载 .dfx 着色器链。
+     *  @param force 强制重载（会话开始 / 新 EGL 上下文后） */
+    private fun fxCheck(eng: DraSticEngine, force: Boolean = false) {
+        val want = eng.optFilter.ifBlank { "none" }
+        if (!force && want == fxWanted) return
+        fxWanted = want
+        fxUsable = false
+        if (want == "none") return
+        // 原版 f0.h.g()：虚拟路径 DraStic/shaders/<名>.dfx → PathCache →
+        // <sysDir>/shaders/<名>.dfx；参数 (0, 2208) = 位置/UV 数据 VBO 偏移
+        val rc = try {
+            DraSticJNI.fxLoad("DraStic/shaders/$want.dfx", 0, VBO_UV_OFFSET)
+        } catch (t: Throwable) {
+            Log.w(TAG, "fxLoad threw", t)
+            -1
+        }
+        if (rc == 0) {
+            fxUsable = true
+            fxSetupNow()
+            Log.i(TAG, "fxLoad ok: $want")
+        } else {
+            // 原版行为：toast 提示 + 回退无滤镜渲染（draw_screen pass 数为 0 → 直绘）
+            Log.w(TAG, "fxLoad failed rc=$rc: $want — fallback to plain renderFrame")
+        }
+    }
+
+    /** fxSetup：帧纹理尺寸 + 最终 pass 视口（原版 onSurfaceChanged 语义）。 */
+    private fun fxSetupNow() {
+        try {
+            DraSticJNI.fxSetup(
+                texW, texH, 0, 0,
+                surfaceW.coerceAtLeast(1), surfaceH.coerceAtLeast(1)
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "fxSetup failed", t)
+            fxUsable = false
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 帧循环（原版 onDrawFrame 同步模型）
     // ------------------------------------------------------------------
 
     private fun glLoop() {
         var sessionLoaded = false
         var lastSmooth = true
+        var lastFxW = 0
+        var lastFxH = 0
 
         while (glThreadRunning.get() && surfaceReady.get()) {
             val eng = engine
@@ -412,47 +518,103 @@ class DraSticGlView @JvmOverloads constructor(
                 continue
             }
 
-            // 会话首帧：按引擎在 loadRom 时的快照分配纹理，并接管帧消费
-            // （渲染消费线程停止 CPU 帧拷贝）。
+            // 会话首帧：分配纹理 → 接管帧同步（引擎渲染线程驻车）→ 加载滤镜
             if (!sessionLoaded) {
                 allocTextures(eng)
                 eng.glDisplayActive = true
                 sessionLoaded = true
                 lastSmooth = smoothFilter
                 layoutDirty = true
-            }
-            if (smoothFilter != lastSmooth) {
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texTop); applyTexFilter()
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texBottom); applyTexFilter()
-                lastSmooth = smoothFilter
-            }
-
-            GLES20.glViewport(0, 0, surfaceW.coerceAtLeast(1), surfaceH.coerceAtLeast(1))
-
-            if (layoutDirty) {
+                lastFxW = 0; lastFxH = 0
+                fxCheck(eng, force = true)
+                GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
                 rebuildVertices()
                 layoutDirty = false
             }
 
-            // 绑定程序 + 顶点属性（原生 renderFrame 的 glDrawArrays 复用此状态）
-            GLES20.glUseProgram(prog)
-            GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
-            GLES20.glEnableVertexAttribArray(aPosLoc)
-            GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, 0)
-            GLES20.glEnableVertexAttribArray(aUvLoc)
-            GLES20.glVertexAttribPointer(aUvLoc, 2, GLES20.GL_FLOAT, false, 16, 8)
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            // ---- 帧同步门（原版 getFrameInfo 低 16 位 == 0 时消费新帧） ----
+            val frameInfo = try {
+                DraSticJNI.getFrameInfo()
+            } catch (_: Throwable) {
+                0
+            }
+            if ((frameInfo and 0xFFFF) == 0) {
+                // 会话可能恰在门与等待之间结束（cleanup 置 isLoaded=false 且
+                // 不再有信号源）——重查一次避免阻塞在无人唤醒的 condvar 上。
+                if (!eng.isLoaded) {
+                    sessionLoaded = false
+                    continue
+                }
+                // 阻塞到模拟线程产出新帧（原版 waitScreen 语义）——
+                // 本线程是唯一消费者：消费与模拟严格同步，多线程 3D 的
+                // 异步帧冲刷不会被读到中间态。
+                DraSticJNI.waitScreen()
+                if (!glThreadRunning.get() || !surfaceReady.get()) break
 
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                if (layoutDirty) {
+                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+                    rebuildVertices()
+                    layoutDirty = false
+                }
+                if (smoothFilter != lastSmooth) {
+                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texTop); applyTexFilter()
+                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texBottom); applyTexFilter()
+                    lastSmooth = smoothFilter
+                }
+                // 滤镜热切换检查点（设置页改滤镜 → 下一帧重载，与原版一致）
+                fxCheck(eng)
 
-            // 原生上传 + 绘制（互斥锁保护帧池；脏标记控制上传频度）
-            try {
-                DraSticJNI.renderFrame(texTop, texBottom, false)
-            } catch (t: Throwable) {
-                Log.w(TAG, "renderFrame failed", t)
+                // 表面尺寸变化：fx 需要重新 fxSetup（视口 + pass 尺寸链）
+                if (fxUsable && (surfaceW != lastFxW || surfaceH != lastFxH)) {
+                    lastFxW = surfaceW; lastFxH = surfaceH
+                    fxSetupNow()
+                }
+
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                GLES20.glDisable(GLES20.GL_BLEND)
+
+                if (fxUsable) {
+                    // 滤镜路径：原生按 pass 链自用程序/属性指针/视口，
+                    // 只要求共享 VBO 已绑定、纹理单元 0 可用。
+                    GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+                    GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                    val s = screenPixelSizes()
+                    try {
+                        DraSticJNI.fxRender(texTop, texBottom, 0, 6, 18, s[0], s[1], s[2], s[3], false)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "fxRender failed — fallback to plain", t)
+                        fxUsable = false
+                        drawPlain(eng)
+                    }
+                } else {
+                    drawPlain(eng)
+                }
+                eng.notifyGlFrame()
+            } else {
+                // 模拟批次进行中（快进等）：不重绘不清屏，保持上一帧画面
+                Thread.sleep(4)
             }
 
             if (!swap()) break
+        }
+    }
+
+    /** 无滤镜直绘路径：本前端程序 + 非交错属性指针（offset 0 / 2208），
+     *  原生 renderFrame 负责帧池上传 + glDrawArrays（复用当前 GL 状态）。 */
+    private fun drawPlain(eng: DraSticEngine) {
+        GLES20.glViewport(0, 0, surfaceW.coerceAtLeast(1), surfaceH.coerceAtLeast(1))
+        GLES20.glUseProgram(prog)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+        GLES20.glEnableVertexAttribArray(aPosLoc)
+        GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 8, 0)
+        GLES20.glEnableVertexAttribArray(aUvLoc)
+        GLES20.glVertexAttribPointer(aUvLoc, 2, GLES20.GL_FLOAT, false, 8, VBO_UV_OFFSET)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        try {
+            DraSticJNI.renderFrame(texTop, texBottom, false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "renderFrame failed", t)
         }
     }
 
@@ -468,44 +630,15 @@ class DraSticGlView @JvmOverloads constructor(
     }
 
     // ------------------------------------------------------------------
-    // 顶点布局（12 顶点：上屏 0..5，下屏 6..11）
+    // 顶点布局（原版契约：顶点序 = 三角 1 (l,t)(l,b)(r,b) + 三角 2 (l,t)(r,b)(r,t)）
     // ------------------------------------------------------------------
 
-    /** 依据 screenLayout / 自定义矩形重建顶点数据并上传 VBO。 */
-    private fun rebuildVertices() {
-        val topRect: FloatArray?
-        val bottomRect: FloatArray?
-        val ct = customTopRect
-        val cb = customBottomRect
-        if (ct != null && cb != null) {
-            topRect = ct
-            bottomRect = cb
-        } else {
-            val (t, b) = ndsLayoutRects(screenLayout)
-            topRect = if (t[2] > t[0] && t[3] > t[1]) t else null
-            bottomRect = if (b[2] > b[0] && b[3] > b[1]) b else null
-        }
-
-        putQuad(0, topRect)
-        putQuad(6, bottomRect)
-
-        vertexBuf.clear()
-        vertexBuf.put(vertexData).flip()
-        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
-        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, 0, vertexData.size * 4, vertexBuf)
-    }
-
-    /** 写入一个 6 顶点四边形（GL_TRIANGLES：两个三角形拼成矩形）。
-     * 顶点序与原生 draw 调用严格对应：first=0/6、count=6、图元 GL_TRIANGLES
-     * （原生 renderFrame 两次 glDrawArrays 均为 w0=4=GL_TRIANGLES）。 */
-    private fun putQuad(base: Int, rect: FloatArray?) {
+    /** 把一个 6 顶点四边形写入 [out] 的 [base] float 处；rect=null 折叠为零面积。 */
+    private fun putQuad(out: FloatArray, base: Int, rect: FloatArray?) {
         if (rect == null) {
-            // 无此屏：全部折叠到同一点（零面积三角形，不产生像素）
             for (i in 0 until 6) {
-                vertexData[(base + i) * 4] = -1f
-                vertexData[(base + i) * 4 + 1] = -1f
-                vertexData[(base + i) * 4 + 2] = 0.5f
-                vertexData[(base + i) * 4 + 3] = 0.5f
+                out[base + i * 2] = -1f
+                out[base + i * 2 + 1] = -1f
             }
             return
         }
@@ -514,20 +647,49 @@ class DraSticGlView @JvmOverloads constructor(
         val r = rect[2] * 2f - 1f
         val t = 1f - rect[1] * 2f
         val b = 1f - rect[3] * 2f
-        // GL_TRIANGLES 两个三角形拼成矩形（与原生 first/count 契约一致）：
-        //   三角 1 = v0(l,t) v1(r,t) v2(l,b)
-        //   三角 2 = v3(r,t) v4(r,b) v5(l,b)
-        val px = floatArrayOf(l, r, l, r, r, l)
-        val py = floatArrayOf(t, t, b, t, b, b)
-        // UV：纹理 v=0 对应帧池数据的第 0 行（画面顶部）→ 屏幕矩形顶部
-        val u = floatArrayOf(0f, 1f, 0f, 1f, 1f, 0f)
-        val v = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f)
+        // 原版顶点序（DraSticGlView$j l() / c()）：
+        //   三角 1 = (l,t) (l,b) (r,b)
+        //   三角 2 = (l,t) (r,b) (r,t)
+        val px = floatArrayOf(l, l, r, l, r, r)
+        val py = floatArrayOf(t, b, b, t, b, t)
         for (i in 0 until 6) {
-            vertexData[(base + i) * 4] = px[i]
-            vertexData[(base + i) * 4 + 1] = py[i]
-            vertexData[(base + i) * 4 + 2] = u[i]
-            vertexData[(base + i) * 4 + 3] = v[i]
+            out[base + i * 2] = px[i]
+            out[base + i * 2 + 1] = py[i]
         }
+    }
+
+    /** 当前两屏归一化矩形（top, bottom；不可见 = null）。 */
+    private fun currentRects(): Pair<FloatArray?, FloatArray?> {
+        val ct = customTopRect
+        val cb = customBottomRect
+        if (ct != null && cb != null) return ct to cb
+        val (t, b) = ndsLayoutRects(screenLayout)
+        val top = if (t[2] > t[0] && t[3] > t[1]) t else null
+        val bottom = if (b[2] > b[0] && b[3] > b[1]) b else null
+        return top to bottom
+    }
+
+    /** 依据 screenLayout / 自定义矩形重建两屏位置四边形并上传 VBO。 */
+    private fun rebuildVertices() {
+        val (top, bottom) = currentRects()
+        putQuad(posData, 0, top)
+        putQuad(posData, QUAD_FLOATS, bottom)
+        posBuf.clear()
+        posBuf.put(posData).flip()
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vbo)
+        GLES20.glBufferSubData(GLES20.GL_ARRAY_BUFFER, OFF_POS_TOP, QUAD_BYTES * 2, posBuf)
+    }
+
+    /** 两屏目标矩形的像素尺寸（fxRender 的 u_target_size；不可见 = 0）。 */
+    private fun screenPixelSizes(): IntArray {
+        val (top, bottom) = currentRects()
+        val w = surfaceW.coerceAtLeast(1).toFloat()
+        val h = surfaceH.coerceAtLeast(1).toFloat()
+        val wa = if (top != null) ((top[2] - top[0]) * w).roundToInt().coerceAtLeast(0) else 0
+        val ha = if (top != null) ((top[3] - top[1]) * h).roundToInt().coerceAtLeast(0) else 0
+        val wb = if (bottom != null) ((bottom[2] - bottom[0]) * w).roundToInt().coerceAtLeast(0) else 0
+        val hb = if (bottom != null) ((bottom[3] - bottom[1]) * h).roundToInt().coerceAtLeast(0) else 0
+        return intArrayOf(wa, ha, wb, hb)
     }
 
     // ------------------------------------------------------------------
@@ -571,7 +733,7 @@ class DraSticGlView @JvmOverloads constructor(
     /** 当前下屏归一化矩形（触摸热区）。 */
     fun currentBottomRect(): FloatArray? {
         customBottomRect?.let { return it }
-        val (t, b) = ndsLayoutRects(screenLayout)
+        val (_, b) = ndsLayoutRects(screenLayout)
         return if (b[2] > b[0] && b[3] > b[1]) b else null
     }
 
