@@ -460,24 +460,98 @@ class PadLayout {
     // 运行时经 DraSticEngine.setCoreOption → DraSticJNI.setAudioVolume 应用。
     var ndsDrasticVolume: String = "100"
 
-    // 以下激烈核心设置均来自对 libdrastic_arm64.so 的逐指令反汇编验证
-    // （config 位域布局与消费链路见 DraSticEngine.packConfig 的注释）。
-    // 默认值 = 已在真机验证可正常显示画面的配置字（bit31 声音开，
-    // 其余位全 0）——不默认开启任何未经验证的位。
+    // 以下激烈核心设置全部对照原版 DraStic r2.6.0.4a APK（jadx 反编译
+    // f0.h 的 SharedPreferences 读写 + libdrastic_arm64.so 消费链路验证），
+    // config 位域布局见 DraSticEngine.packConfig 的注释。
+    // 默认值 = 原版 App 的出厂默认 —— 保证默认配置字与原版 f0.h.n()
+    // 逐位一致（3D 渲染完整性的前提：模拟线程数按核数自动 1/2/3，
+    // 高清渲染默认关，音频延迟默认"极高"等）。
 
-    // 声音开关（config bit31，1=开启）。
+    // 声音开关（config bit31，_SoundEnabled，原版默认开）。
     var ndsDrasticSound: String = "enabled"
 
-    // 高清渲染（config bit41）：开启后原生以 512×384（2x）内部分辨率渲染
-    // 并强制 GL 显示路径；关闭则 256×192（与验证可用的默认配置一致）。
+    // 高清渲染（config bit41，_Hires3D）：开启后原生以 512×384（2x）内部分辨率
+    // 渲染并强制 GL 显示路径；关闭则 256×192（原版默认）。
     // 需重进游戏生效（分辨率在 startGame 路径初始化）。
     var ndsDrasticHdRender: String = "disabled"
 
-    // 快进倍率索引（bits 37-38：0..3 → 2x/4x/8x/16x）。表外倍速
-    // （3x/6x 等）回落到此处设置的倍率。
-    var ndsDrasticFfwdSpeed: String = "0"
+    // 跳帧类型（bits 5-7，_FrameskipType）：none=关闭 / manual=手动 / auto=自动。
+    var ndsDrasticFrameskipType: String = "none"
 
-    // 存档格式（config bit50）："sav"=裸 .sav（默认），
+    // 跳帧值 0-9（bits 0-3，_FrameskipValue，原版默认 4；仅手动跳帧使用）。
+    var ndsDrasticFrameskipValue: String = "4"
+
+    // 安全跳帧（bit 47，_FrameskipSafe，原版默认关）。
+    var ndsDrasticFrameskipSafe: String = "disabled"
+
+    // 多线程 3D 渲染（bit 28，_Threaded3D，原版默认关）：提升 3D 大作性能，
+    // 但部分游戏可能出现画面异常（原版提示语同义）。
+    var ndsDrasticThreaded3D: String = "disabled"
+
+    // 16 位渲染（bit 23，_GlUse16Bit，原版默认关）。
+    var ndsDrastic16Bit: String = "disabled"
+
+    // 禁用边缘标记（bit 40，_DisableEdgeMarking，原版默认关）：
+    // 3D 描边后处理，禁用可提速，个别游戏依赖它显示轮廓。
+    var ndsDrasticEdgeMarking: String = "disabled"
+
+    // 主屏固定在上屏（bit 35，_FixMainEngineScreen，原版默认关）：
+    // 交换主/副 3D 引擎的显示顺序，修复少数游戏主屏错位。
+    var ndsDrasticFixMainScreen: String = "disabled"
+
+    // 音频延迟（bits 8-9，_AudioLatency）：0=低 1=中 2=高 3=极高（原版默认 3）。
+    var ndsDrasticAudioLatency: String = "3"
+
+    // 麦克风启用（bit 26，_MicEnabled，原版默认开）。
+    var ndsDrasticMicEnabled: String = "enabled"
+
+    // 麦克风等级 0-3（bits 37-38，_MicLevel，原版默认 1；增益表 [2,4,8,16]）。
+    var ndsDrasticMicLevel: String = "1"
+
+    // 连发速度 0-4（bits 32-34，_AutoFireSpeed，原版默认 2；1 最快 5 最慢）。
+    var ndsDrasticAutofireSpeed: String = "2"
+
+    // 快进速率 0-5（bits 12-15，_FfwdSpeed）：50%/150%/200%/300%/400%/无限制
+    // （原版默认 2=200%）。
+    var ndsDrasticFfwdRate: String = "2"
+
+    // Slot2 卡带类型 0-5（bits 43-46，_Slot2Type，原版默认 1=GBA 卡）：
+    // none/gba/sram/rumble/motion_official/motion_homebrew。
+    var ndsDrasticSlot2Type: String = "gba"
+
+    // RTC 使用系统时间（bit 39，_RtcSystemTime，原版默认关）。
+    var ndsDrasticRtcSystemTime: String = "disabled"
+
+    // 金手指启用（bit 27，_CheatsEnabled，原版默认开）。
+    var ndsDrasticCheatsEnabled: String = "enabled"
+
+    // Lua 启用（bit 42，_LuaEnabled，原版默认开）。
+    var ndsDrasticLuaEnabled: String = "enabled"
+
+    // 即时存档内保存游戏存档（bit 25，_BackupInSavestates，原版默认开）。
+    var ndsDrasticBackupInSavestates: String = "enabled"
+
+    // 忽略卡带容量（bit 24，_IgnoreGamecardLimit，原版默认关）。
+    var ndsDrasticIgnoreCardLimit: String = "disabled"
+
+    // ROM 自动裁边（bit 36，_AutoTrim，原版默认关）。
+    var ndsDrasticAutoTrim: String = "disabled"
+
+    // 预解压 ROM 到内存（bit 48，_PreloadRoms，原版默认关）。
+    var ndsDrasticPreloadRoms: String = "disabled"
+
+    // 原生显示 FPS（bit 30，_ShowFPS，原版默认关：帧内叠加 FPS）。
+    var ndsDrasticShowFps: String = "disabled"
+
+    // 模拟线程数：0=自动（≥4核=3，≥2核=2，否则1，与原版同构）；1-8=强制
+    // （原版 threads.cfg 语义）。★ 3D 游戏显示不完整（只剩顶部一条）时
+    // 调高此值或保持自动 —— 原版绝不会以 0 线程启动。
+    var ndsDrasticThreads: String = "0"
+
+    // 自动存档间隔秒：0=关 / 300 / 900 / 1800（原版 _AutosaveMode 语义）。
+    var ndsDrasticAutosave: String = "0"
+
+    // 存档格式（config bit50，_RawSavFormat）："sav"=裸 .sav（默认），
     // "dsv"=melonDS .dsv（带头信息，可与官方 melonDS 互换）。
     var ndsDrasticSaveFormat: String = "sav"
 
@@ -963,7 +1037,29 @@ class PadLayout {
         ndsDrasticVolume = another.ndsDrasticVolume
         ndsDrasticSound = another.ndsDrasticSound
         ndsDrasticHdRender = another.ndsDrasticHdRender
-        ndsDrasticFfwdSpeed = another.ndsDrasticFfwdSpeed
+        ndsDrasticFrameskipType = another.ndsDrasticFrameskipType
+        ndsDrasticFrameskipValue = another.ndsDrasticFrameskipValue
+        ndsDrasticFrameskipSafe = another.ndsDrasticFrameskipSafe
+        ndsDrasticThreaded3D = another.ndsDrasticThreaded3D
+        ndsDrastic16Bit = another.ndsDrastic16Bit
+        ndsDrasticEdgeMarking = another.ndsDrasticEdgeMarking
+        ndsDrasticFixMainScreen = another.ndsDrasticFixMainScreen
+        ndsDrasticAudioLatency = another.ndsDrasticAudioLatency
+        ndsDrasticMicEnabled = another.ndsDrasticMicEnabled
+        ndsDrasticMicLevel = another.ndsDrasticMicLevel
+        ndsDrasticAutofireSpeed = another.ndsDrasticAutofireSpeed
+        ndsDrasticFfwdRate = another.ndsDrasticFfwdRate
+        ndsDrasticSlot2Type = another.ndsDrasticSlot2Type
+        ndsDrasticRtcSystemTime = another.ndsDrasticRtcSystemTime
+        ndsDrasticCheatsEnabled = another.ndsDrasticCheatsEnabled
+        ndsDrasticLuaEnabled = another.ndsDrasticLuaEnabled
+        ndsDrasticBackupInSavestates = another.ndsDrasticBackupInSavestates
+        ndsDrasticIgnoreCardLimit = another.ndsDrasticIgnoreCardLimit
+        ndsDrasticAutoTrim = another.ndsDrasticAutoTrim
+        ndsDrasticPreloadRoms = another.ndsDrasticPreloadRoms
+        ndsDrasticShowFps = another.ndsDrasticShowFps
+        ndsDrasticThreads = another.ndsDrasticThreads
+        ndsDrasticAutosave = another.ndsDrasticAutosave
         ndsDrasticSaveFormat = another.ndsDrasticSaveFormat
         ndsDrasticSmoothFilter = another.ndsDrasticSmoothFilter
         ndsDrasticDisplayMode = another.ndsDrasticDisplayMode
@@ -1730,14 +1826,49 @@ object PadLayoutStore {
             // DraStic（激烈）核心：音量 0..100
             ndsDrasticVolume = (p.getString("nds_drastic_volume", "100") ?: "100")
                 .toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "100"
-            // DraStic 其余设置（均为字符串枚举，非法值回退默认）
-            ndsDrasticSound = p.getString("nds_drastic_sound", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
-            ndsDrasticHdRender = p.getString("nds_drastic_hd_render", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
-            ndsDrasticFfwdSpeed = (p.getString("nds_drastic_ffwd_speed", "0") ?: "0")
-                .toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "0"
-            ndsDrasticSaveFormat = p.getString("nds_drastic_save_format", "sav")?.takeIf { it == "sav" || it == "dsv" } ?: "sav"
-            ndsDrasticSmoothFilter = p.getString("nds_drastic_smooth_filter", "enabled")?.takeIf { it == "enabled" || it == "disabled" } ?: "enabled"
-            ndsDrasticDisplayMode = p.getString("nds_drastic_display_mode", "gl")?.takeIf { it == "gl" || it == "canvas" } ?: "gl"
+            // DraStic 其余设置（均为字符串枚举，非法值回退默认）。
+            // ★ 默认值必须与原版出厂默认一致（尤其 hd_render=disabled：
+            // 旧版本此处误写 "enabled" 导致高清默认开启、3D 大游戏单线程
+            // 光栅化来不及完成 → 画面只剩顶部一条，已修正）。
+            fun dr(key: String, def: String, allowed: Set<String>? = null): String {
+                val v = p.getString(key, def) ?: def
+                return if (allowed != null && v !in allowed) def else v
+            }
+            ndsDrasticSound = dr("nds_drastic_sound", "enabled", setOf("enabled", "disabled"))
+            ndsDrasticHdRender = dr("nds_drastic_hd_render", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticFrameskipType = dr("nds_drastic_frameskip_type", "none", setOf("none", "manual", "auto"))
+            ndsDrasticFrameskipValue = (p.getString("nds_drastic_frameskip_value", "4") ?: "4")
+                .toIntOrNull()?.coerceIn(0, 9)?.toString() ?: "4"
+            ndsDrasticFrameskipSafe = dr("nds_drastic_frameskip_safe", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticThreaded3D = dr("nds_drastic_threaded_3d", "disabled", setOf("enabled", "disabled"))
+            ndsDrastic16Bit = dr("nds_drastic_16bit", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticEdgeMarking = dr("nds_drastic_edge_marking", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticFixMainScreen = dr("nds_drastic_fix_main_screen", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticAudioLatency = (p.getString("nds_drastic_audio_latency", "3") ?: "3")
+                .toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "3"
+            ndsDrasticMicEnabled = dr("nds_drastic_mic_enabled", "enabled", setOf("enabled", "disabled"))
+            ndsDrasticMicLevel = (p.getString("nds_drastic_mic_level", "1") ?: "1")
+                .toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "1"
+            ndsDrasticAutofireSpeed = (p.getString("nds_drastic_autofire_speed", "2") ?: "2")
+                .toIntOrNull()?.coerceIn(0, 4)?.toString() ?: "2"
+            ndsDrasticFfwdRate = (p.getString("nds_drastic_ffwd_rate", "2") ?: "2")
+                .toIntOrNull()?.coerceIn(0, 5)?.toString() ?: "2"
+            ndsDrasticSlot2Type = dr("nds_drastic_slot2_type", "gba",
+                setOf("none", "gba", "sram", "rumble", "motion_official", "motion_homebrew"))
+            ndsDrasticRtcSystemTime = dr("nds_drastic_rtc_system_time", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticCheatsEnabled = dr("nds_drastic_cheats_enabled", "enabled", setOf("enabled", "disabled"))
+            ndsDrasticLuaEnabled = dr("nds_drastic_lua_enabled", "enabled", setOf("enabled", "disabled"))
+            ndsDrasticBackupInSavestates = dr("nds_drastic_backup_in_savestates", "enabled", setOf("enabled", "disabled"))
+            ndsDrasticIgnoreCardLimit = dr("nds_drastic_ignore_card_limit", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticAutoTrim = dr("nds_drastic_auto_trim", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticPreloadRoms = dr("nds_drastic_preload_roms", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticShowFps = dr("nds_drastic_show_fps", "disabled", setOf("enabled", "disabled"))
+            ndsDrasticThreads = (p.getString("nds_drastic_threads", "0") ?: "0")
+                .toIntOrNull()?.coerceIn(0, 8)?.toString() ?: "0"
+            ndsDrasticAutosave = dr("nds_drastic_autosave", "0", setOf("0", "300", "900", "1800"))
+            ndsDrasticSaveFormat = dr("nds_drastic_save_format", "sav", setOf("sav", "dsv"))
+            ndsDrasticSmoothFilter = dr("nds_drastic_smooth_filter", "enabled", setOf("enabled", "disabled"))
+            ndsDrasticDisplayMode = dr("nds_drastic_display_mode", "gl", setOf("gl", "canvas"))
             // 全局存档方式迁移：老版本只有 nds_save_mode（NDS 独有），
             // 升级后继承用户已选的 NDS 存档方式作为全局默认。
             globalSaveMode = p.getString("global_save_mode", null)
@@ -2251,7 +2382,29 @@ object PadLayoutStore {
             putString("nds_drastic_volume", layout.ndsDrasticVolume)   // DraStic（激烈）核心
             putString("nds_drastic_sound", layout.ndsDrasticSound)
             putString("nds_drastic_hd_render", layout.ndsDrasticHdRender)
-            putString("nds_drastic_ffwd_speed", layout.ndsDrasticFfwdSpeed)
+            putString("nds_drastic_frameskip_type", layout.ndsDrasticFrameskipType)
+            putString("nds_drastic_frameskip_value", layout.ndsDrasticFrameskipValue)
+            putString("nds_drastic_frameskip_safe", layout.ndsDrasticFrameskipSafe)
+            putString("nds_drastic_threaded_3d", layout.ndsDrasticThreaded3D)
+            putString("nds_drastic_16bit", layout.ndsDrastic16Bit)
+            putString("nds_drastic_edge_marking", layout.ndsDrasticEdgeMarking)
+            putString("nds_drastic_fix_main_screen", layout.ndsDrasticFixMainScreen)
+            putString("nds_drastic_audio_latency", layout.ndsDrasticAudioLatency)
+            putString("nds_drastic_mic_enabled", layout.ndsDrasticMicEnabled)
+            putString("nds_drastic_mic_level", layout.ndsDrasticMicLevel)
+            putString("nds_drastic_autofire_speed", layout.ndsDrasticAutofireSpeed)
+            putString("nds_drastic_ffwd_rate", layout.ndsDrasticFfwdRate)
+            putString("nds_drastic_slot2_type", layout.ndsDrasticSlot2Type)
+            putString("nds_drastic_rtc_system_time", layout.ndsDrasticRtcSystemTime)
+            putString("nds_drastic_cheats_enabled", layout.ndsDrasticCheatsEnabled)
+            putString("nds_drastic_lua_enabled", layout.ndsDrasticLuaEnabled)
+            putString("nds_drastic_backup_in_savestates", layout.ndsDrasticBackupInSavestates)
+            putString("nds_drastic_ignore_card_limit", layout.ndsDrasticIgnoreCardLimit)
+            putString("nds_drastic_auto_trim", layout.ndsDrasticAutoTrim)
+            putString("nds_drastic_preload_roms", layout.ndsDrasticPreloadRoms)
+            putString("nds_drastic_show_fps", layout.ndsDrasticShowFps)
+            putString("nds_drastic_threads", layout.ndsDrasticThreads)
+            putString("nds_drastic_autosave", layout.ndsDrasticAutosave)
             putString("nds_drastic_save_format", layout.ndsDrasticSaveFormat)
             putString("nds_drastic_smooth_filter", layout.ndsDrasticSmoothFilter)
             putString("nds_drastic_display_mode", layout.ndsDrasticDisplayMode)

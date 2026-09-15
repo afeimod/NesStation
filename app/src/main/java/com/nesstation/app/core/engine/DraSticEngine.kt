@@ -133,44 +133,128 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         private const val BOOT_TIMEOUT_MS = 20_000L
 
         /**
-         * 打包 DraStic 配置位域（位布局经 libdrastic_arm64.so 逐指令反汇编
-         * 验证 —— applyConfig(0x1a4a0) → 解包器(0x17c58) → 各消费点全链路）：
+         * 打包 DraStic 配置位域 —— 与原版 App `f0.h.n()`（jadx 反编译
+         * DraStic r2.6.0.4a classes.dex）逐位一致，并经 libdrastic_arm64.so
+         * 反汇编验证消费链路（applyConfig 0x1a4a0 → 解包器 0x17c58）：
          *
-         *  bit31     = 声音启用（解包器 → [cfg+0x460]；!bit31 写入音频
-         *              引擎的"跳过音频"标志）
-         *  bit29     = 快进激活状态（运行中随 setFastForward 翻转）
-         *  bits12-15 = 快进时的显示帧间隔表索引（0x1070c0：
-         *              [100000,33333,25000,16666,12500,5000]µs，仅 ≤5 有效；
-         *              固定用 2 = 25ms = 40fps 显示上限）
-         *  bit41     = 高清渲染（2x）：解包器 → [cfg+0x4a0] → startGame 路径
-         *              读 [core+0x8aaf8] → setResolution(0x1cde4) 写两屏
-         *              分辨率档 → renderFrame 上传 (scale+1)×256 × (scale+1)×192；
-         *              帧池每屏 0xC0000 = 512×384×4，按 2x 容量预分配
-         *  bits37-38 = 快进倍率表索引（0x1d728 读 0x10a080：[2,4,8,16] → float
-         *              存 [0x143ec0]；索引钳位到 0..3）
-         *  bit50     = 存档格式：解包器 → [cfg+0x4b8]，0=.sav，1=.dsv
-         *  bit23     = 帧缓冲色彩格式（applyConfig 直接测试 → [core+0x3b2f931]
-         *              的 16/32 bpp → sub_1cbc0 写 GL 常量 0x1908/0x1401 或
-         *              0x1907/0x8363）——恒为 0（32 位）：16 位的 REV 类型
-         *              非 GLES 核心，不暴露
-         *  其余位保持 0 = 关闭/自动（默认即已验证可正常显示的配置字）
+         * 【连续字段】
+         *  bits 0-3  = 跳帧值（原版 _FrameskipValue，默认 4；解包器以
+         *              FrameskipValue^1 写入全局跳帧计数 0x3c9b048）
+         *  bits 5-7  = 跳帧类型（_FrameskipType：0=关闭 1=手动 2=自动）
+         *  bits 8-9  = 音频延迟（_AudioLatency：0=低 1=中 2=高 3=极高，默认 3）
+         *  bits 12-15= 快进速率（_FfwdSpeed：0=50% 1=150% 2=200%(默认)
+         *              3=300% 4=400% 5=无限制；仅 bit29 激活时查表
+         *              0x1070c0=[100000,33333,25000,16666,12500,5000]µs）
+         *  bits 16-19= 模拟线程数（原版按 CPU 核数自动：≥4核=3，≥2核=2，
+         *              否则 1；可由 config/threads.cfg 强制 1-8。
+         *              ★ 3D 渲染按 16 行/段分段光栅化，线程数决定并行段数：
+         *              传 0 = 单线程模式，3D 大游戏每帧光栅化赶不上帧节奏，
+         *              显示端只能捕到顶部 1 段（画面顶部一条、其余全黑的
+         *              "3D 游戏显示不完整" bug 根因）。原版绝不会传 0！）
+         *  bits 32-34= 连发速度（_AutoFireSpeed 0-4，默认 2）
+         *  bits 37-38= 麦克风等级（_MicLevel 0-3，默认 1；表 0x10a080=[2,4,8,16]
+         *              → float 麦克风增益 —— 注意不是快进倍率！）
+         *  bits 43-46= Slot2 卡带类型（_Slot2Type 0-5，默认 1=GBA 卡）
+         *
+         * 【开关位】（默认值 = 原版 SharedPreferences 默认）
+         *  bit23 = 16 位渲染（_GlUse16Bit，默认关）
+         *  bit24 = 忽略卡带容量（_IgnoreGamecardLimit，默认关）
+         *  bit25 = 即时存档内保存游戏存档（_BackupInSavestates，默认开）
+         *  bit26 = 麦克风启用（_MicEnabled，默认开）
+         *  bit27 = 金手指启用（_CheatsEnabled，默认开）
+         *  bit28 = 多线程 3D 渲染（_Threaded3D，默认关；解包器 → cfg+0x468，
+         *          帧冲刷函数 0x59bb4 按它选择"异步分段+上一帧补拷贝"路径）
+         *  bit29 = 快进激活（运行时状态，非用户设置）
+         *  bit30 = 显示 FPS（_ShowFPS，默认关）
+         *  bit31 = 声音启用（_SoundEnabled，默认开）
+         *  bit35 = 主屏固定在上屏（_FixMainEngineScreen，默认关；
+         *          解包器 SIMD → cfg+0x498，帧冲刷按它交换双屏脏标记顺序）
+         *  bit36 = ROM 自动裁边（_AutoTrim，默认关）
+         *  bit39 = RTC 使用系统时间（_RtcSystemTime，默认关）
+         *  bit40 = 禁用边缘标记（_DisableEdgeMarking，默认关；cfg+0x49c）
+         *  bit41 = 高清渲染（_Hires3D，默认关；SIMD → cfg+0x4a0 →
+         *          startGame 路径 0x3ca08 调 setResolution(0x1cde4) 写两屏
+         *          分辨率档 → 帧池 512×384×4/屏）
+         *  bit42 = Lua 启用（_LuaEnabled，默认开）
+         *  bit47 = 安全跳帧（_FrameskipSafe，默认关）
+         *  bit48 = 预解压 ROM 到内存（_PreloadRoms，默认关）
+         *  bit49 = 混合渲染（_Blend，默认关）
+         *  bit50 = 存档格式（_RawSavFormat：0=.sav 带头 1=.dsv，默认 .sav）
+         *  bit 4 / 10-11 / 20-22 / 33-34 高位 / 51-63 = 恒 0（原版同）
          */
         private fun packConfig(
-            sound: Boolean,
-            fastForward: Boolean,
-            ffwdSpeed: Int,
+            frameskipType: Int = 0,
+            frameskipValue: Int = 4,
+            audioLatency: Int = 3,
+            ffwdRate: Int = 2,
+            emuThreads: Int = 3,
+            autoFireSpeed: Int = 2,
+            micLevel: Int = 1,
+            slot2Type: Int = 1,
+            glUse16Bit: Boolean = false,
+            ignoreGamecardLimit: Boolean = false,
+            backupInSavestates: Boolean = true,
+            micEnabled: Boolean = true,
+            cheatsEnabled: Boolean = true,
+            threaded3D: Boolean = false,
+            fastForward: Boolean = false,
+            showFps: Boolean = false,
+            sound: Boolean = true,
+            fixMainEngineScreen: Boolean = false,
+            autoTrim: Boolean = false,
+            rtcSystemTime: Boolean = false,
+            disableEdgeMarking: Boolean = false,
             hdRender: Boolean = false,
-            ffwdMultiplier: Int = 0,
+            luaEnabled: Boolean = true,
+            frameskipSafe: Boolean = false,
+            preloadRoms: Boolean = false,
+            blend: Boolean = false,
             saveDsv: Boolean = false
         ): Long {
-            var cfg = 0L
-            if (sound) cfg = cfg or 0x80000000L
-            if (fastForward) cfg = cfg or 0x20000000L
-            cfg = cfg or ((ffwdSpeed.coerceIn(0, 15).toLong()) shl 12)
-            if (hdRender) cfg = cfg or (1L shl 41)             // bit 41
-            cfg = cfg or ((ffwdMultiplier.coerceIn(0, 3).toLong()) shl 37)  // bits 37-38
-            if (saveDsv) cfg = cfg or (1L shl 50)              // bit 50
+            var cfg = (frameskipValue.coerceIn(0, 15).toLong()) or          // bits 0-3
+                ((frameskipType.coerceIn(0, 7).toLong()) shl 5) or          // bits 5-7
+                ((audioLatency.coerceIn(0, 3).toLong()) shl 8) or           // bits 8-9
+                ((ffwdRate.coerceIn(0, 15).toLong()) shl 12) or             // bits 12-15
+                ((emuThreads.coerceIn(1, 8).toLong()) shl 16) or            // bits 16-19 ★ 绝不为 0
+                ((autoFireSpeed.coerceIn(0, 7).toLong()) shl 32) or         // bits 32-34
+                ((micLevel.coerceIn(0, 3).toLong()) shl 37) or              // bits 37-38
+                ((slot2Type.coerceIn(0, 15).toLong()) shl 43)               // bits 43-46
+            if (glUse16Bit) cfg = cfg or (1L shl 23)
+            if (ignoreGamecardLimit) cfg = cfg or (1L shl 24)
+            if (backupInSavestates) cfg = cfg or (1L shl 25)
+            if (micEnabled) cfg = cfg or (1L shl 26)
+            if (cheatsEnabled) cfg = cfg or (1L shl 27)
+            if (threaded3D) cfg = cfg or (1L shl 28)
+            if (fastForward) cfg = cfg or (1L shl 29)
+            if (showFps) cfg = cfg or (1L shl 30)
+            if (sound) cfg = cfg or (1L shl 31)
+            if (fixMainEngineScreen) cfg = cfg or (1L shl 35)
+            if (autoTrim) cfg = cfg or (1L shl 36)
+            if (rtcSystemTime) cfg = cfg or (1L shl 39)
+            if (disableEdgeMarking) cfg = cfg or (1L shl 40)
+            if (hdRender) cfg = cfg or (1L shl 41)
+            if (luaEnabled) cfg = cfg or (1L shl 42)
+            if (frameskipSafe) cfg = cfg or (1L shl 47)
+            if (preloadRoms) cfg = cfg or (1L shl 48)
+            if (blend) cfg = cfg or (1L shl 49)
+            if (saveDsv) cfg = cfg or (1L shl 50)
             return cfg
+        }
+
+        /**
+         * 模拟线程数自动探测 —— 与原版 f0.h 完全同构：
+         * ≥4 核 → 3，≥2 核 → 2，否则 1；用户强制值（1-8）优先。
+         * 3D 游戏的 16 行/段分段光栅化依赖该线程数提供并行度 ——
+         * 必须与原版一致（绝不传 0），否则 3D 大游戏画面只剩顶部一条。
+         */
+        fun effectiveEmuThreads(forced: Int): Int {
+            if (forced in 1..8) return forced
+            val cores = Runtime.getRuntime().availableProcessors()
+            return when {
+                cores >= 4 -> 3
+                cores >= 2 -> 2
+                else -> 1
+            }
         }
 
         // ---- 可用性探测（核心选择对话框用） ----
@@ -251,24 +335,118 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     // ---- 激烈核心用户设置缓存（setCoreOption 在 loadRom 前后都可更新） ----
     // 这些设置打包进 startGame/applyConfig 的 config 位域（见 packConfig）。
-    // loadRom 之前缓存的值会在 startGame 时生效；游戏运行期间修改的
-    // 会通过 applyConfig 热更新（原生解包函数 0x17c58 立即消费新位域）。
+    // 默认值 = 原版 App 的 SharedPreferences 默认（jadx 确认），保证默认
+    // 配置字与原版 f0.h.n() 完全一致。loadRom 之前缓存的值会在 startGame
+    // 时生效；游戏运行期间修改的会通过 applyConfig 热更新。
 
     /** 声音开关（bit31）。 */
     @Volatile
     var optSound: Boolean = true
 
-    /** 高清渲染 2x（bit41）。 */
+    /** 高清渲染 2x（bit41，_Hires3D）。 */
     @Volatile
     var optHdRender: Boolean = false
 
-    /** 快进倍率索引 0..3 = 2x/4x/8x/16x（bits37-38）。 */
+    /** 跳帧类型 0=关闭 1=手动 2=自动（bits5-7，_FrameskipType）。 */
     @Volatile
-    var optFfwdMultiplier: Int = 0
+    var optFrameskipType: Int = 0
 
-    /** 存档格式 .dsv（bit50）；false = 裸 .sav。 */
+    /** 跳帧值 0-9（bits0-3，_FrameskipValue，原版默认 4）。 */
+    @Volatile
+    var optFrameskipValue: Int = 4
+
+    /** 安全跳帧（bit47，_FrameskipSafe）。 */
+    @Volatile
+    var optFrameskipSafe: Boolean = false
+
+    /** 多线程 3D 渲染（bit28，_Threaded3D，原版默认关）。 */
+    @Volatile
+    var optThreaded3D: Boolean = false
+
+    /** 16 位渲染（bit23，_GlUse16Bit）。 */
+    @Volatile
+    var optGlUse16Bit: Boolean = false
+
+    /** 禁用边缘标记（bit40，_DisableEdgeMarking）。 */
+    @Volatile
+    var optDisableEdgeMarking: Boolean = false
+
+    /** 主屏固定在上屏（bit35，_FixMainEngineScreen）。 */
+    @Volatile
+    var optFixMainEngineScreen: Boolean = false
+
+    /** 音频延迟 0=低 1=中 2=高 3=极高（bits8-9，_AudioLatency，原版默认 3）。 */
+    @Volatile
+    var optAudioLatency: Int = 3
+
+    /** 麦克风启用（bit26，_MicEnabled，原版默认开）。 */
+    @Volatile
+    var optMicEnabled: Boolean = true
+
+    /** 麦克风等级 0-3（bits37-38，_MicLevel，原版默认 1）。 */
+    @Volatile
+    var optMicLevel: Int = 1
+
+    /** 连发速度 0-4（bits32-34，_AutoFireSpeed，原版默认 2）。 */
+    @Volatile
+    var optAutoFireSpeed: Int = 2
+
+    /** 快进速率 0-5 = 50%/150%/200%/300%/400%/无限制（bits12-15，_FfwdSpeed，原版默认 2）。 */
+    @Volatile
+    var optFfwdRate: Int = 2
+
+    /** Slot2 卡带类型 0-5（bits43-46，_Slot2Type，原版默认 1=GBA 卡）。 */
+    @Volatile
+    var optSlot2Type: Int = 1
+
+    /** RTC 使用系统时间（bit39，_RtcSystemTime）。 */
+    @Volatile
+    var optRtcSystemTime: Boolean = false
+
+    /** 金手指启用（bit27，_CheatsEnabled，原版默认开）。 */
+    @Volatile
+    var optCheatsEnabled: Boolean = true
+
+    /** Lua 启用（bit42，_LuaEnabled，原版默认开）。 */
+    @Volatile
+    var optLuaEnabled: Boolean = true
+
+    /** 即时存档内保存游戏存档（bit25，_BackupInSavestates，原版默认开）。 */
+    @Volatile
+    var optBackupInSavestates: Boolean = true
+
+    /** 忽略卡带容量（bit24，_IgnoreGamecardLimit）。 */
+    @Volatile
+    var optIgnoreGamecardLimit: Boolean = false
+
+    /** ROM 自动裁边（bit36，_AutoTrim）。 */
+    @Volatile
+    var optAutoTrim: Boolean = false
+
+    /** 预解压 ROM 到内存（bit48，_PreloadRoms）。 */
+    @Volatile
+    var optPreloadRoms: Boolean = false
+
+    /** 显示 FPS（bit30，_ShowFPS —— 原版内建 FPS 叠加）。 */
+    @Volatile
+    var optShowFps: Boolean = false
+
+    /** 存档格式 .dsv（bit50，_RawSavFormat）；false = 裸 .sav。 */
     @Volatile
     var optSaveDsv: Boolean = false
+
+    /** 模拟线程数：0=自动（按核数 1/2/3），1-8=强制（原版 threads.cfg 语义）。 */
+    @Volatile
+    var optThreads: Int = 0
+
+    /** 自动存档间隔秒（0=关，300/900/1800；原版 _AutosaveMode）。 */
+    @Volatile
+    var optAutosaveInterval: Int = 0
+
+    /** 实际生效的线程数（自动探测结果，loadRom 时计算）。 */
+    @Volatile
+    var activeThreads: Int = 3
+        private set
 
     // ---- 会话快照（loadRom 时从用户偏好拍下，决定原生 GPU 初始化） ----
     // bit41（高清）在 startGame 时进入原生分辨率初始化（setResolution 路径），
@@ -290,11 +468,32 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     /** 用会话快照 + 快进状态打包完整 config（热更新用，保证分辨率位
      *  与当前会话的原生状态一致）。 */
     private fun currentConfig(fastForward: Boolean): Long = packConfig(
-        sound = optSound,
+        frameskipType = optFrameskipType,
+        frameskipValue = optFrameskipValue,
+        audioLatency = optAudioLatency,
+        ffwdRate = optFfwdRate,
+        emuThreads = activeThreads,
+        autoFireSpeed = optAutoFireSpeed,
+        micLevel = optMicLevel,
+        slot2Type = optSlot2Type,
+        glUse16Bit = optGlUse16Bit,
+        ignoreGamecardLimit = optIgnoreGamecardLimit,
+        backupInSavestates = optBackupInSavestates,
+        micEnabled = optMicEnabled,
+        cheatsEnabled = optCheatsEnabled,
+        threaded3D = optThreaded3D,
         fastForward = fastForward,
-        ffwdSpeed = 2,                       // 快进时显示帧间隔档（40fps 显示上限）
+        showFps = optShowFps,
+        sound = optSound,
+        fixMainEngineScreen = optFixMainEngineScreen,
+        autoTrim = optAutoTrim,
+        rtcSystemTime = optRtcSystemTime,
+        disableEdgeMarking = optDisableEdgeMarking,
         hdRender = activeHdRender,
-        ffwdMultiplier = if (fastForward) optFfwdMultiplier else 0,
+        luaEnabled = optLuaEnabled,
+        frameskipSafe = optFrameskipSafe,
+        preloadRoms = optPreloadRoms,
+        blend = false,
         saveDsv = optSaveDsv
     )
 
@@ -306,14 +505,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         activeHdRender = false
         if (isLoaded) {
             try {
-                DraSticJNI.applyConfig(packConfig(
-                    sound = optSound,
-                    fastForward = false,
-                    ffwdSpeed = 2,
-                    hdRender = false,
-                    ffwdMultiplier = 0,
-                    saveDsv = optSaveDsv
-                ))
+                DraSticJNI.applyConfig(currentConfig(fastForward = false))
             } catch (e: Throwable) {
                 android.util.Log.w("DraSticEngine", "revert HD failed", e)
             }
@@ -535,11 +727,15 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
         // 先拍会话快照（原生分辨率初始化与 GL 视图纹理分配都以此为准）。
         activeHdRender = optHdRender
+        // 模拟线程数：自动探测（≥4核=3，≥2核=2，否则1）或用户强制 1-8。
+        // ★ 必须 ≥1 —— 原版绝不会传 0；传 0 = 单线程 3D 光栅化，
+        // 3D 大游戏每帧只能完成顶部 1 段（16 行）→ "画面显示不完整"。
+        activeThreads = effectiveEmuThreads(optThreads)
         try {
             DraSticPathCache.changeRom(effectiveRom.absolutePath, effectiveRom)
 
             DraSticJNI.setAudioVolume(DEFAULT_VOLUME)
-            DraSticJNI.setAutosaveInterval(0)
+            DraSticJNI.setAutosaveInterval(optAutosaveInterval.coerceIn(0, 1800))
             DraSticJNI.applyConfig(currentConfig(fastForward = false))
         } catch (e: Throwable) {
             lastErrorMsg = "DraStic 启动异常: ${e.message}"
@@ -708,33 +904,14 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
     }
 
-    /** NesStation 快进倍速 → DraStic 倍率索引（bits37-38，表 [2,4,8,16]）。
-     * 表内倍速精确映射；表外倍速（3x/6x）回落到用户的激烈快进倍率设置。 */
-    private fun ffwdMultiplierIndex(speed: Int): Int = when (speed) {
-        2 -> 0
-        4 -> 1
-        8 -> 2
-        16 -> 3
-        else -> optFfwdMultiplier.coerceIn(0, 3)
-    }
-
     override fun setFastForward(speed: Int) {
         if (!isLoaded) return
         val active = speed > 0
-        // NesStation 倍速 → DraStic 倍率索引（bits37-38，表 [2,4,8,16]）。
-        // bits12-15 的显示帧间隔档保持 2（快进时 40fps 显示上限，防止
-        // 显示线程拖慢模拟）。分辨率位用会话快照，不随快进翻转。
+        // 快进激活位 = bit29；快进速率 = bits12-15（_FfwdSpeed 表
+        // [50%,150%,200%,300%,400%,无限制]，仅 bit29 激活时被原生消费）。
+        // 分辨率位用会话快照，不随快进翻转。
         try {
-            DraSticJNI.applyConfig(
-                packConfig(
-                    sound = optSound,
-                    fastForward = active,
-                    ffwdSpeed = 2,
-                    hdRender = activeHdRender,
-                    ffwdMultiplier = if (active) ffwdMultiplierIndex(speed) else optFfwdMultiplier,
-                    saveDsv = optSaveDsv
-                )
-            )
+            DraSticJNI.applyConfig(currentConfig(fastForward = active))
         } catch (e: Throwable) {
             android.util.Log.w("DraSticEngine", "applyConfig(ff) failed", e)
         }
@@ -979,8 +1156,9 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     override fun setCoreOption(key: String, value: String) {
         // melonds_* 选项对 DraStic 无意义；drastic_* 专属键在此消费。
-        // 立即生效的部分（音量）直接转发；位域类设置先入缓存 ——
-        // 游戏未启动时随 startGame 生效，已启动时经 applyConfig 热更新。
+        // 音量立即转发；位域类设置先入缓存 —— 游戏未启动时随 startGame
+        // 生效，已启动时经 applyConfig 热更新（原生解包函数立即消费）。
+        // 键名与取值对照原版 App（jadx：f0.h 的 SharedPreferences 读写）。
         when (key) {
             "drastic_volume" -> {
                 value.toIntOrNull()?.let {
@@ -998,13 +1176,114 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 optHdRender = value == "enabled"
                 applyOptionsHot()
             }
-            "drastic_ffwd_speed" -> {
-                // 用户设置快进倍率：0..3 → 2x/4x/8x/16x（仅快进激活时生效）
-                optFfwdMultiplier = value.toIntOrNull()?.coerceIn(0, 3) ?: 0
-            }
             "drastic_save_format" -> {
                 optSaveDsv = value == "dsv"
                 applyOptionsHot()
+            }
+            "drastic_frameskip_type" -> {
+                optFrameskipType = value.toIntOrNull()?.coerceIn(0, 2) ?: 0
+                applyOptionsHot()
+            }
+            "drastic_frameskip_value" -> {
+                optFrameskipValue = value.toIntOrNull()?.coerceIn(0, 9) ?: 4
+                applyOptionsHot()
+            }
+            "drastic_frameskip_safe" -> {
+                optFrameskipSafe = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_threaded_3d" -> {
+                optThreaded3D = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_16bit" -> {
+                optGlUse16Bit = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_edge_marking" -> {
+                optDisableEdgeMarking = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_fix_main_screen" -> {
+                optFixMainEngineScreen = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_audio_latency" -> {
+                optAudioLatency = value.toIntOrNull()?.coerceIn(0, 3) ?: 3
+                applyOptionsHot()
+            }
+            "drastic_mic_enabled" -> {
+                optMicEnabled = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_mic_level" -> {
+                optMicLevel = value.toIntOrNull()?.coerceIn(0, 3) ?: 1
+                applyOptionsHot()
+            }
+            "drastic_autofire_speed" -> {
+                optAutoFireSpeed = value.toIntOrNull()?.coerceIn(0, 4) ?: 2
+                applyOptionsHot()
+            }
+            "drastic_ffwd_rate" -> {
+                optFfwdRate = value.toIntOrNull()?.coerceIn(0, 5) ?: 2
+                applyOptionsHot()
+            }
+            "drastic_slot2_type" -> {
+                optSlot2Type = value.toIntOrNull()?.coerceIn(0, 5) ?: 1
+                applyOptionsHot()
+            }
+            "drastic_rtc_system_time" -> {
+                optRtcSystemTime = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_cheats_enabled" -> {
+                optCheatsEnabled = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_lua_enabled" -> {
+                optLuaEnabled = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_backup_in_savestates" -> {
+                optBackupInSavestates = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_ignore_card_limit" -> {
+                optIgnoreGamecardLimit = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_auto_trim" -> {
+                optAutoTrim = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_preload_roms" -> {
+                optPreloadRoms = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_show_fps" -> {
+                optShowFps = value == "enabled"
+                applyOptionsHot()
+            }
+            "drastic_threads" -> {
+                // 0=自动（按核数 1/2/3），1-8=强制；startGame 时经
+                // effectiveEmuThreads 计算生效（线程组在帧冲刷中按需重建）
+                optThreads = value.toIntOrNull()?.coerceIn(0, 8) ?: 0
+                applyOptionsHot()
+            }
+            "drastic_autosave_interval" -> {
+                val v = value.toIntOrNull()?.coerceIn(0, 1800) ?: 0
+                optAutosaveInterval = v
+                if (isLoaded) {
+                    try {
+                        DraSticJNI.setAutosaveInterval(v)
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            // ---- 兼容旧键（历史版本遗留，映射到新语义） ----
+            "drastic_ffwd_speed" -> {
+                // 旧"快进倍率"(0-3) 实际写的是麦克风等级位（bits37-38）——
+                // 已纠正；旧值丢弃，避免把麦克风等级改坏。
             }
         }
     }

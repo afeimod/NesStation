@@ -3154,14 +3154,43 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             if (engine is com.nesstation.app.core.engine.DraSticEngine) {
                 // ---- DraStic（激烈）专属 ----
                 // 所有 drastic_* 键由 DraSticEngine.setCoreOption 消费：
-                // 音量立即生效；位域设置（声音/高清/格式/延迟/存档格式）在
-                // startGame 时打包进 config，运行中修改经 applyConfig 热更新
-                // （高清渲染与色彩格式重启游戏后完全生效）。
+                // 音量立即生效；位域设置先入缓存，在 startGame 时打包进
+                // config，运行中修改经 applyConfig 热更新（高清渲染/线程数/
+                // Slot2 重启游戏后完全生效）。键名/取值对照原版 APK（f0.h）。
                 engine.setCoreOption("drastic_volume", layout.ndsDrasticVolume)
                 engine.setCoreOption("drastic_sound", layout.ndsDrasticSound)
                 engine.setCoreOption("drastic_hd_render", layout.ndsDrasticHdRender)
-                engine.setCoreOption("drastic_ffwd_speed", layout.ndsDrasticFfwdSpeed)
                 engine.setCoreOption("drastic_save_format", layout.ndsDrasticSaveFormat)
+                val fsTypeKey: String = when (layout.ndsDrasticFrameskipType) {
+                    "manual" -> "1"; "auto" -> "2"; else -> "0"
+                }
+                engine.setCoreOption("drastic_frameskip_type", fsTypeKey)
+                engine.setCoreOption("drastic_frameskip_value", layout.ndsDrasticFrameskipValue)
+                engine.setCoreOption("drastic_frameskip_safe", layout.ndsDrasticFrameskipSafe)
+                engine.setCoreOption("drastic_threaded_3d", layout.ndsDrasticThreaded3D)
+                engine.setCoreOption("drastic_16bit", layout.ndsDrastic16Bit)
+                engine.setCoreOption("drastic_edge_marking", layout.ndsDrasticEdgeMarking)
+                engine.setCoreOption("drastic_fix_main_screen", layout.ndsDrasticFixMainScreen)
+                engine.setCoreOption("drastic_audio_latency", layout.ndsDrasticAudioLatency)
+                engine.setCoreOption("drastic_mic_enabled", layout.ndsDrasticMicEnabled)
+                engine.setCoreOption("drastic_mic_level", layout.ndsDrasticMicLevel)
+                engine.setCoreOption("drastic_autofire_speed", layout.ndsDrasticAutofireSpeed)
+                engine.setCoreOption("drastic_ffwd_rate", layout.ndsDrasticFfwdRate)
+                val slot2Key: String = when (layout.ndsDrasticSlot2Type) {
+                    "sram" -> "2"; "rumble" -> "3"; "motion_official" -> "4"
+                    "motion_homebrew" -> "5"; else -> if (layout.ndsDrasticSlot2Type == "none") "0" else "1"
+                }
+                engine.setCoreOption("drastic_slot2_type", slot2Key)
+                engine.setCoreOption("drastic_rtc_system_time", layout.ndsDrasticRtcSystemTime)
+                engine.setCoreOption("drastic_cheats_enabled", layout.ndsDrasticCheatsEnabled)
+                engine.setCoreOption("drastic_lua_enabled", layout.ndsDrasticLuaEnabled)
+                engine.setCoreOption("drastic_backup_in_savestates", layout.ndsDrasticBackupInSavestates)
+                engine.setCoreOption("drastic_ignore_card_limit", layout.ndsDrasticIgnoreCardLimit)
+                engine.setCoreOption("drastic_auto_trim", layout.ndsDrasticAutoTrim)
+                engine.setCoreOption("drastic_preload_roms", layout.ndsDrasticPreloadRoms)
+                engine.setCoreOption("drastic_show_fps", layout.ndsDrasticShowFps)
+                engine.setCoreOption("drastic_threads", layout.ndsDrasticThreads)
+                engine.setCoreOption("drastic_autosave_interval", layout.ndsDrasticAutosave)
             } else {
                 // ---- melonDS 专属 ----
                 // keys/values must match the prebuilt melonDS libretro core
@@ -9394,9 +9423,47 @@ private fun SettingsPanel(
                     listOf("enabled" to "双线性 (平滑)", "disabled" to "最近邻 (锐利像素)"),
                     padLayout.ndsDrasticSmoothFilter
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSmoothFilter = it}) }
+                // 跳帧 = bits5-7 / bits0-3 / bit47
+                DropdownSetting("跳帧 (Frameskip)",
+                    listOf("none" to "关闭 (默认, 满帧渲染)",
+                           "manual" to "手动 (按跳帧值)",
+                           "auto" to "自动 (按性能)"),
+                    padLayout.ndsDrasticFrameskipType
+                ) { onLayoutChange(padLayout.copy {ndsDrasticFrameskipType = it}) }
+                DropdownSetting("跳帧值",
+                    (0..9).map { it.toString() to (if (it == 4) "$it (默认)" else it.toString()) },
+                    padLayout.ndsDrasticFrameskipValue
+                ) { onLayoutChange(padLayout.copy {ndsDrasticFrameskipValue = it}) }
+                DropdownSetting("安全跳帧",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                    padLayout.ndsDrasticFrameskipSafe
+                ) { onLayoutChange(padLayout.copy {ndsDrasticFrameskipSafe = it}) }
+                // 多线程 3D = config bit28（原版默认关）
+                DropdownSetting("多线程 3D 渲染",
+                    listOf("disabled" to "关闭 (默认, 兼容性最好)",
+                           "enabled" to "开启 (提速; 个别游戏可能异常)"),
+                    padLayout.ndsDrasticThreaded3D
+                ) { onLayoutChange(padLayout.copy {ndsDrasticThreaded3D = it}) }
+                // 16 位渲染 = config bit23
+                DropdownSetting("16 位渲染",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速)"),
+                    padLayout.ndsDrastic16Bit
+                ) { onLayoutChange(padLayout.copy {ndsDrastic16Bit = it}) }
+                // 边缘标记 = config bit40
+                DropdownSetting("禁用边缘标记",
+                    listOf("disabled" to "保留 3D 描边 (默认)",
+                           "enabled" to "禁用 (提速)"),
+                    padLayout.ndsDrasticEdgeMarking
+                ) { onLayoutChange(padLayout.copy {ndsDrasticEdgeMarking = it}) }
+                // 主屏固定上屏 = config bit35
+                DropdownSetting("主屏固定在上屏",
+                    listOf("disabled" to "关闭 (默认)",
+                           "enabled" to "开启 (修复主屏错位)"),
+                    padLayout.ndsDrasticFixMainScreen
+                ) { onLayoutChange(padLayout.copy {ndsDrasticFixMainScreen = it}) }
 
                 Spacer(Modifier.size(4.dp))
-                Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
+                Text("音频 / 麦克风", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("音量",
                     (0..100).step(10)
                         .map { it.toString() to (if (it == 0) "静音" else "$it%") },
@@ -9406,14 +9473,76 @@ private fun SettingsPanel(
                     listOf("enabled" to "开启", "disabled" to "关闭"),
                     padLayout.ndsDrasticSound
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSound = it}) }
+                // 音频延迟 = config bits8-9（原版默认 3=极高）
+                DropdownSetting("音频延迟",
+                    listOf("0" to "低", "1" to "中", "2" to "高",
+                           "3" to "极高 (默认)"),
+                    padLayout.ndsDrasticAudioLatency
+                ) { onLayoutChange(padLayout.copy {ndsDrasticAudioLatency = it}) }
+                // 麦克风 = config bit26 / bits37-38
+                DropdownSetting("设备麦克风",
+                    listOf("enabled" to "启用 (默认)", "disabled" to "禁用"),
+                    padLayout.ndsDrasticMicEnabled
+                ) { onLayoutChange(padLayout.copy {ndsDrasticMicEnabled = it}) }
+                DropdownSetting("麦克风灵敏度",
+                    listOf("0" to "1 级 (最低)", "1" to "2 级 (默认)",
+                           "2" to "3 级", "3" to "4 级 (最高)"),
+                    padLayout.ndsDrasticMicLevel
+                ) { onLayoutChange(padLayout.copy {ndsDrasticMicLevel = it}) }
 
                 Spacer(Modifier.size(4.dp))
-                Text("性能 / 存档", color = Color(0xFF8899AA), fontSize = 11.sp)
-                // 快进倍率 = config bits37-38（表 [2,4,8,16]）
-                DropdownSetting("快进倍率",
-                    listOf("0" to "2x", "1" to "4x", "2" to "8x", "3" to "16x"),
-                    padLayout.ndsDrasticFfwdSpeed
-                ) { onLayoutChange(padLayout.copy {ndsDrasticFfwdSpeed = it}) }
+                Text("性能 / 模拟", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // 模拟线程数 = config bits16-19（★ 3D 画面不完整时保持"自动"或调高）
+                DropdownSetting("模拟线程数",
+                    listOf("0" to "自动 (默认, 按核数 1/2/3)") +
+                        (1..8).map { it.toString() to "强制 $it 线程" },
+                    padLayout.ndsDrasticThreads
+                ) { onLayoutChange(padLayout.copy {ndsDrasticThreads = it}) }
+                Text("3D 游戏按 16 行/段分段光栅化，线程数决定并行度：3D 画面只剩顶部一条时保持「自动」或调高。修改后重进游戏完全生效。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
+                // 快进速率 = config bits12-15（_FfwdSpeed，原版默认 200%）
+                DropdownSetting("快进速率",
+                    listOf("0" to "50% (慢速)", "1" to "150%", "2" to "200% (默认)",
+                           "3" to "300%", "4" to "400%", "5" to "无限制"),
+                    padLayout.ndsDrasticFfwdRate
+                ) { onLayoutChange(padLayout.copy {ndsDrasticFfwdRate = it}) }
+                // 连发速度 = config bits32-34
+                DropdownSetting("连发速度",
+                    listOf("0" to "速度 1 (最快)", "1" to "速度 2", "2" to "速度 3 (默认)",
+                           "3" to "速度 4", "4" to "速度 5 (最慢)"),
+                    padLayout.ndsDrasticAutofireSpeed
+                ) { onLayoutChange(padLayout.copy {ndsDrasticAutofireSpeed = it}) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("系统 / 存档", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // Slot2 卡带 = config bits43-46
+                DropdownSetting("Slot2 (GBA 卡槽) 类型",
+                    listOf("none" to "无", "gba" to "GBA 卡 (默认)",
+                           "sram" to "SRAM 存储卡", "rumble" to "震动卡",
+                           "motion_official" to "体感卡 (官方)",
+                           "motion_homebrew" to "体感卡 (Homebrew)"),
+                    padLayout.ndsDrasticSlot2Type
+                ) { onLayoutChange(padLayout.copy {ndsDrasticSlot2Type = it}) }
+                // RTC = config bit39
+                DropdownSetting("RTC 使用系统时间",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                    padLayout.ndsDrasticRtcSystemTime
+                ) { onLayoutChange(padLayout.copy {ndsDrasticRtcSystemTime = it}) }
+                // 金手指 / Lua = config bit27 / bit42
+                DropdownSetting("金手指",
+                    listOf("enabled" to "启用 (默认)", "disabled" to "禁用"),
+                    padLayout.ndsDrasticCheatsEnabled
+                ) { onLayoutChange(padLayout.copy {ndsDrasticCheatsEnabled = it}) }
+                DropdownSetting("Lua 脚本",
+                    listOf("enabled" to "启用 (默认)", "disabled" to "禁用"),
+                    padLayout.ndsDrasticLuaEnabled
+                ) { onLayoutChange(padLayout.copy {ndsDrasticLuaEnabled = it}) }
+                // 自动存档间隔
+                DropdownSetting("自动存档间隔",
+                    listOf("0" to "关闭 (默认)", "300" to "5 分钟",
+                           "900" to "15 分钟", "1800" to "30 分钟"),
+                    padLayout.ndsDrasticAutosave
+                ) { onLayoutChange(padLayout.copy {ndsDrasticAutosave = it}) }
                 // 存档格式 = config bit50
                 DropdownSetting("存档格式",
                     listOf("sav" to ".sav 裸格式 (兼容性最好)",

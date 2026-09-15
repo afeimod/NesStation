@@ -223,3 +223,107 @@ GL 路径在互斥锁下读另一档已完成帧，画面干净，且为高清�
 6. 截图（GL 模式 captureFrame 直接拉取）→ 截图完整。
 7. logcat 过滤 `DraSticGlView`：EGL 正常时无 error；异常时看到
    "EGL init failed" 并自动回退画布 + 降回 1x。
+
+---
+
+# 第三轮修复：3D 游戏显示不完整（只剩顶部一条）+ 激烈专属配置全面对齐原版 APK
+
+修复版本：基于仓库前两轮修复之后的 HEAD。
+参考基准：用户提供的原版 **DraStic r2.6.0.4a (109) arm64 APK**（jadx 反编译 classes.dex
++ libdrastic_arm64.so 反汇编，两路证据交叉验证）。
+
+## 〇、症状
+
+3D 游戏（如 Sonic Rush 等双屏 3D 作品）运行时上下两屏都只显示顶部的
+一条横带（约 16 行 / 8% 画面），其余全黑；2D 游戏正常；FPS 计数正常（60+）。
+
+## 一、根因（证据链）
+
+### 根因 1：模拟线程数传了 0（原版绝不会传 0）
+
+- 原版 `f0.h.n()`（config 打包函数，jadx 反编译）把 **f3673q（模拟线程数）
+  打进 bits 16-19**，其值按 CPU 核数自动决定：`≥4核=3，≥2核=2，否则 1`，
+  另可被系统目录 `config/threads.cfg`（ASCII '1'-'8'）覆盖 —— **取值域恒为 1..8**。
+- 旧实现 packConfig 根本没有线程数概念，bits 16-19 恒为 0。
+- 原生侧（libdrastic_arm64.so 反汇编）：解包器 0x17c58 把 bits 16-19 存
+  `cfg+0x490`；帧冲刷函数（0x59bb4 / 0x5ee84 两个引擎变体）每帧读取它
+  决定 3D 光栅化的并行结构：
+  `cmp w23,#1; b.ls → 单线程路径`，≥2 时按 threads 生成持久工作线程组
+  （每个 0x24100 字节上下文，互斥锁+条件变量握手）。
+- 3D 画面按 **16 行/段** 分段光栅化（单线程执行器 0x596a4 内
+  `udiv w11, w13, w8`（w13=0xC=12 段×16 行=192 行），与截图里可见横带
+  高度 ≈15.6 行完全吻合）。单线程（0/1）模式下每帧光栅化吞吐不足，
+  帧信号到达时只完成了顶部第一段 → 显示端捕到的帧 = 顶部一条、其余黑。
+
+### 根因 2：高清渲染的偏好读取默认值写错（"enabled" ≠ 设计默认 "disabled"）
+
+`PadLayoutStore` 加载路径 `p.getString("nds_drastic_hd_render", "enabled")`
+把从未进过设置页的用户的 HD 渲染（bit41，_Hires3D）静默置为开。
+HD 模式下光栅化像素量 ×4，单线程下每帧能完成的段数再 ÷4 —— 与根因 1
+叠加后，可见横带只剩 1 段。字段声明默认值本是 "disabled"（第三轮返工
+注释也写明"默认配置字 = 位全 0"），两处不一致属于笔误级 bug。
+
+### 根因 3（配置面）：config 位域大量字段缺失/错位
+
+对照原版 `f0.h.n()` 逐位比对，旧实现的问题：
+
+| 位域 | 原版语义（_Pref 键） | 原版默认 | 旧实现 |
+| --- | --- | --- | --- |
+| bits0-3 | 跳帧值 _FrameskipValue | 4 | 0 |
+| bits5-7 | 跳帧类型 _FrameskipType | 0(关) | 0 ✓ |
+| bits8-9 | 音频延迟 _AudioLatency | 3(极高) | 0(低) |
+| bits12-15 | **快进速率** _FfwdSpeed (0..5=50%~无限制) | 2(200%) | 恒 2（碰巧等于默认） |
+| bits16-19 | **模拟线程数** | 1/2/3 自动 | **0** ← 渲染 bug 根因 |
+| bits23 | 16位渲染 _GlUse16Bit | 关 | 未发 |
+| bit24 | 忽略卡带容量 _IgnoreGamecardLimit | 关 | 未发 |
+| bit25 | 即时存档含游戏存档 _BackupInSavestates | **开** | 未发 |
+| bit26 | 麦克风 _MicEnabled | **开** | 未发 |
+| bit27 | 金手指 _CheatsEnabled | **开** | 未发 |
+| bit28 | 多线程3D _Threaded3D | 关 | 未发 |
+| bit30 | 显示FPS _ShowFPS | 关 | 未发 |
+| bit35 | 主屏固定上屏 _FixMainEngineScreen | 关 | 未发 |
+| bit36 | ROM自动裁边 _AutoTrim | 关 | 未发 |
+| bit39 | RTC系统时间 _RtcSystemTime | 关 | 未发 |
+| bit40 | 禁用边缘标记 _DisableEdgeMarking | 关 | 未发 |
+| bit42 | Lua _LuaEnabled | **开** | 未发 |
+| bits32-34 | 连发速度 _AutoFireSpeed | 2 | 0 |
+| bits37-38 | **麦克风等级** _MicLevel | 1 | 被误当"快进倍率"写 0..3 |
+| bits43-46 | Slot2 卡带 _Slot2Type | 1(GBA) | 0(无) |
+| bit47 | 安全跳帧 _FrameskipSafe | 关 | 未发 |
+| bit48 | 预解压ROM _PreloadRoms | 关 | 未发 |
+
+注：旧版"快进倍率(2x/4x/8x/16x)"实为 bits37-38 = 麦克风增益表 [2,4,8,16]
+（0x1d728 查 0x10a080 字节表转 float）——语义错位；真正的快进速率是
+_FfwdSpeed（bits12-15，仅 bit29 激活时查 0x1070c0 表）。
+
+## 二、修复内容
+
+| 文件 | 改动 |
+| --- | --- |
+| `DraSticEngine.kt` | packConfig 重写为 51 位全量布局（与 f0.h.n() 逐位一致，参数全默认值=原版出厂）；新增 `effectiveEmuThreads()`（≥4核=3/≥2核=2/否则1，强制 1-8 优先，绝不传 0）；loadRom 计算 activeThreads 快照；setCoreOption 扩到 27 个 drastic_* 键（含旧键 drastic_ffwd_speed 兼容吞掉）；setFastForward 简化为 bit29+bits12-15 语义；自动存档间隔经 setAutosaveInterval 下发 |
+| `PadLayoutStore.kt` | 新增 24 个 ndsDrastic* 偏好字段（默认=原版出厂）+ copy + 读写；**修复 hd_render 读取默认值 "enabled"→"disabled"**；快进倍率旧字段替换为 ndsDrasticFfwdRate（0..5） |
+| `CoreSettingsPanel.kt` | 激烈专属设置从 2 区 7 项扩到 4 区 28 项（画面渲染/线程快进金手指/音频麦克风/系统高级），全部标注原版默认值 |
+| `EmulatorScreen.kt` | applyCoreOptions 下发全部 27 键；游戏内快捷菜单激烈区从 7 项扩到 26 项；快进倍率(错位语义)替换为快进速率 |
+
+## 三、验证
+
+- 四个修改文件用 kotlinc 2.0.21 独立编译：错误轮廓与 HEAD 基线**逐类完全一致**
+  （全部为脱离 Android/Compose classpath 的预期级联；EmulatorScreen 的
+  cannot-infer 计数 322=322），无新增语法/语义错误。
+- `scripts/verify_config.py`：默认配置字与原版 `f0.h.n()` 出厂默认**逐位一致**
+  （0x00000C228E032304），高清/快进/组合场景断言全过。
+- 新用 Kotlin 构造（`(0..9).map{}`、`listOf()+map{}`、when 映射）通过
+  kotlinc -script 独立验证。
+
+### 建议真机验证步骤
+
+1. 直接进 3D 游戏（不调任何设置）→ 上下屏应完整显示（默认线程数=自动 3，
+   HD 关，与原版出厂一致）。
+2. 设置页「激烈专属 · 模拟线程数」切 1（强制单线程）重进 3D 游戏 →
+   应能复现"只剩顶部一条"，验证根因；切回自动恢复完整。
+3. 开「高清渲染」→ 重进 → 画面完整且更细腻（线程并行下 HD 帧可按时完成）。
+4. 「跳帧」切手动/值 1 → 弱机上 3D 提速；「多线程 3D」开启 → 3D 大作提速
+   （个别游戏如出现双屏互换即关掉，与原版提示一致）。
+5. 「音频延迟」低/极高切换听爆音差异；对麦克风吹气（《心跳》类游戏）验证
+   麦克风灵敏度。
+6. 快进（按住快进键）→ 按「快进速率」设定的倍速走。
