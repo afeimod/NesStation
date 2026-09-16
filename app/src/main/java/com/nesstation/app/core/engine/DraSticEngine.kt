@@ -721,7 +721,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
      * 幂等：文件存在即跳过（用户可自行替换/新增 .dfx 实现滤镜热扩展）。
      */
     private fun ensureShadersInstalled(ctx: Context, sysDir: File) {
-        return try {
+        try {
             val names = ctx.assets.list("drastic/shaders") ?: return
             val dstRoot = File(sysDir, "shaders")
             for (name in names) {
@@ -750,7 +750,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
      */
     private fun migrateLegacyDsv(globalDir: File, base: String?, usrDir: File) {
         if (base.isNullOrBlank()) return
-        return try {
+        try {
             val globalSav = File(globalDir, "$base.sav")
             if (globalSav.isFile && globalSav.length() > 0) return
             val legacy = File(usrDir, "backup/$base.dsv")
