@@ -121,18 +121,29 @@ void melonds_set_gba_save_basename_override(const char* name);
 namespace ndscore::rom {
 
 // ---------------------------------------------------------------------------
-// Maximum video resolution supported by melonDS.
-// DS screens are each 256x192. With the default "Top/Bottom" layout this
-// gives a 256x384 composite framebuffer; horizontal layouts give 512x192.
+// Maximum video resolution that the CPU upscale filters (XBR / HQX) accept.
 //
-// The GL compositor (opengl.cpp) always emits 256x386 — 384 + a fixed
-// 2-row black gap between the screens.  kMaxH must cover that so the
-// XBR/HQX upscale buffers (sized kMaxW*kMaxH*2*2 / *4*4) fit the GL
-// output and canUpscale in applyFilterAndBlit() stays true; otherwise
-// the global video filter is silently skipped for the GL renderer.
+// DS screens are each 256x192. The software renderer's default "Top/Bottom"
+// layout produces a 256x384 composite; the GL compositor (opengl.cpp) emits
+// 256x386 — 384 + a fixed 2-row black gap between the screens.
+//
+// 修复（"开启硬件加速后全局放大滤镜失效"）：OpenGL 渲染器的内部分辨率
+// 倍数高于 1x 时，合成帧等比变大（2x → 512x772，4x → 1024x1544）。
+// 旧上限 256x386 会让 canUpscale 在 2x+ 分辨率下永远为 false —— 用户
+// 开了硬件加速 + 2x 分辨率后，XBR/HQ2X/HQ4X 全部被静默跳过，看起来
+// 就是"全局滤镜不起作用"。现在把上限放宽到 2x GL 帧（512x772）：
+//   - 2x 放大滤镜（XBR/HQ2X/XBR+dot）：输出 1024x1544 ≈ 6.3MB ✔
+//   - 4x 放大滤镜（HQ4X/4XBR/…+dot）：输出 2048x3088 ≈ 25MB（BSS 按需
+//     落地，仅在用户选择 4x 类滤镜时触碰）
+// 4x GL 帧（1024x1544）做 4x CPU 放大单帧代价过高（>100MB 输出 +
+// 数十毫秒/帧），仍然跳过并打一条一次性日志 —— GL 本身已按倍数放大，
+// CPU 滤镜在 4x 源上是收益极低的重复劳动。
 // ---------------------------------------------------------------------------
-static constexpr int kMaxW = 256;
-static constexpr int kMaxH = 386;
+static constexpr int kMaxW = 512;
+static constexpr int kMaxH = 772;
+
+// 一次性提示：帧大于滤镜可承受上限时只打一次日志，避免刷屏。
+static bool s_filterSkipLogged = false;
 
 static constexpr int TARGET_SAMPLE_RATE = coreshared::TARGET_SAMPLE_RATE;
 
@@ -267,9 +278,32 @@ static retro_hw_context_reset_t s_hwContextDestroy = nullptr;
 // Uses a small Pbuffer surface (1x1) — the melonDS core renders to its
 // own framebuffer objects internally.
 // ---------------------------------------------------------------------------
+// Forward declaration — defined below; used by createEglContext's
+// "already initialized" path to re-bind the context to the calling thread.
+static bool ensureEglContextCurrent();
+
 static bool createEglContext(int contextType = RETRO_HW_CONTEXT_OPENGLES2,
                               int versionMajor = 2, int versionMinor = 0) {
-    if (s_eglInitialized) return true;
+    if (s_eglInitialized) {
+        // 修复（"硬件加速丢失"）：上下文已存在（上一次会话创建）时不能
+        // 直接 return true —— EGL context 是绑定在"当前线程"上的。旧会话
+        // 的模拟线程退出后上下文虽然被释放，但当前（加载）线程上并没有
+        // current context；核心紧接着在本线程调用 GLRenderer::New() 编译
+        // 着色器时，所有 glCreateShader / glShaderSource 调用都会静默失败
+        // （无 current context 时 GL 指令是 no-op），返回 null → 包装层
+        // 打出 "GLRenderer::New() failed … falling back to the CPU
+        // renderer" 并把 enable_opengl 永久置 false —— 第二次进 NDS 游戏
+        // 必现"硬件加速丢失"。先把已存在的上下文绑到当前线程，再让核心
+        // 继续初始化。
+        if (!ensureEglContextCurrent()) {
+            LOGE("createEglContext: existing EGL context could not be "
+                 "re-bound to current thread — falling back to software");
+            return false;
+        }
+        LOGI("createEglContext: re-bound existing EGL context to current "
+             "thread");
+        return true;
+    }
 
     s_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (s_eglDisplay == EGL_NO_DISPLAY) {
@@ -860,6 +894,18 @@ static void cb_video(const void* data, unsigned width, unsigned height, size_t p
     }
 
     const int filter = s_videoFilter.load(std::memory_order_relaxed);
+    // 滤镜被跳过时给出一次性可见日志（此前是完全静默的 —— "滤镜失效"
+    // 的根因之一就是无从得知被跳过）。GL 4x 帧做 CPU 4x 放大代价过高，
+    // 属预期行为；其余情况出现即说明缓冲/上限需要跟进。
+    if (filter >= 4 && filter <= 10) {
+        const bool canUpscale = (width <= (unsigned)kMaxW && height <= (unsigned)kMaxH);
+        if (!canUpscale && !s_filterSkipLogged) {
+            s_filterSkipLogged = true;
+            LOGW("Video filter %d skipped: frame %ux%u exceeds filter budget "
+                 "%dx%d (GL resolution too high — the GL renderer already "
+                 "upscales internally)", filter, width, height, kMaxW, kMaxH);
+        }
+    }
     coreshared::applyFilterAndBlit(
         s_window, s_windowMtx,
         s_frame.data(), width, height, width,
@@ -882,7 +928,12 @@ static void cb_video(const void* data, unsigned width, unsigned height, size_t p
         std::lock_guard<std::mutex> lk(s_windowMtx);
         const bool hasWindow = (s_window != nullptr);
         if (!hasWindow) {
-            const bool canUpscale = (width <= (unsigned)kMaxW && height <= (unsigned)kMaxH);
+            // 自定义布局路径的滤镜预算保持旧的 256x386（原始 1x 帧）：
+            // 这条路径在每帧做一次整帧 assign 拷贝（surface 路径则是把
+            // 滤镜输出直接 blit 到 ANativeWindow，无额外复制），放宽预算
+            // 会引入每帧 6~25MB 的额外复制。GL 2x+ 分辨率下放大滤镜在此
+            // 跳过 —— 帧本身已经比 1x 清晰，视图缩放由 Compose 层做。
+            const bool canUpscale = (width <= 256u && height <= 386u);
             if ((filter == 4 || filter == 5 || filter == 7) && canUpscale) {
                 // 2x filters: XBR(4) / HQ2X(5) / XBR+dot(7)
                 s_filteredFrame.assign(s_xbrBuffer2x, s_xbrBuffer2x + (size_t)width * 2 * height * 2);

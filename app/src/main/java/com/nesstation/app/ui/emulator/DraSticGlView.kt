@@ -400,6 +400,14 @@ class DraSticGlView @JvmOverloads constructor(
     private fun glLoop() {
         var sessionLoaded = false
         var lastSmooth = true
+        // 修复（高清渲染热切换后画面失效）：核心的 bit41（_Hires3D）可在
+        // 游戏运行中经 applyConfig 热更新，原生帧池随之在 256×192 / 512×384
+        // 两档间切换（setResolution 写 +0x968 分辨率档）。旧实现只在会话
+        // 首帧分配一次纹理 —— 档位切换后 glTexSubImage2D 仍按新尺寸向旧
+        // 纹理上传，宽/高超出时返回 GL_INVALID_OPERATION 且脏标记照常被
+        // 清掉，之后纹理内容永远不再更新（画面停在切换前的最后一帧 /
+        // 黑屏）。现在跟踪引擎的 HD 快照，档位变化即重建纹理。
+        var lastTexHd = false
 
         while (glThreadRunning.get() && surfaceReady.get()) {
             val eng = engine
@@ -416,9 +424,16 @@ class DraSticGlView @JvmOverloads constructor(
             // （渲染消费线程停止 CPU 帧拷贝）。
             if (!sessionLoaded) {
                 allocTextures(eng)
+                lastTexHd = eng.activeHdRender
                 eng.glDisplayActive = true
                 sessionLoaded = true
                 lastSmooth = smoothFilter
+                layoutDirty = true
+            }
+            // 高清渲染档位热切换：重建两张屏幕纹理到新分辨率
+            if (eng.activeHdRender != lastTexHd) {
+                allocTextures(eng)
+                lastTexHd = eng.activeHdRender
                 layoutDirty = true
             }
             if (smoothFilter != lastSmooth) {

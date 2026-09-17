@@ -250,7 +250,13 @@ Compiler::Compiler(melonDS::NDS& nds) : Arm64Gen::ARM64XEmitter(), NDS(nds)
     CodeMemBase = ARMJIT_Global::AllocateCodeMem();
     nds.JIT.JitEnableWrite();
 
-    SetCodeBase(reinterpret_cast<u8*>(CodeMemBase), reinterpret_cast<u8*>(CodeMemBase));
+    // 修复（W^X 设备上 JIT 失效）：AllocateCodeMem 返回的是"可写视图"，
+    // 执行要走 GetExecAlias 给出的"可执行视图"别名（memfd 双映射下两者
+    // 指向同一块物理内存）。旧代码把写/执行基址设成同一个 RWX 指针，
+    // 在 Android 12+ (targetSdk>=31) 的 W^X 策略下不可行。Switch 路径
+    // （JitRWStart/JitRXStart）本来就是这种双基址模型。
+    SetCodeBase(reinterpret_cast<u8*>(CodeMemBase),
+                reinterpret_cast<u8*>(ARMJIT_Global::GetExecAlias(CodeMemBase)));
     JitMemMainSize = ARMJIT_Global::CodeMemorySliceSize;
 #endif
     SetCodePtr(0);

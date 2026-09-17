@@ -37,6 +37,12 @@ void DeInit();
 void* AllocateCodeMem();
 void FreeCodeMem(void* codeMem);
 
+// 返回"可写视图"指针对应的"可执行视图"别名。
+//  * W^X 双映射模式（Android 12+ / memfd）：返回同一物理内存的 RX 别名，
+//    编译器经 SetCodeBase(rw, rx) 写读分离；
+//  * 单视图 RWX 模式（旧设备回退）：原样返回。
+void* GetExecAlias(void* codeMem);
+
 // Frontend-facing capability probe: true when the process may map
 // executable pages (i.e. the JIT's BSS code pool can actually be made RWX).
 // Android frontends call this BEFORE constructing NDS so they can fall back

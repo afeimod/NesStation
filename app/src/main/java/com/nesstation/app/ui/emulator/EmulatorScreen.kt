@@ -1117,28 +1117,27 @@ fun EmulatorScreen(
         applyCoreOptions(engine, padLayout, platform)
         // Apply video filter (frontend post-processing, not a core option)
         //
-        // WORKAROUND for native XBR color bleeding:
-        // The native C XBR implementation (Hyllian 5xBR v3.5a in libnescore/
-        // libsnescore/libgbacore) produces color bleeding artifacts at hard
-        // edges — red/purple/yellow dots appear exposed at font and sprite
-        // edges in SFC/GBA games. This is a known issue with the 5xBR
-        // algorithm when pixels with high color channel contrast are adjacent.
-        //
-        // Since we cannot modify the native C code, we map XBR requests to
-        // HQ2X (filter=5) for native engine games. HQ2X provides similar
-        // edge-smoothing without the color bleeding artifact. J2ME games
-        // use the Java-side XBR implementation (J2meBitmapFilter) which has
-        // been patched with additional color clamping to suppress bleeding.
+        // 修复（全局滤镜 XBR/4XBR "不起作用"）：旧实现把 XBR 系列请求
+        // 替换成 HQ2X/HQ4X（"xbr"->5、"4xbr"->6 等），理由是旧注释声称
+        // libnescore 的 Hyllian 5xBR v3.5a 有 color bleeding。但当前所有
+        // 核心（NES/SNES/GBA/NDS）实际共用 coreshared::xbr2xUpscale
+        // （RetroArch 2xBR v3.3a + int32 blend 修正），并不存在该问题
+        // （已通过主机端单元测试验证：边缘保持 + 无溢出）。替换导致
+        // 用户选择 XBR/4XBR 时永远看到 HQ2X/HQ4X 的效果 —— "XBR 不起
+        // 作用"。现在下发真实滤镜编号，与设置页 SettingsScreen 的映射
+        // 完全一致：
+        //   0=none, 1=scanline, 2=crt, 3=dot, 4=xbr, 5=hq2x, 6=hq4x,
+        //   7=xbr+dot, 8=4xbr, 9=4xbr+dot, 10=hq4x+dot
         val filterInt = when (padLayout.videoFilter) {
             "scanline" -> 1
             "crt" -> 2
             "dot" -> 3
-            "xbr" -> 5      // native XBR(4) → HQ2X(5) to avoid color bleeding
+            "xbr" -> 4
             "hq2x" -> 5
             "hq4x" -> 6
-            "xbr_dot" -> 5  // native XBR+dot(7) → HQ2X(5), dot added by FilterOverlay
-            "4xbr" -> 6     // native 4XBR(8) → HQ4X(6) to avoid color bleeding
-            "4xbr_dot" -> 6 // native 4XBR+dot(9) → HQ4X(6), dot added by FilterOverlay
+            "xbr_dot" -> 7
+            "4xbr" -> 8
+            "4xbr_dot" -> 9
             "hq4x_dot" -> 10
             else -> 0
         }
@@ -3683,6 +3682,20 @@ private fun GameSurfaceView(
                 },
                 modifier = glModifier.then(gameViewTracker)
             )
+            // 修复（"激烈核心自带的滤镜不起作用"）：叠加类全局滤镜
+            // （扫描线 / CRT / 点阵 / *_dot）此前只接入了 SurfaceView 分支
+            // （melonDS）和画布分支（DraStic 兼容模式），DraStic 的默认
+            // GL 加速显示路径完全没有绘制叠加层 —— 选任何滤镜都毫无反应。
+            // 现在与 SurfaceView 分支同构：在 GL 视图之上绘制同一套
+            // FilterOverlay 图案（放大型滤镜 HQ2X/HQ4X/XBR 对 DraStic
+            // 依旧不适用 —— 那是 melonDS 原生管线的能力，见
+            // DraSticEngine.setVideoFilter 的说明）。
+            if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot")) {
+                FilterOverlay(
+                    if (videoFilter.endsWith("_dot")) "dot" else videoFilter,
+                    glModifier
+                )
+            }
         } else {
         val surfaceModifier = when (effectiveVideoScale) {
             "4:3" -> Modifier.aspectRatio(4f / 3f)
