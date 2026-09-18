@@ -456,11 +456,12 @@ class DraSticGlView @JvmOverloads constructor(
             }
 
             // 当前滤镜档（每帧读取，支持游戏运行中热切换全局滤镜）。
-            // ★ 高清渲染（bit41）激活时放大滤镜必须退避：滤镜管线经
-            // getScreenBuffers 取帧，而该函数反汇编验证固定按 256×192 读取
-            // （sub_1cd18 → 帧池基址 + slot×0xC0000，各拷 0x30000 字节）——
-            // 高清帧池下只能取到每屏左上 1/4（画面错乱）。此会话按原生
-            // 路径显示高清帧，滤镜待 HD 关闭重进游戏后再生效。
+            // ★ 安全网（滤镜优先策略的兜底）：引擎侧已在 loadRom 拍会话
+            // 快照时实现"滤镜优先" —— 放大滤镜（xBR/HQx）激活则
+            // activeHdRender 强制为 false，滤镜管线正常取 1x 帧工作。
+            // 这里保留退避仅防边界态：运行中热改滤镜编号时 HD 位无法
+            // 热切换（applyConfig 不调 setResolution），本会话仍是高清
+            // 帧池，此时退回原生路径显示，绝不取错乱帧。
             val filter = eng.activeVideoFilter
             val fClass = if (eng.activeHdRender) 0 else filterClass(filter)
 

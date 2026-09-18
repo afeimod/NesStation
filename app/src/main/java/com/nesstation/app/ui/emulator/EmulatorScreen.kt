@@ -3220,7 +3220,22 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
                 // OpenGL 渲染器：启用后分辨率缩放生效，3D 渲染使用硬件加速
                 engine.setCoreOption("melonds_opengl_renderer", layout.ndsOpenGlRenderer) // "enabled" | "disabled"
                 // OpenGL 内部分辨率：仅 OpenGL 渲染器生效，值格式 "1x native (256x192)" .. "8x native (2048x1536)"
-                engine.setCoreOption("melonds_opengl_resolution", layout.ndsResolution)
+                // ★ 放大滤镜优先（滤镜可见性保障，本轮修复核心）：
+                // CPU 放大滤镜（xBR/HQx 系）只处理 1x 合成帧（256×386 预算，
+                // 见 nds_loader.cpp kMaxW/kMaxH 与 applyFilterAndBlit 的
+                // canUpscale 判断）；内部分辨率 ≥2x 时 GL 合成帧放大到
+                // 512×772+，滤镜被跳过 —— "开了高清滤镜就没效果"。
+                // 全局滤镜选择放大类时，本会话对核心下发 1x：滤镜必定生效
+                // （与 3.5.2 行为一致）；用户的分辨率设置原样保留在偏好里，
+                // 滤镜换回 无/叠加类 后自动恢复下发原值。
+                val ndsUpscaleFilterActive = layout.videoFilter in
+                    listOf("xbr", "hq2x", "hq4x", "xbr_dot", "4xbr", "4xbr_dot", "hq4x_dot")
+                val ndsEffectiveResolution =
+                    if (ndsUpscaleFilterActive &&
+                        layout.ndsOpenGlRenderer == "enabled" &&
+                        layout.ndsResolution != "1x native (256x192)"
+                    ) "1x native (256x192)" else layout.ndsResolution
+                engine.setCoreOption("melonds_opengl_resolution", ndsEffectiveResolution)
                 // OpenGL 多边形优化：改善多边形分割，减少图形错误
                 engine.setCoreOption("melonds_opengl_better_polygons", layout.ndsOpenGlBetterPolygons)
                 // OpenGL 纹理过滤：nearest(锐利) | linear(平滑)
@@ -9367,6 +9382,8 @@ private fun SettingsPanel(
                     (1..8).map { it.toString() to "${it}x native (${256*it}x${192*it})" },
                     padLayout.ndsResolution
                 ) { onLayoutChange(padLayout.copy {ndsResolution = it}) }
+                Text("★ 选择 xBR/HQx 放大滤镜时，内部分辨率会话内自动按 1x 运行以保证滤镜生效（滤镜优先，此设置原样保留，滤镜关闭后恢复）；若画面未立即变化，重进游戏后必生效。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
 
                 DropdownSetting("JIT 编译器",
                     listOf("enabled" to "开启(加速)", "disabled" to "关闭(解释器)"),
@@ -9446,7 +9463,7 @@ private fun SettingsPanel(
                            "enabled" to "开启 512×384 (2x 高清)"),
                     padLayout.ndsDrasticHdRender
                 ) { onLayoutChange(padLayout.copy {ndsDrasticHdRender = it}) }
-                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。★ 与放大滤镜（xBR/HQx）互斥：高清会话内滤镜退避。",
+                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。★ 放大滤镜（xBR/HQx）优先于高清：选择放大滤镜时高清会话内自动让路（重进游戏生效），滤镜换回无/叠加类后高清恢复。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 // 显示方式：GL 加速显示路径（原生 renderFrame 纹理上传 + GPU 绘制）
                 DropdownSetting("显示方式",

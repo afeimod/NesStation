@@ -830,6 +830,13 @@ fun CoreSettingsPanel(
                             ),
                             padLayout.ndsResolution
                         ) { updateLayout(padLayout.copy {ndsResolution = it}) }
+                        Text(
+                            "★ 选择 xBR/HQx 放大滤镜时，内部分辨率会话内自动按 1x 运行" +
+                            "以保证滤镜生效（滤镜优先，此设置原样保留，滤镜关闭后恢复）；" +
+                            "若画面未立即变化，重进游戏后必生效。",
+                            color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
                         DropdownRow("OpenGL 多边形优化",
                             listOf("disabled" to "关闭", "enabled" to "开启(减少图形错误)"),
                             padLayout.ndsOpenGlBetterPolygons
@@ -900,8 +907,8 @@ fun CoreSettingsPanel(
                     Text(
                         "开启后内部分辨率翻倍（256×192 → 512×384），画面细节与 3D 模型边缘显著改善。" +
                         "需重进游戏生效；高清模式自动使用 GL 显示路径。低端设备若帧率下降可关闭。" +
-                        "★ 高清与放大滤镜（xBR/HQx 系）互斥：开启高清的会话内全局滤镜退避显示，" +
-                        "滤镜在关闭高清重进游戏后恢复生效。",
+                        "★ 放大滤镜（xBR/HQx 系）优先于高清：选择放大滤镜时高清会话内自动让路" +
+                        "（重进游戏生效），滤镜换回无/叠加类后高清恢复。",
                         color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )

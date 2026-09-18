@@ -768,7 +768,14 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         // 预启动配置。ROM 以真实绝对路径传入（startGame 的路径最终会回到
         // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
         // 先拍会话快照（原生分辨率初始化与 GL 视图纹理分配都以此为准）。
-        activeHdRender = optHdRender
+        // ★ 放大滤镜优先（滤镜可见性保障，本轮修复核心）：全局滤镜选择
+        // xBR/HQx 系时，本会话强制关闭高清渲染（bit41=0）。滤镜管线经
+        // getScreenBuffers 从 1x 帧池取帧（固定 256×192，反汇编 sub_1cd18
+        // 各拷 0x30000 字节），高清帧池下取不到完整帧；且 CPU 滤镜也无法
+        // 实时放大 512×384（HQ2X 单屏 ~27ms）。规则：滤镜优先可见 ——
+        // 高清会话内自动让路；滤镜换回 无/叠加类 后重进游戏，高清按用户
+        // 设置恢复（optHdRender 原值保留，仅不入本会话快照）。
+        activeHdRender = optHdRender && !isUpscaleFilter()
         // 模拟线程数：自动探测（≥4核=3，≥2核=2，否则1）或用户强制 1-8。
         // ★ 必须 ≥1 —— 原版绝不会传 0；传 0 = 单线程 3D 光栅化，
         // 3D 大游戏每帧只能完成顶部 1 段（16 行）→ "画面显示不完整"。
