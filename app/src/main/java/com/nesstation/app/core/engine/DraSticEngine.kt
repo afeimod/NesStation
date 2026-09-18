@@ -180,7 +180,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
          *  bit47 = 安全跳帧（_FrameskipSafe，默认关）
          *  bit48 = 预解压 ROM 到内存（_PreloadRoms，默认关）
          *  bit49 = 混合渲染（_Blend，默认关）
-         *  bit50 = 存档格式（_RawSavFormat：0=.sav 带头 1=.dsv，默认 .sav）
+         *  bit50 = 存档格式（_RawSavFormat：0=.dsv 带头格式（原生默认）
+         *          1=裸 .sav。★ 反汇编实锤（0x75740：csel x3, .dsv, .sav, eq）
+         *          —— 字段==0 → ".dsv" 备份名，非 0 → ".sav"；本工程默认置 1
+         *          （裸 .sav，与 melonDS 互通））
          *  bit 4 / 10-11 / 20-22 / 33-34 高位 / 51-63 = 恒 0（原版同）
          */
         private fun packConfig(
@@ -210,7 +213,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             frameskipSafe: Boolean = false,
             preloadRoms: Boolean = false,
             blend: Boolean = false,
-            saveDsv: Boolean = false
+            saveRawSav: Boolean = true
         ): Long {
             var cfg = (frameskipValue.coerceIn(0, 15).toLong()) or          // bits 0-3
                 ((frameskipType.coerceIn(0, 7).toLong()) shl 5) or          // bits 5-7
@@ -238,7 +241,12 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             if (frameskipSafe) cfg = cfg or (1L shl 47)
             if (preloadRoms) cfg = cfg or (1L shl 48)
             if (blend) cfg = cfg or (1L shl 49)
-            if (saveDsv) cfg = cfg or (1L shl 50)
+            // bit50 = _RawSavFormat：置位 = 裸 .sav（与 melonDS 互通）；
+            // 清零 = .dsv（DeSmuME 带头格式，原生默认）。反汇编 0x75768
+            // (csel x3, x12=.dsv, x11=.sav, eq) 实锤：0 → .dsv，非 0 → .sav。
+            // ★ 旧实现把 "dsv" 映射到 bit50=1 —— 与原生语义恰好相反，
+            // 导致存档格式设置永远与用户选择相反（“总变回默认”根因）。
+            if (saveRawSav) cfg = cfg or (1L shl 50)
             return cfg
         }
 
@@ -298,46 +306,19 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     // ---- 引擎状态 ----
 
     /**
-     * 合成帧：上屏在前（行 0..h-1）、下屏在后，共 w×(h×2)。
-     * 无高清渲染时 256×384；高清渲染（bit41）开启时为 512×768
-     * （画布路径经 drasticGetCompletedFrames 拉取帧池真实分辨率）。
-     * NdsDualScreenView.computeSrcRects 的 Top/Bottom 切片推导对
-     * 上/下屏等分的合成帧天然成立。
-     *
-     * 【双缓冲发布】渲染线程每帧写入"未发布"的那块缓冲，写完才把引用
-     * 换到 [frameBuffer]（volatile 写 = 原子发布）。视图/GL 滤镜线程读到
-     * 的已发布数组在下一帧内绝不会被改写 —— 修复旧实现"渲染线程
-     * System.arraycopy 与 UI 线程 setPixels 并发读写同一数组"的撕裂。
+     * 合成帧：上屏 256×192 在前（行 0..191）、下屏在后（行 192..383），
+     * 共 256×384。NdsDualScreenView.computeSrcRects 的 Top/Bottom 切片
+     * 推导（screenH=192、gap=0）对它天然成立。
      */
     @Volatile
     override var frameBuffer: IntArray = IntArray(256 * 384)
 
-    /** 发布缓冲对（frameBuffer 在两者间交替引用）。 */
-    private var pubA = IntArray(256 * 384)
-    private var pubB = IntArray(256 * 384)
-    private var pubToggle = false
+    private val topBuf = IntArray(256 * 192)
+    private val bottomBuf = IntArray(256 * 192)
 
-    /** 帧读取缓冲：按 HD 档上限 512×384/屏 分配。shim 失败回落原生
-     * getScreenBuffers 时只写前 256×192（原生按 49152 int 写入，安全）。 */
-    private val topBuf = IntArray(512 * 384)
-    private val bottomBuf = IntArray(512 * 384)
-
-    /** shim 输出的每屏尺寸 {topW, topH, bottomW, bottomH}。 */
-    private val frameDims = IntArray(4)
-
-    /**
-     * 原始合成帧（上屏在前、下屏在后，分辨率随帧池档位 256×384 / 512×768）：
-     * 截图/存档缩略图的数据源，与可能被放大滤镜替换掉的 [frameBuffer]
-     * （画布呈现帧）分离。 */
-    private val rawComposite = IntArray(512 * 768)
-
-    /** [rawComposite] 的当前实际尺寸（渲染线程每帧维护）。 */
-    @Volatile
-    var rawFrameWidth: Int = 256
-        private set
-    @Volatile
-    var rawFrameHeight: Int = 384
-        private set
+    /** 原始合成帧（恒 256×384，上屏在前）：截图/存档缩略图的数据源，
+     * 与可能被放大滤镜替换掉的 [frameBuffer]（画布呈现帧）分离。 */
+    private val rawComposite = IntArray(256 * 384)
 
     private val running = AtomicBoolean(false)
     private var renderThread: Thread? = null
@@ -463,9 +444,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     @Volatile
     var optShowFps: Boolean = false
 
-    /** 存档格式 .dsv（bit50，_RawSavFormat）；false = 裸 .sav。 */
+    /** 存档格式：true = 裸 .sav（bit50 置位，与 melonDS 互通，默认）；
+     * false = .dsv（DeSmuME 带头格式）。★ 极性已反汇编修正。 */
     @Volatile
-    var optSaveDsv: Boolean = false
+    var optSaveRawSav: Boolean = true
 
     /** 模拟线程数：0=自动（按核数 1/2/3），1-8=强制（原版 threads.cfg 语义）。 */
     @Volatile
@@ -533,15 +515,22 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         frameskipSafe = optFrameskipSafe,
         preloadRoms = optPreloadRoms,
         blend = false,
-        saveDsv = optSaveDsv
+        saveRawSav = optSaveRawSav
     )
 
-    /** 【已废弃的强制降档】画布路径现已支持高清帧（drasticGetCompletedFrames
-     * 返回帧池真实分辨率，修复前"只取左上 1/4"的裁切问题从根因上不存在了
-     * —— 反汇编确认原生 getScreenBuffers 的 HD 分支本身也会做 2:1 抽取降
-     * 采样，不会越界）。保留空实现仅为兼容旧调用点。 */
+    /** GL 显示失败回退画布时调用：立即把原生渲染分辨率降回 1x（bit41=0），
+     * 并同步偏好与会话快照 —— 画布路径的 getScreenBuffers 固定按
+     * 256×192 读取，高清帧池下只能取到左上 1/4。 */
     fun revertHdForCanvasFallback() {
-        // no-op（画布路径已支持 HD；不再强制把原生分辨率降回 1x）
+        optHdRender = false
+        activeHdRender = false
+        if (isLoaded) {
+            try {
+                DraSticJNI.applyConfig(currentConfig(fastForward = false))
+            } catch (e: Throwable) {
+                android.util.Log.w("DraSticEngine", "revert HD failed", e)
+            }
+        }
     }
 
     // ---- 输入缓存（按键与触摸必须合并成一次 updateInput 调用） ----
@@ -755,10 +744,38 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
         romFileBase = effectiveRom.nameWithoutExtension
 
+        // === 存档互通（与 melonDS 共用同一份裸 .sav，用户要求“默认互通”）===
+        // 路径：
+        //   激烈侧  <filesDir>/drastic/user/backup/<ROM基名>.sav —— 原生备份
+        //           目录（反汇编格式串 "%s%cbackup%c%s.sav" @0x10ede4）；
+        //   共享侧  <saveDir>/<setSaveName 或 ROM基名>.sav —— melonDS 写 .sav
+        //           的同一位置（nesstation 模式 = saves/<gameId>.sav；
+        //           core_builtin 模式 = ROM 同目录同名，兼容官方 melonDS APK）。
+        // bit50 极性修正后激烈默认写裸 .sav（与 melonDS 同格式），会话边界
+        // 做时间戳同步；旧版 .dsv（DeSmuME 带头格式）一次性迁移剥壳。
+        run {
+            val base = romFileBase ?: return@run
+            val backupDir = File(drasticRoot, "user/backup").apply { mkdirs() }
+            val drasticSav = File(backupDir, "$base.sav")
+            val sharedName = saveNameOverride?.takeIf { it.isNotBlank() } ?: base
+            val sharedSav = File(saveDir, "$sharedName.sav")
+            drasticSavFile = drasticSav
+            sharedSavFile = sharedSav
+            migrateDsvIfNeeded(drasticSav)
+            syncSaveOnLoad(sharedSav, drasticSav)
+        }
+
         // 预启动配置。ROM 以真实绝对路径传入（startGame 的路径最终会回到
         // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
         // 先拍会话快照（原生分辨率初始化与 GL 视图纹理分配都以此为准）。
-        activeHdRender = optHdRender
+        // ★ 放大滤镜优先（滤镜可见性保障，本轮修复核心）：全局滤镜选择
+        // xBR/HQx 系时，本会话强制关闭高清渲染（bit41=0）。滤镜管线经
+        // getScreenBuffers 从 1x 帧池取帧（固定 256×192，反汇编 sub_1cd18
+        // 各拷 0x30000 字节），高清帧池下取不到完整帧；且 CPU 滤镜也无法
+        // 实时放大 512×384（HQ2X 单屏 ~27ms）。规则：滤镜优先可见 ——
+        // 高清会话内自动让路；滤镜换回 无/叠加类 后重进游戏，高清按用户
+        // 设置恢复（optHdRender 原值保留，仅不入本会话快照）。
+        activeHdRender = optHdRender && !isUpscaleFilter()
         // 模拟线程数：自动探测（≥4核=3，≥2核=2，否则1）或用户强制 1-8。
         // ★ 必须 ≥1 —— 原版绝不会传 0；传 0 = 单线程 3D 光栅化，
         // 3D 大游戏每帧只能完成顶部 1 段（16 行）→ "画面显示不完整"。
@@ -807,101 +824,39 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
                     if (!glDisplayActive) {
                         // 渲染线程帧搬运：
-                        //
-                        // 【帧一致性读取（本轮核心修复）】旧实现调原生
-                        // getScreenBuffers —— 反汇编确认它【不加锁】读帧池
-                        // 【当前写入档】（帧边界翻转后即将被帧 N+1 覆盖的
-                        // 缓冲）：普通 3D 游戏满屏刷新时瞬时撕裂；开"多线程
-                        // 3D 渲染"后异步分段光栅化在帧边界后继续写入，读到
-                        // 的帧上下段新旧混杂 = "上下屏部分贴图错乱"。
-                        // 现在优先走 drasticGetCompletedFrames（与原生
-                        // renderFrame 同语义：读【刚完成的另一档】+ slot
-                        // 复读校验），失败时回落原生 getScreenBuffers。
-                        //
-                        // 尺寸：shim 返回帧池真实分辨率（HD 档 = 512×384/屏，
-                        // 原生 getScreenBuffers 在 HD 下只会返回 2:1 抽取
-                        // 降采样的 256×192）。
-                        //   · 画布路径 → 发布全分辨率 HD 合成帧（512×768），
-                        //     高清渲染在画布回退路径同样生效；
-                        //   · filteredGlActive（GL 放大滤镜路径）→ GL 线程的
-                        //     滤镜管线按 1x 源（256×192/屏）设计，HD 档时在
-                        //     本线程按原生同款 2:1 抽取降采样后再合成发布，
-                        //     发布尺寸恒 256×384。
-                        //
-                        // 【双缓冲发布】写入"未发布"的 pub 缓冲，最后以
-                        // volatile 引用交换发布到 frameBuffer —— 视图读到的
-                        // 数组在本帧内不再被改写，杜绝呈现端撕裂。
-                        val shimOk = try {
-                            NdsNative.drasticGetCompletedFrames(topBuf, bottomBuf, frameDims)
-                        } catch (e: Throwable) {
-                            android.util.Log.w(TAG, "completed-frame shim unavailable", e)
-                            false
-                        }
-                        var topW: Int
-                        var topH: Int
-                        if (shimOk && frameDims[0] == frameDims[2]) {
-                            topW = frameDims[0]; topH = frameDims[1]
-                        } else {
-                            DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
-                            topW = 256; topH = 192
-                        }
-
-                        if (filteredGlActive && topW == 512) {
-                            // HD 池 → 1x 源：even-x/even-y 抽取（与原生
-                            // getScreenBuffers 的 HD 分支 0x19398 完全一致）。
-                            // 就地写安全：目标索引恒落后于源索引。
-                            for (y in 0 until 192) {
-                                val srcRow = y * 2 * 512
-                                val dstRow = y * 256
-                                for (x in 0 until 256) {
-                                    topBuf[dstRow + x] = topBuf[srcRow + x * 2]
-                                    bottomBuf[dstRow + x] = bottomBuf[srcRow + x * 2]
-                                }
-                            }
-                            topW = 256; topH = 192
-                        }
-
-                        val screenPx = topW * topH
-                        val totalW = topW
-                        val totalH = topH * 2
-
-                        // 原始合成帧（上屏在前、下屏在后）——截图恒用原始帧
-                        System.arraycopy(topBuf, 0, rawComposite, 0, screenPx)
-                        System.arraycopy(bottomBuf, 0, rawComposite, screenPx, screenPx)
-                        rawFrameWidth = totalW
-                        rawFrameHeight = totalH
-
+                        //  · filteredGlActive（GL 放大滤镜路径）：只搬原始帧，
+                        //    frameBuffer 恒 256×384，GL 线程取去滤镜；
+                        //  · 画布路径 + 放大滤镜：frameBuffer 指向放大后的合成帧，
+                        //    NdsDualScreenView 按 filteredVideoWidth/Height 切片
+                        //    绘制（与 melonDS 自由布局的滤镜路径同构）；先切换
+                        //    frameBuffer 引用再更新尺寸，视图侧 fb.size < vw*vh
+                        //    的守卫可安全吸收一帧的中间态。
+                        //  · 画布路径 + 无放大滤镜：搬原始帧（截图/存档缩略图用）。
+                        DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                        // 原始合成帧（上屏在前、下屏在后，256×384）——截图恒用原始帧
+                        System.arraycopy(topBuf, 0, rawComposite, 0, topBuf.size)
+                        System.arraycopy(bottomBuf, 0, rawComposite, topBuf.size, bottomBuf.size)
                         val f = activeVideoFilter
-                        // 放大滤镜只按 1x 源（256×192）定义（kDfMaxSrcW=256）；
-                        // HD 帧本身就是 2x，直接呈现原始 HD 合成帧（_dot 变体
-                        // 的点阵部分仍由视图层 FilterOverlay 叠加）。
-                        val canvasFilter = !filteredGlActive && topW == 256 && isUpscaleFilter(f)
-
-                        pubToggle = !pubToggle
-                        var back = if (pubToggle) pubA else pubB
-
+                        val canvasFilter = !filteredGlActive && isUpscaleFilter(f)
                         if (canvasFilter) {
                             val scale = if (f == 6 || f == 8 || f == 9 || f == 10) 4 else 2
                             val fw = 256 * scale
                             val fh = 384 * scale
                             val half = fw * fh / 2
-                            if (back.size < fw * fh) {
-                                back = IntArray(fw * fh)
-                                if (pubToggle) pubA = back else pubB = back
-                            }
+                            if (frameBuffer.size < fw * fh) frameBuffer = IntArray(fw * fh)
+                            val fb = frameBuffer
                             val nTop = try {
-                                NdsNative.applyUpscaleFilterArgb(f, topBuf, 256, 192, back, 0)
+                                NdsNative.applyUpscaleFilterArgb(f, topBuf, 256, 192, fb, 0)
                             } catch (e: Throwable) {
                                 android.util.Log.w(TAG, "canvas filter(top) failed", e); 0
                             }
                             if (nTop > 0) {
                                 try {
-                                    NdsNative.applyUpscaleFilterArgb(f, bottomBuf, 256, 192, back, half)
+                                    NdsNative.applyUpscaleFilterArgb(f, bottomBuf, 256, 192, fb, half)
                                 } catch (e: Throwable) {
                                     android.util.Log.w(TAG, "canvas filter(bottom) failed", e)
-                                    System.arraycopy(rawComposite, 0, back, 0, totalW * totalH)
-                                    displayW = totalW; displayH = totalH
-                                    frameBuffer = back
+                                    System.arraycopy(rawComposite, 0, fb, 0, 256 * 384)
+                                    displayW = 256; displayH = 384
                                     frameCount++
                                     onFrame()
                                     continue
@@ -909,19 +864,14 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                                 displayW = fw; displayH = fh
                             } else {
                                 // 滤镜失败（不应发生）→ 回落原始帧
-                                System.arraycopy(rawComposite, 0, back, 0, totalW * totalH)
-                                displayW = totalW; displayH = totalH
+                                System.arraycopy(rawComposite, 0, fb, 0, 256 * 384)
+                                displayW = 256; displayH = 384
                             }
                         } else {
-                            if (back.size < totalW * totalH) {
-                                back = IntArray(totalW * totalH)
-                                if (pubToggle) pubA = back else pubB = back
-                            }
-                            System.arraycopy(rawComposite, 0, back, 0, totalW * totalH)
-                            displayW = totalW; displayH = totalH
+                            if (frameBuffer.size < 256 * 384) frameBuffer = IntArray(256 * 384)
+                            System.arraycopy(rawComposite, 0, frameBuffer, 0, 256 * 384)
+                            displayW = 256; displayH = 384
                         }
-                        // volatile 引用交换 = 原子发布
-                        frameBuffer = back
                     }
                     frameCount++
                     onFrame()
@@ -1157,8 +1107,102 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     /** 当前 ROM 的去扩展名基名（存档恢复路径构造用，loadRom 时记录）。 */
     private var romFileBase: String? = null
 
+    // ---- 存档互通（与 melonDS 共用裸 .sav）：本会话两侧的存档文件 ----
+    /** melonDS 侧共享存档（<saveDir>/<gameId>.sav）。 */
+    private var sharedSavFile: File? = null
+    /** 激烈核心备份目录的裸 .sav（drastic/user/backup/<ROM基名>.sav）。 */
+    private var drasticSavFile: File? = null
+
     /** NesStation 传来的每游戏存档名（content:// temp_rom 缓解用）。 */
     private var saveNameOverride: String? = null
+
+    /** 旧版 .dsv（DeSmuME 兼容带头格式）一次性迁移为裸 .sav。
+     * .dsv 布局（反汇编 DraStic 写入器 0x785f8 实锤）：
+     *   [0x50 字节说明文本][版本字段][标志位] "|-DESMUME SAVE-|\\0" <原始存档>
+     *   ["|<--Snip above here ... savedata footer:" 行]
+     * 即原始存档紧随 15 字符标记 + 1 个 NUL 终止符（写入器按 16 字节
+     * 一次性写入）；DeSmuME 写入器则在标记后直接跟换行。头部之后多出的
+     * 尾部字节对读取端无害（按芯片容量取前缀），故尾部不做修剪。
+     * */
+    private fun migrateDsvIfNeeded(drasticSav: File) {
+        if (drasticSav.isFile && drasticSav.length() > 0) return
+        val dsv = File(drasticSav.parentFile, "${drasticSav.nameWithoutExtension}.dsv")
+        if (!dsv.isFile || dsv.length() == 0L) return
+        try {
+            val data = dsv.readBytes()
+            val marker = "|-DESMUME SAVE-|".toByteArray(Charsets.US_ASCII)
+            val footer = ("|<--Snip above here to create a raw sav by excluding " +
+                "this DeSmuME savedata footer").toByteArray(Charsets.US_ASCII)
+            val s = indexOfBytes(data, marker)
+            if (s < 0) return
+            var start = s + marker.size
+            var end = indexOfBytes(data, footer, start)
+            if (end < 0) end = data.size
+            // DraStic 写入器：标记后是 NUL 终止符（16 字节块写入的一部分）
+            if (start < end && data[start] == 0.toByte()) {
+                start++
+            } else if (start < end && (data[start] == '\n'.code.toByte() ||
+                    data[start] == '\r'.code.toByte())) {
+                // DeSmuME 写入器：标记后是换行
+                start++
+                if (start < end && data[start - 1] == '\r'.code.toByte() &&
+                    data[start] == '\n'.code.toByte()) start++
+            }
+            if (end <= start) return
+            drasticSav.writeBytes(data.copyOfRange(start, end))
+            // 保留原 .dsv 的修改时间：互通同步按时间戳择新，迁移件
+            // 不应伪造为“最新”而压过 melonDS 侧真正的最新进度
+            drasticSav.setLastModified(dsv.lastModified())
+            android.util.Log.i(TAG, "save interop: migrated ${dsv.name} -> ${drasticSav.name} (${end - start}B)")
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "save interop: dsv migration failed", e)
+        }
+    }
+
+    private fun indexOfBytes(data: ByteArray, pat: ByteArray, from: Int = 0): Int {
+        if (pat.isEmpty() || data.size < pat.size) return -1
+        outer@ for (i in from..data.size - pat.size) {
+            for (j in pat.indices) {
+                if (data[i + j] != pat[j]) continue@outer
+            }
+            return i
+        }
+        return -1
+    }
+
+    /** 进游戏：共享侧（melonDS）较新的裸 .sav → 拷入激烈备份目录。 */
+    private fun syncSaveOnLoad(shared: File, drastic: File) {
+        try {
+            if (shared.isFile && shared.length() > 0) {
+                if (!drastic.isFile || shared.lastModified() > drastic.lastModified()) {
+                    shared.copyTo(drastic, overwrite = true)
+                    android.util.Log.i(TAG, "save interop: imported ${shared.name} -> drastic backup")
+                }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "save interop: import failed", e)
+        }
+    }
+
+    /** 退游戏：激烈备份目录较新的裸 .sav → 回写共享位置（melonDS 直接可用）。
+     * 在 cleanup 末尾（原生 quit 已刷盘、releaseSystem 完成后）调用。 */
+    private fun syncSaveOnUnload() {
+        val shared = sharedSavFile ?: return
+        val drastic = drasticSavFile ?: return
+        try {
+            if (drastic.isFile && drastic.length() > 0) {
+                if (!shared.isFile || drastic.lastModified() >= shared.lastModified()) {
+                    shared.parentFile?.mkdirs()
+                    drastic.copyTo(shared, overwrite = true)
+                    // 对齐时间戳：下次进游戏时两侧时间相等，不再重复回导
+                    shared.setLastModified(drastic.lastModified())
+                    android.util.Log.i(TAG, "save interop: exported ${drastic.name} -> shared")
+                }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "save interop: export failed", e)
+        }
+    }
 
     override fun unload() = synchronized(lifecycleLock) {
         cleanup()
@@ -1245,6 +1289,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             nativePoisoned = true
             android.util.Log.e(TAG, "cleanup: drastic native threads refused to exit (emu=$emuDied render=$renderDied)")
         }
+
+        // 存档互通：原生 quit 已把备份刷盘 → 较新的裸 .sav 回写共享位置
+        // （melonDS 直接可用）。异常会话（poisoned）也尽力导出，避免丢档。
+        syncSaveOnUnload()
     }
 
     // ---- 输入（EmulatorEngine / NdsCoreEngine） ----
@@ -1277,8 +1325,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     override fun frameStamp(): Long = frameCount
 
     /**
-     * 画布回退路径当前呈现的合成帧尺寸：无放大滤镜时为帧池真实分辨率
-     * （1x = 256×384；高清渲染 = 512×768，见 drasticGetCompletedFrames）；
+     * 画布回退路径当前呈现的合成帧尺寸：无放大滤镜时为原生 256×384；
      * 放大类滤镜激活时为放大后的合成帧（2x → 512×768，4x → 1024×1536），
      * 与 [frameBuffer] 内容一致（渲染线程在画布模式下填充）。
      */
@@ -1330,7 +1377,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 applyOptionsHot()
             }
             "drastic_save_format" -> {
-                optSaveDsv = value == "dsv"
+                // ★ 极性修正（反汇编 0x75768 实锤）：bit50 置位 = 裸 .sav。
+                // "sav"（默认）→ 裸 .sav，与 melonDS 同格式同命名规则 → 互通；
+                // "dsv" → .dsv 带头格式。旧实现写反，用户选什么得到相反格式。
+                optSaveRawSav = value != "dsv"
                 applyOptionsHot()
             }
             "drastic_frameskip_type" -> {
@@ -1510,12 +1560,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 System.arraycopy(bottom, 0, out, top.size, bottom.size)
                 FrameCapture(out, 256, 384)
             } else {
-                // 画布路径：截取原始合成帧（rawComposite 恒为帧池真实分辨率
-                // —— 1x 时 256×384，高清渲染开启时 512×768；frameBuffer 在
-                // 放大滤镜激活时是放大后的呈现帧，尺寸与截图规格不符，不用它）
-                val w = rawFrameWidth
-                val h = rawFrameHeight
-                FrameCapture(rawComposite.copyOf(w * h), w, h)
+                // 画布路径：截取原始 256×384 合成帧（rawComposite 恒为原始
+                // 帧；frameBuffer 在放大滤镜激活时是放大后的呈现帧，尺寸
+                // 与截图规格不符，不用它）
+                FrameCapture(rawComposite.copyOf(), 256, 384)
             }
         } catch (e: Throwable) {
             null

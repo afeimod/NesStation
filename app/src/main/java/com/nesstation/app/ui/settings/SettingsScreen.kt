@@ -393,18 +393,13 @@ fun SettingsScreen(
                         SettingsSection("存储") {
                             // 全局存档方式：所有核心通用（不再只是 NDS 独有）。
                             // NES/SFC/GB/GBA/PCE/DOS/街机/MD/PSX 写 .srm，NDS 写 .sav。
-                            // ⚠ 经专用通道即时落盘（setGlobalSaveMode）——不走
-                            // PadLayout 整体回写，杜绝陈旧副本覆盖/防抖丢失。
                             DropdownRow("存档方式",
                                 listOf(
                                     "nesstation" to "统一存档目录 (推荐)",
                                     "core_builtin" to "ROM 同目录同名 (.srm/.sav)"
                                 ),
                                 padLayout.globalSaveMode
-                            ) {
-                                PadLayoutStore.setGlobalSaveMode(context, it)
-                                updateLayout(padLayout.copy {globalSaveMode = it})
-                            }
+                            ) { updateLayout(padLayout.copy {globalSaveMode = it}) }
                             Text(
                                 "「统一存档目录」把存档集中在应用内部 saves 目录（NDS 为 <游戏ID>.sav，其他核心为 .srm），content:// 导入的游戏互不干扰。" +
                                 "「ROM 同目录」直接读写 ROM 旁的同名存档（与官方 melonDS APK / RetroArch 习惯一致，便于和电脑交换存档）。切换后需重进游戏。",

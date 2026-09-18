@@ -1001,25 +1001,6 @@ fun EmulatorScreen(
         }
     }
 
-    // === 退出会话时同步刷新未落盘的布局改动 ===
-    // 防抖保存有 400ms 窗口：改完立刻退出游戏（协程随组合销毁被取消）
-    // 会丢掉最后一次改动 —— 典型表现"游戏内改了设置但没保存"。这里用
-    // rememberUpdatedState 追踪最新布局，onDispose 同步补写一次（幂等，
-    // 与防抖重复写盘无害；快捷菜单改动已改为即时落盘，不走这里）。
-    val latestLayoutForFlush by rememberUpdatedState(padLayout)
-    val latestJavaHasOverride by rememberUpdatedState(javaHasOverride)
-    DisposableEffect(Unit) {
-        onDispose {
-            if (platform == GamePlatform.JAVA && javaGameKey != null) {
-                JavaGameSettingsStore.save(context, javaGameKey, JavaGameSettings.of(latestLayoutForFlush))
-                if (!latestJavaHasOverride) javaHasOverride = true
-                PadLayoutStore.save(context, latestLayoutForFlush.withJavaSettings(globalJavaSnapshot), platform)
-            } else {
-                PadLayoutStore.save(context, latestLayoutForFlush, platform)
-            }
-        }
-    }
-
     // On TV, auto-hide the on-screen pad regardless of the user's setting —
     // the touch overlay is useless without a touchscreen and only wastes GPU.
     val effectiveShowPad = padLayout.showPad && !isTv
@@ -1097,6 +1078,27 @@ fun EmulatorScreen(
                    padLayout.ndsJitBranchOptimisations, padLayout.ndsJitLiteralOptimisations,
                    padLayout.ndsAudioBitrate, padLayout.ndsMicInput, padLayout.ndsLanguage,
                    padLayout.ndsScreenGap, padLayout.ndsSwapscreenMode, padLayout.ndsHybridSmallScreen,
+                   // DraStic（激烈）专属设置 —— ★ 此前完全缺失触发键：游戏中
+                   // （含画中画模式）改任何激烈设置，applyCoreOptions 不会重新
+                   // 执行，引擎 opt* 缓存永远是旧值 → "高清渲染/多线程 3D/存档
+                   // 格式等设置不生效"。现在全部纳入监听：改动即时经
+                   // setCoreOption 下发（热生效项立即应用；bit41 高清等
+                   // startGame 项在下次进游戏生效）。
+                   padLayout.ndsDrasticVolume, padLayout.ndsDrasticSound,
+                   padLayout.ndsDrasticHdRender, padLayout.ndsDrasticDisplayMode,
+                   padLayout.ndsDrasticSmoothFilter, padLayout.ndsDrasticSaveFormat,
+                   padLayout.ndsDrasticFrameskipType, padLayout.ndsDrasticFrameskipValue,
+                   padLayout.ndsDrasticFrameskipSafe, padLayout.ndsDrasticThreaded3D,
+                   padLayout.ndsDrastic16Bit, padLayout.ndsDrasticEdgeMarking,
+                   padLayout.ndsDrasticFixMainScreen, padLayout.ndsDrasticAudioLatency,
+                   padLayout.ndsDrasticMicEnabled, padLayout.ndsDrasticMicLevel,
+                   padLayout.ndsDrasticAutofireSpeed, padLayout.ndsDrasticFfwdRate,
+                   padLayout.ndsDrasticSlot2Type, padLayout.ndsDrasticRtcSystemTime,
+                   padLayout.ndsDrasticCheatsEnabled, padLayout.ndsDrasticLuaEnabled,
+                   padLayout.ndsDrasticBackupInSavestates, padLayout.ndsDrasticIgnoreCardLimit,
+                   padLayout.ndsDrasticAutoTrim, padLayout.ndsDrasticPreloadRoms,
+                   padLayout.ndsDrasticShowFps, padLayout.ndsDrasticThreads,
+                   padLayout.ndsDrasticAutosave,
                    // PSX / PCSX-ReARMed options — keys verified against the
                    // shipped core; wrong-key entries (padNtype/cpu_clock 等) 已移除
                    padLayout.pscxBios, padLayout.pscxRegion, padLayout.pscxFrameskipType,
@@ -1317,13 +1319,10 @@ fun EmulatorScreen(
         //   与 RetroArch/常见模拟器交换习惯一致）。ROM 目录不可写时自动
         //   回退到应用内部目录。J2ME (JAVA) 平台的存档在核心内部管理，
         //   不参与此切换。
-        // 存档方式读权威值（getGlobalSaveMode 实时读盘）：全局存档方式经
-        // 专用通道存取（setGlobalSaveMode），padLayout 内存副本可能滞后。
         var romAdjSaveDirPath: String? = null
         var romAdjSaveNameOverride: String? = null
         var romAdjSaveNotice: String? = null
-        if (platform != GamePlatform.JAVA &&
-            PadLayoutStore.getGlobalSaveMode(context) == "core_builtin") {
+        if (platform != GamePlatform.JAVA && padLayout.globalSaveMode == "core_builtin") {
             val resolved = resolveNdsRomAdjacentSave(context, romPath, savesDir)
             romAdjSaveDirPath = resolved.dir
             romAdjSaveNameOverride = resolved.basename
@@ -2491,17 +2490,7 @@ fun EmulatorScreen(
                 padLayout = padLayout,
                 platform = platform,
                 onLayoutChange = { newLayout ->
-                    // 存档方式改动走专用通道即时落盘（save() 已不再回写
-                    // global_save_mode；防抖延迟 + 退出游戏会丢失该改动）
-                    if (newLayout.globalSaveMode != padLayout.globalSaveMode) {
-                        PadLayoutStore.setGlobalSaveMode(context, newLayout.globalSaveMode)
-                    }
-                    // 快捷菜单改动为离散点击（非拖拽），立即落盘：
-                    // 修复"在游戏内改的存档格式/高清渲染/多线程 3D 等设置
-                    // 有时没保存"——旧实现依赖 400ms 防抖，改完立刻退出
-                    // 游戏会被协程取消吞掉。
                     padLayout = newLayout
-                    PadLayoutStore.save(context, newLayout, platform)
                     applyCoreOptions(engine, newLayout, platform)
                 },
                 onEnterCustomLayout = {
@@ -3231,7 +3220,22 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
                 // OpenGL 渲染器：启用后分辨率缩放生效，3D 渲染使用硬件加速
                 engine.setCoreOption("melonds_opengl_renderer", layout.ndsOpenGlRenderer) // "enabled" | "disabled"
                 // OpenGL 内部分辨率：仅 OpenGL 渲染器生效，值格式 "1x native (256x192)" .. "8x native (2048x1536)"
-                engine.setCoreOption("melonds_opengl_resolution", layout.ndsResolution)
+                // ★ 放大滤镜优先（滤镜可见性保障，本轮修复核心）：
+                // CPU 放大滤镜（xBR/HQx 系）只处理 1x 合成帧（256×386 预算，
+                // 见 nds_loader.cpp kMaxW/kMaxH 与 applyFilterAndBlit 的
+                // canUpscale 判断）；内部分辨率 ≥2x 时 GL 合成帧放大到
+                // 512×772+，滤镜被跳过 —— "开了高清滤镜就没效果"。
+                // 全局滤镜选择放大类时，本会话对核心下发 1x：滤镜必定生效
+                // （与 3.5.2 行为一致）；用户的分辨率设置原样保留在偏好里，
+                // 滤镜换回 无/叠加类 后自动恢复下发原值。
+                val ndsUpscaleFilterActive = layout.videoFilter in
+                    listOf("xbr", "hq2x", "hq4x", "xbr_dot", "4xbr", "4xbr_dot", "hq4x_dot")
+                val ndsEffectiveResolution =
+                    if (ndsUpscaleFilterActive &&
+                        layout.ndsOpenGlRenderer == "enabled" &&
+                        layout.ndsResolution != "1x native (256x192)"
+                    ) "1x native (256x192)" else layout.ndsResolution
+                engine.setCoreOption("melonds_opengl_resolution", ndsEffectiveResolution)
                 // OpenGL 多边形优化：改善多边形分割，减少图形错误
                 engine.setCoreOption("melonds_opengl_better_polygons", layout.ndsOpenGlBetterPolygons)
                 // OpenGL 纹理过滤：nearest(锐利) | linear(平滑)
@@ -3459,8 +3463,8 @@ private fun GameSurfaceView(
     val ctx = LocalContext.current
     val isCustom = videoScale == "custom"
     // DraStic（激烈）核心的 GL 加速显示路径（EGL 失败自动回退画布）。
-    // 高清渲染（bit41）时优先走 GL（原生纹理上传效率最高）；画布路径
-    // 经 drasticGetCompletedFrames 同样能呈现 HD 全分辨率帧，仅作回退。
+    // 高清渲染（bit41）时强制走 GL：原生帧池变为 512×384，而画布路径的
+    // getScreenBuffers 固定按 256×192 读取（会只取到左上四分之一）。
     val isDrasticEngine = platform == GamePlatform.NDS &&
         engine is com.nesstation.app.core.engine.DraSticEngine
     val drasticGlFailed = remember { mutableStateOf(false) }
@@ -3642,11 +3646,13 @@ private fun GameSurfaceView(
                         isFocusableInTouchMode = true
                         requestFocus()
                         // EGL/GL 失败自动回退画布路径（重组后 isDrasticCanvas 命中）。
-                        // 画布路径现已支持高清帧（drasticGetCompletedFrames 返回
-                        // 帧池真实分辨率），无需再把原生分辨率降回 1x —— 高清
-                        // 渲染设置在 GL 与画布两条显示路径下都真实生效。
+                        // 若高清渲染开着，同时把原生分辨率降回 1x —— 画布路径的
+                        // getScreenBuffers 固定按 256×192 读取，高清帧池下只能取
+                        // 到左上 1/4；revertHdForCanvasFallback 立即热更新位域。
                         onGlFailed = {
                             drasticGlFailed.value = true
+                            (engine as? com.nesstation.app.core.engine.DraSticEngine)
+                                ?.revertHdForCanvasFallback()
                         }
                         // 物理按键路由（与画布分支一致）
                         setOnKeyListener { v, keyCode, event ->
@@ -9376,6 +9382,8 @@ private fun SettingsPanel(
                     (1..8).map { it.toString() to "${it}x native (${256*it}x${192*it})" },
                     padLayout.ndsResolution
                 ) { onLayoutChange(padLayout.copy {ndsResolution = it}) }
+                Text("★ 选择 xBR/HQx 放大滤镜时，内部分辨率会话内自动按 1x 运行以保证滤镜生效（滤镜优先，此设置原样保留，滤镜关闭后恢复）；若画面未立即变化，重进游戏后必生效。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
 
                 DropdownSetting("JIT 编译器",
                     listOf("enabled" to "开启(加速)", "disabled" to "关闭(解释器)"),
@@ -9455,7 +9463,7 @@ private fun SettingsPanel(
                            "enabled" to "开启 512×384 (2x 高清)"),
                     padLayout.ndsDrasticHdRender
                 ) { onLayoutChange(padLayout.copy {ndsDrasticHdRender = it}) }
-                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。",
+                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。★ 放大滤镜（xBR/HQx）优先于高清：选择放大滤镜时高清会话内自动让路（重进游戏生效），滤镜换回无/叠加类后高清恢复。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 // 显示方式：GL 加速显示路径（原生 renderFrame 纹理上传 + GPU 绘制）
                 DropdownSetting("显示方式",
@@ -9587,13 +9595,13 @@ private fun SettingsPanel(
                            "900" to "15 分钟", "1800" to "30 分钟"),
                     padLayout.ndsDrasticAutosave
                 ) { onLayoutChange(padLayout.copy {ndsDrasticAutosave = it}) }
-                // 存档格式 = config bit50
+                // 存档格式 = config bit50（_RawSavFormat，极性反汇编修正）
                 DropdownSetting("存档格式",
-                    listOf("sav" to ".sav 裸格式 (兼容性最好)",
-                           "dsv" to ".dsv melonDS格式 (可互换)"),
+                    listOf("sav" to ".sav 裸格式 (默认 · 与 melonDS 互通)",
+                           "dsv" to ".dsv 带头格式 (DraStic/DeSmuME 原生)"),
                     padLayout.ndsDrasticSaveFormat
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSaveFormat = it}) }
-                Text("存档格式决定 .sav 文件结构：裸格式通用于各类 NDS 模拟器；dsv 带头信息可与官方 melonDS 直接互换。切换后需重进游戏。",
+                Text("裸 .sav 与 melonDS 核心同格式：两个核心共用同一份游戏存档，切换核心进度不丢（旧 .dsv 存档进游戏时自动迁移）。切换后需重进游戏。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
             }
             GamePlatform.PSX -> {
