@@ -551,8 +551,9 @@ class PadLayout {
     // 自动存档间隔秒：0=关 / 300 / 900 / 1800（原版 _AutosaveMode 语义）。
     var ndsDrasticAutosave: String = "0"
 
-    // 存档格式（config bit50，_RawSavFormat）："sav"=裸 .sav（默认），
-    // "dsv"=melonDS .dsv（带头信息，可与官方 melonDS 互换）。
+    // ★ 已废弃的独立存档模式（仅保留存储兼容，UI/引擎不再读取）：
+    // 激烈核心不再有独立存档格式选项 —— 电池存档恒为裸 .sav（bit50 恒置位），
+    // 位置与格式完全跟随全局存档方式（设置 → 存储 → 存档方式）。
     var ndsDrasticSaveFormat: String = "sav"
 
     // 显示平滑滤波（GL 纹理过滤，视图层实现，不入 config）：
@@ -562,7 +563,7 @@ class PadLayout {
     // 显示方式（视图层选择）："gl"=OpenGL 加速显示（默认，复刻原版 App
     // 的 renderFrame 显示路径：原生纹理上传 + 双缓冲读 + GPU 绘制，
     // 3D 游戏无撕裂），"canvas"=画布位图路径（传统行为）。
-    // EGL 初始化失败时自动回退 canvas（并自动降回 1x 分辨率）。
+    // EGL 初始化失败时自动回退 canvas（高清会话下取到的是原生降采样帧，无需降档）。
     var ndsDrasticDisplayMode: String = "gl"
 
     // === NDS 双屏独立布局 (videoScale == "custom" 时生效) ===

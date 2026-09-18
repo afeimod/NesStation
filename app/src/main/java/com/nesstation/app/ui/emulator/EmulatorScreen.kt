@@ -3252,7 +3252,9 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
                 engine.setCoreOption("drastic_volume", layout.ndsDrasticVolume)
                 engine.setCoreOption("drastic_sound", layout.ndsDrasticSound)
                 engine.setCoreOption("drastic_hd_render", layout.ndsDrasticHdRender)
-                engine.setCoreOption("drastic_save_format", layout.ndsDrasticSaveFormat)
+                // 注：不再下发 drastic_save_format —— 激烈核心的独立存档格式
+                // 选项已移除，电池存档恒为裸 .sav，位置/格式跟随全局存档方式
+                //（设置 → 存储 → 存档方式），与 melonDS 同一份文件互通。
                 val fsTypeKey: String = when (layout.ndsDrasticFrameskipType) {
                     "manual" -> "1"; "auto" -> "2"; else -> "0"
                 }
@@ -3719,9 +3721,8 @@ private fun GameSurfaceView(
                         isFocusableInTouchMode = true
                         requestFocus()
                         // EGL/GL 失败自动回退画布路径（重组后 isDrasticCanvas 命中）。
-                        // 若高清渲染开着，同时把原生分辨率降回 1x —— 画布路径的
-                        // getScreenBuffers 固定按 256×192 读取，高清帧池下只能取
-                        // 到左上 1/4；revertHdForCanvasFallback 立即热更新位域。
+                        // 画布路径在高清会话下拿到的同样是原生降采样帧
+                        // （getScreenBuffers 0x19398 分支），无需降档。
                         onGlFailed = {
                             drasticGlFailed.value = true
                             (engine as? com.nesstation.app.core.engine.DraSticEngine)
@@ -9536,7 +9537,7 @@ private fun SettingsPanel(
                            "enabled" to "开启 512×384 (2x 高清)"),
                     padLayout.ndsDrasticHdRender
                 ) { onLayoutChange(padLayout.copy {ndsDrasticHdRender = it}) }
-                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。★ 放大滤镜（xBR/HQx）优先于高清：选择放大滤镜时高清会话内自动让路（重进游戏生效），滤镜换回无/叠加类后高清恢复。",
+                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。★ 与放大滤镜（xBR/HQx）可同时生效：高清会话下滤镜作用于原生降采样帧，无需二选一。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 // 显示方式：GL 加速显示路径（原生 renderFrame 纹理上传 + GPU 绘制）
                 DropdownSetting("显示方式",
@@ -9668,13 +9669,9 @@ private fun SettingsPanel(
                            "900" to "15 分钟", "1800" to "30 分钟"),
                     padLayout.ndsDrasticAutosave
                 ) { onLayoutChange(padLayout.copy {ndsDrasticAutosave = it}) }
-                // 存档格式 = config bit50（_RawSavFormat，极性反汇编修正）
-                DropdownSetting("存档格式",
-                    listOf("sav" to ".sav 裸格式 (默认 · 与 melonDS 互通)",
-                           "dsv" to ".dsv 带头格式 (DraStic/DeSmuME 原生)"),
-                    padLayout.ndsDrasticSaveFormat
-                ) { onLayoutChange(padLayout.copy {ndsDrasticSaveFormat = it}) }
-                Text("裸 .sav 与 melonDS 核心同格式：两个核心共用同一份游戏存档，切换核心进度不丢（旧 .dsv 存档进游戏时自动迁移）。切换后需重进游戏。",
+                // 注：激烈核心的独立存档格式（sav/dsv）选项已移除 ——
+                // 电池存档恒为裸 .sav，位置与格式完全跟随全局存档方式。
+                Text("存档跟随全局设置：电池存档固定为裸 .sav，位置由「设置 → 存储 → 存档方式」决定（统一存档目录 = saves/<gameId>.sav；核心自带位置 = ROM 同目录同名）。与 melonDS 核心共用同一份游戏存档，切换核心进度不丢（旧 .dsv 存档进游戏时自动迁移）。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
             }
             GamePlatform.PSX -> {

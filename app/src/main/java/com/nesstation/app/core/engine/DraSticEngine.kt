@@ -36,11 +36,14 @@ private const val TAG = "DraSticEngine"
  *    已为此做了分支处理）。
  *
  * ## 输入位布局换算
- * NesStation 统一使用 libretro 12 键位（bit0=A … bit11=R）；
- * DraStic 使用 bit0-3=方向 / bit4-11=A,B,X,Y,L,R,Start,Select +
- * bit31=触摸标志（[DraSticJNI.updateInput] 反汇编验证）。
- * [setPad1] 负责 libretro→DraStic 的位重排，[pushInput] 保证按键与触摸
- * 状态合并成一个完整的 updateInput 调用（两状态都缓存在引擎里）。
+ * NesStation 前端经 routePadBits/projectToLibretroLayout 统一下发【标准
+ * libretro】位布局（bit0=B bit1=Y bit8=A bit9=X）；
+ * DraStic 原生使用 bit0-3=方向 / bit4-11=A,B,X,Y,L,R,Start,Select +
+ * bit31=触摸标志（[DraSticJNI.updateInput] + KEYINPUT 组装反汇编验证：
+ * KEYINPUT bit0(A)=掩码 bit4、bit1(B)=掩码 bit5、KEYXY bit0(X)=掩码 bit6、
+ * bit1(Y)=掩码 bit7）。[setPad1] 负责 libretro→DraStic 的位重排，
+ * [pushInput] 保证按键与触摸状态合并成一个完整的 updateInput 调用
+ * （两状态都缓存在引擎里）。
  *
  * ## ABI 支持（双 ABI）
  * libdrastic*.so 同时提供 armeabi-v7a（32 位：drastic / drastic_compat）
@@ -52,10 +55,14 @@ private const val TAG = "DraSticEngine"
  * DraStic 选项，不影响选 melonDS 游玩）。
  *
  * ## 存档
- * 电池存档（.dsv）与即时存档（.dss 槽 0-8，9 为快速槽）全部由原生经
- * [DraSticPathCache] 写入 `<filesDir>/drastic/user/`。即时存档与
- * NesStation 槽位 UI 的互通见 [saveState]（写路径观察器精确定位 .dss，
- * 复制一份到 NesStation 的 .state 路径供槽位存在性检查 / 备份迁移）。
+ * 电池存档固定为裸 .sav（bit50 恒置位），格式与位置完全跟随 NesStation
+ * 全局存档方式（设置 → 存储 → 存档方式，见 [DraSticEngine] 存档互通注释）——
+ * 激烈核心自身不再提供独立的存档格式/位置选项。原生库始终把备份写到
+ * `<filesDir>/drastic/user/backup/`（预编译 .so 的路径写死），会话边界与
+ * 全局存档位置双向同步，对用户呈现为同一份存档。即时存档（.dss 槽 0-8，
+ * 9 为快速槽）由原生经 [DraSticPathCache] 写入；与 NesStation 槽位 UI 的
+ * 互通见 [saveState]（写路径观察器精确定位 .dss，复制一份到 NesStation
+ * 的 .state 路径供槽位存在性检查 / 备份迁移）。
  */
 class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
@@ -72,20 +79,28 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
 
         // ---- libretro → DraStic 按键位换算表 ----
-        // libretro: bit0=A bit1=B bit2=Select bit3=Start bit4=Up bit5=Down
-        //           bit6=Left bit7=Right bit8=X bit9=Y bit10=L bit11=R
-        // DraStic:  bit0=Up bit1=Down bit2=Left bit3=Right bit4=A bit5=B
+        // ★ 位序已修正：前端 routePadBits 对 NDS 下发的是【标准 libretro
+        // 位布局】（melonDS 核心同款），旧实现误按项目 SNES 布局解释 ——
+        // 导致 ABXY 输出错位（实测 A→X、B→A、X→Y、Y→B，用户报
+        // “a 输出 y 了、b 变成 a 了”）。
+        //
+        // 标准 libretro JOYPAD 位序（RETRO_DEVICE_ID_JOYPAD_*）：
+        //           bit0=B bit1=Y bit2=Select bit3=Start bit4=Up bit5=Down
+        //           bit6=Left bit7=Right bit8=A bit9=X bit10=L bit11=R
+        // DraStic 位序（KEYINPUT 组装 0x80cbc-0x80e74 反汇编实锤，原生
+        // 掩码 active-high、KEYINPUT/KEYXY active-low）：
+        //           bit0=Up bit1=Down bit2=Left bit3=Right bit4=A bit5=B
         //           bit6=X bit7=Y bit8=L bit9=R bit10=Start bit11=Select
-        private const val LR_A = 0x001
-        private const val LR_B = 0x002
+        private const val LR_A = 0x100   // 标准 libretro：A = bit8
+        private const val LR_B = 0x001   // 标准 libretro：B = bit0
         private const val LR_SELECT = 0x004
         private const val LR_START = 0x008
         private const val LR_UP = 0x010
         private const val LR_DOWN = 0x020
         private const val LR_LEFT = 0x040
         private const val LR_RIGHT = 0x080
-        private const val LR_X = 0x100
-        private const val LR_Y = 0x200
+        private const val LR_X = 0x200   // 标准 libretro：X = bit9
+        private const val LR_Y = 0x002   // 标准 libretro：Y = bit1
         private const val LR_L = 0x400
         private const val LR_R = 0x800
 
@@ -448,11 +463,6 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     @Volatile
     var optShowFps: Boolean = false
 
-    /** 存档格式：true = 裸 .sav（bit50 置位，与 melonDS 互通，默认）；
-     * false = .dsv（DeSmuME 带头格式）。★ 极性已反汇编修正。 */
-    @Volatile
-    var optSaveRawSav: Boolean = true
-
     /** 模拟线程数：0=自动（按核数 1/2/3），1-8=强制（原版 threads.cfg 语义）。 */
     @Volatile
     var optThreads: Int = 0
@@ -479,12 +489,8 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     /**
      * 本会话的用户提示（加载完成后由 UI 以 Toast 展示一次）。
-     * 目前用于"高清渲染被静默抑制"的场景 —— 用户开了高清但实际按 1x 运行：
-     *  - 放大滤镜（xBR/HQx 系）激活时滤镜优先，高清让路；
-     *  - GL 显示路径初始化失败回退画布（画布的 getScreenBuffers 固定读
-     *    256×192，高清帧池下会裁切）。
-     * 无提示时为空串。修复"高清渲染(2倍分辨率)设置无效果"的排查盲区：
-     * 设置值虽为 enabled，实际会话被上述规则降级 —— 必须让用户看见原因。
+     * 高清渲染与放大滤镜共存后不再有"会话被静默降级"的场景，
+     * 当前保留该通道供未来提示使用，恒为空串。
      */
     @Volatile
     var sessionNotice: String = ""
@@ -537,28 +543,20 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         frameskipSafe = optFrameskipSafe,
         preloadRoms = optPreloadRoms,
         blend = false,
-        saveRawSav = optSaveRawSav
+        // 存档格式固定裸 .sav（bit50 恒置位）：电池存档跟随全局存档方式
+        // （nesstation = saves/<gameId>.sav；core_builtin = ROM 同目录同名
+        // .sav），两者都是裸 .sav —— 与 melonDS 完全同格式互通。激烈核心
+        // 不再有独立的存档格式选项。
+        saveRawSav = true
     )
 
-    /** GL 显示失败回退画布时调用：立即把原生渲染分辨率降回 1x（bit41=0），
-     * 并同步偏好与会话快照 —— 画布路径的 getScreenBuffers 固定按
-     * 256×192 读取，高清帧池下只能取到左上 1/4。 */
+    /** GL 显示失败回退画布时调用（保留兼容入口）：
+     * 反汇编实锤（getScreenBuffers 0x190f0 → 0x19398 分支）原生在高清
+     * （config bit41）下对 512×384 帧池做 even-row/even-col 2:1 抽取
+     * 降采样，画布路径拿到的仍是合法 256×192/屏 —— 高清无需降档，
+     * 本函数不再改任何状态。 */
     fun revertHdForCanvasFallback() {
-        optHdRender = false
-        activeHdRender = false
-        // 显式告知用户：GL 回退画布导致高清被关闭（否则用户感知为
-        // "高清渲染设置无效果"）。
-        setSessionNotice(
-            "GL 显示初始化失败，已回退画布模式；高清渲染本局自动关闭。" +
-                "可尝试更新系统 WebView/显卡驱动，或在「显示方式」保持 GL 后重进游戏。"
-        )
-        if (isLoaded) {
-            try {
-                DraSticJNI.applyConfig(currentConfig(fastForward = false))
-            } catch (e: Throwable) {
-                android.util.Log.w("DraSticEngine", "revert HD failed", e)
-            }
-        }
+        // no-op：画布路径在高清会话下取到的是原生降采样帧，无需强制降回 1x
     }
 
     // ---- 输入缓存（按键与触摸必须合并成一次 updateInput 调用） ----
@@ -779,15 +777,17 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
         romFileBase = effectiveRom.nameWithoutExtension
 
-        // === 存档互通（与 melonDS 共用同一份裸 .sav，用户要求“默认互通”）===
-        // 路径：
-        //   激烈侧  <filesDir>/drastic/user/backup/<ROM基名>.sav —— 原生备份
-        //           目录（反汇编格式串 "%s%cbackup%c%s.sav" @0x10ede4）；
-        //   共享侧  <saveDir>/<setSaveName 或 ROM基名>.sav —— melonDS 写 .sav
-        //           的同一位置（nesstation 模式 = saves/<gameId>.sav；
-        //           core_builtin 模式 = ROM 同目录同名，兼容官方 melonDS APK）。
-        // bit50 极性修正后激烈默认写裸 .sav（与 melonDS 同格式），会话边界
-        // 做时间戳同步；旧版 .dsv（DeSmuME 带头格式）一次性迁移剥壳。
+        // === 存档互通（跟随全局存档方式，激烈核心无独立存档模式）===
+        // 全局存档方式（设置 → 存储 → 存档方式）由 EmulatorScreen 解析后经
+        // saveDir / setSaveName 传入：
+        //   globalSaveMode == "nesstation" → <filesDir>/saves/<gameId>.sav
+        //   globalSaveMode == "core_builtin" → ROM 同目录同名 .sav
+        // 原生库始终把电池存档写到固定私有目录（预编译 .so 写死）：
+        //   激烈侧  <filesDir>/drastic/user/backup/<ROM基名>.sav —— 反汇编
+        //           格式串 "%s%cbackup%c%s.sav" @0x10ede4；
+        // bit50 恒置位（裸 .sav，与 melonDS 同格式），共享侧即全局存档位置的
+        // 同一份文件；会话边界做时间戳双向同步，旧版 .dsv（DeSmuME 带头格式）
+        // 一次性迁移剥壳。
         run {
             val base = romFileBase ?: return@run
             val backupDir = File(drasticRoot, "user/backup").apply { mkdirs() }
@@ -803,23 +803,16 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         // 预启动配置。ROM 以真实绝对路径传入（startGame 的路径最终会回到
         // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
         // 先拍会话快照（原生分辨率初始化与 GL 视图纹理分配都以此为准）。
-        // ★ 放大滤镜优先（滤镜可见性保障，本轮修复核心）：全局滤镜选择
-        // xBR/HQx 系时，本会话强制关闭高清渲染（bit41=0）。滤镜管线经
-        // getScreenBuffers 从 1x 帧池取帧（固定 256×192，反汇编 sub_1cd18
-        // 各拷 0x30000 字节），高清帧池下取不到完整帧；且 CPU 滤镜也无法
-        // 实时放大 512×384（HQ2X 单屏 ~27ms）。规则：滤镜优先可见 ——
-        // 高清会话内自动让路；滤镜换回 无/叠加类 后重进游戏，高清按用户
-        // 设置恢复（optHdRender 原值保留，仅不入本会话快照）。
-        activeHdRender = optHdRender && !isUpscaleFilter()
-        sessionNotice = ""
-        if (optHdRender && !activeHdRender) {
-            // 用户开了高清但滤镜优先策略将其抑制 —— 必须显式告知，
-            // 否则表现为"高清渲染(2倍分辨率)设置无效果"（排查盲区）。
-            setSessionNotice(
-                "已开启放大滤镜：本局按 1x 渲染以保滤镜可见。" +
-                    "换回「无/叠加类」滤镜后重进游戏即恢复高清 2x。"
-            )
-        }
+        // ★ 高清 2x 与放大滤镜共存（模仿 melonDS 思路，本轮修复核心）：
+        // 全局滤镜选 xBR/HQx 系时【不再强制关闭高清渲染】。旧实现认为
+        // getScreenBuffers 固定拷 0x30000 字节、高清帧池下取不到完整帧
+        // —— 前提错误。反汇编实锤：config bit41（_Hires3D）置位时
+        // （全量 config 存于 0x14c468，byte5 = 0x14c46d 的 bit1），
+        // getScreenBuffers 跳转到 0x19398 降采样分支：对 512×384 帧池做
+        // even-row/even-col 2:1 抽取，输出合法 256×192/屏 —— 即高清会话
+        // 下滤镜管线照常拿到 1x 帧，滤镜正常工作；同时 3D 内部仍以 2x
+        // 渲染，降采样帧相当于超采样（AA 更干净），两特性同时生效。
+        activeHdRender = optHdRender
         // 模拟线程数：自动探测（≥4核=3，≥2核=2，否则1）或用户强制 1-8。
         // ★ 必须 ≥1 —— 原版绝不会传 0；传 0 = 单线程 3D 光栅化，
         // 3D 大游戏每帧只能完成顶部 1 段（16 行）→ "画面显示不完整"。
@@ -1444,13 +1437,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 optHdRender = value == "enabled"
                 applyOptionsHot()
             }
-            "drastic_save_format" -> {
-                // ★ 极性修正（反汇编 0x75768 实锤）：bit50 置位 = 裸 .sav。
-                // "sav"（默认）→ 裸 .sav，与 melonDS 同格式同命名规则 → 互通；
-                // "dsv" → .dsv 带头格式。旧实现写反，用户选什么得到相反格式。
-                optSaveRawSav = value != "dsv"
-                applyOptionsHot()
-            }
+            // ---- 已移除的独立存档模式（历史版本遗留键，忽略）----
+            // "drastic_save_format"（sav/dsv）：激烈核心不再有独立存档格式
+            // 设置 —— bit50 恒置位（裸 .sav），电池存档的位置与格式完全跟随
+            // 全局存档方式（设置 → 存储 → 存档方式）。旧键收到后直接忽略。
             "drastic_frameskip_type" -> {
                 optFrameskipType = value.toIntOrNull()?.coerceIn(0, 2) ?: 0
                 applyOptionsHot()

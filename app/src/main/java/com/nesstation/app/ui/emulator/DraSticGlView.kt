@@ -456,14 +456,13 @@ class DraSticGlView @JvmOverloads constructor(
             }
 
             // 当前滤镜档（每帧读取，支持游戏运行中热切换全局滤镜）。
-            // ★ 安全网（滤镜优先策略的兜底）：引擎侧已在 loadRom 拍会话
-            // 快照时实现"滤镜优先" —— 放大滤镜（xBR/HQx）激活则
-            // activeHdRender 强制为 false，滤镜管线正常取 1x 帧工作。
-            // 这里保留退避仅防边界态：运行中热改滤镜编号时 HD 位无法
-            // 热切换（applyConfig 不调 setResolution），本会话仍是高清
-            // 帧池，此时退回原生路径显示，绝不取错乱帧。
+            // ★ 高清 2x 与放大滤镜共存：引擎侧 loadRom 不再因放大滤镜关闭
+            // 高清（旧“滤镜优先”策略已移除）。高清会话下 getScreenBuffers
+            // 走原生 0x19398 分支（config bit41 置位时对 512×384 帧池做
+            // even-row/even-col 2:1 抽取），滤镜管线拿到的恒为合法
+            // 256×192 源帧 —— 运行中热切换滤镜也无需回退原生路径。
             val filter = eng.activeVideoFilter
-            val fClass = if (eng.activeHdRender) 0 else filterClass(filter)
+            val fClass = filterClass(filter)
 
             // 会话首帧：按引擎在 loadRom 时的快照分配纹理，并接管帧消费
             // （渲染消费线程停止 CPU 帧拷贝）。
@@ -474,8 +473,9 @@ class DraSticGlView @JvmOverloads constructor(
                 layoutDirty = true
             }
             // 显示档切换（滤镜类变化 或 原生档下的 HD 档位变化）：重建纹理。
-            // 放大滤镜路径的纹理尺寸由滤镜倍数决定（与 HD 快照无关——源帧
-            // 经 getScreenBuffers 恒为 256×192），原生路径沿用 HD 快照。
+            // 放大滤镜路径的纹理尺寸由滤镜倍数决定（源帧经 getScreenBuffers
+            // 恒为 256×192 —— 高清会话下为原生降采样帧），原生路径沿用
+            // HD 快照。
             if (fClass != lastFilterClass) {
                 when (fClass) {
                     2 -> allocTextures(SCREEN_W_2X, SCREEN_H_2X)      // 512×384

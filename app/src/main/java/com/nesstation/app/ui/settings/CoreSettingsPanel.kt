@@ -907,8 +907,8 @@ fun CoreSettingsPanel(
                     Text(
                         "开启后内部分辨率翻倍（256×192 → 512×384），画面细节与 3D 模型边缘显著改善。" +
                         "需重进游戏生效；高清模式自动使用 GL 显示路径。低端设备若帧率下降可关闭。" +
-                        "★ 放大滤镜（xBR/HQx 系）优先于高清：选择放大滤镜时高清会话内自动让路" +
-                        "（重进游戏生效），滤镜换回无/叠加类后高清恢复。",
+                        "★ 与放大滤镜（xBR/HQx 系）可同时生效：高清会话下原生对帧池做 2:1 降采样供滤镜使用，" +
+                        "两个特性无需二选一。",
                         color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
@@ -1099,15 +1099,13 @@ fun CoreSettingsPanel(
                                "900" to "15 分钟", "1800" to "30 分钟"),
                         padLayout.ndsDrasticAutosave
                     ) { updateLayout(padLayout.copy {ndsDrasticAutosave = it}) }
-                    // 存档格式 = config bit50（_RawSavFormat，极性反汇编修正）
-                    DropdownRow("存档格式",
-                        listOf("sav" to ".sav 裸格式 (默认 · 与 melonDS 互通)",
-                               "dsv" to ".dsv 带头格式 (DraStic/DeSmuME 原生)"),
-                        padLayout.ndsDrasticSaveFormat
-                    ) { updateLayout(padLayout.copy {ndsDrasticSaveFormat = it}) }
+                    // 注：激烈核心的独立存档格式（sav/dsv）选项已移除 ——
+                    // 电池存档恒为裸 .sav，位置与格式完全跟随全局存档方式
+                    //（设置 → 存储 → 存档方式），与 melonDS 同一份文件互通。
                     Text(
-                        "裸 .sav 与 melonDS 核心同格式：两个核心共用同一份游戏存档，" +
-                        "切换核心进度不丢（旧 .dsv 存档进游戏时自动迁移）。",
+                        "存档跟随全局设置：电池存档固定为裸 .sav，位置由「设置 → 存储 → 存档方式」决定" +
+                        "（统一存档目录 = saves/<gameId>.sav；核心自带位置 = ROM 同目录同名）。" +
+                        "与 melonDS 核心共用同一份游戏存档，切换核心进度不丢（旧 .dsv 存档进游戏时自动迁移）。",
                         color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
