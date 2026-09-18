@@ -7,11 +7,13 @@
 
 #include "nds_bridge.h"
 #include "nds_loader.h"
+#include "shared/core_shared.h"
 
 #include <jni.h>
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <cstdint>
 #include <cstring>
 
 #define TAG "ndscore"
@@ -355,6 +357,141 @@ Java_com_nesstation_app_core_jni_NdsNative_setHighQualityScaling(JNIEnv*, jclass
 JNIEXPORT jboolean JNICALL
 Java_com_nesstation_app_core_jni_NdsNative_isCoreLibLoaded(JNIEnv*, jclass) {
     return ndscore::rom::isCoreLoaded() ? JNI_TRUE : JNI_FALSE;
+}
+
+// --- DraStic 全局放大滤镜（XBR / HQX）----------------------------------
+//
+// DraStic 核心是预编译 .so（libdrastic_arm64.so），其显示路径
+// renderFrame(tex1, tex2) 只做"原样上传帧池 + glDrawArrays"，没有放大
+// 滤镜能力。要让全局滤镜（HQ2X/HQ4X 等）在激烈核心生效，由 Kotlin 的
+// DraSticGlView 自行取帧（getScreenBuffers → frameBuffer，恒为
+// 256×192×2 的 0xAARRGGBB int），再调用本函数在原生侧跑与 melonDS
+// surface 路径完全相同的 coreshared 滤镜实现，输出 RGBA8888 字节供
+// glTexSubImage2D 直接上传。
+//
+// filter 取值与 coreshared::applyFilterAndBlit 一致：
+//   4=xbr(2x), 5=hq2x, 6=hq4x, 7=xbr+dot(2x), 8=4xbr(4x),
+//   9=4xbr+dot(4x), 10=hq4x+dot(4x)
+//   （1/2/3 是叠加类，由视图层 FilterOverlay 绘制，不走这里）
+//
+// 返回写入 dst 的字节数；filter 不支持 / 参数非法时返回 0。
+// -----------------------------------------------------------------------
+
+// 输出上限：256×192 源做 4x 放大 = 1024×768。
+static constexpr int kDfMaxSrcW = 256;
+static constexpr int kDfMaxSrcH = 192;
+
+// 2x 输出缓冲（4x 级联的中间缓冲也用它）
+static uint32_t s_dfBuf2x[kDfMaxSrcW * 2 * kDfMaxSrcH * 2];
+// 4x 输出缓冲
+static uint32_t s_dfBuf4x[kDfMaxSrcW * 4 * kDfMaxSrcH * 4];
+
+// 0xAARRGGBB uint32（滤镜内部格式，与 Bitmap/IntArray 一致）
+// → RGBA8888 字节序（GL_RGBA / GL_UNSIGNED_BYTE 上传格式）。
+static inline void argbToRgbaBytes(const uint32_t* src, uint8_t* dst, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t px = src[i];
+        dst[i * 4 + 0] = (uint8_t)((px >> 16) & 0xFF); // R
+        dst[i * 4 + 1] = (uint8_t)((px >> 8)  & 0xFF); // G
+        dst[i * 4 + 2] = (uint8_t)( px        & 0xFF); // B
+        dst[i * 4 + 3] = 0xFF;                         // A
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_nesstation_app_core_jni_NdsNative_applyUpscaleFilter(
+        JNIEnv* env, jclass, jint filter, jintArray src, jint w, jint h, jobject dst) {
+    if (w <= 0 || h <= 0 || w > kDfMaxSrcW || h > kDfMaxSrcH || src == nullptr || dst == nullptr)
+        return 0;
+
+    const bool is2x = (filter == 4 || filter == 5 || filter == 7);
+    const bool is4x = (filter == 6 || filter == 8 || filter == 9 || filter == 10);
+    if (!is2x && !is4x) return 0;
+
+    const jint* srcPtr = env->GetIntArrayElements(src, nullptr);
+    if (srcPtr == nullptr) return 0;
+
+    const uint32_t* srcPx = reinterpret_cast<const uint32_t*>(srcPtr);
+    const size_t outW = (size_t)w * (is4x ? 4 : 2);
+    const size_t outH = (size_t)h * (is4x ? 4 : 2);
+    uint32_t* outBuf = is4x ? s_dfBuf4x : s_dfBuf2x;
+
+    // 与 coreshared::applyFilterAndBlit 的 surface 路径相同的滤镜实现
+    // （xbr/hq4x 均为 coreshared 命名空间内的 static inline；hq2x_32_rb /
+    //  hq4x_32_rb 是 hqx/hqx.h 的全局 C 函数，hqxInit 为空操作无需调用）
+    if (filter == 4 || filter == 7) {
+        coreshared::xbr2xUpscale(srcPx, (unsigned)w, (unsigned)h,
+                                 (size_t)w, s_dfBuf2x);
+    } else if (filter == 5) {
+        hq2x_32_rb(srcPx, (uint32_t)(w * sizeof(uint32_t)),
+                   s_dfBuf2x, (uint32_t)(outW * sizeof(uint32_t)),
+                   (int)w, (int)h);
+    } else if (filter == 8 || filter == 9) {
+        coreshared::xbr4xUpscale(srcPx, (unsigned)w, (unsigned)h,
+                                 (size_t)w, s_dfBuf4x, s_dfBuf2x);
+    } else { // 6 / 10
+        hq4x_32_rb(srcPx, (uint32_t)(w * sizeof(uint32_t)),
+                   s_dfBuf4x, (uint32_t)(outW * sizeof(uint32_t)),
+                   (int)w, (int)h);
+    }
+
+    env->ReleaseIntArrayElements(src, const_cast<jint*>(srcPtr), JNI_ABORT);
+
+    const size_t outPixels = outW * outH;
+    const size_t outBytes = outPixels * 4;
+    void* dstPtr = env->GetDirectBufferAddress(dst);
+    const jlong dstCap = env->GetDirectBufferCapacity(dst);
+    if (dstPtr == nullptr || dstCap < 0 || (size_t)dstCap < outBytes) return 0;
+    argbToRgbaBytes(outBuf, static_cast<uint8_t*>(dstPtr), outPixels);
+    return (jint)outBytes;
+}
+
+// 画布路径变体：把滤镜输出（0xAARRGGBB uint32）直接写入 jintArray 的
+// [dstOffset] 处，返回写入的像素数。供 DraSticEngine 渲染线程在画布
+// 回退路径（GL 初始化失败的设备）合成放大后的 frameBuffer 使用。
+JNIEXPORT jint JNICALL
+Java_com_nesstation_app_core_jni_NdsNative_applyUpscaleFilterArgb(
+        JNIEnv* env, jclass, jint filter, jintArray src, jint w, jint h,
+        jintArray dst, jint dstOffset) {
+    if (w <= 0 || h <= 0 || w > kDfMaxSrcW || h > kDfMaxSrcH || src == nullptr || dst == nullptr)
+        return 0;
+
+    const bool is2x = (filter == 4 || filter == 5 || filter == 7);
+    const bool is4x = (filter == 6 || filter == 8 || filter == 9 || filter == 10);
+    if (!is2x && !is4x) return 0;
+
+    const jint* srcPtr = env->GetIntArrayElements(src, nullptr);
+    if (srcPtr == nullptr) return 0;
+
+    const uint32_t* srcPx = reinterpret_cast<const uint32_t*>(srcPtr);
+    const size_t outW = (size_t)w * (is4x ? 4 : 2);
+    const size_t outH = (size_t)h * (is4x ? 4 : 2);
+    const size_t outPixels = outW * outH;
+
+    jint* dstPtr = env->GetIntArrayElements(dst, nullptr);
+    if (dstPtr == nullptr) {
+        env->ReleaseIntArrayElements(src, const_cast<jint*>(srcPtr), JNI_ABORT);
+        return 0;
+    }
+
+    if (filter == 4 || filter == 7) {
+        coreshared::xbr2xUpscale(srcPx, (unsigned)w, (unsigned)h, (size_t)w, s_dfBuf2x);
+    } else if (filter == 5) {
+        hq2x_32_rb(srcPx, (uint32_t)(w * sizeof(uint32_t)),
+                   s_dfBuf2x, (uint32_t)(outW * sizeof(uint32_t)), (int)w, (int)h);
+    } else if (filter == 8 || filter == 9) {
+        coreshared::xbr4xUpscale(srcPx, (unsigned)w, (unsigned)h, (size_t)w, s_dfBuf4x, s_dfBuf2x);
+    } else { // 6 / 10
+        hq4x_32_rb(srcPx, (uint32_t)(w * sizeof(uint32_t)),
+                   s_dfBuf4x, (uint32_t)(outW * sizeof(uint32_t)), (int)w, (int)h);
+    }
+
+    env->ReleaseIntArrayElements(src, const_cast<jint*>(srcPtr), JNI_ABORT);
+
+    const uint32_t* outBuf = is4x ? s_dfBuf4x : s_dfBuf2x;
+    memcpy(dstPtr + dstOffset, outBuf, outPixels * sizeof(uint32_t));
+    env->ReleaseIntArrayElements(dst, dstPtr, 0);
+    return (jint)outPixels;
 }
 
 } // extern "C"

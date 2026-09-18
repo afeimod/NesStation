@@ -1117,27 +1117,26 @@ fun EmulatorScreen(
         applyCoreOptions(engine, padLayout, platform)
         // Apply video filter (frontend post-processing, not a core option)
         //
-        // 修复（全局滤镜 XBR/4XBR "不起作用"）：旧实现把 XBR 系列请求
-        // 替换成 HQ2X/HQ4X（"xbr"->5、"4xbr"->6 等），理由是旧注释声称
-        // libnescore 的 Hyllian 5xBR v3.5a 有 color bleeding。但当前所有
-        // 核心（NES/SNES/GBA/NDS）实际共用 coreshared::xbr2xUpscale
-        // （RetroArch 2xBR v3.3a + int32 blend 修正），并不存在该问题
-        // （已通过主机端单元测试验证：边缘保持 + 无溢出）。替换导致
-        // 用户选择 XBR/4XBR 时永远看到 HQ2X/HQ4X 的效果 —— "XBR 不起
-        // 作用"。现在下发真实滤镜编号，与设置页 SettingsScreen 的映射
-        // 完全一致：
-        //   0=none, 1=scanline, 2=crt, 3=dot, 4=xbr, 5=hq2x, 6=hq4x,
-        //   7=xbr+dot, 8=4xbr, 9=4xbr+dot, 10=hq4x+dot
+        // 与 3.5.2 分支保持一致（用户实测该分支"滤镜生效"）：
+        // XBR 系列请求映射到 HQ2X/HQ4X 下发。上一版曾改为下发真实滤镜
+        // 编号（"xbr"->4 走 coreshared::xbr2xUpscale），用户实测反馈
+        // XBR 效果不佳（原生 2xBR 在硬边缘存在 color bleeding——项目
+        // 历史注释同样记录了该问题，3.5.2 正是为此才做的映射），且
+        // 叠加上一轮的滤镜预算放宽问题后整体观感为"不起作用"。现在
+        // 恢复 3.5.2 的映射：
+        //   "xbr"/"xbr_dot" -> 5 (HQ2X)，"4xbr"/"4xbr_dot" -> 6 (HQ4X)
+        // 叠加类（scanline/crt/dot/_dot 的点阵部分）仍由视图层
+        // FilterOverlay 绘制，与滤镜编号无关。
         val filterInt = when (padLayout.videoFilter) {
             "scanline" -> 1
             "crt" -> 2
             "dot" -> 3
-            "xbr" -> 4
+            "xbr" -> 5      // native XBR(4) → HQ2X(5)（3.5.2 行为，避免 2xBR 色渗）
             "hq2x" -> 5
             "hq4x" -> 6
-            "xbr_dot" -> 7
-            "4xbr" -> 8
-            "4xbr_dot" -> 9
+            "xbr_dot" -> 5  // native XBR+dot(7) → HQ2X(5), dot 由 FilterOverlay 绘制
+            "4xbr" -> 6     // native 4XBR(8) → HQ4X(6)（3.5.2 行为）
+            "4xbr_dot" -> 6 // native 4XBR+dot(9) → HQ4X(6), dot 由 FilterOverlay 绘制
             "hq4x_dot" -> 10
             else -> 0
         }
@@ -3687,9 +3686,11 @@ private fun GameSurfaceView(
             // （melonDS）和画布分支（DraStic 兼容模式），DraStic 的默认
             // GL 加速显示路径完全没有绘制叠加层 —— 选任何滤镜都毫无反应。
             // 现在与 SurfaceView 分支同构：在 GL 视图之上绘制同一套
-            // FilterOverlay 图案（放大型滤镜 HQ2X/HQ4X/XBR 对 DraStic
-            // 依旧不适用 —— 那是 melonDS 原生管线的能力，见
-            // DraSticEngine.setVideoFilter 的说明）。
+            // FilterOverlay 图案。
+            // 放大型滤镜（HQ2X/HQ4X/XBR）由 DraSticGlView 内部实现：取帧
+            // 后经 NdsNative.applyUpscaleFilter 做 CPU 放大并自行上传纹理
+            // （见 DraSticGlView.renderFilteredFrame）；_dot 变体的点阵部分
+            // 仍由这里的 FilterOverlay 叠加。
             if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot")) {
                 FilterOverlay(
                     if (videoFilter.endsWith("_dot")) "dot" else videoFilter,

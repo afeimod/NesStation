@@ -14,6 +14,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import com.dsemu.drastic.DraSticJNI
 import com.nesstation.app.core.engine.DraSticEngine
+import com.nesstation.app.core.jni.NdsNative
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -144,6 +145,22 @@ class DraSticGlView @JvmOverloads constructor(
         .order(ByteOrder.nativeOrder())
         .asFloatBuffer()
 
+    // ---- 放大滤镜路径（XBR / HQX，全局滤镜在激烈核心的实现） ----
+    // 激烈核心是预编译 .so，renderFrame 只会"原样上传帧池 + glDrawArrays"，
+    // 没有滤镜能力。放大型全局滤镜（HQ2X/HQ4X 等）由本视图实现：
+    //   渲染线程照常搬运 frameBuffer（256×384，上屏在前）→ GL 线程取帧、
+    //   调 NdsNative.applyUpscaleFilter（与 melonDS surface 路径同一套
+    //   coreshared 滤镜实现）→ 自行 glTexSubImage2D 上传 → 自绘 12 顶点。
+    // 该模式下引擎的 glDisplayActive 置 false，让渲染线程保持帧搬运。
+    private val srcFrame = IntArray(256 * 384)
+    private val srcTop = IntArray(256 * 192)
+    private val srcBottom = IntArray(256 * 192)
+
+    /** 滤镜输出直接缓冲（4x 上限 1024×768×4 = 3MB）。 */
+    private val filterOutBuf: ByteBuffer = ByteBuffer
+        .allocateDirect(1024 * 768 * 4)
+        .order(ByteOrder.nativeOrder())
+
     init {
         holder.addCallback(this)
         // GLSurfaceView 的合成类型：不与系统 UI 混合时更高效
@@ -201,8 +218,9 @@ class DraSticGlView @JvmOverloads constructor(
                 Log.e(TAG, "GL thread died", t)
                 view.post { onGlFailed?.invoke() }
             } finally {
-                // 释放 GL 帧消费接管（画布路径恢复帧搬运）
+                // 释放 GL 帧消费接管（画布路径恢复帧搬运 + 画布滤镜）
                 engine?.glDisplayActive = false
+                engine?.filteredGlActive = false
                 glReleaseResources()
                 glReleaseEgl()
                 glThreadRunning.set(false)
@@ -364,13 +382,33 @@ class DraSticGlView @JvmOverloads constructor(
         return sh
     }
 
+    /** 平滑/最近邻纹理过滤（NPOT 纹理只允许非 mipmap 过滤）。 */
+    private fun applyTexFilter() {
+        val f = if (smoothFilter) GLES20.GL_LINEAR else GLES20.GL_NEAREST
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, f)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, f)
+    }
+
+    /** 全局滤镜的显示档：0=原生 renderFrame；2=2x 放大滤镜；4=4x 放大滤镜。 */
+    private fun filterClass(filter: Int): Int = when {
+        filter == 4 || filter == 5 || filter == 7 -> 2
+        filter == 6 || filter == 8 || filter == 9 || filter == 10 -> 4
+        else -> 0
+    }
+
     /** 按引擎会话快照（activeHdRender）分配两张屏幕纹理。
      * 恒为 32 位 GL_RGBA/UNSIGNED_BYTE（与原生 32 位上传常量一致；
      * 16 位格式不提供 —— 其 REV 类型组合非 ES 核心合法）。 */
     private fun allocTextures(eng: DraSticEngine) {
         val hd = eng.activeHdRender
-        texW = if (hd) SCREEN_W_2X else SCREEN_W_1X
-        texH = if (hd) SCREEN_H_2X else SCREEN_H_1X
+        allocTextures(if (hd) SCREEN_W_2X else SCREEN_W_1X,
+                      if (hd) SCREEN_H_2X else SCREEN_H_1X)
+    }
+
+    /** 按显式尺寸分配两张屏幕纹理（滤镜档切换时纹理随放大倍数变化）。 */
+    private fun allocTextures(w: Int, h: Int) {
+        texW = w
+        texH = h
         for (tex in intArrayOf(texTop, texBottom)) {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
@@ -384,13 +422,6 @@ class DraSticGlView @JvmOverloads constructor(
             )
         }
         GLES20.glGetError() // 清理可能的分配错误残留
-    }
-
-    /** 平滑/最近邻纹理过滤（NPOT 纹理只允许非 mipmap 过滤）。 */
-    private fun applyTexFilter() {
-        val f = if (smoothFilter) GLES20.GL_LINEAR else GLES20.GL_NEAREST
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, f)
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, f)
     }
 
     // ------------------------------------------------------------------
@@ -408,6 +439,9 @@ class DraSticGlView @JvmOverloads constructor(
         // 清掉，之后纹理内容永远不再更新（画面停在切换前的最后一帧 /
         // 黑屏）。现在跟踪引擎的 HD 快照，档位变化即重建纹理。
         var lastTexHd = false
+        // 全局滤镜显示档（0=原生 renderFrame / 2=2x 放大 / 4=4x 放大）。
+        // 放大档位由 eng.activeVideoFilter 驱动，可游戏运行中热切换。
+        var lastFilterClass = -1
 
         while (glThreadRunning.get() && surfaceReady.get()) {
             val eng = engine
@@ -417,21 +451,39 @@ class DraSticGlView @JvmOverloads constructor(
                 swap()
                 Thread.sleep(50)
                 sessionLoaded = false
+                lastFilterClass = -1
                 continue
             }
+
+            // 当前滤镜档（每帧读取，支持游戏运行中热切换全局滤镜）
+            val filter = eng.activeVideoFilter
+            val fClass = filterClass(filter)
 
             // 会话首帧：按引擎在 loadRom 时的快照分配纹理，并接管帧消费
             // （渲染消费线程停止 CPU 帧拷贝）。
             if (!sessionLoaded) {
-                allocTextures(eng)
                 lastTexHd = eng.activeHdRender
-                eng.glDisplayActive = true
                 sessionLoaded = true
                 lastSmooth = smoothFilter
                 layoutDirty = true
             }
-            // 高清渲染档位热切换：重建两张屏幕纹理到新分辨率
-            if (eng.activeHdRender != lastTexHd) {
+            // 显示档切换（滤镜类变化 或 原生档下的 HD 档位变化）：重建纹理。
+            // 放大滤镜路径的纹理尺寸由滤镜倍数决定（与 HD 快照无关——源帧
+            // 经 getScreenBuffers 恒为 256×192），原生路径沿用 HD 快照。
+            if (fClass != lastFilterClass) {
+                when (fClass) {
+                    2 -> allocTextures(SCREEN_W_2X, SCREEN_H_2X)      // 512×384
+                    4 -> allocTextures(SCREEN_W_2X * 2, SCREEN_H_2X * 2) // 1024×768
+                    else -> allocTextures(eng)                        // 原生：1x/2x 按 HD 快照
+                }
+                // 放大滤镜路径需要渲染线程持续搬运帧（frameBuffer）供 GL
+                // 线程取帧滤镜（且不做画布滤镜替换）；原生路径由 renderFrame
+                // 直消费帧池（跳过约 500KB/帧的 CPU 拷贝）。
+                eng.glDisplayActive = (fClass == 0)
+                eng.filteredGlActive = (fClass != 0)
+                lastFilterClass = fClass
+                layoutDirty = true
+            } else if (fClass == 0 && eng.activeHdRender != lastTexHd) {
                 allocTextures(eng)
                 lastTexHd = eng.activeHdRender
                 layoutDirty = true
@@ -460,15 +512,68 @@ class DraSticGlView @JvmOverloads constructor(
 
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
-            // 原生上传 + 绘制（互斥锁保护帧池；脏标记控制上传频度）
-            try {
-                DraSticJNI.renderFrame(texTop, texBottom, false)
-            } catch (t: Throwable) {
-                Log.w(TAG, "renderFrame failed", t)
+            if (fClass == 0) {
+                // 原生上传 + 绘制（互斥锁保护帧池；脏标记控制上传频度）
+                try {
+                    DraSticJNI.renderFrame(texTop, texBottom, false)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "renderFrame failed", t)
+                }
+            } else {
+                // 放大滤镜路径：CPU 滤镜两屏 + 自行上传纹理 + 自绘
+                renderFilteredFrame(eng, filter)
             }
 
             if (!swap()) break
         }
+    }
+
+    /**
+     * 放大滤镜帧路径：取渲染线程搬运的 frameBuffer（256×384，上屏在前），
+     * 上/下屏分别经 NdsNative.applyUpscaleFilter 做 CPU 放大（与 melonDS
+     * surface 路径同一套 coreshared 实现），以 RGBA8888 上传到 2x/4x 纹理，
+     * 再按现有 12 顶点契约自绘。取帧用 frameStamp 前后校验，恰逢渲染线程
+     * 覆盖时跳过本帧上传（只重绘既有纹理，避免撕裂）。
+     */
+    private fun renderFilteredFrame(eng: DraSticEngine, filter: Int) {
+        var coherent = false
+        var attempt = 0
+        while (!coherent && attempt < 2) {
+            val stamp = eng.frameStamp()
+            System.arraycopy(eng.frameBuffer, 0, srcFrame, 0, srcFrame.size)
+            coherent = eng.frameStamp() == stamp
+            attempt++
+        }
+        if (!coherent) return
+
+        System.arraycopy(srcFrame, 0, srcTop, 0, srcTop.size)
+        System.arraycopy(srcFrame, srcTop.size, srcBottom, 0, srcBottom.size)
+
+        val tw = texW
+        val th = texH
+        uploadFiltered(texTop, filter, srcTop, tw, th)
+        uploadFiltered(texBottom, filter, srcBottom, tw, th)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 12)
+    }
+
+    /** 单屏滤镜 + 上传：成功返回 true。滤镜调用失败（返回 0）时跳过。 */
+    private fun uploadFiltered(tex: Int, filter: Int, src: IntArray, tw: Int, th: Int): Boolean {
+        val n = try {
+            NdsNative.applyUpscaleFilter(filter, src, SCREEN_W_1X, SCREEN_H_1X, filterOutBuf)
+        } catch (t: Throwable) {
+            Log.w(TAG, "applyUpscaleFilter failed", t)
+            0
+        }
+        if (n <= 0) return false
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
+        filterOutBuf.position(0)
+        filterOutBuf.limit(n)
+        GLES20.glTexSubImage2D(
+            GLES20.GL_TEXTURE_2D, 0, 0, 0, tw, th,
+            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, filterOutBuf
+        )
+        return true
     }
 
     private fun swap(): Boolean {

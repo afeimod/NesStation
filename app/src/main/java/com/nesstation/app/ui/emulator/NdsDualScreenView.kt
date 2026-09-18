@@ -100,8 +100,9 @@ internal object NdsFilterPatterns {
  *     surface 时滤镜结果写入 s_filteredFrame，Kotlin 端通过
  *     [NdsCoreEngine.frameBuffer] / [NdsCoreEngine.filteredVideoWidth] 拉取放大后的
  *     合成帧，切片比例不变（2x/4x 等比放大），绘制路径完全一致。
- *     （DraStic 引擎不支持放大型滤镜 —— frameBuffer 恒为 256x384 原生帧，
- *     叠加型滤镜 scanline/crt/dot 仍在本视图绘制。）
+ *     （DraStic 引擎：渲染线程经 NdsNative.applyUpscaleFilterArgb 把
+ *     frameBuffer 替换为放大后的合成帧，行为与 melonDS 一致；叠加型滤镜
+ *     scanline/crt/dot 同样在本视图绘制。）
  * - 触摸（官方 melonDS 架构）：触点位于下屏目标矩形内时，直接把触点线性
  *   映射为 DS 下屏像素坐标 (0..255, 0..191) 并调用 [NdsCoreEngine.setTouchInputDirect]。
  *   不再经过"合成帧归一化坐标"的间接层 —— 自由布局 / 屏幕间距 / GL gap /

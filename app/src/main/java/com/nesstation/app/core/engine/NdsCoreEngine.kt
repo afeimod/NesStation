@@ -15,9 +15,10 @@ package com.nesstation.app.core.engine
  *    下屏 256×192 在后的合成帧）按布局切片绘制，经 [frameStamp] 帧号节流，
  *    尺寸经 [filteredVideoWidth] / [filteredVideoHeight] 查询。
  *
- * [NdsEngine.frameBuffer] 在放大滤镜（HQ2X/HQ4X）时返回放大后的合成帧；
- * [DraSticEngine.frameBuffer] 恒为 256×384 原生合成帧（DraStic 无放大型
- * 原生滤镜，叠加型滤镜 scanline/crt/dot 仍由视图层绘制）。
+ * [NdsEngine.frameBuffer] 与 [DraSticEngine.frameBuffer] 在放大滤镜
+ * （HQ2X/HQ4X/XBR）激活时均返回放大后的合成帧（melonDS 在原生 cb_video
+ * 中处理；DraStic 由渲染线程经 NdsNative.applyUpscaleFilterArgb 处理），
+ * 尺寸以 [filteredVideoWidth] / [filteredVideoHeight] 为准。
  */
 interface NdsCoreEngine : EmulatorEngine {
 

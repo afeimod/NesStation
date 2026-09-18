@@ -183,4 +183,32 @@ object NdsNative {
 
     /** Check whether the melonDS libretro wrapper is available (always true when statically linked). */
     @JvmStatic external fun isCoreLibLoaded(): Boolean
+
+    /**
+     * 对一帧 w×h 的 0xAARRGGBB int 像素（[src]）执行与 melonDS surface
+     * 路径相同的 CPU 放大滤镜（[filter]），把输出（2x 或 4x）以 RGBA8888
+     * 字节序写入直接缓冲 [dst]，返回写入的字节数。
+     *
+     * 供 DraSticGlView 在激烈核心 GL 显示路径实现全局放大滤镜使用：
+     * 激烈核心是预编译 .so，renderFrame 只会原样上传帧池，放大滤镜由
+     * Kotlin 侧取帧后经本函数处理再自行上传纹理。
+     *
+     * filter 取值：4=xbr(2x) 5=hq2x(2x) 7=xbr+dot(2x) 6=hq4x(4x)
+     * 8=4xbr(4x) 9=4xbr+dot(4x) 10=hq4x+dot(4x)；其余返回 0。
+     * [dst] 容量须 ≥ w*h*(2x→16 / 4x→64) 字节（256×192 源 4x 时最大
+     * 1024×768×4 = 3MB）。
+     */
+    @JvmStatic external fun applyUpscaleFilter(
+        filter: Int, src: IntArray, w: Int, h: Int, dst: java.nio.ByteBuffer
+    ): Int
+
+    /**
+     * [applyUpscaleFilter] 的画布路径变体：滤镜输出保持 0xAARRGGBB int
+     * 格式，直接写入 [dst] 的 [dstOffset] 像素偏移处，返回写入的像素数。
+     * 供 DraSticEngine 渲染线程在画布回退路径合成放大后的 frameBuffer。
+     * filter 取值与失败语义同上。
+     */
+    @JvmStatic external fun applyUpscaleFilterArgb(
+        filter: Int, src: IntArray, w: Int, h: Int, dst: IntArray, dstOffset: Int
+    ): Int
 }

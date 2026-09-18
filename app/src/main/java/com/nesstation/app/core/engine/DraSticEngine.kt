@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.dsemu.drastic.DraSticJNI
 import com.dsemu.drastic.filesystem.DraSticPathCache
+import com.nesstation.app.core.jni.NdsNative
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -307,6 +308,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     private val topBuf = IntArray(256 * 192)
     private val bottomBuf = IntArray(256 * 192)
 
+    /** 原始合成帧（恒 256×384，上屏在前）：截图/存档缩略图的数据源，
+     * 与可能被放大滤镜替换掉的 [frameBuffer]（画布呈现帧）分离。 */
+    private val rawComposite = IntArray(256 * 384)
+
     private val running = AtomicBoolean(false)
     private var renderThread: Thread? = null
 
@@ -464,6 +469,13 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
      * 仅维持帧计数与就绪握手；截图改由 captureFrame 直接拉取。 */
     @Volatile
     var glDisplayActive: Boolean = false
+
+    /** GL 放大滤镜显示路径已接管（DraSticGlView 置位，与 glDisplayActive
+     * 互斥）：渲染消费线程照常搬运原始帧到 frameBuffer（GL 线程要拿去
+     * 滤镜），但【不做】画布路径的滤镜/尺寸替换 —— frameBuffer 保持
+     * 原始 256×384。 */
+    @Volatile
+    var filteredGlActive: Boolean = false
 
     /** 用会话快照 + 快进状态打包完整 config（热更新用，保证分辨率位
      *  与当前会话的原生状态一致）。 */
@@ -774,12 +786,55 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                     if (paused) continue
 
                     if (!glDisplayActive) {
-                        // 画布路径：搬运帧到 frameBuffer（截图/存档缩略图用）。
-                        // GL 路径：跳过约 500KB/帧的 CPU 拷贝，GL 线程直接消费帧池。
+                        // 渲染线程帧搬运：
+                        //  · filteredGlActive（GL 放大滤镜路径）：只搬原始帧，
+                        //    frameBuffer 恒 256×384，GL 线程取去滤镜；
+                        //  · 画布路径 + 放大滤镜：frameBuffer 指向放大后的合成帧，
+                        //    NdsDualScreenView 按 filteredVideoWidth/Height 切片
+                        //    绘制（与 melonDS 自由布局的滤镜路径同构）；先切换
+                        //    frameBuffer 引用再更新尺寸，视图侧 fb.size < vw*vh
+                        //    的守卫可安全吸收一帧的中间态。
+                        //  · 画布路径 + 无放大滤镜：搬原始帧（截图/存档缩略图用）。
                         DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
-                        // 合成：上屏在前、下屏在后（256×384）
-                        System.arraycopy(topBuf, 0, frameBuffer, 0, topBuf.size)
-                        System.arraycopy(bottomBuf, 0, frameBuffer, topBuf.size, bottomBuf.size)
+                        // 原始合成帧（上屏在前、下屏在后，256×384）——截图恒用原始帧
+                        System.arraycopy(topBuf, 0, rawComposite, 0, topBuf.size)
+                        System.arraycopy(bottomBuf, 0, rawComposite, topBuf.size, bottomBuf.size)
+                        val f = activeVideoFilter
+                        val canvasFilter = !filteredGlActive && isUpscaleFilter(f)
+                        if (canvasFilter) {
+                            val scale = if (f == 6 || f == 8 || f == 9 || f == 10) 4 else 2
+                            val fw = 256 * scale
+                            val fh = 384 * scale
+                            val half = fw * fh / 2
+                            if (frameBuffer.size < fw * fh) frameBuffer = IntArray(fw * fh)
+                            val fb = frameBuffer
+                            val nTop = try {
+                                NdsNative.applyUpscaleFilterArgb(f, topBuf, 256, 192, fb, 0)
+                            } catch (e: Throwable) {
+                                android.util.Log.w(TAG, "canvas filter(top) failed", e); 0
+                            }
+                            if (nTop > 0) {
+                                try {
+                                    NdsNative.applyUpscaleFilterArgb(f, bottomBuf, 256, 192, fb, half)
+                                } catch (e: Throwable) {
+                                    android.util.Log.w(TAG, "canvas filter(bottom) failed", e)
+                                    System.arraycopy(rawComposite, 0, fb, 0, 256 * 384)
+                                    displayW = 256; displayH = 384
+                                    frameCount++
+                                    onFrame()
+                                    continue
+                                }
+                                displayW = fw; displayH = fh
+                            } else {
+                                // 滤镜失败（不应发生）→ 回落原始帧
+                                System.arraycopy(rawComposite, 0, fb, 0, 256 * 384)
+                                displayW = 256; displayH = 384
+                            }
+                        } else {
+                            if (frameBuffer.size < 256 * 384) frameBuffer = IntArray(256 * 384)
+                            System.arraycopy(rawComposite, 0, frameBuffer, 0, 256 * 384)
+                            displayW = 256; displayH = 384
+                        }
                     }
                     frameCount++
                     onFrame()
@@ -1134,9 +1189,19 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     override fun frameStamp(): Long = frameCount
 
-    override fun filteredVideoWidth(): Int = 256
+    /**
+     * 画布回退路径当前呈现的合成帧尺寸：无放大滤镜时为原生 256×384；
+     * 放大类滤镜激活时为放大后的合成帧（2x → 512×768，4x → 1024×1536），
+     * 与 [frameBuffer] 内容一致（渲染线程在画布模式下填充）。
+     */
+    @Volatile
+    private var displayW: Int = 256
+    @Volatile
+    private var displayH: Int = 384
 
-    override fun filteredVideoHeight(): Int = 384
+    override fun filteredVideoWidth(): Int = displayW
+
+    override fun filteredVideoHeight(): Int = displayH
 
     override fun videoWidth(): Int = 256
 
@@ -1298,9 +1363,29 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         }
     }
 
+    /**
+     * 当前全局滤镜编号（EmulatorScreen 经 EmulatorEngine.setVideoFilter 下发，
+     * 与 melonDS 共用同一套编号）：
+     *   0=none, 1=scanline, 2=crt, 3=dot, 4=xbr(2x), 5=hq2x, 6=hq4x,
+     *   7=xbr+dot(2x), 8=4xbr(4x), 9=4xbr+dot(4x), 10=hq4x+dot(4x)
+     *
+     * - 叠加类（1/2/3）由视图层 FilterOverlay 绘制（melonDS 与 DraStic 通用）；
+     * - 放大类（4..10）由 [DraSticGlView] 消费：取 frameBuffer 后经
+     *   NdsNative.applyUpscaleFilter 做与 melonDS 相同的 CPU 放大，再自行
+     *   上传纹理绘制（核心预编译 .so 无滤镜能力，显示层补齐）。
+     * 可游戏运行中热切换，GL 视图每帧读取。
+     */
+    @Volatile
+    var activeVideoFilter: Int = 0
+        private set
+
+    /** 放大类滤镜（2x：4/5/7；4x：6/8/9/10）。 */
+    fun isUpscaleFilter(filter: Int = activeVideoFilter): Boolean =
+        filter == 4 || filter == 5 || filter == 7 ||
+        filter == 6 || filter == 8 || filter == 9 || filter == 10
+
     override fun setVideoFilter(filter: Int) {
-        // 叠加型滤镜（scanline/crt/dot）由 NdsDualScreenView 视图层绘制；
-        // 放大型（HQ2X 等）为 melonDS 原生特性，DraStic 不支持，忽略
+        activeVideoFilter = filter
     }
 
     override fun setHighQualityScaling(enabled: Boolean) {
@@ -1337,7 +1422,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 System.arraycopy(bottom, 0, out, top.size, bottom.size)
                 FrameCapture(out, 256, 384)
             } else {
-                FrameCapture(frameBuffer.copyOf(), 256, 384)
+                // 画布路径：截取原始 256×384 合成帧（rawComposite 恒为原始
+                // 帧；frameBuffer 在放大滤镜激活时是放大后的呈现帧，尺寸
+                // 与截图规格不符，不用它）
+                FrameCapture(rawComposite.copyOf(), 256, 384)
             }
         } catch (e: Throwable) {
             null
