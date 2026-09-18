@@ -639,6 +639,7 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../melonds" "${CMAKE_BINARY_DIR}/m
 set(NDS_JNI_SOURCES
     "${APP_JNI_DIR}/nds_bridge.cpp"
     "${APP_JNI_DIR}/nds_loader.cpp"
+    "${APP_JNI_DIR}/drastic_frames.cpp"
     ${HQX_SOURCES}
 )
 
@@ -673,11 +674,13 @@ target_compile_options(ndscore PRIVATE
 
 # Link the melonDS static library. The melonds-core target brings in
 # EGL + GLESv2 + log + android transitively through its PUBLIC link
-# dependencies. `dl` is no longer needed since we no longer dlopen.
+# dependencies. `dl` is needed by drastic_frames.cpp (dlopen RTLD_NOLOAD /
+# dladdr 定位预编译 libdrastic 的帧池基址).
 target_link_libraries(ndscore
     melonds-core
     log
     android
+    dl
 )
 
 # ---------------------------------------------------------------------------

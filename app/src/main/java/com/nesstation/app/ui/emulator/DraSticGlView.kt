@@ -455,15 +455,9 @@ class DraSticGlView @JvmOverloads constructor(
                 continue
             }
 
-            // 当前滤镜档（每帧读取，支持游戏运行中热切换全局滤镜）。
-            // ★ 安全网（滤镜优先策略的兜底）：引擎侧已在 loadRom 拍会话
-            // 快照时实现"滤镜优先" —— 放大滤镜（xBR/HQx）激活则
-            // activeHdRender 强制为 false，滤镜管线正常取 1x 帧工作。
-            // 这里保留退避仅防边界态：运行中热改滤镜编号时 HD 位无法
-            // 热切换（applyConfig 不调 setResolution），本会话仍是高清
-            // 帧池，此时退回原生路径显示，绝不取错乱帧。
+            // 当前滤镜档（每帧读取，支持游戏运行中热切换全局滤镜）
             val filter = eng.activeVideoFilter
-            val fClass = if (eng.activeHdRender) 0 else filterClass(filter)
+            val fClass = filterClass(filter)
 
             // 会话首帧：按引擎在 loadRom 时的快照分配纹理，并接管帧消费
             // （渲染消费线程停止 CPU 帧拷贝）。
@@ -557,15 +551,10 @@ class DraSticGlView @JvmOverloads constructor(
 
         val tw = texW
         val th = texH
-        // ★ 双屏同画 bug 修复：旧实现先上传两张纹理，再一次性
-        // glDrawArrays(0, 12) —— 单次 draw 的所有顶点共用【最后绑定的】
-        // 纹理（texBottom），导致上下两屏都画出下屏画面。原生 renderFrame
-        // 的契约是每屏 "bind → draw(6)" 分两次调用（反汇编 0x1ceac 验证：
-        // first=0/6 各一次 count=6），这里严格对齐。
         uploadFiltered(texTop, filter, srcTop, tw, th)
-        drawScreen(0, texTop)
         uploadFiltered(texBottom, filter, srcBottom, tw, th)
-        drawScreen(6, texBottom)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 12)
     }
 
     /** 单屏滤镜 + 上传：成功返回 true。滤镜调用失败（返回 0）时跳过。 */
@@ -585,14 +574,6 @@ class DraSticGlView @JvmOverloads constructor(
             GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, filterOutBuf
         )
         return true
-    }
-
-    /** 绘制单个屏幕的四边形（6 顶点）。原生 renderFrame 契约：
-     * 每屏 "glBindTexture → glDrawArrays(GL_TRIANGLES, first, 6)" ——
-     * 一次 draw 只能消费一个绑定纹理，双屏必须分两次 draw。 */
-    private fun drawScreen(first: Int, tex: Int) {
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, first, 6)
     }
 
     private fun swap(): Boolean {

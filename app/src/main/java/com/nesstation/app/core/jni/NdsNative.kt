@@ -211,4 +211,26 @@ object NdsNative {
     @JvmStatic external fun applyUpscaleFilterArgb(
         filter: Int, src: IntArray, w: Int, h: Int, dst: IntArray, dstOffset: Int
     ): Int
+
+    /**
+     * DraStic（激烈）帧一致性读取（libndscore 对预编译 libdrastic*.so 的补充
+     * 通道，见 core/jni/drastic_frames.cpp）：
+     *
+     * 拉取【刚完成的帧】（原生 renderFrame 同款语义：读帧池"另一档"缓冲，
+     * 而不是原生 getScreenBuffers 的"当前写入档"）—— 修复画布路径读取写入中
+     * 缓冲导致的撕裂 / 多线程 3D 渲染时"上下屏部分贴图错乱"。
+     *
+     * 同时返回帧池的【真实分辨率】（高清渲染 bit41 开启时为 512×384/屏，
+     * 而原生 getScreenBuffers 在 HD 下只返回 2:1 抽取降采样的 256×192），
+     * 画布路径由此完整呈现 HD 帧的分辨率增益。
+     *
+     * @param top    上屏输出（需 ≥ w*h int；调用方按 512×384 上限分配）
+     * @param bottom 下屏输出（同上）
+     * @param outDims 输出 {topW, topH, bottomW, bottomH}
+     * @return false = 校验失败（核心未启动 / 16 位渲染 / 档位异常 /
+     *         一致性校验未通过），调用方应回落原生 getScreenBuffers。
+     */
+    @JvmStatic external fun drasticGetCompletedFrames(
+        top: IntArray, bottom: IntArray, outDims: IntArray
+    ): Boolean
 }

@@ -1364,6 +1364,30 @@ object PadLayoutStore {
     private fun prefs(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    // =========================================================================
+    // 全局存档方式 —— 专用读写通道（脱离 PadLayout 整体存取）
+    // -------------------------------------------------------------------------
+    // 【为什么单独存取】总设置页与游戏会话各自持有 PadLayout 内存副本并整体
+    // 回写 SharedPreferences（会话侧还有 400ms 防抖）。任何一方的【陈旧副本】
+    // 落盘都会把 global_save_mode 一起写回旧值 —— 这正是"存档方式有时保存
+    // 不上 / 被重置回统一存档目录"的根因。现在：
+    //   · 唯一写入口 = [setGlobalSaveMode]（UI 改动即时落盘，不等防抖）；
+    //   · [save] 不再回写 global_save_mode（陈旧副本无法覆盖）；
+    //   · 存档路径解析处用 [getGlobalSaveMode] 读权威值。
+    // =========================================================================
+
+    /** 读取全局存档方式（权威值，实时读盘）：nesstation | core_builtin。 */
+    fun getGlobalSaveMode(ctx: Context): String =
+        prefs(ctx).getString("global_save_mode", null)
+            ?: prefs(ctx).getString("nds_save_mode", null)
+            ?: "nesstation"
+
+    /** 写入全局存档方式（即时落盘；全应用唯一写入口）。 */
+    fun setGlobalSaveMode(ctx: Context, mode: String) {
+        if (mode != "nesstation" && mode != "core_builtin") return
+        prefs(ctx).edit().putString("global_save_mode", mode).apply()
+    }
+
     // Helper: load a ButtonLayout from SharedPreferences with a default fallback.
     // Uses key prefix "<prefix>_x" / "<prefix>_y" / "<prefix>_size".
     private fun loadBtn(p: SharedPreferences, prefix: String, default: ButtonLayout): ButtonLayout {
@@ -2378,7 +2402,8 @@ object PadLayoutStore {
             putString("nds_jit_enable", layout.ndsJitEnable)
             putString("nds_audio_interpolation", layout.ndsAudioInterpolation)
             putString("nds_use_fw_settings", layout.ndsUseFwSettings)
-            putString("nds_save_mode", layout.ndsSaveMode)   // legacy (NDS-only), 迁移到 global_save_mode
+            // legacy nds_save_mode 不再写入（保留磁盘上的旧值作迁移回退源）：
+            // 权威键 = global_save_mode，经 setGlobalSaveMode/getGlobalSaveMode 读写。
             putString("nds_drastic_volume", layout.ndsDrasticVolume)   // DraStic（激烈）核心
             putString("nds_drastic_sound", layout.ndsDrasticSound)
             putString("nds_drastic_hd_render", layout.ndsDrasticHdRender)
@@ -2408,7 +2433,11 @@ object PadLayoutStore {
             putString("nds_drastic_save_format", layout.ndsDrasticSaveFormat)
             putString("nds_drastic_smooth_filter", layout.ndsDrasticSmoothFilter)
             putString("nds_drastic_display_mode", layout.ndsDrasticDisplayMode)
-            putString("global_save_mode", layout.globalSaveMode)
+            // global_save_mode / nds_save_mode 不再随 PadLayout 整体回写：
+            // 两处 UI（总设置 + 游戏内快捷菜单）各持内存副本，整体回写会让
+            // 陈旧副本覆盖用户刚改的存档方式。改经 PadLayoutStore
+            // .setGlobalSaveMode() 即时写入（全应用唯一写入口），读取用
+            // .getGlobalSaveMode()。
             // === 主页个性化 ===
             putString("home_bg_uri", layout.homeBackgroundUri)
             putBoolean("home_bg_is_video", layout.homeBackgroundIsVideo)
