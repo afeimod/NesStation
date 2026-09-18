@@ -180,7 +180,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
          *  bit47 = 安全跳帧（_FrameskipSafe，默认关）
          *  bit48 = 预解压 ROM 到内存（_PreloadRoms，默认关）
          *  bit49 = 混合渲染（_Blend，默认关）
-         *  bit50 = 存档格式（_RawSavFormat：0=.sav 带头 1=.dsv，默认 .sav）
+         *  bit50 = 存档格式（_RawSavFormat：0=.dsv 带头格式（原生默认）
+         *          1=裸 .sav。★ 反汇编实锤（0x75740：csel x3, .dsv, .sav, eq）
+         *          —— 字段==0 → ".dsv" 备份名，非 0 → ".sav"；本工程默认置 1
+         *          （裸 .sav，与 melonDS 互通））
          *  bit 4 / 10-11 / 20-22 / 33-34 高位 / 51-63 = 恒 0（原版同）
          */
         private fun packConfig(
@@ -210,7 +213,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             frameskipSafe: Boolean = false,
             preloadRoms: Boolean = false,
             blend: Boolean = false,
-            saveDsv: Boolean = false
+            saveRawSav: Boolean = true
         ): Long {
             var cfg = (frameskipValue.coerceIn(0, 15).toLong()) or          // bits 0-3
                 ((frameskipType.coerceIn(0, 7).toLong()) shl 5) or          // bits 5-7
@@ -238,7 +241,12 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             if (frameskipSafe) cfg = cfg or (1L shl 47)
             if (preloadRoms) cfg = cfg or (1L shl 48)
             if (blend) cfg = cfg or (1L shl 49)
-            if (saveDsv) cfg = cfg or (1L shl 50)
+            // bit50 = _RawSavFormat：置位 = 裸 .sav（与 melonDS 互通）；
+            // 清零 = .dsv（DeSmuME 带头格式，原生默认）。反汇编 0x75768
+            // (csel x3, x12=.dsv, x11=.sav, eq) 实锤：0 → .dsv，非 0 → .sav。
+            // ★ 旧实现把 "dsv" 映射到 bit50=1 —— 与原生语义恰好相反，
+            // 导致存档格式设置永远与用户选择相反（“总变回默认”根因）。
+            if (saveRawSav) cfg = cfg or (1L shl 50)
             return cfg
         }
 
@@ -436,9 +444,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     @Volatile
     var optShowFps: Boolean = false
 
-    /** 存档格式 .dsv（bit50，_RawSavFormat）；false = 裸 .sav。 */
+    /** 存档格式：true = 裸 .sav（bit50 置位，与 melonDS 互通，默认）；
+     * false = .dsv（DeSmuME 带头格式）。★ 极性已反汇编修正。 */
     @Volatile
-    var optSaveDsv: Boolean = false
+    var optSaveRawSav: Boolean = true
 
     /** 模拟线程数：0=自动（按核数 1/2/3），1-8=强制（原版 threads.cfg 语义）。 */
     @Volatile
@@ -506,7 +515,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         frameskipSafe = optFrameskipSafe,
         preloadRoms = optPreloadRoms,
         blend = false,
-        saveDsv = optSaveDsv
+        saveRawSav = optSaveRawSav
     )
 
     /** GL 显示失败回退画布时调用：立即把原生渲染分辨率降回 1x（bit41=0），
@@ -734,6 +743,27 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             rom
         }
         romFileBase = effectiveRom.nameWithoutExtension
+
+        // === 存档互通（与 melonDS 共用同一份裸 .sav，用户要求“默认互通”）===
+        // 路径：
+        //   激烈侧  <filesDir>/drastic/user/backup/<ROM基名>.sav —— 原生备份
+        //           目录（反汇编格式串 "%s%cbackup%c%s.sav" @0x10ede4）；
+        //   共享侧  <saveDir>/<setSaveName 或 ROM基名>.sav —— melonDS 写 .sav
+        //           的同一位置（nesstation 模式 = saves/<gameId>.sav；
+        //           core_builtin 模式 = ROM 同目录同名，兼容官方 melonDS APK）。
+        // bit50 极性修正后激烈默认写裸 .sav（与 melonDS 同格式），会话边界
+        // 做时间戳同步；旧版 .dsv（DeSmuME 带头格式）一次性迁移剥壳。
+        run {
+            val base = romFileBase ?: return@run
+            val backupDir = File(drasticRoot, "user/backup").apply { mkdirs() }
+            val drasticSav = File(backupDir, "$base.sav")
+            val sharedName = saveNameOverride?.takeIf { it.isNotBlank() } ?: base
+            val sharedSav = File(saveDir, "$sharedName.sav")
+            drasticSavFile = drasticSav
+            sharedSavFile = sharedSav
+            migrateDsvIfNeeded(drasticSav)
+            syncSaveOnLoad(sharedSav, drasticSav)
+        }
 
         // 预启动配置。ROM 以真实绝对路径传入（startGame 的路径最终会回到
         // DraSticPathCache.open —— 绝对路径分支直接解析为真实文件）
@@ -1070,8 +1100,102 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     /** 当前 ROM 的去扩展名基名（存档恢复路径构造用，loadRom 时记录）。 */
     private var romFileBase: String? = null
 
+    // ---- 存档互通（与 melonDS 共用裸 .sav）：本会话两侧的存档文件 ----
+    /** melonDS 侧共享存档（<saveDir>/<gameId>.sav）。 */
+    private var sharedSavFile: File? = null
+    /** 激烈核心备份目录的裸 .sav（drastic/user/backup/<ROM基名>.sav）。 */
+    private var drasticSavFile: File? = null
+
     /** NesStation 传来的每游戏存档名（content:// temp_rom 缓解用）。 */
     private var saveNameOverride: String? = null
+
+    /** 旧版 .dsv（DeSmuME 兼容带头格式）一次性迁移为裸 .sav。
+     * .dsv 布局（反汇编 DraStic 写入器 0x785f8 实锤）：
+     *   [0x50 字节说明文本][版本字段][标志位] "|-DESMUME SAVE-|\\0" <原始存档>
+     *   ["|<--Snip above here ... savedata footer:" 行]
+     * 即原始存档紧随 15 字符标记 + 1 个 NUL 终止符（写入器按 16 字节
+     * 一次性写入）；DeSmuME 写入器则在标记后直接跟换行。头部之后多出的
+     * 尾部字节对读取端无害（按芯片容量取前缀），故尾部不做修剪。
+     * */
+    private fun migrateDsvIfNeeded(drasticSav: File) {
+        if (drasticSav.isFile && drasticSav.length() > 0) return
+        val dsv = File(drasticSav.parentFile, "${drasticSav.nameWithoutExtension}.dsv")
+        if (!dsv.isFile || dsv.length() == 0L) return
+        try {
+            val data = dsv.readBytes()
+            val marker = "|-DESMUME SAVE-|".toByteArray(Charsets.US_ASCII)
+            val footer = ("|<--Snip above here to create a raw sav by excluding " +
+                "this DeSmuME savedata footer").toByteArray(Charsets.US_ASCII)
+            val s = indexOfBytes(data, marker)
+            if (s < 0) return
+            var start = s + marker.size
+            var end = indexOfBytes(data, footer, start)
+            if (end < 0) end = data.size
+            // DraStic 写入器：标记后是 NUL 终止符（16 字节块写入的一部分）
+            if (start < end && data[start] == 0.toByte()) {
+                start++
+            } else if (start < end && (data[start] == '\n'.code.toByte() ||
+                    data[start] == '\r'.code.toByte())) {
+                // DeSmuME 写入器：标记后是换行
+                start++
+                if (start < end && data[start - 1] == '\r'.code.toByte() &&
+                    data[start] == '\n'.code.toByte()) start++
+            }
+            if (end <= start) return
+            drasticSav.writeBytes(data.copyOfRange(start, end))
+            // 保留原 .dsv 的修改时间：互通同步按时间戳择新，迁移件
+            // 不应伪造为“最新”而压过 melonDS 侧真正的最新进度
+            drasticSav.setLastModified(dsv.lastModified())
+            android.util.Log.i(TAG, "save interop: migrated ${dsv.name} -> ${drasticSav.name} (${end - start}B)")
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "save interop: dsv migration failed", e)
+        }
+    }
+
+    private fun indexOfBytes(data: ByteArray, pat: ByteArray, from: Int = 0): Int {
+        if (pat.isEmpty() || data.size < pat.size) return -1
+        outer@ for (i in from..data.size - pat.size) {
+            for (j in pat.indices) {
+                if (data[i + j] != pat[j]) continue@outer
+            }
+            return i
+        }
+        return -1
+    }
+
+    /** 进游戏：共享侧（melonDS）较新的裸 .sav → 拷入激烈备份目录。 */
+    private fun syncSaveOnLoad(shared: File, drastic: File) {
+        try {
+            if (shared.isFile && shared.length() > 0) {
+                if (!drastic.isFile || shared.lastModified() > drastic.lastModified()) {
+                    shared.copyTo(drastic, overwrite = true)
+                    android.util.Log.i(TAG, "save interop: imported ${shared.name} -> drastic backup")
+                }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "save interop: import failed", e)
+        }
+    }
+
+    /** 退游戏：激烈备份目录较新的裸 .sav → 回写共享位置（melonDS 直接可用）。
+     * 在 cleanup 末尾（原生 quit 已刷盘、releaseSystem 完成后）调用。 */
+    private fun syncSaveOnUnload() {
+        val shared = sharedSavFile ?: return
+        val drastic = drasticSavFile ?: return
+        try {
+            if (drastic.isFile && drastic.length() > 0) {
+                if (!shared.isFile || drastic.lastModified() >= shared.lastModified()) {
+                    shared.parentFile?.mkdirs()
+                    drastic.copyTo(shared, overwrite = true)
+                    // 对齐时间戳：下次进游戏时两侧时间相等，不再重复回导
+                    shared.setLastModified(drastic.lastModified())
+                    android.util.Log.i(TAG, "save interop: exported ${drastic.name} -> shared")
+                }
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w(TAG, "save interop: export failed", e)
+        }
+    }
 
     override fun unload() = synchronized(lifecycleLock) {
         cleanup()
@@ -1158,6 +1282,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             nativePoisoned = true
             android.util.Log.e(TAG, "cleanup: drastic native threads refused to exit (emu=$emuDied render=$renderDied)")
         }
+
+        // 存档互通：原生 quit 已把备份刷盘 → 较新的裸 .sav 回写共享位置
+        // （melonDS 直接可用）。异常会话（poisoned）也尽力导出，避免丢档。
+        syncSaveOnUnload()
     }
 
     // ---- 输入（EmulatorEngine / NdsCoreEngine） ----
@@ -1242,7 +1370,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                 applyOptionsHot()
             }
             "drastic_save_format" -> {
-                optSaveDsv = value == "dsv"
+                // ★ 极性修正（反汇编 0x75768 实锤）：bit50 置位 = 裸 .sav。
+                // "sav"（默认）→ 裸 .sav，与 melonDS 同格式同命名规则 → 互通；
+                // "dsv" → .dsv 带头格式。旧实现写反，用户选什么得到相反格式。
+                optSaveRawSav = value != "dsv"
                 applyOptionsHot()
             }
             "drastic_frameskip_type" -> {

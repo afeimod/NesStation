@@ -1078,6 +1078,27 @@ fun EmulatorScreen(
                    padLayout.ndsJitBranchOptimisations, padLayout.ndsJitLiteralOptimisations,
                    padLayout.ndsAudioBitrate, padLayout.ndsMicInput, padLayout.ndsLanguage,
                    padLayout.ndsScreenGap, padLayout.ndsSwapscreenMode, padLayout.ndsHybridSmallScreen,
+                   // DraStic（激烈）专属设置 —— ★ 此前完全缺失触发键：游戏中
+                   // （含画中画模式）改任何激烈设置，applyCoreOptions 不会重新
+                   // 执行，引擎 opt* 缓存永远是旧值 → "高清渲染/多线程 3D/存档
+                   // 格式等设置不生效"。现在全部纳入监听：改动即时经
+                   // setCoreOption 下发（热生效项立即应用；bit41 高清等
+                   // startGame 项在下次进游戏生效）。
+                   padLayout.ndsDrasticVolume, padLayout.ndsDrasticSound,
+                   padLayout.ndsDrasticHdRender, padLayout.ndsDrasticDisplayMode,
+                   padLayout.ndsDrasticSmoothFilter, padLayout.ndsDrasticSaveFormat,
+                   padLayout.ndsDrasticFrameskipType, padLayout.ndsDrasticFrameskipValue,
+                   padLayout.ndsDrasticFrameskipSafe, padLayout.ndsDrasticThreaded3D,
+                   padLayout.ndsDrastic16Bit, padLayout.ndsDrasticEdgeMarking,
+                   padLayout.ndsDrasticFixMainScreen, padLayout.ndsDrasticAudioLatency,
+                   padLayout.ndsDrasticMicEnabled, padLayout.ndsDrasticMicLevel,
+                   padLayout.ndsDrasticAutofireSpeed, padLayout.ndsDrasticFfwdRate,
+                   padLayout.ndsDrasticSlot2Type, padLayout.ndsDrasticRtcSystemTime,
+                   padLayout.ndsDrasticCheatsEnabled, padLayout.ndsDrasticLuaEnabled,
+                   padLayout.ndsDrasticBackupInSavestates, padLayout.ndsDrasticIgnoreCardLimit,
+                   padLayout.ndsDrasticAutoTrim, padLayout.ndsDrasticPreloadRoms,
+                   padLayout.ndsDrasticShowFps, padLayout.ndsDrasticThreads,
+                   padLayout.ndsDrasticAutosave,
                    // PSX / PCSX-ReARMed options — keys verified against the
                    // shipped core; wrong-key entries (padNtype/cpu_clock 等) 已移除
                    padLayout.pscxBios, padLayout.pscxRegion, padLayout.pscxFrameskipType,
@@ -9425,7 +9446,7 @@ private fun SettingsPanel(
                            "enabled" to "开启 512×384 (2x 高清)"),
                     padLayout.ndsDrasticHdRender
                 ) { onLayoutChange(padLayout.copy {ndsDrasticHdRender = it}) }
-                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。",
+                Text("开启后内部分辨率翻倍，画面细节与 3D 模型边缘显著改善；需重进游戏生效。高清模式自动使用 GL 显示路径。★ 与放大滤镜（xBR/HQx）互斥：高清会话内滤镜退避。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
                 // 显示方式：GL 加速显示路径（原生 renderFrame 纹理上传 + GPU 绘制）
                 DropdownSetting("显示方式",
@@ -9557,13 +9578,13 @@ private fun SettingsPanel(
                            "900" to "15 分钟", "1800" to "30 分钟"),
                     padLayout.ndsDrasticAutosave
                 ) { onLayoutChange(padLayout.copy {ndsDrasticAutosave = it}) }
-                // 存档格式 = config bit50
+                // 存档格式 = config bit50（_RawSavFormat，极性反汇编修正）
                 DropdownSetting("存档格式",
-                    listOf("sav" to ".sav 裸格式 (兼容性最好)",
-                           "dsv" to ".dsv melonDS格式 (可互换)"),
+                    listOf("sav" to ".sav 裸格式 (默认 · 与 melonDS 互通)",
+                           "dsv" to ".dsv 带头格式 (DraStic/DeSmuME 原生)"),
                     padLayout.ndsDrasticSaveFormat
                 ) { onLayoutChange(padLayout.copy {ndsDrasticSaveFormat = it}) }
-                Text("存档格式决定 .sav 文件结构：裸格式通用于各类 NDS 模拟器；dsv 带头信息可与官方 melonDS 直接互换。切换后需重进游戏。",
+                Text("裸 .sav 与 melonDS 核心同格式：两个核心共用同一份游戏存档，切换核心进度不丢（旧 .dsv 存档进游戏时自动迁移）。切换后需重进游戏。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
             }
             GamePlatform.PSX -> {
