@@ -316,6 +316,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     private val topBuf = IntArray(256 * 192)
     private val bottomBuf = IntArray(256 * 192)
 
+    /** 帧快照一致性校验用的影子缓冲（多线程 3D 下双拷贝比对，见渲染线程）。 */
+    private val topVerify = IntArray(256 * 192)
+    private val bottomVerify = IntArray(256 * 192)
+
     /** 原始合成帧（恒 256×384，上屏在前）：截图/存档缩略图的数据源，
      * 与可能被放大滤镜替换掉的 [frameBuffer]（画布呈现帧）分离。 */
     private val rawComposite = IntArray(256 * 384)
@@ -473,6 +477,24 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     var activeHdRender: Boolean = false
         private set
 
+    /**
+     * 本会话的用户提示（加载完成后由 UI 以 Toast 展示一次）。
+     * 目前用于"高清渲染被静默抑制"的场景 —— 用户开了高清但实际按 1x 运行：
+     *  - 放大滤镜（xBR/HQx 系）激活时滤镜优先，高清让路；
+     *  - GL 显示路径初始化失败回退画布（画布的 getScreenBuffers 固定读
+     *    256×192，高清帧池下会裁切）。
+     * 无提示时为空串。修复"高清渲染(2倍分辨率)设置无效果"的排查盲区：
+     * 设置值虽为 enabled，实际会话被上述规则降级 —— 必须让用户看见原因。
+     */
+    @Volatile
+    var sessionNotice: String = ""
+        private set
+
+    private fun setSessionNotice(msg: String) {
+        sessionNotice = msg
+        android.util.Log.i(TAG, "session notice: $msg")
+    }
+
     /** GL 显示路径已接管帧消费（DraSticGlView 置位）：
      * 渲染消费线程跳过 getScreenBuffers 的 CPU 帧拷贝（约 500KB/帧），
      * 仅维持帧计数与就绪握手；截图改由 captureFrame 直接拉取。 */
@@ -524,6 +546,12 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     fun revertHdForCanvasFallback() {
         optHdRender = false
         activeHdRender = false
+        // 显式告知用户：GL 回退画布导致高清被关闭（否则用户感知为
+        // "高清渲染设置无效果"）。
+        setSessionNotice(
+            "GL 显示初始化失败，已回退画布模式；高清渲染本局自动关闭。" +
+                "可尝试更新系统 WebView/显卡驱动，或在「显示方式」保持 GL 后重进游戏。"
+        )
         if (isLoaded) {
             try {
                 DraSticJNI.applyConfig(currentConfig(fastForward = false))
@@ -554,7 +582,14 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         val packedXY = ((touchX shl 16) or touchY)
         val mask1 = if (touchPressed) mask or DS_TOUCH_FLAG else mask
         try {
-            DraSticJNI.updateInput(mask1, packedXY, mask)
+            // ★ arg3 必须传 0（反汇编 0x16eb8-0x16ee8 实锤）：arg3 是【连发
+            // (Turbo/自动连打) 按键掩码】而非"第二手柄掩码"。模拟主循环对
+            // arg3 中命中的按键按连发模式表（0x106cf8，默认 0xaaaaaaaa=50%
+            // 占空比）逐帧清除（bic w9, w9, w10）。旧实现把整个按键掩码同时
+            // 传给 arg1/arg3，导致【所有按住的方向键/功能键都被连发模式周期
+            // 性取消】—— 表现为走路一顿一顿、移动速度只有正常的几分之一
+            // （"激烈核心走路有问题"根因）。原版 App 无连发指派时 arg3 恒 0。
+            DraSticJNI.updateInput(mask1, packedXY, 0)
         } catch (e: Throwable) {
             android.util.Log.w("DraSticEngine", "updateInput failed", e)
         }
@@ -776,6 +811,15 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         // 高清会话内自动让路；滤镜换回 无/叠加类 后重进游戏，高清按用户
         // 设置恢复（optHdRender 原值保留，仅不入本会话快照）。
         activeHdRender = optHdRender && !isUpscaleFilter()
+        sessionNotice = ""
+        if (optHdRender && !activeHdRender) {
+            // 用户开了高清但滤镜优先策略将其抑制 —— 必须显式告知，
+            // 否则表现为"高清渲染(2倍分辨率)设置无效果"（排查盲区）。
+            setSessionNotice(
+                "已开启放大滤镜：本局按 1x 渲染以保滤镜可见。" +
+                    "换回「无/叠加类」滤镜后重进游戏即恢复高清 2x。"
+            )
+        }
         // 模拟线程数：自动探测（≥4核=3，≥2核=2，否则1）或用户强制 1-8。
         // ★ 必须 ≥1 —— 原版绝不会传 0；传 0 = 单线程 3D 光栅化，
         // 3D 大游戏每帧只能完成顶部 1 段（16 行）→ "画面显示不完整"。
@@ -832,7 +876,31 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                         //    frameBuffer 引用再更新尺寸，视图侧 fb.size < vw*vh
                         //    的守卫可安全吸收一帧的中间态。
                         //  · 画布路径 + 无放大滤镜：搬原始帧（截图/存档缩略图用）。
-                        DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                        //
+                        // ★ 帧快照一致性校验（"多线程 3D 渲染上下屏部分贴图错乱"
+                        //   根因修复）：反汇编 sub_1cd18（0x1cd18）证实
+                        //   getScreenBuffers 直接读取帧池【写入槽】指针
+                        //   （[video_state+0x958]，无锁），拷贝循环同样无锁。
+                        //   多线程 3D（bit28）开启时，原生 3D 光栅化线程以
+                        //   16 行/段异步写入同一缓冲 → 一次快照可能取到半成品
+                        //   帧（上下屏水平条带错乱）。写入者在冲刷后毫秒级内
+                        //   收尾，因此做"双拷贝一致性"校验：两次拷贝完全一致
+                        //   才视为完整帧；不一致则让步 1ms 重试（最多 3 次，
+                        //   超限用末次结果避免卡帧）。
+                        var coherent = false
+                        var attempt = 0
+                        while (attempt < 3 && !coherent && running.get()) {
+                            DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                            if (!optThreaded3D) break   // 单线程 3D：CPU 同步出帧，无需校验
+                            // 让步给原生写入者收尾，再拷一次比对
+                            System.arraycopy(topBuf, 0, topVerify, 0, topBuf.size)
+                            System.arraycopy(bottomBuf, 0, bottomVerify, 0, bottomBuf.size)
+                            try { Thread.sleep(1) } catch (_: InterruptedException) { break }
+                            DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                            coherent = topBuf.contentEquals(topVerify) &&
+                                bottomBuf.contentEquals(bottomVerify)
+                            attempt++
+                        }
                         // 原始合成帧（上屏在前、下屏在后，256×384）——截图恒用原始帧
                         System.arraycopy(topBuf, 0, rawComposite, 0, topBuf.size)
                         System.arraycopy(bottomBuf, 0, rawComposite, topBuf.size, bottomBuf.size)

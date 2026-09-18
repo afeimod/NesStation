@@ -855,6 +855,19 @@ fun EmulatorScreen(
     var lastNonZeroFFSpeed by remember { mutableStateOf(6) }
     var loaded by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    // 激烈核心会话提示（高清渲染被滤镜/GL 回退抑制等场景）：
+    // 游戏加载成功后以 Toast 展示一次 —— 修复"高清渲染(2倍分辨率)设置
+    // 无效果"这类"设置已开但被静默降级"的排查盲区。
+    LaunchedEffect(loaded) {
+        if (loaded && platform == GamePlatform.NDS) {
+            val eng = engine as? com.nesstation.app.core.engine.DraSticEngine
+            val notice = eng?.sessionNotice.orEmpty()
+            if (notice.isNotBlank()) {
+                Toast.makeText(context, notice, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
 
     var showMenu by remember { mutableStateOf(false) }
@@ -987,17 +1000,77 @@ fun EmulatorScreen(
     // and persist via a debounced LaunchedEffect — it waits 400ms after
     // the last change before writing to disk, so a continuous drag only
     // triggers ONE save at the end.
-    LaunchedEffect(padLayout) {
-        kotlinx.coroutines.delay(400)
+    //
+    // ★ 会话快照（"全局设置被旧会话覆盖"防护）：保存前把【会话内未修改的
+    // 全局字段】与磁盘最新值合并 —— 游戏会话持有的 PadLayout 是进入时
+    // 的快照，若用户在游戏之外（设置页/主页）改了全局配置，游戏侧的
+    // 防抖保存会把旧值写回去（"存档方式被恢复成统一存档目录"根因）。
+    // 会话内改过的字段（≠快照）仍以会话值写入，游戏内设置不受影响。
+    val sessionStartLayout = remember { padLayout }
+    val latestLayoutRef = remember { java.util.concurrent.atomic.AtomicReference(padLayout) }
+
+    fun saveSessionLayout(layout: PadLayout) {
+        // 读取磁盘最新布局，仅回填会话未触碰的全局字段
+        val disk = PadLayoutStore.load(context, platform)
+        val merged = layout.copy {
+            if (globalSaveMode == sessionStartLayout.globalSaveMode &&
+                disk.globalSaveMode != globalSaveMode) {
+                globalSaveMode = disk.globalSaveMode
+            }
+            if (screenOrientation == sessionStartLayout.screenOrientation) {
+                screenOrientation = disk.screenOrientation
+            }
+            if (showPad == sessionStartLayout.showPad) showPad = disk.showPad
+            if (showFps == sessionStartLayout.showFps) showFps = disk.showFps
+            if (highQualityScaling == sessionStartLayout.highQualityScaling) {
+                highQualityScaling = disk.highQualityScaling
+            }
+            if (showPlayerSwitch == sessionStartLayout.showPlayerSwitch) {
+                showPlayerSwitch = disk.showPlayerSwitch
+            }
+            if (homeBackgroundUri == sessionStartLayout.homeBackgroundUri) {
+                homeBackgroundUri = disk.homeBackgroundUri
+            }
+            if (homeBackgroundIsVideo == sessionStartLayout.homeBackgroundIsVideo) {
+                homeBackgroundIsVideo = disk.homeBackgroundIsVideo
+            }
+            if (homeTileIcons == sessionStartLayout.homeTileIcons) {
+                homeTileIcons = disk.homeTileIcons
+            }
+            if (homeTileIconAlphas == sessionStartLayout.homeTileIconAlphas) {
+                homeTileIconAlphas = disk.homeTileIconAlphas
+            }
+        }
         if (platform == GamePlatform.JAVA && javaGameKey != null) {
             // J2ME 每游戏单独保存：java* 子集写入专属配置（游戏中改的分辨率/
             // 缩放/帧率/触摸/透明度等只影响当前游戏）；全局 prefs 的 java*
             // 字段回写为进入会话前的全局快照，其他 Java 游戏不受影响。
-            JavaGameSettingsStore.save(context, javaGameKey, JavaGameSettings.of(padLayout))
+            JavaGameSettingsStore.save(context, javaGameKey, JavaGameSettings.of(layout))
             if (!javaHasOverride) javaHasOverride = true
-            PadLayoutStore.save(context, padLayout.withJavaSettings(globalJavaSnapshot), platform)
+            PadLayoutStore.save(context, merged.withJavaSettings(globalJavaSnapshot), platform)
         } else {
-            PadLayoutStore.save(context, padLayout, platform)
+            PadLayoutStore.save(context, merged, platform)
+        }
+    }
+
+    LaunchedEffect(padLayout) {
+        latestLayoutRef.set(padLayout)
+        kotlinx.coroutines.delay(400)
+        // NonCancellable：防抖期间组合被销毁（用户改完立刻退出游戏）时，
+        // 取消会让本次修改永远丢失（"存档方式设置有时候无法保存"根因）。
+        withContext(kotlinx.coroutines.NonCancellable) {
+            saveSessionLayout(padLayout)
+        }
+    }
+
+    // 兜底冲刷：组合销毁（退出游戏 / Activity 重建）时立即持久化最新状态，
+    // 不再依赖 400ms 防抖窗口 —— 窗口内的修改此前会随协程取消而丢失。
+    DisposableEffect(Unit) {
+        onDispose {
+            val latest = latestLayoutRef.get()
+            if (latest !== sessionStartLayout) {
+                saveSessionLayout(latest)
+            }
         }
     }
 

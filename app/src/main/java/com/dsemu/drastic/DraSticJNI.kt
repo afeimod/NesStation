@@ -121,16 +121,21 @@ object DraSticJNI {
     /**
      * 推送输入状态（按键 + 触摸）。
      *
-     * [反汇编] 语义（Java_com_dsemu_drastic_DraSticJNI_updateInput）：
+     * [反汇编] 语义（Java_com_dsemu_drastic_DraSticJNI_updateInput 0x1a5d8 +
+     * 消费点 0x16eb8-0x16ee8）：
      *  - arg1: bit31 = 触摸激活标志；bit0-30 = 按键掩码
      *  - arg2: (touchX shl 16) or touchY —— x: 0..255, y: 0..191
-     *  - arg3: 第二按键掩码，原生将其与 arg1 掩码 OR 合并后写入 NDS 输入
-     *    （并非 P2 手柄，两掩码同值安全）
+     *  - arg3: ★【连发 (Turbo) 按键掩码】—— 不是 P2 手柄，也不是与 arg1
+     *    OR 合并！模拟主循环对 arg3 中命中的按键按连发模式表（0x106cf8，
+     *    默认 0xaaaaaaaa = 50% 占空比）逐帧清除：`bic w9, w9, w10`。
+     *    无连发指派时必须传 0 —— 若把 arg1 的按键掩码原样传给 arg3，
+     *    所有按住的键都会被周期性取消（走路一顿一顿/按键连打）。
      *
-     * 按键位布局（反编译 + 反汇编交叉验证）：
+     * 按键位布局（Lua 注册表 0x813d8-0x815f4 + 反汇编交叉验证）：
      *  bit0=Up  bit1=Down  bit2=Left  bit3=Right
      *  bit4=A   bit5=B     bit6=X     bit7=Y
      *  bit8=L   bit9=R     bit10=Start bit11=Select
+     *  bit17=快进 (BUTTON_FFWD)  bit31=触摸 (BUTTON_TOUCH)
      *  bit12=触摸指示位（由原生在触摸激活时自动置位，Java 侧不使用）
      */
     @JvmStatic external fun updateInput(buttonsOrTouchFlag: Int, packedXY: Int, buttons2: Int)
