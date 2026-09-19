@@ -372,4 +372,44 @@ object RomStore {
         if (changed) saveAll(ctx, list)
         return updatedCount
     }
+
+    /**
+     * 游戏库垃圾条目清理（升级后一次性执行，见 NesApp.sanitizeLibraryOnce）。
+     *
+     * 旧版宽松扫描把 apk / 未知 zip 等垃圾灌进了游戏库；新扫描逻辑已经收紧，
+     * 但存量垃圾不会自己消失。本函数做一次性清扫：
+     *  - 本地 .apk 条目：直接删除（安装包不是 ROM）；
+     *  - 本地 .zip 条目：用 [PlatformDetector.isZipContentRecognizable] 探头
+     *    验证内容，验证不出（资源包 / 文档包 / 空包）→ 删除；
+     *  - content:// 条目保留（SAF 读取成本高，且刷新重扫已经收紧）；.7z/.gz
+     *    保留（java.util.zip 无法探头，历史遗留宁可不删）。
+     *
+     * @return 删除的条目数量
+     */
+    fun sanitizeLibrary(ctx: Context): Int {
+        val list = loadAll(ctx)
+        val toRemove = mutableListOf<GameEntry>()
+        for (entry in list) {
+            val path = entry.romPath ?: continue
+            if (path.startsWith("content://")) continue          // SAF 条目不动
+            if (entry.platform == GamePlatform.JAVA) continue    // Java 游戏是 jar 包，不适用 ROM 规则
+            val lower = path.lowercase()
+            val file = java.io.File(path)
+            if (lower.endsWith(".apk")) {
+                toRemove.add(entry)                              // 安装包显式清除
+                continue
+            }
+            if (lower.endsWith(".zip") && file.exists()) {
+                // 内容不可识别的 zip = 资源包 / 文档包 / 备份包，清掉
+                if (PlatformDetector.isZipContentRecognizable(file) == null) {
+                    toRemove.add(entry)
+                }
+            }
+        }
+        if (toRemove.isNotEmpty()) {
+            val removed = toRemove.toSet()
+            saveAll(ctx, list.filter { it !in removed })
+        }
+        return toRemove.size
+    }
 }

@@ -33,7 +33,15 @@ import android.graphics.RectF;
  *   7 = 4xBR + Dot
  *   8 = HQ4x
  *   9 = HQ4x + Dot
+ *  10 = TV      (仿电视机：CPU 端 drawTvFrame 桶形弧面 + applyTvMask)
+ *  11 = 2xBR + Scanline
+ *  12 = 4xBR + Scanline
+ *  13 = HQ4x + Scanline
+ *  14 = 2xBR + TV
+ *  15 = 4xBR + TV
+ *  16 = HQ4x + TV
  * </pre>
+ * 追加式编号（新模式只加在尾部）保证旧存档里的滤镜序号不漂移。
  */
 public final class J2meBitmapFilter {
 
@@ -47,6 +55,14 @@ public final class J2meBitmapFilter {
     public static final int MODE_4XBR_DOT  = 7;
     public static final int MODE_HQ4X      = 8;
     public static final int MODE_HQ4X_DOT  = 9;
+    // —— 仿电视机 + 组合滤镜（追加尾部，不改旧编号）——
+    public static final int MODE_TV            = 10;
+    public static final int MODE_2XBR_SCANLINE = 11;
+    public static final int MODE_4XBR_SCANLINE = 12;
+    public static final int MODE_HQ4X_SCANLINE = 13;
+    public static final int MODE_2XBR_TV       = 14;
+    public static final int MODE_4XBR_TV       = 15;
+    public static final int MODE_HQ4X_TV       = 16;
 
     // Legacy aliases for backward compatibility
     public static final int MODE_XBR     = MODE_2XBR;
@@ -80,18 +96,30 @@ public final class J2meBitmapFilter {
     public static boolean isPixelProcessingMode(int mode) {
         return mode == MODE_2XBR || mode == MODE_4XBR ||
                mode == MODE_2XBR_DOT || mode == MODE_4XBR_DOT ||
-               mode == MODE_HQ4X || mode == MODE_HQ4X_DOT;
+               mode == MODE_HQ4X || mode == MODE_HQ4X_DOT ||
+               mode == MODE_2XBR_SCANLINE || mode == MODE_4XBR_SCANLINE ||
+               mode == MODE_HQ4X_SCANLINE || mode == MODE_2XBR_TV ||
+               mode == MODE_4XBR_TV || mode == MODE_HQ4X_TV;
+    }
+
+    /** 放大类组合滤镜中带 TV 外观的（需要弧面网格绘制 + TV 遮罩叠加）。 */
+    public static boolean isTvComboMode(int mode) {
+        return mode == MODE_2XBR_TV || mode == MODE_4XBR_TV || mode == MODE_HQ4X_TV;
     }
 
     public static int getScaleFactor(int mode) {
-        if (mode == MODE_2XBR || mode == MODE_2XBR_DOT) return 2;
+        if (mode == MODE_2XBR || mode == MODE_2XBR_DOT ||
+            mode == MODE_2XBR_SCANLINE || mode == MODE_2XBR_TV) return 2;
         if (mode == MODE_4XBR || mode == MODE_4XBR_DOT ||
-            mode == MODE_HQ4X || mode == MODE_HQ4X_DOT) return 4;
+            mode == MODE_HQ4X || mode == MODE_HQ4X_DOT ||
+            mode == MODE_4XBR_SCANLINE || mode == MODE_HQ4X_SCANLINE ||
+            mode == MODE_4XBR_TV || mode == MODE_HQ4X_TV) return 4;
         return 1;
     }
 
     public static boolean isMaskMode(int mode) {
-        return mode == MODE_SCANLINE || mode == MODE_CRT || mode == MODE_DOT;
+        return mode == MODE_SCANLINE || mode == MODE_CRT || mode == MODE_DOT ||
+               mode == MODE_TV;
     }
 
     // ─── Public API: applyFilter (returns upscaled filtered bitmap) ──────
@@ -138,6 +166,18 @@ public final class J2meBitmapFilter {
                 return hq4xUpscale(work);
             case MODE_HQ4X_DOT:
                 return applyDotMask(hq4xUpscale(work));
+            case MODE_2XBR_SCANLINE:
+                return applyScanlineMask(xbrUpscale(work, 2), 2);
+            case MODE_4XBR_SCANLINE:
+                return applyScanlineMask(xbrUpscale(work, 4), 4);
+            case MODE_HQ4X_SCANLINE:
+                return applyScanlineMask(hq4xUpscale(work), 4);
+            case MODE_2XBR_TV:
+                return xbrUpscale(work, 2);      // TV 外观在 drawFiltered 里画
+            case MODE_4XBR_TV:
+                return xbrUpscale(work, 4);
+            case MODE_HQ4X_TV:
+                return hq4xUpscale(work);
             default:
                 return work;
         }
@@ -168,9 +208,15 @@ public final class J2meBitmapFilter {
         if (isPixelProcessingMode(mode)) {
             Bitmap filtered = applyFilter(srcBitmap, srcW, srcH, mode);
             if (filtered != null && filtered != srcBitmap) {
-                dstCanvas.drawBitmap(filtered,
-                        new Rect(0, 0, filtered.getWidth(), filtered.getHeight()),
-                        dstRect, sNearestPaint);
+                if (isTvComboMode(mode)) {
+                    // 放大 + 仿电视机：弧面网格绘制 + 圆角裁剪 + TV 遮罩叠加
+                    drawTvFrame(filtered, dstCanvas, dstRect);
+                    applyTvMask(dstCanvas, dstRect);
+                } else {
+                    dstCanvas.drawBitmap(filtered,
+                            new Rect(0, 0, filtered.getWidth(), filtered.getHeight()),
+                            dstRect, sNearestPaint);
+                }
             } else {
                 dstCanvas.drawBitmap(srcBitmap,
                         new Rect(0, 0, srcW, srcH),
@@ -180,7 +226,13 @@ public final class J2meBitmapFilter {
             dstCanvas.drawBitmap(srcBitmap,
                     new Rect(0, 0, srcW, srcH),
                     dstRect, sNearestPaint);
-            applyCanvasMask(dstCanvas, dstRect, mode);
+            if (mode == MODE_TV) {
+                // 仿电视机：先画弧面（带圆角裁剪），再叠扫描线/暗角/高光
+                drawTvFrame(srcBitmap, srcW, srcH, dstCanvas, dstRect);
+                applyTvMask(dstCanvas, dstRect);
+            } else {
+                applyCanvasMask(dstCanvas, dstRect, mode);
+            }
         }
     }
 
@@ -690,6 +742,171 @@ public final class J2meBitmapFilter {
         sum[0] += v[0];
         sum[1] += v[1];
         sum[2] += v[2];
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Scanline overlay for upscaled bitmaps (xBR/HQ4x + Scanline combos)
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * 放大后位图的扫描线叠加：每个源像素行（放大后占 {@code scale} 物理行）
+     * 的最后一行压暗 —— 与 GL 路径「每源行一条扫描线」的观感一致。
+     * 就地修改并返回原 bitmap（调用方持有缓存，无需复制）。
+     */
+    private static Bitmap applyScanlineMask(Bitmap bmp, int scale) {
+        try {
+            int w = bmp.getWidth();
+            int h = bmp.getHeight();
+            if (w <= 0 || h <= 0 || scale <= 1) return bmp;
+            int[] pixels = new int[w * h];
+            bmp.getPixels(pixels, 0, w, 0, 0, w, h);
+            final float dim = 0.62f;   // 扫描线暗行亮度系数
+            for (int y = 0; y < h; y++) {
+                // 源行内位置：放大后每 scale 行构成一个源像素行
+                int inRow = y % scale;
+                if (inRow != scale - 1) continue;   // 只压暗每组最后一行
+                for (int x = 0; x < w; x++) {
+                    int idx = y * w + x;
+                    int c = pixels[idx];
+                    int r = (int)(((c >> 16) & 0xFF) * dim);
+                    int g = (int)(((c >> 8) & 0xFF) * dim);
+                    int b = (int)((c & 0xFF) * dim);
+                    pixels[idx] = (c & 0xFF000000) | (r << 16) | (g << 8) | b;
+                }
+            }
+            bmp.setPixels(pixels, 0, w, 0, 0, w, h);
+        } catch (Throwable ignored) {
+            // 扫描线叠加失败不影响游戏画面 —— 忽略
+        }
+        return bmp;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  TV appearance (仿电视机) — CPU 路径
+    //  drawTvFrame：20×20 网格桶形弧面绘制 + 四角圆弧裁剪 + 暗边框；
+    //  applyTvMask：扫描线 + 暗角 + 玻璃高光。
+    //  异常时全部退化保护（普通绘制），绝不因滤镜崩溃。
+    // ════════════════════════════════════════════════════════════════════
+
+    /** 桶形弯曲强度（与 GLSL nsCurve 的 5.4/3.6 参数观感一致）。 */
+    private static final float TV_CURVATURE = 0.07f;
+
+    /** 绘制整张位图（放大后的）到弧面。 */
+    private static void drawTvFrame(Bitmap bmp, Canvas canvas, RectF rect) {
+        drawTvFrame(bmp, bmp.getWidth(), bmp.getHeight(), canvas, rect);
+    }
+
+    /**
+     * 只取活动区域 srcW×srcH 绘制到弧面（Image.setSize 缩小位图时避免
+     * 把陈旧边缘像素画出来）。用 20×20 drawBitmapMesh 网格做桶形变形，
+     * 四周向外鼓；圆角 Path 裁剪 + 暗边框营造「立体凸起屏幕」。
+     */
+    private static void drawTvFrame(Bitmap bmp, int srcW, int srcH,
+                                    Canvas canvas, RectF rect) {
+        try {
+            if (bmp == null || bmp.isRecycled() || rect.width() <= 0 || rect.height() <= 0) return;
+            Bitmap work = bmp;
+            if (srcW < bmp.getWidth() || srcH < bmp.getHeight()) {
+                try {
+                    work = Bitmap.createBitmap(bmp, 0, 0, srcW, srcH);
+                } catch (Throwable ignored) {
+                    work = bmp;   // 裁剪失败退回整图
+                }
+            }
+
+            // 四角圆弧裁剪（圆角半径 ≈ 短边 4.5%）
+            float radius = Math.min(rect.width(), rect.height()) * 0.045f;
+            android.graphics.Path clip = new android.graphics.Path();
+            clip.addRoundRect(rect, radius, radius, android.graphics.Path.Direction.CW);
+
+            canvas.save();
+            canvas.clipPath(clip);
+
+            // 20×20 网格桶形变形：均匀源网格 → 桶形目标位置（中心不动、边缘外鼓）
+            final int N = 20;
+            final int cols = N + 1, rows = N + 1;
+            float[] verts = new float[cols * rows * 2];
+            float cx = rect.centerX(), cy = rect.centerY();
+            float halfW = rect.width() * 0.5f, halfH = rect.height() * 0.5f;
+            for (int j = 0; j < rows; j++) {
+                // v ∈ [-1, 1]
+                float v = (j / (float) N) * 2f - 1f;
+                for (int i = 0; i < cols; i++) {
+                    float u = (i / (float) N) * 2f - 1f;
+                    // 桶形：|uv|² 加权外推，k = TV_CURVATURE
+                    float r2 = u * u + v * v;
+                    float bu = u * (1f + TV_CURVATURE * r2);
+                    float bv = v * (1f + TV_CURVATURE * r2);
+                    int idx = (j * cols + i) * 2;
+                    verts[idx]     = cx + bu * halfW;
+                    verts[idx + 1] = cy + bv * halfH;
+                }
+            }
+            android.graphics.Paint meshPaint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+            canvas.drawBitmapMesh(work, N, N, verts, 0, null, 0, meshPaint);
+            canvas.restore();
+
+            // 暗边框：模拟电视机边框内侧的阴影
+            sMaskPaint.setAntiAlias(true);
+            sMaskPaint.setStyle(android.graphics.Paint.Style.STROKE);
+            sMaskPaint.setStrokeWidth(Math.max(1.5f, rect.width() * 0.006f));
+            sMaskPaint.setColor(0xB3000000);   // 70% 黑
+            canvas.drawRoundRect(rect, radius, radius, sMaskPaint);
+            sMaskPaint.setStyle(android.graphics.Paint.Style.FILL);
+
+            if (work != bmp) work.recycle();
+        } catch (Throwable ignored) {
+            // 滤镜绘制任何异常都退化为普通绘制 —— 游戏画面优先
+            try {
+                canvas.drawBitmap(bmp, new Rect(0, 0, srcW, srcH), rect, sNearestPaint);
+            } catch (Throwable ignored2) { }
+        }
+    }
+
+    /**
+     * TV 遮罩叠加（画在弧面画面之上）：水平扫描线 + 径向暗角 +
+     * 顶部玻璃高光弧带。全部用 RectF 内的渐变/线条，无位图分配。
+     */
+    private static void applyTvMask(Canvas canvas, RectF rect) {
+        try {
+            float w = rect.width();
+            float h = rect.height();
+            if (w <= 0 || h <= 0) return;
+
+            // 1) 扫描线：每 3px 一条 35% 黑线
+            sMaskPaint.setAntiAlias(false);
+            sMaskPaint.setColor(0x59000000);   // 35% 黑
+            float lineStep = Math.max(3f, h / 240f);
+            for (float y = rect.top + lineStep; y < rect.bottom; y += lineStep) {
+                canvas.drawLine(rect.left, y, rect.right, y, sMaskPaint);
+            }
+
+            // 2) 暗角：径向渐变（中心透明 → 边缘 55% 黑）
+            android.graphics.RadialGradient vg = new android.graphics.RadialGradient(
+                    rect.centerX(), rect.centerY(),
+                    (float) (Math.max(w, h) * 0.72),
+                    new int[]{0x00000000, 0x00000000, 0x8C000000},
+                    new float[]{0f, 0.55f, 1f},
+                    android.graphics.Shader.TileMode.CLAMP);
+            sMaskPaint.setShader(vg);
+            sMaskPaint.setAntiAlias(true);
+            canvas.drawRect(rect, sMaskPaint);
+            sMaskPaint.setShader(null);
+
+            // 3) 玻璃高光：屏幕上部一道微弱白色弧形反光（立体感）
+            android.graphics.LinearGradient gloss = new android.graphics.LinearGradient(
+                    0, rect.top + h * 0.04f, 0, rect.top + h * 0.38f,
+                    new int[]{0x00000000, 0x14FFFFFF, 0x00000000},
+                    new float[]{0f, 0.5f, 1f},
+                    android.graphics.Shader.TileMode.CLAMP);
+            sMaskPaint.setShader(gloss);
+            canvas.drawRect(rect.left, rect.top + h * 0.04f,
+                    rect.right, rect.top + h * 0.38f, sMaskPaint);
+            sMaskPaint.setShader(null);
+            sMaskPaint.setAntiAlias(false);
+        } catch (Throwable ignored) {
+            // 遮罩失败不影响画面
+        }
     }
 
     // ════════════════════════════════════════════════════════════════════

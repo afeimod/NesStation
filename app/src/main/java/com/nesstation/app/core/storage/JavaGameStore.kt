@@ -218,18 +218,29 @@ object JavaGameStore {
     /**
      * Map video filter string from PadLayoutStore to J2ME integer mode.
      * Mode mapping: 0=none, 1=scanline, 2=CRT, 3=dot, 4=2XBR, 5=4XBR,
-     *   6=2XBR+dot, 7=4XBR+dot, 8=HQ4x, 9=HQ4x+dot
+     *   6=2XBR+dot, 7=4XBR+dot, 8=HQ4x, 9=HQ4x+dot,
+     *   10=TV(仿电视机), 11=2XBR+扫描线, 12=4XBR+扫描线, 13=HQ4x+扫描线,
+     *   14=2XBR+仿电视机, 15=4XBR+仿电视机, 16=HQ4x+仿电视机
      */
     private fun videoFilterToJ2meMode(filter: String): Int = when (filter) {
         "scanline" -> 1
         "crt"      -> 2
         "dot"      -> 3
+        "tv"       -> 10
         "xbr"      -> 4
         "4xbr"     -> 5
         "xbr_dot"  -> 6
         "4xbr_dot" -> 7
         "hq4x"     -> 8
         "hq4x_dot" -> 9
+        "xbr_scanline"  -> 11
+        "4xbr_scanline" -> 12
+        "hq2x_scanline",
+        "hq4x_scanline" -> 13
+        "xbr_tv"        -> 14
+        "4xbr_tv"       -> 15
+        "hq2x_tv",
+        "hq4x_tv"       -> 16
         else -> 0
     }
 

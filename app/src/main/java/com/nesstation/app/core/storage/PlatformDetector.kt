@@ -51,9 +51,9 @@ object PlatformDetector {
         // CPS1 / CPS2 / CPS3
         "prg", "gfx", "snd", "qsf", "q1", "q2", "q3", "q4", "q5",
         // PGM
-        "b1", "b2", "t1", "t2", "u1", "u2", "v10", "v20", "v30", "v40",
-        // Generic arcade dumps
-        "rom"   // 注意：.bin 单独放在通用 dump 里太宽泛，下方专门处理
+        "b1", "b2", "t1", "t2", "u1", "u2", "v10", "v20", "v30", "v40"
+        // 注意：旧表里的 "rom" 已移除 —— BIOS 包 / 固件包几乎必含 .rom，
+        // 它会把 emulator BIOS 合集 zip 误判成街机；.bin 也太宽泛，不在此表。
     )
 
     // ===== 自动扫描（存储权限授予后的自动导入）专用严格判定 =====
@@ -147,6 +147,120 @@ object PlatformDetector {
         // c) 含可信平台扩展 —— NES/SFC/GBA 等合集包
         entryExts.firstNotNullOfOrNull { AUTO_TRUSTED_EXTENSIONS[it] }?.let { return it }
         // d) 无法验证 —— 不再兜底街机 / MD / DOS，直接跳过
+        return null
+    }
+
+    /**
+     * zip 内容探头（参考全能模拟器「先识别内容、再分类核心」的思路）：
+     * 只有能验证出明确内容的 zip 才返回对应平台，验证不出返回 null。
+     *
+     * 探测顺序：
+     *  1. 街机特征扩展（p1/sp1/c1…）→ ARCADE —— 真 FBNeo ROM zip 几乎必含；
+     *  2. zip 名是已知街机驱动名（kof97.zip / mslug2.zip …，600+ 映射表）→ ARCADE；
+     *  3. 含白名单平台扩展（nes/sfc/gba/smd… 的合集包）→ 对应平台；
+     *  4. 仅含 CD 镜像扩展（cue/bin/iso…）→ 跟随 hint（无 hint 默认 MD）；
+     *  5. 其余（仅 .bin/.apk/未知内容/空包）→ null —— 资源 zip、APK 备份 zip、
+     *     文档 zip 全部在此被拒之门外。
+     *
+     * 供「刷新重扫收紧判定」与 [RomStore.sanitizeLibrary] 存量垃圾清理共用。
+     */
+    fun isZipContentRecognizable(file: File, hintPlatform: GamePlatform? = null): GamePlatform? {
+        val entryExts = listZipEntryExtensions(file)
+        return recognizeZipEntries(entryExts, file.name, hintPlatform)
+    }
+
+    /** [isZipContentRecognizable] 的 SAF Uri 版本，供 SAF 文件夹重扫使用。 */
+    fun isZipContentRecognizable(
+        context: Context,
+        uri: Uri,
+        fileName: String,
+        hintPlatform: GamePlatform? = null
+    ): GamePlatform? {
+        val entryExts = listZipEntryExtensions(context, uri)
+        return recognizeZipEntries(entryExts, fileName, hintPlatform)
+    }
+
+    /** zip 探头的公共实现（条目扩展名集合 + zip 文件名 + hint → 平台或 null）。 */
+    private fun recognizeZipEntries(
+        entryExts: List<String>,
+        zipFileName: String,
+        hintPlatform: GamePlatform?
+    ): GamePlatform? {
+        if (entryExts.isEmpty()) return null                                  // 空包 / 损坏包
+        // 1. 街机特征扩展
+        if (entryExts.any { it in ARCADE_ROM_EXTENSIONS }) return GamePlatform.ARCADE
+        // 2. zip 名是已知街机驱动名
+        if (ArcadeTitleMapper.lookupByFileName(zipFileName) != null) return GamePlatform.ARCADE
+        // 3. 白名单平台扩展（NES/SFC/GBA 等合集包）
+        entryExts.firstNotNullOfOrNull { AUTO_TRUSTED_EXTENSIONS[it] }?.let { return it }
+        // 4. 仅 CD 镜像扩展 —— 跟随 hint 消歧
+        if (entryExts.any { it in CD_IMAGE_EXTENSIONS }) {
+            return when (hintPlatform) {
+                GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
+                GamePlatform.PSX, GamePlatform.PS2 -> hintPlatform
+                else -> GamePlatform.MD
+            }
+        }
+        // 5. 无法验证 —— 跳过
+        return null
+    }
+
+    /** 刷新重扫时允许跟随 hint 消歧的平台集合（CD 镜像类）。 */
+    private val REFRESH_HINT_ALLOWED = setOf(
+        GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
+        GamePlatform.PSX, GamePlatform.PS2
+    )
+
+    /**
+     * 刷新 / 重扫文件夹专用收紧判定。
+     *
+     * 与手动导入的宽松判定 [detectFromFile] 的区别：手动导入是用户明确意图，
+     * 识别不出可以兜底；刷新重扫是【批量扫文件夹】，文件夹里什么都可能有 ——
+     * 微信资源 zip、APK 安装包、文档压缩包。若沿用宽松判定，每次刷新都会
+     * 把这些垃圾重新灌进游戏库（旧行为：未知 zip 兑 ARCADE/跟随 hint，
+     * .gz 恒街机，未知扩展→NES）。
+     *
+     * 规则：
+     *  - .apk 显式排除（安装包不是 ROM）；
+     *  - .zip 探头验证内容（[isZipContentRecognizable]），验证不出 → null 跳过；
+     *  - .7z/.gz 无法探头 → 仅街机页（hint=ARCADE）重扫时收街机，其余 null；
+     *  - 无歧义 ROM 扩展（nes/sfc/gba…）→ 对应平台；
+     *  - CD 镜像扩展 → 跟随平台页 hint（无 hint 不收）；
+     *  - 其余未知扩展 → null，绝不兜底。
+     *
+     * @return 平台；不可信识别时返回 null（调用方应跳过该文件）
+     */
+    fun detectForRefresh(file: File, hintPlatform: GamePlatform? = null): GamePlatform? {
+        val ext = file.extension.lowercase()
+        if (ext == "apk") return null
+        if (ext == "zip") return isZipContentRecognizable(file, hintPlatform)
+        if (ext == "7z" || ext == "gz") {
+            return if (hintPlatform == GamePlatform.ARCADE) GamePlatform.ARCADE else null
+        }
+        AUTO_TRUSTED_EXTENSIONS[ext]?.let { return it }
+        if (ext in CD_IMAGE_EXTENSIONS || ext in MDF_MDS_NRG_EXTENSIONS) {
+            return hintPlatform?.takeIf { it in REFRESH_HINT_ALLOWED }
+        }
+        return null
+    }
+
+    /** [detectForRefresh] 的 SAF Uri 版本（refreshList 的 content:// 路径用）。 */
+    fun detectForRefreshUri(
+        context: Context,
+        uri: Uri,
+        fileName: String,
+        hintPlatform: GamePlatform? = null
+    ): GamePlatform? {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        if (ext == "apk") return null
+        if (ext == "zip") return isZipContentRecognizable(context, uri, fileName, hintPlatform)
+        if (ext == "7z" || ext == "gz") {
+            return if (hintPlatform == GamePlatform.ARCADE) GamePlatform.ARCADE else null
+        }
+        AUTO_TRUSTED_EXTENSIONS[ext]?.let { return it }
+        if (ext in CD_IMAGE_EXTENSIONS || ext in MDF_MDS_NRG_EXTENSIONS) {
+            return hintPlatform?.takeIf { it in REFRESH_HINT_ALLOWED }
+        }
         return null
     }
 

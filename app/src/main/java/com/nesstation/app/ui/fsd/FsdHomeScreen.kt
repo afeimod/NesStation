@@ -317,8 +317,9 @@ fun FsdHomeScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    // 触摸纵向滑动切换所选分区（行）
-                    .pointerInput(sections.size, selectedSection) {
+                    // 触摸纵向滑动切换所选分区（行）；不再以 selectedSection 为 key，
+                    // 避免分区切换瞬间手势协程重启打断正在进行的拖动
+                    .pointerInput(sections.size) {
                         var accum = 0f
                         detectVerticalDragGestures(
                             onDragStart = { accum = 0f },
@@ -338,8 +339,6 @@ fun FsdHomeScreen(
                 contentAlignment = Alignment.Center
             ) {
                 sections.forEachIndexed { idx, section ->
-                    val pos = idx - animatedSection
-                    val absPos = abs(pos)
                     FsdSectionRow(
                         section = section,
                         selectedIndex = selInSection.value[idx]
@@ -358,12 +357,15 @@ fun FsdHomeScreen(
                         onFocusSelf = { selectedSection = idx },
                         modifier = Modifier
                             .align(Alignment.Center)
-                            // 垂直封面流：选中的一行在中间、放大，上下行缩小变暗
+                            // 垂直封面流：选中的一行在中间、放大，上下行缩小变暗；
+                            // 在绘制阶段读取动画值，分区切换每帧只重绘不重组
                             .graphicsLayer {
+                                val pos = idx - animatedSection
+                                val absPos = abs(pos)
                                 translationY = pos * flowStep
                                 scaleX = (1f - 0.34f * absPos).coerceAtLeast(0.5f)
                                 scaleY = (1f - 0.34f * absPos).coerceAtLeast(0.5f)
-                                this.alpha = (1f - 0.45f * absPos).coerceIn(0.35f, 1f)
+                                alpha = (1f - 0.45f * absPos).coerceIn(0.35f, 1f)
                             }
                     )
                 }

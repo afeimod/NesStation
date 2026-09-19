@@ -83,6 +83,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -1232,6 +1233,13 @@ fun EmulatorScreen(
             "4xbr" -> 6     // native 4XBR(8) → HQ4X(6)（3.5.2 行为）
             "4xbr_dot" -> 6 // native 4XBR+dot(9) → HQ4X(6), dot 由 FilterOverlay 绘制
             "hq4x_dot" -> 10
+            // —— 组合滤镜：放大走原生 HQ2X/HQ4X，扫描线/仿电视外观由 FilterOverlay 叠加 ——
+            "xbr_scanline", "hq2x_scanline" -> 5
+            "4xbr_scanline", "hq4x_scanline" -> 6
+            "xbr_tv", "hq2x_tv" -> 5
+            "4xbr_tv", "hq4x_tv" -> 6
+            // 仿电视机：原生无弧面实现，画面原样下发，外观全部由 FilterOverlay 绘制
+            "tv" -> 0
             else -> 0
         }
         engine.setVideoFilter(filterInt)
@@ -1243,12 +1251,22 @@ fun EmulatorScreen(
                 "scanline" -> 1   // scanline
                 "crt"      -> 2   // CRT
                 "dot"      -> 3   // dot
+                "tv"       -> 10  // 仿电视机（弧面+四角圆角+扫描线）
                 "xbr"      -> 4   // 2xBR
                 "4xbr"     -> 5   // 4xBR
                 "xbr_dot"  -> 6   // 2xBR+dot
                 "4xbr_dot" -> 7   // 4xBR+dot
                 "hq4x"     -> 8   // HQ4x
                 "hq4x_dot" -> 9   // HQ4x+dot
+                // —— 组合滤镜（J2ME 双轨：GL 路径单 pass，CPU 路径放大+叠加）——
+                "xbr_scanline"          -> 11  // 2xBR+扫描线
+                "4xbr_scanline"         -> 12  // 4xBR+扫描线
+                "hq2x_scanline",
+                "hq4x_scanline"         -> 13  // HQ4x+扫描线（J2ME 无 2x HQ，用 4x）
+                "xbr_tv"                -> 14  // 2xBR+仿电视机
+                "4xbr_tv"               -> 15  // 4xBR+仿电视机
+                "hq2x_tv",
+                "hq4x_tv"               -> 16  // HQ4x+仿电视机
                 else -> 0         // none (hq2x not supported in J2ME)
             }
             javax.microedition.lcdui.Canvas.setJ2meFilterMode(j2meMode)
@@ -3314,7 +3332,9 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
                 // （与 3.5.2 行为一致）；用户的分辨率设置原样保留在偏好里，
                 // 滤镜换回 无/叠加类 后自动恢复下发原值。
                 val ndsUpscaleFilterActive = layout.videoFilter in
-                    listOf("xbr", "hq2x", "hq4x", "xbr_dot", "4xbr", "4xbr_dot", "hq4x_dot")
+                    listOf("xbr", "hq2x", "hq4x", "xbr_dot", "4xbr", "4xbr_dot", "hq4x_dot",
+                           "xbr_scanline", "4xbr_scanline", "hq2x_scanline", "hq4x_scanline",
+                           "xbr_tv", "4xbr_tv", "hq2x_tv", "hq4x_tv")
                 val ndsEffectiveResolution =
                     if (ndsUpscaleFilterActive &&
                         layout.ndsOpenGlRenderer == "enabled" &&
@@ -3811,9 +3831,11 @@ private fun GameSurfaceView(
             // 后经 NdsNative.applyUpscaleFilter 做 CPU 放大并自行上传纹理
             // （见 DraSticGlView.renderFilteredFrame）；_dot 变体的点阵部分
             // 仍由这里的 FilterOverlay 叠加。
-            if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot")) {
+            if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
+                                      "tv", "xbr_scanline", "4xbr_scanline", "hq2x_scanline",
+                                      "hq4x_scanline", "xbr_tv", "4xbr_tv", "hq2x_tv", "hq4x_tv")) {
                 FilterOverlay(
-                    if (videoFilter.endsWith("_dot")) "dot" else videoFilter,
+                    overlayFilterTypeFor(videoFilter) ?: videoFilter,
                     glModifier
                 )
             }
@@ -3990,10 +4012,12 @@ private fun GameSurfaceView(
             },
             modifier = surfaceModifier.then(gameViewTracker)
         )
-            // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot drawn by Compose
-            if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot")) {
+            // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot/*+扫描线/*+仿电视 drawn by Compose
+            if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
+                                      "tv", "xbr_scanline", "4xbr_scanline", "hq2x_scanline",
+                                      "hq4x_scanline", "xbr_tv", "4xbr_tv", "hq2x_tv", "hq4x_tv")) {
                 FilterOverlay(
-                    if (videoFilter.endsWith("_dot")) "dot" else videoFilter,
+                    overlayFilterTypeFor(videoFilter) ?: videoFilter,
                     surfaceModifier
                 )
             }
@@ -4201,6 +4225,22 @@ private fun J2meGameView(
     }
 }
 
+/**
+ * 全局滤镜字符串 → FilterOverlay 叠加层类型。
+ * 放大类组合（*_scanline / *_tv / *_dot）的原生放大由核心内部完成，
+ * 这里只负责叠加外观：扫描线 / 点阵 / 仿电视机。
+ */
+private fun overlayFilterTypeFor(videoFilter: String): String? = when {
+    videoFilter == "scanline"          -> "scanline"
+    videoFilter == "crt"               -> "crt"
+    videoFilter == "dot"               -> "dot"
+    videoFilter == "tv"                -> "tv"
+    videoFilter.endsWith("_dot")       -> "dot"
+    videoFilter.endsWith("_scanline")  -> "scanline"
+    videoFilter.endsWith("_tv")        -> "tv"
+    else -> null
+}
+
 // GPU-accelerated filter overlay using BitmapShader — a single GPU texture
 // draw instead of hundreds of individual drawLine calls.
 // The pattern bitmap is small (1x3 or 3x3) and tiled via REPEAT mode.
@@ -4210,11 +4250,13 @@ private fun FilterOverlay(
     modifier: Modifier = Modifier
 ) {
     // Pre-create the pattern bitmap once per filter type
+    // tv（仿电视机）：扫描线图案打底，强暗角/四角圆弧/暗边框在绘制时叠加
     val patternBitmap = remember(filterType) {
         when (filterType) {
             "scanline" -> NdsFilterPatterns.createScanlinePattern()
             "crt" -> NdsFilterPatterns.createCrtPattern()
             "dot" -> NdsFilterPatterns.createDotPattern()
+            "tv" -> NdsFilterPatterns.createScanlinePattern()
             else -> null
         }
     }
@@ -4232,20 +4274,50 @@ private fun FilterOverlay(
     }
 
     Canvas(modifier = modifier) {
-        shaderPaint?.let { paint ->
+        if (filterType == "tv") {
+            // 仿电视机：扫描线打底 + 强暗角 + 四角圆弧裁切 + 暗边框
+            val r = minOf(size.width, size.height) * 0.045f
             drawIntoCanvas { canvas ->
-                canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
+                val n = canvas.nativeCanvas
+                val save = n.save()
+                val clip = android.graphics.Path().apply {
+                    addRoundRect(0f, 0f, size.width, size.height, r, r,
+                            android.graphics.Path.Direction.CW)
+                }
+                n.clipPath(clip)
+                shaderPaint?.let { n.drawRect(0f, 0f, size.width, size.height, it) }
+                n.restoreToCount(save)
             }
-        }
-        // CRT vignette — radial gradient darkening at edges
-        if (filterType == "crt") {
+            // 强暗角（径向渐变，边缘 62% 黑 —— 比 CRT 更浓的电视观感）
             drawRect(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f)),
+                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.62f)),
                     center = Offset(size.width / 2, size.height / 2),
-                    radius = minOf(size.width, size.height) * 0.7f
+                    radius = maxOf(size.width, size.height) * 0.72f
                 )
             )
+            // 暗边框
+            drawRoundRect(
+                color = Color.Black.copy(alpha = 0.7f),
+                cornerRadius = CornerRadius(r, r),
+                style = Stroke(width = 2.dp.toPx())
+            )
+        } else {
+            shaderPaint?.let { paint ->
+                drawIntoCanvas { canvas ->
+                    canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
+                }
+            }
+            // CRT vignette — radial gradient darkening at edges
+            if (filterType == "crt") {
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.35f)),
+                        center = Offset(size.width / 2, size.height / 2),
+                        radius = minOf(size.width, size.height) * 0.7f
+                    )
+                )
+            }
         }
     }
 }
@@ -8486,8 +8558,13 @@ private fun SettingsPanel(
 
         DropdownSetting("视频滤镜",
             listOf("none" to "关闭", "scanline" to "扫描线", "crt" to "CRT", "dot" to "点阵",
+                   "tv" to "仿电视机",
                    "xbr" to "XBR", "hq2x" to "HQ2X", "hq4x" to "HQ4X", "xbr_dot" to "XBR+点阵",
-                   "4xbr" to "4XBR", "4xbr_dot" to "4XBR+点阵", "hq4x_dot" to "HQ4X+点阵"),
+                   "4xbr" to "4XBR", "4xbr_dot" to "4XBR+点阵", "hq4x_dot" to "HQ4X+点阵",
+                   "xbr_scanline" to "XBR+扫描线", "4xbr_scanline" to "4XBR+扫描线",
+                   "hq2x_scanline" to "HQ2X+扫描线", "hq4x_scanline" to "HQ4X+扫描线",
+                   "xbr_tv" to "XBR+仿电视机", "4xbr_tv" to "4XBR+仿电视机",
+                   "hq2x_tv" to "HQ2X+仿电视机", "hq4x_tv" to "HQ4X+仿电视机"),
             padLayout.videoFilter
         ) { onLayoutChange(padLayout.copy {videoFilter = it}) }
 

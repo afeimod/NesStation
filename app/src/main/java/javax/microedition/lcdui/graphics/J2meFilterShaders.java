@@ -15,7 +15,15 @@ package javax.microedition.lcdui.graphics;
  *   7 = 4xBR + Dot
  *   8 = HQ4x          (4xGLSLHqFilter)
  *   9 = HQ4x + Dot
+ *  10 = TV            (仿电视机：桶形弧面 + 四角圆角 + 暗角 + 扫描线 + 玻璃高光)
+ *  11 = 2xBR + Scanline
+ *  12 = 4xBR + Scanline
+ *  13 = HQ4x + Scanline
+ *  14 = 2xBR + TV     (单 pass 真弯曲采样)
+ *  15 = 4xBR + TV
+ *  16 = HQ4x + TV
  * </pre>
+ * 追加式编号（新模式只能加在尾部）保证旧存档里的滤镜序号不漂移。
  *
  * <p>XBR shaders implement Hyllian's 5xBR v3.5a algorithm with weighted RGB luminance
  * edge detection, 21-pixel sampling, interpolation restriction, and line-inequality
@@ -34,6 +42,14 @@ public final class J2meFilterShaders {
     public static final int MODE_4XBR_DOT  = 7;
     public static final int MODE_HQ4X      = 8;
     public static final int MODE_HQ4X_DOT  = 9;
+    // —— 仿电视机 + 组合滤镜（追加尾部，不改旧编号）——
+    public static final int MODE_TV            = 10;
+    public static final int MODE_2XBR_SCANLINE = 11;
+    public static final int MODE_4XBR_SCANLINE = 12;
+    public static final int MODE_HQ4X_SCANLINE = 13;
+    public static final int MODE_2XBR_TV       = 14;
+    public static final int MODE_4XBR_TV       = 15;
+    public static final int MODE_HQ4X_TV       = 16;
 
     // ─── Default passthrough shaders (mode 0) ────────────────────────────────
 
@@ -934,6 +950,211 @@ public final class J2meFilterShaders {
             "    gl_FragColor = vec4(result, 1.0);\n" +
             "}\n";
 
+    // ─── TV appearance (仿电视机) GLSL helper library ─────────────────────────
+    //
+    // 共享给 FRAGMENT_TV 与 XBR/HQ4X+TV 组合滤镜的函数库：桶形弯曲、四角圆弧、
+    // 暗角、扫描线。不含 uniform 声明（由各 shader 自己声明，避免重复）。
+
+    /** TV 外观共享函数库（插入各 shader 的 main 之前）。 */
+    private static final String TV_GLSL_HELPERS =
+            "// ===== NesStation TV appearance helpers (curved glass / rounded corners / vignette / scanlines) =====\n" +
+            "// 桶形弯曲 —— 模拟 CRT 弧面玻璃：屏幕边缘向外鼓\n" +
+            "vec2 nsCurve(vec2 tc) {\n" +
+            "    vec2 c = tc * 2.0 - 1.0;\n" +
+            "    vec2 off = abs(c.yx) / vec2(5.4, 3.6);\n" +
+            "    c = c + c * off * off;\n" +
+            "    return c * 0.5 + 0.5;\n" +
+            "}\n" +
+            "// 四角圆弧遮罩 —— 圆角矩形 SDF：屏幕四角圆弧外渐黑\n" +
+            "float nsCornerMask(vec2 tc) {\n" +
+            "    vec2 p = abs(tc * 2.0 - 1.0);\n" +
+            "    vec2 corner = vec2(0.965, 0.955) - 0.085;\n" +
+            "    float dist = length(max(p - corner, vec2(0.0))) - 0.085;\n" +
+            "    return 1.0 - smoothstep(-0.008, 0.016, dist);\n" +
+            "}\n" +
+            "// 暗角 —— CRT 玻璃边缘自然压暗\n" +
+            "float nsVignette(vec2 tc) {\n" +
+            "    vec2 p = tc * 2.0 - 1.0;\n" +
+            "    return clamp(1.0 - 0.30 * dot(p * 0.72, p * 0.72), 0.0, 1.0);\n" +
+            "}\n" +
+            "// 扫描线 —— 按源分辨率行数明暗相间；传入弯曲后坐标时扫描线随弧面弯曲\n" +
+            "float nsScanlines(vec2 tc) {\n" +
+            "    float rows = 1.0 / max(u_texelDelta.y, 0.0001);\n" +
+            "    float f = fract(tc.y * rows);\n" +
+            "    return 0.72 + 0.28 * exp(-6.0 * f);\n" +
+            "}\n" +
+            // 立体凸起：屏幕边缘内侧压暗模拟玻璃向内弯折的反光衰减
+            "float nsBevel(vec2 tc) {\n" +
+            "    vec2 e = min(tc, 1.0 - tc);\n" +
+            "    return mix(0.55, 1.0, smoothstep(0.0, 0.05, min(e.x, e.y)));\n" +
+            "}\n";
+
+    /**
+     * 仿电视机滤镜（mode 10）—— 四角圆弧 + 立体凸起弧面屏幕 + 扫描线 + 暗角 + 玻璃高光。
+     * 顶点着色器用 VERTEX_CRT（passthrough，v_texcoord0）。
+     */
+    public static final String FRAGMENT_TV =
+            "#ifdef GL_FRAGMENT_PRECISION_HIGH\n" +
+            "precision highp float;\n" +
+            "#else\n" +
+            "precision mediump float;\n" +
+            "#endif\n" +
+            "uniform sampler2D sampler0;\n" +
+            "uniform mediump vec2 u_texelDelta;\n" +
+            "varying vec2 v_texcoord0;\n" +
+            "\n" +
+            TV_GLSL_HELPERS +
+            "\n" +
+            "void main() {\n" +
+            "    float corner = nsCornerMask(v_texcoord0);\n" +
+            "    if (corner < 0.004) {\n" +
+            "        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);\n" +
+            "        return;\n" +
+            "    }\n" +
+            "    // 桶形弯曲采样：屏幕外缘鼓出 —— 真正的弧面透视，而非平面拉伸\n" +
+            "    vec2 cuv = nsCurve(v_texcoord0);\n" +
+            "    vec3 res;\n" +
+            "    if (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0) {\n" +
+            "        res = vec3(0.0);\n" +
+            "    } else {\n" +
+            "        res = texture2D(sampler0, cuv).xyz;\n" +
+            "    }\n" +
+            "    // 立体凸起：屏幕四周边缘内侧压暗（玻璃向内弯折的反光衰减）\n" +
+            "    res *= nsBevel(v_texcoord0);\n" +
+            "    // 扫描线随弧面弯曲（用弯曲后坐标）\n" +
+            "    res *= nsScanlines(cuv);\n" +
+            "    // 暗角 + 四角圆弧\n" +
+            "    res *= nsVignette(v_texcoord0);\n" +
+            "    res *= corner;\n" +
+            "    // 玻璃高光：屏幕上部一道微弱的弧形反光，立体感的关键\n" +
+            "    float gloss = 0.055 * smoothstep(0.42, 0.02, abs(v_texcoord0.y - 0.20));\n" +
+            "    res += gloss * corner;\n" +
+            "    res = clamp(res, vec3(0.0), vec3(1.0));\n" +
+            "    gl_FragColor = vec4(res, 1.0);\n" +
+            "}\n";
+
+    // ─── XBR / HQ4X 与扫描线 / 仿电视机的组合滤镜（运行时拼接，复用模板）─────
+    //
+    // 6 个组合滤镜不从模板整段复制（6×90 行漂移隐患），而是在类加载时用
+    // Java 字符串拼接复用 FRAGMENT_2XBR / FRAGMENT_4XBR / FRAGMENT_HQ4X：
+    //  - +Scanline：只在模板尾部输出前叠加扫描线；
+    //  - +TV：在 main 开头把采样坐标换成桶形弯曲坐标（单 pass 真弯曲采样，
+    //    放大算法在弯曲后的 texel 网格上运行），尾部叠加圆角/暗角/弯曲扫描线。
+
+    /** XBR 模板尾部输出锚点（main 内唯一）。 */
+    private static final String XBR_TAIL_ANCHOR = "    gl_FragColor.rgb = res;\n";
+
+    /** HQ4X 模板尾部输出锚点（main 内唯一）。 */
+    private static final String HQ4X_TAIL_ANCHOR = "    gl_FragColor = vec4(result, 1.0);\n";
+
+    /** XBR main 入口锚点。 */
+    private static final String XBR_MAIN_ANCHOR = "void main() {\n";
+
+    /** HQ4X main 入口锚点。 */
+    private static final String HQ4X_MAIN_ANCHOR = "void main()\n{\n";
+
+    /** 拼接 +Scanline 变体：尾部输出前叠加扫描线（不弯曲，走直线）。 */
+    private static String makeXbrScanline(String base) {
+        String tail =
+                "    res *= nsScanlines(v_tc0);\n" +
+                "    res = clamp(res, vec3(0.0), vec3(1.0));\n";
+        return injectXbrTail(base, tail);
+    }
+
+    /** 拼接 XBR+TV 变体：弯曲采样 + 圆角 + 暗角 + 随弧面弯曲的扫描线。 */
+    private static String makeXbrTv(String base) {
+        int idx = base.indexOf(XBR_MAIN_ANCHOR);
+        if (idx < 0) return base;   // 模板变了 → 退化为原滤镜（防御性，不崩）
+        String header = base.substring(0, idx);
+        String body = base.substring(idx);
+        // main 内部所有 v_tc0 引用改为弯曲后坐标 v_tc0c（varying 声明在 header，不受影响）
+        body = body.replace("v_tc0", "v_tc0c");
+        // main 开头计算弯曲坐标
+        body = body.replace(XBR_MAIN_ANCHOR,
+                XBR_MAIN_ANCHOR + "    vec2 v_tc0c = nsCurve(v_tc0);\n");
+        // 尾部叠加 TV 外观（圆角/暗角用屏幕原始坐标，扫描线用弯曲坐标）
+        String tail =
+                "    res *= nsCornerMask(v_tc0);\n" +
+                "    res *= nsVignette(v_tc0);\n" +
+                "    res *= nsScanlines(v_tc0c);\n" +
+                "    res = clamp(res, vec3(0.0), vec3(1.0));\n";
+        body = body.replace(XBR_TAIL_ANCHOR, tail + XBR_TAIL_ANCHOR);
+        return header + TV_GLSL_HELPERS + body;
+    }
+
+    /** 拼接 HQ4X+Scanline 变体。 */
+    private static String makeHq4xScanline(String base) {
+        String tail =
+                "    result *= nsScanlines(v_tc0.xy);\n" +
+                "    result = clamp(result, vec3(0.0), vec3(1.0));\n";
+        return injectHq4xTail(base, tail);
+    }
+
+    /** 拼接 HQ4X+TV 变体：弯曲采样 + TV 外观。 */
+    private static String makeHq4xTv(String base) {
+        int idx = base.indexOf(HQ4X_MAIN_ANCHOR);
+        if (idx < 0) return base;
+        String header = base.substring(0, idx);
+        String body = base.substring(idx);
+        // HQ4X fragment 没有 u_texelDelta 声明（vertex 有）—— helpers 需要它
+        body = body.replace(HQ4X_MAIN_ANCHOR,
+                HQ4X_MAIN_ANCHOR + "    vec2 hqC = nsCurve(v_tc0.xy);\n");
+        body = body.replace("sampleTC(v_tc0.xy)", "sampleTC(hqC)");
+        String tail =
+                "    result *= nsCornerMask(v_tc0.xy);\n" +
+                "    result *= nsVignette(v_tc0.xy);\n" +
+                "    result *= nsScanlines(hqC);\n" +
+                "    result = clamp(result, vec3(0.0), vec3(1.0));\n";
+        body = body.replace(HQ4X_TAIL_ANCHOR, tail + HQ4X_TAIL_ANCHOR);
+        // header 里补 u_texelDelta uniform（TV helpers 的 nsScanlines 用）
+        String uniforms = "uniform mediump vec2 u_texelDelta;\n";
+        return header + uniforms + TV_GLSL_HELPERS + body;
+    }
+
+    /** XBR 系尾部注入（helpers 必须插在 main 之前 —— GLSL 先声明后使用）。 */
+    private static String injectXbrTail(String base, String tail) {
+        if (!base.contains(XBR_TAIL_ANCHOR)) return base;
+        String injected = base.replace(XBR_TAIL_ANCHOR, tail + XBR_TAIL_ANCHOR);
+        int m = injected.indexOf(XBR_MAIN_ANCHOR);
+        if (m < 0) return injected;
+        return injected.substring(0, m) + TV_GLSL_HELPERS + injected.substring(m);
+    }
+
+    /** HQ4X 系尾部注入（补 u_texelDelta 声明，校验锚点）。 */
+    private static String injectHq4xTail(String base, String tail) {
+        if (!base.contains(HQ4X_TAIL_ANCHOR)) return base;
+        String injected = base.replace(HQ4X_TAIL_ANCHOR, tail + HQ4X_TAIL_ANCHOR);
+        // helpers 的 nsScanlines 需要 u_texelDelta —— HQ4X fragment 未声明，补在 precision 之后
+        int p = injected.indexOf("varying vec4 v_tc0;");
+        if (p >= 0) {
+            injected = injected.substring(0, p)
+                    + "uniform mediump vec2 u_texelDelta;\n"
+                    + injected.substring(p);
+        }
+        // helpers 函数库插在 main 之前
+        int m = injected.indexOf(HQ4X_MAIN_ANCHOR);
+        if (m < 0) return injected;
+        return injected.substring(0, m) + TV_GLSL_HELPERS + injected.substring(m);
+    }
+
+    /** 2xBR + Scanline（mode 11）。 */
+    public static final String FRAGMENT_2XBR_SCANLINE = makeXbrScanline(FRAGMENT_2XBR);
+
+    /** 4xBR + Scanline（mode 12）。 */
+    public static final String FRAGMENT_4XBR_SCANLINE = makeXbrScanline(FRAGMENT_4XBR);
+
+    /** HQ4x + Scanline（mode 13）。 */
+    public static final String FRAGMENT_HQ4X_SCANLINE = makeHq4xScanline(FRAGMENT_HQ4X);
+
+    /** 2xBR + TV（mode 14）—— 单 pass 真弯曲采样。 */
+    public static final String FRAGMENT_2XBR_TV = makeXbrTv(FRAGMENT_2XBR);
+
+    /** 4xBR + TV（mode 15）。 */
+    public static final String FRAGMENT_4XBR_TV = makeXbrTv(FRAGMENT_4XBR);
+
+    /** HQ4x + TV（mode 16）。 */
+    public static final String FRAGMENT_HQ4X_TV = makeHq4xTv(FRAGMENT_HQ4X);
+
     // ─── Public API ──────────────────────────────────────────────────────────
 
     public static String[] getShader(int mode) {
@@ -945,12 +1166,19 @@ public final class J2meFilterShaders {
             case MODE_SCANLINE: return VERTEX_SCANLINE;
             case MODE_CRT:      return VERTEX_CRT;
             case MODE_DOT:      return VERTEX_DOT;
+            case MODE_TV:       return VERTEX_CRT;   // passthrough，varying v_texcoord0
             case MODE_2XBR:
-            case MODE_2XBR_DOT: return VERTEX_2XBR;
+            case MODE_2XBR_DOT:
+            case MODE_2XBR_SCANLINE:
+            case MODE_2XBR_TV:  return VERTEX_2XBR;
             case MODE_4XBR:
-            case MODE_4XBR_DOT: return VERTEX_4XBR;
+            case MODE_4XBR_DOT:
+            case MODE_4XBR_SCANLINE:
+            case MODE_4XBR_TV:  return VERTEX_4XBR;
             case MODE_HQ4X:
-            case MODE_HQ4X_DOT: return VERTEX_HQ4X;
+            case MODE_HQ4X_DOT:
+            case MODE_HQ4X_SCANLINE:
+            case MODE_HQ4X_TV:  return VERTEX_HQ4X;
             case MODE_NONE:
             default:            return VERTEX_SHADER;
         }
@@ -958,17 +1186,24 @@ public final class J2meFilterShaders {
 
     public static String getFragmentShader(int mode) {
         switch (mode) {
-            case MODE_SCANLINE:  return FRAGMENT_SCANLINE;
-            case MODE_CRT:       return FRAGMENT_CRT;
-            case MODE_DOT:       return FRAGMENT_DOT;
-            case MODE_2XBR:      return FRAGMENT_2XBR;
-            case MODE_4XBR:      return FRAGMENT_4XBR;
-            case MODE_2XBR_DOT:  return FRAGMENT_2XBR_DOT;
-            case MODE_4XBR_DOT:  return FRAGMENT_4XBR_DOT;
-            case MODE_HQ4X:      return FRAGMENT_HQ4X;
-            case MODE_HQ4X_DOT:  return FRAGMENT_HQ4X_DOT;
+            case MODE_SCANLINE:       return FRAGMENT_SCANLINE;
+            case MODE_CRT:            return FRAGMENT_CRT;
+            case MODE_DOT:            return FRAGMENT_DOT;
+            case MODE_TV:             return FRAGMENT_TV;
+            case MODE_2XBR:           return FRAGMENT_2XBR;
+            case MODE_4XBR:           return FRAGMENT_4XBR;
+            case MODE_2XBR_DOT:       return FRAGMENT_2XBR_DOT;
+            case MODE_4XBR_DOT:       return FRAGMENT_4XBR_DOT;
+            case MODE_HQ4X:           return FRAGMENT_HQ4X;
+            case MODE_HQ4X_DOT:       return FRAGMENT_HQ4X_DOT;
+            case MODE_2XBR_SCANLINE:  return FRAGMENT_2XBR_SCANLINE;
+            case MODE_4XBR_SCANLINE:  return FRAGMENT_4XBR_SCANLINE;
+            case MODE_HQ4X_SCANLINE:  return FRAGMENT_HQ4X_SCANLINE;
+            case MODE_2XBR_TV:        return FRAGMENT_2XBR_TV;
+            case MODE_4XBR_TV:        return FRAGMENT_4XBR_TV;
+            case MODE_HQ4X_TV:        return FRAGMENT_HQ4X_TV;
             case MODE_NONE:
-            default:             return FRAGMENT_NONE;
+            default:                  return FRAGMENT_NONE;
         }
     }
 
@@ -979,11 +1214,16 @@ public final class J2meFilterShaders {
     public static boolean isPixelProcessingMode(int mode) {
         return mode == MODE_2XBR || mode == MODE_4XBR ||
                mode == MODE_2XBR_DOT || mode == MODE_4XBR_DOT ||
-               mode == MODE_HQ4X || mode == MODE_HQ4X_DOT;
+               mode == MODE_HQ4X || mode == MODE_HQ4X_DOT ||
+               mode == MODE_2XBR_SCANLINE || mode == MODE_4XBR_SCANLINE ||
+               mode == MODE_HQ4X_SCANLINE || mode == MODE_2XBR_TV ||
+               mode == MODE_4XBR_TV || mode == MODE_HQ4X_TV;
     }
 
     public static boolean isMaskMode(int mode) {
-        return mode == MODE_SCANLINE || mode == MODE_CRT || mode == MODE_DOT;
+        // TV（mode 10）是纯遮罩类：GL 端弯曲采样，CPU 端叠加外观
+        return mode == MODE_SCANLINE || mode == MODE_CRT || mode == MODE_DOT ||
+               mode == MODE_TV;
     }
 
     public static boolean usesNearestFiltering(int mode) {

@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +92,15 @@ fun FsdCoverFlow(
             label = "fsd-flow-pos"
         )
 
+        // 手势/键盘回调一律经 State 读取最新值 —— 修复“有时候滑不过来”：
+        // 旧版 pointerInput(count) 的协程闭包捕获首次组合时的 sel/onIndexChange，
+        // count 不变时手势协程永不重启，拖动翻页永远基于过期索引计算目标，
+        // clamp 之后直接卡死；D-pad 路径每次重组重建闭包所以正常。
+        val currentSel by rememberUpdatedState(selectedIndex)
+        val currentOnIndexChange by rememberUpdatedState(onIndexChange)
+        val currentOnItemClick by rememberUpdatedState(onItemClick)
+        val currentOnItemLongClick by rememberUpdatedState(onItemLongClick)
+
         val stepPx = with(LocalDensity.current) { (itemWidth + gap).toPx() }
         var dragAccum by remember { mutableFloatStateOf(0f) }
 
@@ -119,7 +129,7 @@ fun FsdCoverFlow(
         }
 
         fun move(delta: Int) {
-            onIndexChange((sel + delta).coerceIn(0, count - 1))
+            currentOnIndexChange((currentSel.coerceIn(0, count - 1) + delta).coerceIn(0, count - 1))
         }
 
         Box(
@@ -134,27 +144,48 @@ fun FsdCoverFlow(
                         Key.DirectionLeft -> { move(-1); true }
                         Key.DirectionRight -> { move(1); true }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                            onItemClick(sel); true
+                            onItemClick(currentSel.coerceIn(0, count - 1)); true
                         }
-                        Key.Y, Key.ButtonY -> { onItemLongClick(sel); true }  // Y = 选项（长按等效）
+                        Key.Y, Key.ButtonY -> {
+                            onItemLongClick(currentSel.coerceIn(0, count - 1)); true
+                        }  // Y = 选项（长按等效）
                         else -> false
                     }
                 }
-                .pointerInput(count) {
+                .pointerInput(Unit) {
+                    // EMA 速度跟踪：快甩时按速度翻页（惯性 fling），不再只看拖动距离
+                    var emaV = 0f
+                    var lastTime = 0L
                     detectHorizontalDragGestures(
                         onDragStart = {
                             dragAccum = 0f
                             settling = false
                             dragPx = 0f
+                            emaV = 0f
+                            lastTime = 0L
                         },
                         onHorizontalDrag = { change, amount ->
+                            val t = change.uptimeMillis
+                            if (lastTime != 0L) {
+                                val dt = (t - lastTime).coerceAtLeast(1)
+                                val v = amount / dt * 1000f   // px/s
+                                emaV = 0.7f * emaV + 0.3f * v
+                            }
+                            lastTime = t
                             dragAccum += amount
                             dragPx += amount
                             change.consume()
                         },
                         onDragEnd = {
-                            // 半步即翻页 — 手感与 FSD 一致；翻页与回弹动画并行，落位顺滑
-                            val steps = (-dragAccum / (stepPx * 0.45f)).roundToInt()
+                            // 半步即翻页 + fling：慢拖按位移，快甩按速度
+                            // （900 px/s 起翻，每 1800 px/s 额外多翻一步），
+                            // 翻页与回弹动画并行，落位顺滑
+                            var steps = (-dragAccum / (stepPx * 0.45f)).roundToInt()
+                            if (abs(emaV) > 900f) {
+                                val fling = (abs(emaV) / 1800f).toInt() + 1
+                                val dir = if (emaV < 0f) 1 else -1   // 向左甩 → 翻下一页
+                                if (steps * dir < fling) steps = fling * dir
+                            }
                             if (steps != 0) move(steps.coerceIn(-visibleHalfWindow, visibleHalfWindow))
                             settling = true
                         },
@@ -167,31 +198,29 @@ fun FsdCoverFlow(
             val to = (sel + visibleHalfWindow).coerceAtMost(count - 1)
 
             for (i in from..to) {
-                val pos = i - animated          // 动画中的相对位置
                 val dist = abs(i - sel)          // 静态距离（决定可点击性判断）
-
-                // 缩放 / 淡出 / 倾斜都由动画位置驱动，过渡平滑
-                val scale = (1f - scalePerStep * abs(pos)).coerceAtLeast(0.5f)
-                val alpha = (1f - fadePerStep * abs(pos)).coerceIn(0.25f, 1f)
-                val tilt = (pos * tiltDegrees).coerceIn(-tiltDegrees * 2, tiltDegrees * 2).toFloat()
 
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
                         .align(Alignment.Center)
                         .graphicsLayer {
+                            // 在绘制阶段读取动画值：翻页动画每帧只重绘不再重组，
+                            // 旧版每帧重组最多 visibleHalfWindow*2+1 个磁贴子树，掉帧明显
+                            val pos = i - animated
                             translationX = pos * stepPx + dragPx
+                            val scale = (1f - scalePerStep * abs(pos)).coerceAtLeast(0.5f)
                             scaleX = scale
                             scaleY = scale
-                            rotationY = tilt
-                            this.alpha = alpha
+                            rotationY = (pos * tiltDegrees).coerceIn(-tiltDegrees * 2, tiltDegrees * 2)
+                            alpha = (1f - fadePerStep * abs(pos)).coerceIn(0.25f, 1f)
                             cameraDistance = 10f * density // 更柔和的透视
                         }
                         .combinedClickable(
                             onClick = {
-                                if (dist == 0) onItemClick(i) else onIndexChange(i)
+                                if (dist == 0) currentOnItemClick(i) else currentOnIndexChange(i)
                             },
-                            onLongClick = { onItemLongClick(i) }
+                            onLongClick = { currentOnItemLongClick(i) }
                         )
                 ) {
                     // 封面主体

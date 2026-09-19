@@ -1,6 +1,6 @@
 {
   "$schema": "NesStation ROM scanner configuration",
-  "version": 3,
+  "version": 4,
   "scan_defaults": [
     "ROMs",
     "NesStation",
@@ -12,14 +12,15 @@
     "Games/PCE",
     "roms"
   ],
-  "extensions": ["nes", "smc", "sfc", "gb", "gbc", "gba", "zip", "md", "smd", "sms", "gg", "sg", "cue", "chd", "pce", "sgx", "hes"],
+  "extensions": ["nes", "fds", "unf", "smc", "sfc", "gb", "gbc", "gba", "zip", "smd", "gen", "68k", "pce", "sgx", "dosz", "nds", "srl"],
   "ignore_patterns": [
+    "*.apk",
+    "*.tmp",
     "*.nes.bak",
     "*.nes.tmp",
-    "*.tmp",
     ".DS_Store"
   ],
   "scan_recursive": true,
   "max_file_size_mb": 256,
-  "notes": "Directories listed under scan_defaults are relative to the primary external storage root. The SAF (Storage Access Framework) tree, when granted by the user, is scanned in addition. max_file_size_mb raised to 256 to accommodate arcade ROMs, Mega-CD images, and PCE-CD images."
+  "notes": "v4: extension list aligned with PlatformDetector.AUTO_TRUSTED_EXTENSIONS (unambiguous formats only). md/sms/gg/sg/gz/cue/chd/hes removed from auto-scan list — they collide with everyday files (Markdown docs, SMS backups, log archives, firmware images). Zip entries are content-probed (arcade signature extensions / driver name / trusted platform extensions) before classification; .apk is explicitly excluded. Unrecognized files are skipped, never guessed."
 }

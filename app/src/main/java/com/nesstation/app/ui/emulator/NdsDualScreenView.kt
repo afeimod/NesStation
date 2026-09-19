@@ -72,13 +72,17 @@ internal object NdsFilterPatterns {
     /**
      * 视频滤镜字符串 → 叠加层图案类型。
      * 与 EmulatorScreen 中 FilterOverlay 的判定保持一致：
-     * scanline / crt / dot 以及 *_dot 组合会绘制叠加图案。
+     * scanline / crt / dot / tv 以及 *_dot / *_scanline / *_tv 组合会绘制叠加图案
+     * （组合滤镜的原生放大由核心层完成，这里只叠加外观）。
      */
-    fun overlayPatternType(videoFilter: String): String? = when (videoFilter) {
-        "scanline" -> "scanline"
-        "crt" -> "crt"
-        "dot" -> "dot"
-        "xbr_dot", "4xbr_dot", "hq4x_dot" -> "dot"
+    fun overlayPatternType(videoFilter: String): String? = when {
+        videoFilter == "scanline" -> "scanline"
+        videoFilter == "crt" -> "crt"
+        videoFilter == "dot" -> "dot"
+        videoFilter == "tv" -> "tv"
+        videoFilter.endsWith("_dot") -> "dot"
+        videoFilter.endsWith("_scanline") -> "scanline"
+        videoFilter.endsWith("_tv") -> "tv"
         else -> null
     }
 }
@@ -211,7 +215,7 @@ class NdsDualScreenView @JvmOverloads constructor(
             return
         }
         val bmp = when (patternType) {
-            "scanline" -> NdsFilterPatterns.createScanlinePattern()
+            "scanline", "tv" -> NdsFilterPatterns.createScanlinePattern()   // tv：扫描线打底
             "crt" -> NdsFilterPatterns.createCrtPattern()
             else -> NdsFilterPatterns.createDotPattern()
         }
@@ -225,13 +229,13 @@ class NdsDualScreenView @JvmOverloads constructor(
         vignetteBottomKey = ""
     }
 
-    /** 为某个屏幕矩形创建 CRT 边缘暗角 Paint（按矩形尺寸缓存，调用方管理键）。 */
-    private fun makeVignettePaint(rect: RectF): Paint {
+    /** 为某个屏幕矩形创建 CRT/TV 边缘暗角 Paint（按矩形尺寸缓存，调用方管理键）。 */
+    private fun makeVignettePaint(rect: RectF, edgeAlpha: Float = 0.35f): Paint {
         val radius = kotlin.math.min(rect.width(), rect.height()) * 0.7f
         return Paint().apply {
             shader = RadialGradient(
                 rect.centerX(), rect.centerY(), radius.coerceAtLeast(1f),
-                intArrayOf(Color.TRANSPARENT, (0.35f * 255).toInt().shl(24)),
+                intArrayOf(Color.TRANSPARENT, (edgeAlpha.coerceIn(0f, 1f) * 255f).toInt().shl(24)),
                 floatArrayOf(0f, 1f),
                 Shader.TileMode.CLAMP
             )
@@ -291,17 +295,20 @@ class NdsDualScreenView @JvmOverloads constructor(
             if (topSrc != null) canvas.drawRect(dstTop, pp)
             if (bottomSrc != null) canvas.drawRect(dstBottom, pp)
         }
-        if (videoFilter == "crt") {
+        if (videoFilter == "crt" || videoFilter == "tv" || videoFilter.endsWith("_tv")) {
+            // 仿电视机（含组合）用比 CRT 更浓的暗角（电视玻璃观感）
+            val isTv = videoFilter == "tv" || videoFilter.endsWith("_tv")
+            val edge = if (isTv) 0.62f else 0.35f
             val topKey = "${dstTop.width().toInt()}x${dstTop.height().toInt()}"
             if (vignetteTopKey != topKey || vignetteTopPaint == null) {
-                vignetteTopPaint = makeVignettePaint(dstTop)
+                vignetteTopPaint = makeVignettePaint(dstTop, edge)
                 vignetteTopKey = topKey
             }
             vignetteTopPaint?.let { canvas.drawRect(dstTop, it) }
 
             val bottomKey = "${dstBottom.width().toInt()}x${dstBottom.height().toInt()}"
             if (vignetteBottomKey != bottomKey || vignetteBottomPaint == null) {
-                vignetteBottomPaint = makeVignettePaint(dstBottom)
+                vignetteBottomPaint = makeVignettePaint(dstBottom, edge)
                 vignetteBottomKey = bottomKey
             }
             vignetteBottomPaint?.let { canvas.drawRect(dstBottom, it) }

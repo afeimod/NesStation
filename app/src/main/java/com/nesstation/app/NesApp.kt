@@ -13,6 +13,7 @@ import com.nesstation.app.core.engine.PsxEngine
 import com.nesstation.app.core.engine.Psx2Engine
 import com.nesstation.app.core.engine.NdsEngine
 import com.nesstation.app.core.storage.AppContainer
+import com.nesstation.app.core.storage.RomStore
 import com.nesstation.app.core.storage.SettingsRepository
 import java.io.File
 
@@ -118,6 +119,33 @@ class NesApp : Application() {
         tryInit("NdsBios")            { ensureNdsBios() }
         tryInit("PsxBios")            { ensurePsxBios() }
         tryInit("ArcadeTitleMigrate") { migrateArcadeTitles() }
+        tryInit("LibraryJunkSanitize") { sanitizeLibraryOnce() }
+    }
+
+    /**
+     * 一次性游戏库垃圾清理（任务：修复乱扫描 apk/zip 的存量收尾）。
+     *
+     * 旧版宽松扫描把 APK 安装包 / 资源 zip 等垃圾灌进了游戏库；新扫描逻辑
+     * （PlatformDetector.detectForRefresh* + 探头验证）已经堵住入口，但存量
+     * 垃圾不会自己消失。升级后首次启动在后台线程清扫一次，
+     * prefs 标记防重复，只跑一次。
+     */
+    private fun sanitizeLibraryOnce() {
+        val prefs = getSharedPreferences("rom_library", MODE_PRIVATE)
+        if (prefs.getBoolean("library_junk_sanitized", false)) return
+        Thread {
+            try {
+                val removed = RomStore.sanitizeLibrary(this)
+                if (removed > 0) {
+                    Log.i("NesApp", "游戏库垃圾清理：已移除 $removed 条非 ROM 条目")
+                }
+            } catch (t: Throwable) {
+                Log.w("NesApp", "游戏库清理失败（下次启动重试）", t)
+            } finally {
+                // 清理成功与否都标记，避免每次启动都扫一遍库
+                try { prefs.edit().putBoolean("library_junk_sanitized", true).apply() } catch (_: Throwable) {}
+            }
+        }.start()
     }
 
     /**

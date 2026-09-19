@@ -277,7 +277,12 @@ fun LibraryScreen(
                         val uriStr = fileUri.toString()
                         if (uriStr !in knownPaths && uriStr !in pendingAddPaths) {
                             try {
-                                val platform = detectPlatformFromUri(context, fileUri, name, hintPlatform = hintPlatform)
+                                // ★ 收紧判定（参考全能模拟器「先识别内容再分类核心」）：
+                                // 重扫时 apk / 未知 zip / 未知扩展直接跳过，绝不兜底入库，
+                                // 避免每次刷新都把文件夹里的垃圾重新灌进游戏库
+                                val platform = com.nesstation.app.core.storage.PlatformDetector
+                                    .detectForRefreshUri(context, fileUri, name, hintPlatform = hintPlatform)
+                                    ?: return@forEach
                                 val title = when (platform) {
                                     GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
                                     GamePlatform.PSX -> {
@@ -354,7 +359,10 @@ fun LibraryScreen(
                             val path = file.absolutePath
                             if (path !in knownPaths && path !in pendingAddPaths) {
                                 try {
-                                    val platform = detectPlatformFromFile(file, hintPlatform = hintPlatform)
+                                    // ★ 收紧判定：与上方 SAF 路径同规则，不可信识别直接跳过
+                                    val platform = com.nesstation.app.core.storage.PlatformDetector
+                                        .detectForRefresh(file, hintPlatform = hintPlatform)
+                                        ?: return@forEach
                                     val title = when (platform) {
                                         GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(file.name)
                                         GamePlatform.PSX -> {
@@ -872,9 +880,9 @@ fun LibraryScreen(
 
     // === FSD 封面流 UI（Xbox 360 Freestyle Dash 风格）===
 
-    // 封面位图缓存 — 同一游戏封面被「封面主体 + 倒影」两处组合使用，
-    // 在此统一解码一次，避免重复 IO。
-    val coverCache = remember { HashMap<String, android.graphics.Bitmap>() }
+    // 封面位图缓存 — LruCache 替代旧 HashMap：旧版攒到 60+ 张才整表 clear()，
+    // 翻库时触发周期性「解码风暴」掉帧；LruCache 容量 48 张，自动驱逐最久未用条目。
+    val coverCache = remember { android.util.LruCache<String, android.graphics.Bitmap>(48) }
 
     // 封面流选中索引
     var selectedIndex by remember { mutableStateOf(0) }
@@ -1076,6 +1084,8 @@ fun LibraryScreen(
                             displayGames.getOrNull(idx)?.let { longPressGame = it }
                         },
                         grabFocusOnLaunch = true,
+                        // 关闭倒影：每个封面少组合一次完整磁贴子树，封面流滚动更顺滑
+                        showReflection = false,
                         modifier = Modifier.fillMaxSize()
                     ) { i ->
                         FsdGameCover(displayGames[i], coverCache)
@@ -1746,15 +1756,37 @@ private fun MenuOption(text: String, danger: Boolean = false, onClick: () -> Uni
 }
 
 /**
+ * 解码封面位图：inSampleSize 降采样到最长边 ≤600px + RGB_565。
+ * 封面在流里最大只有 ~186dp 宽，600px 足够；单张内存从 ~1.9MB 降到 ~0.5MB，
+ * 大量封面入库时 OOM 与 GC 压力都显著下降。
+ */
+private fun decodeCoverBitmap(path: String): android.graphics.Bitmap? {
+    return try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        var sample = 1
+        val maxEdge = maxOf(bounds.outWidth, bounds.outHeight)
+        while (maxEdge / (sample * 2) >= 600) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+        }
+        BitmapFactory.decodeFile(path, opts)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
  * FSD 封面卡片 — 封面流中的单个游戏封面。
  * 优先使用真实封面（自定义图标 / Java MIDlet-Icon / 街机 zip 内预览图），
  * 否则用 [GameIconExtractor.generateFallbackCover] 生成带游戏名首字的
- * 主题色封面。位图通过 [cache] 复用（封面主体与倒影共享一次解码）。
+ * 主题色封面。位图通过 [cache]（LruCache）复用。
  */
 @Composable
 private fun FsdGameCover(
     game: GameEntry,
-    cache: HashMap<String, android.graphics.Bitmap>
+    cache: android.util.LruCache<String, android.graphics.Bitmap>
 ) {
     val context = LocalContext.current
     // 修复：缓存键必须包含图标来源标识。旧实现 remember 键虽然含 customIconPath，
@@ -1764,16 +1796,17 @@ private fun FsdGameCover(
     val cacheKey = "${game.id}|${game.customIconPath ?: ""}|${game.coverPath ?: ""}"
     val staleKey = "${game.id}|"
     val bmp = remember(cacheKey) {
-        if (cache.size > 60) cache.clear()
         // 清掉同一游戏旧图标的残留位图
-        cache.keys.filter { it.startsWith(staleKey) && it != cacheKey }.forEach { cache.remove(it) }
-        cache.getOrPut(cacheKey) {
+        cache.snapshot().keys
+            .filter { it.startsWith(staleKey) && it != cacheKey }
+            .forEach { cache.remove(it) }
+        cache.get(cacheKey) ?: run {
             var b: android.graphics.Bitmap? = null
             val path = try {
                 com.nesstation.app.core.storage.GameIconExtractor.resolveIconPath(context, game)
             } catch (_: Exception) { null }
             if (path != null) {
-                try { b = BitmapFactory.decodeFile(path) } catch (_: Exception) { b = null }
+                try { b = decodeCoverBitmap(path) } catch (_: Exception) { b = null }
             }
             if (b == null) {
                 try {
@@ -1785,6 +1818,7 @@ private fun FsdGameCover(
                     )
                 }
             }
+            cache.put(cacheKey, b!!)
             b!!
         }
     }
