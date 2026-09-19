@@ -99,7 +99,18 @@ object Psx2Native {
      */
     @JvmStatic fun loadRom(path: String): Boolean {
         if (!ensureLoaded()) return false
-        stopVmThread()
+        // 给上一个 VM 充分的退出时间（换游戏场景）：大游戏收尾可能数秒。
+        stopVmThread(8000)
+        // ★ 关闭大游戏闪退修复：上一个 VM 未完全退出时绝不能启动新 VM。
+        // NativeApp.shutdown() 对重游戏可能超过 5 秒等待窗口（大内存池释放、
+        // 存档/记录刷盘、卡在长 JIT 块），此时上一个 VM 线程还活着 —— 旧实
+        // 现置之不理直接 initialize/runVMThread，两个 VM 并存 → 原生态双
+        // 初始化 → SIGSEGV 闪退。这里确认 VM 真正消亡后才继续；超时则拒
+        // 绝本次启动（UI 报“启动失败”），绝不冒双 VM 的险。
+        if (vmThread?.isAlive == true || NativeApp.hasActiveVM()) {
+            android.util.Log.e("Psx2Native", "previous VM still active — refusing to boot a new one (avoid double-VM crash)")
+            return false
+        }
         // Core is initialized (Psx2Engine calls setPaths → initialize before
         // loadRom) — now safe to replay options queued by the UI pre-boot.
         flushPendingOptions()
@@ -123,17 +134,46 @@ object Psx2Native {
         return true
     }
 
-    private fun stopVmThread() {
+    /**
+     * 等待 VM 线程真正退出（可从 unload 或换游戏路径调用）。
+     * ★ 旧实现只 join(300ms) 就放弃并丢掉引用 —— 大游戏关闭时
+     * VMManager::Shutdown(false) + CPUThreadShutdown 释放大内存池/刷盘
+     * 常超过 300ms，线程被遗留后台继续跑，后续 initialize/换游戏与它
+     * 竞态 → 关闭大核心游戏闪退的主因之一。现分片等待至多 [waitMs]，
+     * 期间不占用调用方过多时间且不留僵尸线程。
+     */
+    private fun stopVmThread(waitMs: Long = 300) {
         vmThread?.let { t ->
             try { t.interrupt() } catch (_: Throwable) {}
-            try { t.join(300) } catch (_: InterruptedException) {}
+            val deadline = System.currentTimeMillis() + waitMs
+            while (t.isAlive && System.currentTimeMillis() < deadline) {
+                try { t.join(200) } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            if (t.isAlive) {
+                android.util.Log.w("Psx2Native", "VM thread still alive after ${waitMs}ms wait")
+            }
         }
         vmThread = null
     }
 
     @JvmStatic fun unload() {
         try { NativeApp.shutdown() } catch (t: Throwable) { android.util.Log.w("Psx2Native", "shutdown", t) }
-        stopVmThread()
+        // ★ shutdown() 内部最多只等 5 秒 VMState::Shutdown，超时后 VM 线程
+        // 仍在收尾（大游戏常见）——这里给足时间让 runVMThread 真正返回，
+        // 避免后台遗留半死 VM 与下一次启动/initialize 竞态闪退。
+        stopVmThread(8000)
+        // 再给 VM 状态一个短暂沉降窗口（VMState → Shutdown 的收尾）。
+        var settle = 0
+        while (settle < 20) {
+            try {
+                if (!NativeApp.hasActiveVM()) break
+            } catch (_: Throwable) { break }
+            try { Thread.sleep(100) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
+            settle++
+        }
     }
 
     /** ARMSX2 has no libretro-style reset; the core handles resets internally. */

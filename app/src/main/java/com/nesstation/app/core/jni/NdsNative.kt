@@ -195,8 +195,10 @@ object NdsNative {
      *
      * filter 取值：4=xbr(2x) 5=hq2x(2x) 7=xbr+dot(2x) 6=hq4x(4x)
      * 8=4xbr(4x) 9=4xbr+dot(4x) 10=hq4x+dot(4x)；其余返回 0。
-     * [dst] 容量须 ≥ w*h*(2x→16 / 4x→64) 字节（256×192 源 4x 时最大
-     * 1024×768×4 = 3MB）。
+     * 源尺寸上限 512×384/屏（1x=256×192 与高清单屏 512×384 均可 —— 上限
+     * 收紧会直接黑屏，见 nds_bridge.cpp kDfMaxSrcW/H 注释）。
+     * [dst] 容量须 ≥ w*h*(2x→16 / 4x→64) 字节（512×384 源 4x 时最大
+     * 2048×3072×4 = 24MB，调用方按输出尺寸精确分配）。
      */
     @JvmStatic external fun applyUpscaleFilter(
         filter: Int, src: IntArray, w: Int, h: Int, dst: java.nio.ByteBuffer

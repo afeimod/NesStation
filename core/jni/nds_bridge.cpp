@@ -377,13 +377,19 @@ Java_com_nesstation_app_core_jni_NdsNative_isCoreLibLoaded(JNIEnv*, jclass) {
 // 返回写入 dst 的字节数；filter 不支持 / 参数非法时返回 0。
 // -----------------------------------------------------------------------
 
-// 输出上限：256×192 源做 4x 放大 = 1024×768。
-static constexpr int kDfMaxSrcW = 256;
-static constexpr int kDfMaxSrcH = 192;
+// 输出上限（★ 高清 2x + 放大滤镜黑屏修复）：旧上限 256×192 只覆盖 1x 源；
+// 高清（bit41/_Hires3D）会话下 DraSticGlView 拿到的单屏源是 512×384，
+// 旧 guard（w>256||h>192）直接返回 0 → 滤镜永远不产出 → GL 视图每帧
+// 绘制从未上传过的空纹理 → 黑屏。现放宽到 512×384（1x 与高清单屏均可）。
+//   1x  源 4x → 1024×768；HD 源 2x → 1024×1536；HD 源 4x → 2048×3072。
+// 缓冲为 BSS 零页（Android 惰性提交）：未用到的页不占物理内存，只有
+// 实际跑到对应档位滤镜时才按页落地，无需担心常驻开销。
+static constexpr int kDfMaxSrcW = 512;
+static constexpr int kDfMaxSrcH = 384;
 
-// 2x 输出缓冲（4x 级联的中间缓冲也用它）
+// 2x 输出缓冲（4x 级联的中间缓冲也用它）：512×2 × 384×2 = 1024×1536
 static uint32_t s_dfBuf2x[kDfMaxSrcW * 2 * kDfMaxSrcH * 2];
-// 4x 输出缓冲
+// 4x 输出缓冲：512×4 × 384×4 = 2048×3072
 static uint32_t s_dfBuf4x[kDfMaxSrcW * 4 * kDfMaxSrcH * 4];
 
 // 0xAARRGGBB uint32（滤镜内部格式，与 Bitmap/IntArray 一致）

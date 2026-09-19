@@ -1317,7 +1317,11 @@ fun EmulatorScreen(
         // loadRom() internally calls cleanup(), but an explicit unload() here
         // guarantees the audio thread, emulation thread, and native core are
         // fully torn down — preventing stale state when switching games.
-        try { engine.unload() } catch (_: Throwable) {}
+        // ★ 闪退/ANR 修复：unload 内部要 join 模拟/渲染/GL 线程（DraStic
+        // 最多 3.5 秒+）、PS2 核心的 shutdown 更可能阻塞数秒 —— 主线程执行
+        // 会冻结 UI → ANR（用户感知为闪退）。移到 IO 线程；loadRom 侧的
+        // lifecycleLock 会自动与其串行化。
+        try { withContext(Dispatchers.IO) { engine.unload() } } catch (_: Throwable) {}
 
         // DOSBox-Pure 音频：统一使用核心自带采样率输出（默认行为，无
         // TV 模式特殊处理），由 DosEngine.loadRom 内部自动设置，无需注入。
@@ -1870,11 +1874,9 @@ fun EmulatorScreen(
                             android.util.Log.w("EmulatorScreen", "iNES patch failed: ${e.message}")
                         }
                     }
-                    val ok = if (platform == GamePlatform.JAVA) {
-                        withContext(Dispatchers.IO) {
-                            engine.loadRom(tempFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
-                        }
-                    } else {
+                    // ★ 全核心统一在 IO 线程加载：DraStic loadRom 内部要等
+                    // 首帧（最长 20 秒轮询），主线程执行会冻结 UI/引发 ANR。
+                    val ok = withContext(Dispatchers.IO) {
                         engine.loadRom(tempFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
                     }
                     if (!ok) {
@@ -1915,7 +1917,15 @@ fun EmulatorScreen(
             // hook 已经销毁后还回调到 NetplayController。
             try { engine.frameHook = null } catch (_: Throwable) {}
             try { netplayController?.stop() } catch (_: Throwable) {}
-            engine.unload()
+            // ★ 退出游戏闪退/ANR 修复：unload 必须等待模拟线程/渲染线程/
+            // GL 显示线程收尾（DraStic 最多 3.5 秒+），PS2 大核心的 shutdown
+            // 阻塞更久 —— 旧实现在主线程同步执行，大游戏退出瞬间主线程
+            // 长时间冻结 → ANR；若原生收尾与 UI 拆卸竞态 → SIGSEGV。
+            // 改到后台线程执行；loadRom 侧的 lifecycleLock 保证与下一次
+            // 加载严格串行（下局游戏会先等本局完全卸载再启动）。
+            kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+                try { engine.unload() } catch (_: Throwable) {}
+            }
         }
     }
 

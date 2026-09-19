@@ -525,6 +525,18 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     @Volatile
     var filteredGlActive: Boolean = false
 
+    /**
+     * GL 显示线程同步停止钩子（DraSticGlView 挂载引擎时注册）。
+     *
+     * ★ 关闭闪退修复核心：原生 renderFrame / 滤镜路径直接触碰核心帧池，
+     * 而 cleanup() 的 releaseSystem 会释放这些状态。旧 teardown 完全不同
+     * 步 GL 线程（只靠 surfaceDestroyed 异步收尾）—— 退出游戏时
+     * releaseSystem 与 GL 线程正在执行的 renderFrame 并发 → use-after-free
+     * → SIGSEGV 闪退。cleanup() 现在在触碰任何原生状态【之前】调用本钩子
+     * 同步停掉 GL 线程；返回 true 表示线程已确认退出。 */
+    @Volatile
+    internal var glDisplayStopper: (() -> Boolean)? = null
+
     /** 用会话快照 + 快进状态打包完整 config（热更新用，保证分辨率位
      *  与当前会话的原生状态一致）。 */
     private fun currentConfig(fastForward: Boolean): Long = packConfig(
@@ -1365,6 +1377,17 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         isLoaded = false
         paused = false
 
+        // ★ 第一步（关闭闪退修复）：同步停掉 GL 显示线程（若视图已挂载）。
+        // 必须在 pauseSystem/quitSystem/releaseSystem 之前 —— renderFrame
+        // 与滤镜路径都会直接读写核心帧池，任何并发触碰都会 use-after-free。
+        var glStopped = true
+        try {
+            glStopped = glDisplayStopper?.invoke() ?: true
+        } catch (_: Throwable) {
+            glStopped = false
+        }
+        glDisplayStopper = null
+
         // 释放所有按键 / 触摸，避免"粘键"带入下一局
         try {
             padBitsLibretro = 0
@@ -1416,18 +1439,21 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
         val renderDied = renderThread?.isAlive != true
         renderThread = null
 
-        try {
-            if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
-                DraSticJNI.releaseSystem()
+        // ★ 关闭闪退修复：只有【模拟线程、渲染线程、GL 显示线程全部确认
+        // 退出】后才允许 releaseSystem。旧实现无条件释放 —— 任一线程仍在
+        // 核心代码内（大游戏帧耗长/慢设备/渲染卡在 swap）都会访问已释放
+        // 的核心状态 → SIGSEGV。未全退时置 poisoned 禁用本进程激烈核心
+        // （宁可"重启应用再玩"也不闪退），与启动超时路径同一取舍。
+        if (emuDied && renderDied && glStopped) {
+            try {
+                if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
+                    DraSticJNI.releaseSystem()
+                }
+            } catch (_: Throwable) {
             }
-        } catch (_: Throwable) {
-        }
-
-        // 模拟/渲染线程任一拒绝退出时，releaseSystem 已经执行会构成
-        // use-after-free 风险 —— 置 poisoned 阻止本进程再次启动激烈核心。
-        if (!emuDied || !renderDied) {
+        } else {
             nativePoisoned = true
-            android.util.Log.e(TAG, "cleanup: drastic native threads refused to exit (emu=$emuDied render=$renderDied)")
+            android.util.Log.e(TAG, "cleanup: drastic teardown unsafe (emu=$emuDied render=$renderDied gl=$glStopped) — releaseSystem skipped, core disabled for this process")
         }
 
         // 存档互通：原生 quit 已把备份刷盘 → 较新的裸 .sav 回写共享位置

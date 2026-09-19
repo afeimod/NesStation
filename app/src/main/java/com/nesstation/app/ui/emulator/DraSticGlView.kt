@@ -91,9 +91,18 @@ class DraSticGlView @JvmOverloads constructor(
         """
     }
 
-    /** 激烈引擎（渲染 / 触摸 / 生命周期全部经由它）。 */
+    /** 激烈引擎（渲染 / 触摸 / 生命周期全部经由它）。
+     * ★ 关闭闪退修复：setter 里同步向引擎注册/撤销“GL 显示线程停止钩子”，
+     * 引擎 cleanup() 在触碰任何原生核心状态【之前】先同步停掉本视图的
+     * GL 线程，杜绝 releaseSystem 释放核心状态后 GL 线程仍在 renderFrame
+     * 中访问已释放内存（use-after-free → 退出游戏瞬间 SIGSEGV 闪退）。 */
     @Volatile
     var engine: DraSticEngine? = null
+        set(value) {
+            field?.glDisplayStopper = null
+            field = value
+            value?.glDisplayStopper = { stopAndJoinGlThread() }
+        }
 
     /** 菜单展开等 UI 阻断（true 时忽略触摸与按键）。 */
     @Volatile
@@ -121,6 +130,10 @@ class DraSticGlView @JvmOverloads constructor(
     private val glThreadRunning = AtomicBoolean(false)
     private var glThread: Thread? = null
     private val surfaceReady = AtomicBoolean(false)
+    /** GL 循环停止请求（引擎 teardown / surface 销毁时置位；
+     * 与 surfaceReady 分离，避免引擎先于 surface 销毁收线程时
+     * “join 超时放弃”后循环仍继续跑完整个会话）。 */
+    @Volatile private var glLoopStopped = false
     @Volatile private var surfaceW = 0
     @Volatile private var surfaceH = 0
     @Volatile private var layoutDirty = true
@@ -199,6 +212,16 @@ class DraSticGlView @JvmOverloads constructor(
         stopGlThread()
     }
 
+    /** 停止 GL 循环并等待线程退出（幂等，可从任意线程调用；
+     * 引擎 cleanup() 的 teardown 钩子。返回线程是否已确认退出）。 */
+    fun stopAndJoinGlThread(): Boolean {
+        glLoopStopped = true
+        surfaceReady.set(false)
+        val t = glThread ?: return true
+        try { t.join(2000) } catch (_: InterruptedException) {}
+        return !t.isAlive
+    }
+
     /** 布局参数变化时通知 GL 线程重建顶点。 */
     fun notifyLayoutChanged() {
         layoutDirty = true
@@ -210,6 +233,7 @@ class DraSticGlView @JvmOverloads constructor(
 
     private fun startGlThread() {
         if (glThreadRunning.getAndSet(true)) return
+        glLoopStopped = false
         val view = this
         glThread = thread(name = "drastic-gl", isDaemon = true) {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY)
@@ -241,6 +265,7 @@ class DraSticGlView @JvmOverloads constructor(
     }
 
     private fun stopGlThread() {
+        glLoopStopped = true
         val t = glThread
         if (t != null) {
             try { t.join(1500) } catch (_: InterruptedException) {}
@@ -460,7 +485,7 @@ class DraSticGlView @JvmOverloads constructor(
         // 放大档位由 eng.activeVideoFilter 驱动，可游戏运行中热切换。
         var lastFilterClass = -1
 
-        while (glThreadRunning.get() && surfaceReady.get()) {
+        while (glThreadRunning.get() && surfaceReady.get() && !glLoopStopped) {
             val eng = engine
             if (eng == null || !eng.isLoaded) {
                 // 未加载：清屏等待（加载遮罩由 Compose 层显示）
@@ -557,11 +582,16 @@ class DraSticGlView @JvmOverloads constructor(
      * 取帧用 frameStamp 前后校验，恰逢渲染线程覆盖时跳过本帧上传
      * （只重绘既有纹理，避免撕裂）。
      *
-     * ★ 纹理/缓冲尺寸按【实际源尺寸 × 滤镜倍数】每帧校准：
+     * ★ 纹理/缓冲尺寸按【实际单屏源尺寸 × 滤镜倍数】每帧校准（单屏！非合成帧）：
      *   1x 源 2x 滤镜 → 512×384 纹理；HD 源 2x 滤镜 → 1024×768；
-     *   HD 源 4x 滤镜 → 2048×1536。输出超过 GL_MAX_TEXTURE_SIZE 时把
+     *   HD 源 4x 滤镜 → 2048×1536。单屏输出超过 GL_MAX_TEXTURE_SIZE 时把
      *   滤镜源回退到恒定 1x 合成帧（eng.oneXComposite），保证分配合法
      *   （此时高清让位 —— 与"纹理分配失败导致黑屏"相比是正确取舍）。
+     *   ★ 旧实现按合成帧全高分配纹理（1x 源 2x 滤镜 → 512×768），而单屏
+     *   滤镜输出只有 512×384 —— glTexSubImage2D 按纹理全高请求像素，
+     *   读出不足部分即抛 IllegalArgumentException（"remaining() < needed"）
+     *   或撕入垃圾半屏，GL 线程被打死 → 黑屏/回退画布。现按单屏真实
+     *   输出尺寸分配纹理，上传尺寸与数据量严格相等。
      */
     private fun renderFilteredFrame(eng: DraSticEngine, filter: Int) {
         // 源尺寸每帧读取（渲染线程在 1x/HD 间自适应，shim 失败即回落 1x）
@@ -569,18 +599,24 @@ class DraSticGlView @JvmOverloads constructor(
         val vh = eng.filteredVideoHeight().coerceAtLeast(1)
         val scale = if (filter == 6 || filter == 8 || filter == 9 || filter == 10) 4 else 2
 
-        // 源选择：优先引擎当前合成帧（可能是 HD）；输出超 GL 上限时回退 1x
+        // 源选择：优先引擎当前合成帧（可能是 HD）；单屏滤镜输出超过
+        // GL_MAX_TEXTURE_SIZE 时回退 1x。
+        // ★ 修复：上限判断改用【单屏】尺寸（srcH/2 × scale 才是真实纹理高）。
+        // 旧判断用合成帧 vh×scale（高了一倍），导致 HD+4x（单屏 2048×1536，
+        // 其实完全在 2048 上限内）被误判超限而强制回退 1x。
         var srcComposite = eng.frameBuffer
         var srcW = vw
         var srcH = vh
         var use1xFallback = false
-        if (srcComposite.size < vw * vh) return   // 渲染线程尚未准备好本档帧
-        if ((vw * scale > maxTexSize) || (vh * scale > maxTexSize)) {
+        if ((srcW * scale > maxTexSize) || ((srcH / 2) * scale > maxTexSize)) {
             srcComposite = eng.oneXComposite()
             srcW = SCREEN_W_1X
-            srcH = SCREEN_H_1X
+            srcH = SCREEN_H_1X * 2   // ★ 旧值 192 只截到上半屏 —— 回退路径黑屏根因之一
             use1xFallback = true
         }
+        // 守卫改在【源确定后】按所选源的真实尺寸校验（旧实现先按 vw*vh
+        // 校验再换源，回退到 1x 缓冲时尺寸不匹配，回退路径永远提前 return）
+        if (srcComposite.size < srcW * srcH) return   // 渲染线程尚未准备好本档帧
 
         ensureFilterBuffers(srcW, srcH, scale)
 
@@ -613,7 +649,11 @@ class DraSticGlView @JvmOverloads constructor(
     }
 
     /** 确保滤镜源/输出缓冲与纹理按 (srcW,srcH,scale) 就绪（仅 GL 线程调用）。
-     * 尺寸变化时重建，其余帧直接复用。 */
+     * 尺寸变化时重建，其余帧直接复用。
+     * ★ 纹理尺寸 = 【单屏】源 (srcW × srcH/2) × 滤镜倍数：滤镜输入是
+     * 上/下屏各自独立的一段，输出也各自独立 —— 按合成帧全高分配会让
+     * 上传请求的像素数超出滤镜实际产出（异常/垃圾半屏），按单屏分配则
+     * 上传尺寸与数据量严格相等。 */
     private fun ensureFilterBuffers(srcW: Int, srcH: Int, scale: Int) {
         if (srcFrameW != srcW || srcFrameH != srcH) {
             srcFrameW = srcW
@@ -622,12 +662,12 @@ class DraSticGlView @JvmOverloads constructor(
             srcTop = IntArray(srcW * (srcH / 2))
             srcBottom = IntArray(srcW * (srcH / 2))
         }
-        val needTexW = srcW * scale
-        val needTexH = srcH * scale
-        if (texW != needTexW || texH != needTexH) {
-            allocTextures(needTexW, needTexH)
+        val screenW = srcW * scale
+        val screenH = (srcH / 2) * scale      // 单屏：合成帧高的一半
+        if (texW != screenW || texH != screenH) {
+            allocTextures(screenW, screenH)
         }
-        val needBytes = needTexW * needTexH * 4
+        val needBytes = screenW * screenH * 4
         if (filterOutBuf.capacity() < needBytes) {
             filterOutBuf = ByteBuffer
                 .allocateDirect(needBytes)
