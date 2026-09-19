@@ -469,28 +469,6 @@ fun LibraryScreen(
         }
     }
 
-    // SAF file picker for importing individual ROM files
-    // （zip 探头 / PSX 标题提取可能较慢，统一放后台协程执行）
-    val filePickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        if (importing) {
-            dialogMsg = "上一次导入还在进行中，请稍候再试"
-            return@rememberLauncherForActivityResult
-        }
-        importing = true
-        scope.launch(Dispatchers.IO) {
-            try {
-                importPickedFiles(context, uris, selectedPlatform)
-            } catch (e: Exception) {
-                dialogMsg = "导入失败：${e.message}"
-            } finally {
-                importing = false
-            }
-        }
-    }
-
     /**
      * 导入 SAF 多选的 ROM 文件（后台协程执行）。
      * 多文件同选一张 CD 的场景做去重（.cue 存在时跳过 .img/.bin/.ccd/.sub）。
@@ -570,48 +548,25 @@ fun LibraryScreen(
         }
     }
 
-    // SAF folder picker — recursively scan selected folder
-    //
-    // ★ 卡死黑屏修复：旧实现把"递归 SAF 扫描 + 每个 zip 的 ZipInputStream
-    //   全量遍历 + 逐条 RomStore.add（每次全量重写库）"全部放在主线程回调里
-    //   执行 —— 目录稍大（尤其街机 zip 几百个）UI 线程就被拖死 → 黑屏/ANR。
-    //   现在整体搬到 Dispatchers.IO 协程，期间显示"正在导入"对话框，
-    //   且库写入整批一次（RomStore.importGames），主线程零阻塞。
-    val folderPickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        // Wrap the whole callback in a try-catch: on TV (and some phone ROMs)
-        // the persistable URI permission can fail silently and the subsequent
-        // contentResolver queries may throw SecurityException. We must not
-        // crash — show a friendly message instead.
-        try {
+    // SAF file picker for importing individual ROM files
+    // （zip 探头 / PSX 标题提取可能较慢，统一放后台协程执行）
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        if (importing) {
+            dialogMsg = "上一次导入还在进行中，请稍候再试"
+            return@rememberLauncherForActivityResult
+        }
+        importing = true
+        scope.launch(Dispatchers.IO) {
             try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: SecurityException) { }
-            catch (_: Exception) { }
-
-            if (importing) {
-                dialogMsg = "上一次导入还在进行中，请稍候再试"
-                return@rememberLauncherForActivityResult
+                importPickedFiles(context, uris, selectedPlatform)
+            } catch (e: Exception) {
+                dialogMsg = "导入失败：${e.message}"
+            } finally {
+                importing = false
             }
-            importing = true
-            scope.launch(Dispatchers.IO) {
-                try {
-                    runFolderImport(context, uri, selectedPlatform)
-                } catch (e: SecurityException) {
-                    dialogMsg = "没有权限访问所选文件夹，请重试或选择其他文件夹"
-                } catch (e: Exception) {
-                    dialogMsg = "导入文件夹失败：${e.message}"
-                } finally {
-                    importing = false
-                }
-            }
-        } catch (e: Exception) {
-            importing = false
-            dialogMsg = "导入文件夹失败：${e.message}"
         }
     }
 
@@ -686,6 +641,51 @@ fun LibraryScreen(
                 else -> "从文件夹导入 ${added.size} 个ROM文件"
             }
         )
+    }
+
+    // SAF folder picker — recursively scan selected folder
+    //
+    // ★ 卡死黑屏修复：旧实现把"递归 SAF 扫描 + 每个 zip 的 ZipInputStream
+    //   全量遍历 + 逐条 RomStore.add（每次全量重写库）"全部放在主线程回调里
+    //   执行 —— 目录稍大（尤其街机 zip 几百个）UI 线程就被拖死 → 黑屏/ANR。
+    //   现在整体搬到 Dispatchers.IO 协程，期间显示"正在导入"对话框，
+    //   且库写入整批一次（RomStore.importGames），主线程零阻塞。
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        // Wrap the whole callback in a try-catch: on TV (and some phone ROMs)
+        // the persistable URI permission can fail silently and the subsequent
+        // contentResolver queries may throw SecurityException. We must not
+        // crash — show a friendly message instead.
+        try {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: SecurityException) { }
+            catch (_: Exception) { }
+
+            if (importing) {
+                dialogMsg = "上一次导入还在进行中，请稍候再试"
+                return@rememberLauncherForActivityResult
+            }
+            importing = true
+            scope.launch(Dispatchers.IO) {
+                try {
+                    runFolderImport(context, uri, selectedPlatform)
+                } catch (e: SecurityException) {
+                    dialogMsg = "没有权限访问所选文件夹，请重试或选择其他文件夹"
+                } catch (e: Exception) {
+                    dialogMsg = "导入文件夹失败：${e.message}"
+                } finally {
+                    importing = false
+                }
+            }
+        } catch (e: Exception) {
+            importing = false
+            dialogMsg = "导入文件夹失败：${e.message}"
+        }
     }
 
     // Storage permission launcher (Android <= 10)
@@ -1124,33 +1124,6 @@ fun LibraryScreen(
         )
     }
 
-    // Built-in file browser dialog — fallback when the system SAF picker is
-    // unavailable (TV devices, custom ROMs without DocumentsUI).
-    if (showFileBrowser) {
-        FileBrowserDialog(
-            onPicked = { folderPath ->
-                showFileBrowser = false
-                // 本地目录扫描 + 逐 zip 平台判定同样很重 —— 与 SAF 导入路径
-                // 一致，放后台协程执行，避免主线程卡死。
-                if (importing) {
-                    dialogMsg = "上一次导入还在进行中，请稍候再试"
-                    return@FileBrowserDialog
-                }
-                importing = true
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        runLocalFolderImport(File(folderPath), selectedPlatform)
-                    } catch (e: Exception) {
-                        dialogMsg = "导入文件夹失败：${e.message}"
-                    } finally {
-                        importing = false
-                    }
-                }
-            },
-            onDismiss = { showFileBrowser = false }
-        )
-    }
-
     /**
      * 从本地文件系统目录导入 ROM（后台协程执行，内置文件浏览器用）。
      * DOS 平台页只导入启动器；其他平台递归扫描 + 批量入库 + 全量刷新。
@@ -1212,6 +1185,33 @@ fun LibraryScreen(
             postMessage = if (failed > 0)
                 "从文件夹导入 ${added.size} 个ROM文件（$failed 个失败）"
             else "从文件夹导入 ${added.size} 个ROM文件"
+        )
+    }
+
+    // Built-in file browser dialog — fallback when the system SAF picker is
+    // unavailable (TV devices, custom ROMs without DocumentsUI).
+    if (showFileBrowser) {
+        FileBrowserDialog(
+            onPicked = { folderPath ->
+                showFileBrowser = false
+                // 本地目录扫描 + 逐 zip 平台判定同样很重 —— 与 SAF 导入路径
+                // 一致，放后台协程执行，避免主线程卡死。
+                if (importing) {
+                    dialogMsg = "上一次导入还在进行中，请稍候再试"
+                    return@FileBrowserDialog
+                }
+                importing = true
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        runLocalFolderImport(File(folderPath), selectedPlatform)
+                    } catch (e: Exception) {
+                        dialogMsg = "导入文件夹失败：${e.message}"
+                    } finally {
+                        importing = false
+                    }
+                }
+            },
+            onDismiss = { showFileBrowser = false }
         )
     }
 
