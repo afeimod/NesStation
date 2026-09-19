@@ -33,6 +33,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
+import com.nesstation.app.core.storage.ArcadeTitleMapper
 import com.nesstation.app.core.storage.JavaGameStore
 import com.nesstation.app.core.storage.PadLayoutStore
 import com.nesstation.app.core.storage.PlatformDetector
@@ -271,18 +272,26 @@ private fun FirstLaunchStoragePrompt() {
 
 /**
  * 首次授权成功后的自动扫描：与游戏库「去授权」流程走同一套
- * [scanForRoms] 扫描 + [RomStore.add] 入库逻辑（RomStore.add 按 romPath
- * 去重，重复添加不会产生重复条目）。返回新增的游戏数量。
- * ★ 改为批量入库（RomStore.importGames）：旧实现逐条 RomStore.add，
- *   每条都是全量读+全量重写 —— /sdcard 下 ROM 多时拖慢授权返回后的导入。
+ * [scanForRoms] 扫描 + 批量入库逻辑（RomStore.importGames 按 romPath
+ * 去重，重复扫描不会产生重复条目）。返回新增的游戏数量。
+ *
+ * ★ 严格判定（修复"授权后乱七八糟的 zip/apk 全进 arcade/dos/md 列表"）：
+ * 用 [PlatformDetector.detectFromFileStrict] 判定平台 —— 只收无歧义
+ * 扩展名或探头可验证内容的 zip，识别不出的一律跳过，绝不兜底街机/
+ * NES，也不再受平台页/服务端配置影响。
  */
 private suspend fun runScanImport(ctx: Context): Int = withContext(Dispatchers.IO) {
     var added = 0
     try {
         val items = mutableListOf<Triple<String, String, GamePlatform>>()
         scanForRoms(ctx).forEach { (name, path) ->
-            val platform = PlatformDetector.detectFromFile(File(path))
-            items.add(Triple(name.substringBeforeLast('.'), path, platform))
+            val platform = PlatformDetector.detectFromFileStrict(File(path))
+                ?: return@forEach   // 无法可信识别（乱 zip/apk 等）→ 跳过不入库
+            val title = when (platform) {
+                GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
+                else -> name.substringBeforeLast('.')
+            }
+            items.add(Triple(title, path, platform))
         }
         added = RomStore.importGames(ctx, items).size
     } catch (_: Exception) { }

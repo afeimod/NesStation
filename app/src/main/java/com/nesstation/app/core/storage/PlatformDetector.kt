@@ -56,6 +56,100 @@ object PlatformDetector {
         "rom"   // 注意：.bin 单独放在通用 dump 里太宽泛，下方专门处理
     )
 
+    // ===== 自动扫描（存储权限授予后的自动导入）专用严格判定 =====
+    //
+    // ★ 修复「授权后扫描乱七八糟的 zip/apk，全进了 arcade 和 dos/md 列表」：
+    // 旧行为的两个漏洞：
+    //  1. 兜底太宽 —— 内容无法识别的 zip 一律当街机（无 hint 时）或跟随
+    //     当前平台页（有 hint 时），导致微信/浏览器下载的资源 zip、APK
+    //     备份 zip、文档 zip 全部涌入街机/DOS/MD 列表；.7z/.gz 无条件判
+    //     街机，连日志压缩包都不放过。
+    //  2. 扩展名撞名 —— .md 撞 Markdown 文档、.sms 撞短信备份、.gz 撞
+    //     日志压缩包、.bin/.img/.iso 撞固件与软件镜像、.app 撞 APK/应用
+    //     数据，这些日常文件全被当成 ROM 入库。
+    // 现在自动扫描只认「无歧义」格式：扩展名专属度极高、日常文件几乎不
+    // 会撞名，或 zip 探头能验证出明确内容。识别失败一律返回 null（调用
+    // 方跳过，不入库），绝不兜底。手动导入（用户主动选文件/文件夹）仍走
+    // 宽松判定 —— 用户明确意图优先，不受影响。
+
+    /**
+     * 自动扫描信任的扩展名 → 平台白名单。
+     * 只收录无歧义、日常文件几乎不会撞名的 ROM 格式。
+     *
+     * 刻意排除的高撞名扩展（手动导入仍支持，仅自动扫描不收）：
+     *   md(Markdown 文档) / sms(短信备份) / gg·sg(过短易撞) / gz(日志压缩包) /
+     *   7z(无法用 java.util.zip 探头验证) / bin·img·iso·cue·chd(固件、软件镜像) /
+     *   exe·bat·com(Windows 程序) / jar(桌面 Java 程序) / app(APK、应用数据) /
+     *   m3u(音乐播放列表) / elf(Linux 可执行) / pbp·ecm·mds·mdf(镜像类) 等。
+     */
+    val AUTO_TRUSTED_EXTENSIONS: Map<String, GamePlatform> = mapOf(
+        // NES / Famicom（.nes/.fds 为专属格式，unf/unif/nez/unh 冷门但专属）
+        "nes" to GamePlatform.NES, "fds" to GamePlatform.NES,
+        "unf" to GamePlatform.NES, "unif" to GamePlatform.NES,
+        "nez" to GamePlatform.NES, "unh" to GamePlatform.NES,
+        // SNES / SFC
+        "smc" to GamePlatform.SFC, "sfc" to GamePlatform.SFC,
+        "swc" to GamePlatform.SFC, "fig" to GamePlatform.SFC,
+        // GB / GBC
+        "gb" to GamePlatform.GB, "sgb" to GamePlatform.GB, "gbc" to GamePlatform.GB,
+        // GBA
+        "gba" to GamePlatform.GBA,
+        // DOSBox-Pure 专属打包格式
+        "dosz" to GamePlatform.DOS,
+        // SEGA MD / Genesis（排除 md/sms/gg/sg —— 分别撞 Markdown/短信备份等）
+        "smd" to GamePlatform.MD, "gen" to GamePlatform.MD, "68k" to GamePlatform.MD,
+        // PC-Engine / SuperGrafx
+        "pce" to GamePlatform.PCE, "sgx" to GamePlatform.PCE,
+        // Nintendo DS（排除 app —— 撞 APK / macOS 应用 / 应用数据）
+        "nds" to GamePlatform.NDS, "srl" to GamePlatform.NDS
+    )
+
+    /**
+     * 自动扫描严格判定（存储权限授予后的自动导入专用）。
+     *
+     * 与 [detectFromFile] 的区别：识别不出就返回 **null**（调用方跳过该
+     * 文件，不入库），绝不兜底到 ARCADE/NES，也不接受平台页 hint —— 否则
+     * 任意 zip 都会被灌进街机或当前平台页的列表。
+     *
+     * 规则：
+     *  1. 裸文件：扩展名必须在 [AUTO_TRUSTED_EXTENSIONS] 白名单内；
+     *     `.apk` 显式排除（APK 是安装包不是 ROM，保险丝防止将来误加）。
+     *  2. `.zip`：探头验证 ——
+     *     a) 含街机特征扩展（p1/sp1/c1…）→ ARCADE；
+     *     b) zip 名是已知街机驱动名（kof97.zip / mslug2.zip …，
+     *        ArcadeTitleMapper 600+ 映射表）→ ARCADE —— 兜住只含 .bin
+     *        的 CPS1 dump 风格街机包；
+     *     c) 含白名单平台扩展（nes/sfc/gba/smd… 的合集包）→ 对应平台；
+     *     d) 其余（仅 .bin/.apk/未知内容/空包）→ null 跳过。
+     *  3. `.7z`/`.gz` 无法用 java.util.zip 探头验证，自动扫描一律跳过
+     *     （手动导入仍支持）。
+     *
+     * @return 判定出的平台；无法可信识别时返回 null（调用方应跳过该文件）
+     */
+    fun detectFromFileStrict(file: File): GamePlatform? {
+        val ext = file.extension.lowercase()
+        if (ext == "apk") return null        // APK 是安装包不是 ROM，显式排除
+        if (ext == "zip") return detectZipStrict(file)
+        return AUTO_TRUSTED_EXTENSIONS[ext]
+    }
+
+    /**
+     * zip 探头严格判定：只有能验证出明确内容的 zip 才返回平台，
+     * 否则返回 null（跳过）。这是修复「任意 zip 全进街机」的核心。
+     */
+    private fun detectZipStrict(file: File): GamePlatform? {
+        val entryExts = listZipEntryExtensions(file)
+        if (entryExts.isEmpty()) return null   // 空包 / 损坏包
+        // a) 街机特征扩展 —— 真正的 FBNeo ROM zip 几乎必含 p1/sp1/c1…
+        if (entryExts.any { it in ARCADE_ROM_EXTENSIONS }) return GamePlatform.ARCADE
+        // b) zip 名是已知街机驱动名 —— 强信号
+        if (ArcadeTitleMapper.lookupByFileName(file.name) != null) return GamePlatform.ARCADE
+        // c) 含可信平台扩展 —— NES/SFC/GBA 等合集包
+        entryExts.firstNotNullOfOrNull { AUTO_TRUSTED_EXTENSIONS[it] }?.let { return it }
+        // d) 无法验证 —— 不再兜底街机 / MD / DOS，直接跳过
+        return null
+    }
+
     /**
      * 从 SAF Uri 检测 ROM 平台（用于本地游戏库导入流程）。
      *

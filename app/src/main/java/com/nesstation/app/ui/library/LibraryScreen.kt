@@ -77,6 +77,7 @@ import androidx.core.content.ContextCompat
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.ArcadeTitleMapper
+import com.nesstation.app.core.storage.PlatformDetector
 import com.nesstation.app.core.storage.JavaGameSettings
 import com.nesstation.app.core.storage.JavaGameSettingsStore
 import com.nesstation.app.core.storage.JavaGameStore
@@ -701,10 +702,14 @@ fun LibraryScreen(
                     val entries = scanForRoms(context)
                     if (entries.isNotEmpty()) {
                         // 批量判定 + 批量入库（一次落盘）
+                        // ★ 严格判定：自动扫描不认平台页 hint（在哪个页授权与
+                        //   文件是什么无关），识别不出的一律跳过，不再兜底
+                        //   街机/MD/DOS —— 否则乱七八糟的 zip/apk 全会灌进列表。
                         val items = mutableListOf<Triple<String, String, GamePlatform>>()
                         entries.forEach { (name, path) ->
                             try {
-                                val platform = detectPlatformFromFile(File(path), hintPlatform = selectedPlatform)
+                                val platform = PlatformDetector.detectFromFileStrict(File(path))
+                                    ?: return@forEach
                                 val title = when (platform) {
                                     GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
                                     GamePlatform.PSX -> {
@@ -717,10 +722,16 @@ fun LibraryScreen(
                                 items.add(Triple(title, path, platform))
                             } catch (_: Exception) { }
                         }
-                        val added = RomStore.importGames(context, items)
-                        refreshList(postMessage = "权限已授予，扫描到 ${added.size} 个ROM文件")
+                        if (items.isNotEmpty()) {
+                            val added = RomStore.importGames(context, items)
+                            refreshList(postMessage = "权限已授予，扫描到 ${added.size} 个ROM文件")
+                        } else {
+                            dialogMsg = "权限已授予，但未在常见目录找到可识别的游戏文件\n" +
+                                "（无法识别的 zip/apk 不再自动导入，请把游戏放到 ROMs 目录后重扫，或手动「导入ROM」）"
+                        }
                     } else {
-                        dialogMsg = "权限已授予，但未在常见目录找到ROM文件"
+                        dialogMsg = "权限已授予，但未在常见目录找到ROM文件\n" +
+                            "自动扫描只扫专用目录（ROMs/NES/Games/NesStation），可手动「导入ROM」选择其他位置"
                     }
                 } finally {
                     importing = false
@@ -820,11 +831,25 @@ fun LibraryScreen(
             } else {
                 val entries = scanForRoms(context)
                 if (entries.isNotEmpty()) {
+                    // ★ 严格判定：与首次授权扫描同一套规则，未知 zip/apk 跳过，
+                    //   不再兜底街机/MD/DOS，也不跟随当前平台页
+                    val items = mutableListOf<Triple<String, String, GamePlatform>>()
                     entries.forEach { (name, path) ->
-                        val platform = detectPlatformFromFile(File(path), hintPlatform = selectedPlatform)
-                        RomStore.add(context, name.substringBeforeLast('.'), path, platform)
+                        val platform = PlatformDetector.detectFromFileStrict(File(path))
+                            ?: return@forEach
+                        val title = when (platform) {
+                            GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
+                            else -> name.substringBeforeLast('.')
+                        }
+                        items.add(Triple(title, path, platform))
                     }
-                    refreshList(postMessage = "已扫描到 ${entries.size} 个ROM文件")
+                    if (items.isNotEmpty()) {
+                        val added = RomStore.importGames(context, items)
+                        refreshList(postMessage = "已扫描到 ${added.size} 个ROM文件")
+                    } else {
+                        dialogMsg = "未在常见目录找到可识别的游戏文件\n" +
+                            "（无法识别的 zip/apk 不再自动导入，请把游戏放到 ROMs 目录后重扫）"
+                    }
                 } else {
                     dialogMsg = "未在常见目录找到ROM文件"
                 }
@@ -1555,31 +1580,92 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
     return results
 }
 
-/** Scan common directories for ROM files (requires storage permission) */
+/**
+ * Scan common directories for ROM files (requires storage permission).
+ *
+ * ★ 自动扫描修复（"授权后扫描乱七八糟的zip和apk，全放在了arcade和dos md列表"）：
+ *
+ * 旧实现的问题：
+ *  1. 递归扫描整个 /sdcard 根目录和 /sdcard/Download —— 微信/QQ 接收的
+ *     文件、浏览器下载的资源包、APK、固件镜像、各种临时压缩包全部被抓
+ *     进来（take(500) 只是任意截断，挡不住垃圾）；
+ *  2. 用 ROM_EXTENSIONS 全集匹配 —— .zip/.7z/.gz（任意压缩包）、.md
+ *     （Markdown 文档！）、.bin/.img/.iso（固件/软件镜像）、.app/.sms
+ *     （应用数据/短信备份）等高撞名扩展全部放行。
+ *
+ * 新实现：
+ *  1. 只扫描【专用 ROM 目录】：/sdcard/ROMs、/sdcard/NES、/sdcard/Games、
+ *     /sdcard/NesStation、/sdcard/Download/NesStation + 应用私有目录。
+ *     这些目录里的文件可以合理假定是用户主动放进去的游戏；
+ *  2. 扩展名白名单收窄为 [PlatformDetector.AUTO_TRUSTED_EXTENSIONS]
+ *     （无歧义专属格式）+ .zip（由调用方用 detectFromFileStrict 探头
+ *     验证内容，验证失败即跳过）；
+ *  3. 深度限制 4 层、跳过隐藏目录和 Android 私有目录。
+ *
+ * 注意：手动导入（文件/文件夹选择器）不受影响，仍走 ROM_EXTENSIONS
+ * 全集 —— 用户明确选择的文件不应被静默过滤。
+ */
 internal fun scanForRoms(context: android.content.Context): List<Pair<String, String>> {
     val results = mutableListOf<Pair<String, String>>()
-    val dirs = mutableListOf<File>()
-    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q || Environment.isExternalStorageManager()) {
-        dirs.add(Environment.getExternalStorageDirectory())
-        dirs.add(File(Environment.getExternalStorageDirectory(), "Download"))
-        dirs.add(File(Environment.getExternalStorageDirectory(), "ROMs"))
-        dirs.add(File(Environment.getExternalStorageDirectory(), "NES"))
-        dirs.add(File(Environment.getExternalStorageDirectory(), "Games"))
+    val seen = mutableSetOf<String>()
+    val sd: File? = Environment.getExternalStorageDirectory()
+
+    val publicDirs = listOfNotNull(
+        sd?.let { File(it, "ROMs") },
+        sd?.let { File(it, "NES") },
+        sd?.let { File(it, "Games") },
+        sd?.let { File(it, "NesStation") },
+        sd?.let { File(it, "Download/NesStation") }
+    )
+    val privateDirs = listOfNotNull(
+        context.getExternalFilesDir(null) ?: context.filesDir,
+        File(context.filesDir, "roms")
+    )
+    // 全盘访问权限就绪才扫公共目录；否则只扫应用私有目录
+    val dirs = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q ||
+                   Environment.isExternalStorageManager()) {
+        publicDirs + privateDirs
+    } else {
+        privateDirs
     }
-    dirs.add(context.getExternalFilesDir(null) ?: context.filesDir)
-    dirs.add(File(context.filesDir, "roms"))
+
+    // 自动扫描接受的裸扩展名 = 无歧义白名单 + zip（zip 由调用方探头验证）
+    fun autoScanAccept(file: File): Boolean {
+        if (!file.isFile) return false
+        if (file.name.startsWith(".")) return false
+        val ext = file.extension.lowercase()
+        return ext == "zip" || PlatformDetector.AUTO_TRUSTED_EXTENSIONS.containsKey(ext)
+    }
+
+    fun walk(dir: File, depth: Int) {
+        if (depth <= 0) return
+        val children = try {
+            dir.listFiles() ?: return
+        } catch (_: Exception) {
+            return
+        }
+        for (f in children) {
+            // 跳过隐藏目录和系统私有目录（Android/data 里全是应用缓存）
+            if (f.name.startsWith(".") || f.name.equals("Android", ignoreCase = true)) continue
+            if (f.isDirectory) {
+                walk(f, depth - 1)
+            } else if (autoScanAccept(f)) {
+                val path = f.absolutePath
+                if (seen.add(path)) results.add(f.name to path)
+            }
+        }
+    }
 
     dirs.forEach { dir ->
         if (dir.exists() && dir.isDirectory) {
-            dir.walkTopDown().take(500).forEach { file ->
-                if (file.isFile && file.extension.lowercase() in ROM_EXTENSIONS) {
-                    results.add(file.name to file.absolutePath)
-                }
-            }
+            walk(dir, AUTO_SCAN_MAX_DEPTH)
         }
     }
     return results
 }
+
+/** 自动扫描目录递归深度上限（ROMs/平台/游戏 三层已够用，防炸深目录树） */
+private const val AUTO_SCAN_MAX_DEPTH = 4
 
 /**
  * Detect the game platform from a file URI.
