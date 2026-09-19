@@ -335,8 +335,19 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     private val topVerify = IntArray(256 * 192)
     private val bottomVerify = IntArray(256 * 192)
 
+    // === 高清（bit41 / _Hires3D）真实帧读取缓冲（修复"高清2x渲染无效果"）===
+    // 高清会话下原生 getScreenBuffers 走 0x19398 降采样分支，CPU 路径只能
+    // 拿到 2:1 抽取后的 256×192/屏。渲染线程优先走 NdsNative.drasticGetCompletedFrames
+    // （libndscore 内 drastic_frames.cpp shim）直接读帧池，拿到真实 512×384/屏
+    // 帧；shim 校验失败（16位渲染/库未加载/档位异常）再回落 getScreenBuffers。
+    private val hdTopBuf = IntArray(512 * 384)
+    private val hdBottomBuf = IntArray(512 * 384)
+    private val hdDims = IntArray(4)   // {topW, topH, botW, botH}
+
     /** 原始合成帧（恒 256×384，上屏在前）：截图/存档缩略图的数据源，
-     * 与可能被放大滤镜替换掉的 [frameBuffer]（画布呈现帧）分离。 */
+     * 与可能被放大滤镜替换掉的 [frameBuffer]（画布呈现帧）分离。
+     * 高清会话下渲染线程把 512×384/屏 的 HD 帧 2:1 抽取写入本缓冲，
+     * 保证截图/缩略图规格恒定。 */
     private val rawComposite = IntArray(256 * 384)
 
     private val running = AtomicBoolean(false)
@@ -590,6 +601,26 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
             DraSticJNI.updateInput(mask1, packedXY, 0)
         } catch (e: Throwable) {
             android.util.Log.w("DraSticEngine", "updateInput failed", e)
+        }
+    }
+
+    /**
+     * 高清帧（512×384/屏，行距 = 帧池稠密布局 512 像素）→ 1x 合成帧
+     * （256×192，写入 [dst] 的 [dstOffset] 像素偏移处）的 even-row/even-col
+     * 2:1 抽取 —— 与原生 getScreenBuffers 高清降采样分支（0x19398）同算法。
+     * 仅用于截图 / 存档缩略图的恒定 1x 规格（rawComposite），显示路径拿的
+     * 是未降采样的真实 HD 帧。
+     */
+    private fun downsample2x(src: IntArray, dst: IntArray, dstOffset: Int) {
+        for (y in 0 until 192) {
+            val srcRow = y * 2 * 512
+            val dstRow = dstOffset + y * 256
+            var s = srcRow
+            var d = dstRow
+            for (x in 0 until 256) {
+                dst[d++] = src[s]
+                s += 2
+            }
         }
     }
 
@@ -861,8 +892,9 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
                     if (!glDisplayActive) {
                         // 渲染线程帧搬运：
-                        //  · filteredGlActive（GL 放大滤镜路径）：只搬原始帧，
-                        //    frameBuffer 恒 256×384，GL 线程取去滤镜；
+                        //  · filteredGlActive（GL 放大滤镜路径）：只搬原始合成帧，
+                        //    frameBuffer 尺寸 = 帧源合成尺寸（1x 256×384 / 高清
+                        //    512×768），GL 线程取去滤镜；
                         //  · 画布路径 + 放大滤镜：frameBuffer 指向放大后的合成帧，
                         //    NdsDualScreenView 按 filteredVideoWidth/Height 切片
                         //    绘制（与 melonDS 自由布局的滤镜路径同构）；先切换
@@ -870,50 +902,93 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                         //    的守卫可安全吸收一帧的中间态。
                         //  · 画布路径 + 无放大滤镜：搬原始帧（截图/存档缩略图用）。
                         //
-                        // ★ 帧快照一致性校验（"多线程 3D 渲染上下屏部分贴图错乱"
-                        //   根因修复）：反汇编 sub_1cd18（0x1cd18）证实
-                        //   getScreenBuffers 直接读取帧池【写入槽】指针
-                        //   （[video_state+0x958]，无锁），拷贝循环同样无锁。
-                        //   多线程 3D（bit28）开启时，原生 3D 光栅化线程以
-                        //   16 行/段异步写入同一缓冲 → 一次快照可能取到半成品
-                        //   帧（上下屏水平条带错乱）。写入者在冲刷后毫秒级内
-                        //   收尾，因此做"双拷贝一致性"校验：两次拷贝完全一致
-                        //   才视为完整帧；不一致则让步 1ms 重试（最多 3 次，
-                        //   超限用末次结果避免卡帧）。
-                        var coherent = false
-                        var attempt = 0
-                        while (attempt < 3 && !coherent && running.get()) {
-                            DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
-                            if (!optThreaded3D) break   // 单线程 3D：CPU 同步出帧，无需校验
-                            // 让步给原生写入者收尾，再拷一次比对
-                            System.arraycopy(topBuf, 0, topVerify, 0, topBuf.size)
-                            System.arraycopy(bottomBuf, 0, bottomVerify, 0, bottomBuf.size)
-                            try { Thread.sleep(1) } catch (_: InterruptedException) { break }
-                            DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
-                            coherent = topBuf.contentEquals(topVerify) &&
-                                bottomBuf.contentEquals(bottomVerify)
-                            attempt++
+                        // ★ 高清帧读取（"高清2x渲染无效果"修复核心）：
+                        //   高清会话（activeHdRender）下原生 getScreenBuffers 走
+                        //   0x19398 降采样分支只返回 256×192/屏（分辨率增益全部
+                        //   丢失）。因此优先调 NdsNative.drasticGetCompletedFrames
+                        //   （libndscore 内 drastic_frames.cpp shim，反汇编定位
+                        //   video_state，读"刚完成的帧"，与原生 renderFrame 同一
+                        //   缓冲、天然无撕裂）拿真实 512×384/屏 帧；shim 校验失败
+                        //   （16位渲染/档位异常/容量不足）再回落 getScreenBuffers
+                        //   （行为同修复前，绝不劣化）。
+                        //   拿到 HD 帧后：
+                        //     · frameBuffer / displayW/H 用真实 HD 合成（512×768）
+                        //       —— 画布路径与 GL 滤镜路径的源分辨率翻倍；
+                        //     · rawComposite 恒 2:1 抽取为 256×384（截图/缩略图
+                        //       规格不变）。
+                        var frameW = 256
+                        var frameH = 192
+                        var srcTop: IntArray = topBuf
+                        var srcBottom: IntArray = bottomBuf
+                        var gotHd = false
+                        if (activeHdRender) {
+                            gotHd = try {
+                                NdsNative.drasticGetCompletedFrames(hdTopBuf, hdBottomBuf, hdDims)
+                            } catch (_: Throwable) {
+                                false
+                            }
+                            if (gotHd && hdDims[0] == 512 && hdDims[1] == 384) {
+                                frameW = 512; frameH = 384
+                                srcTop = hdTopBuf; srcBottom = hdBottomBuf
+                            } else {
+                                gotHd = false   // 档位异常 —— 回落 1x 路径
+                            }
                         }
-                        // 原始合成帧（上屏在前、下屏在后，256×384）——截图恒用原始帧
-                        System.arraycopy(topBuf, 0, rawComposite, 0, topBuf.size)
-                        System.arraycopy(bottomBuf, 0, rawComposite, topBuf.size, bottomBuf.size)
+                        if (!gotHd) {
+                            // ★ 帧快照一致性校验（"多线程 3D 渲染上下屏部分贴图错乱"
+                            //   根因修复）：反汇编 sub_1cd18（0x1cd18）证实
+                            //   getScreenBuffers 直接读取帧池【写入槽】指针
+                            //   （[video_state+0x958]，无锁），拷贝循环同样无锁。
+                            //   多线程 3D（bit28）开启时，原生 3D 光栅化线程以
+                            //   16 行/段异步写入同一缓冲 → 一次快照可能取到半成品
+                            //   帧（上下屏水平条带错乱）。写入者在冲刷后毫秒级内
+                            //   收尾，因此做"双拷贝一致性"校验：两次拷贝完全一致
+                            //   才视为完整帧；不一致则让步 1ms 重试（最多 3 次，
+                            //   超限用末次结果避免卡帧）。
+                            var coherent = false
+                            var attempt = 0
+                            while (attempt < 3 && !coherent && running.get()) {
+                                DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                                if (!optThreaded3D) break   // 单线程 3D：CPU 同步出帧，无需校验
+                                // 让步给原生写入者收尾，再拷一次比对
+                                System.arraycopy(topBuf, 0, topVerify, 0, topBuf.size)
+                                System.arraycopy(bottomBuf, 0, bottomVerify, 0, bottomBuf.size)
+                                try { Thread.sleep(1) } catch (_: InterruptedException) { break }
+                                DraSticJNI.getScreenBuffers(topBuf, bottomBuf)
+                                coherent = topBuf.contentEquals(topVerify) &&
+                                    bottomBuf.contentEquals(bottomVerify)
+                                attempt++
+                            }
+                        }
+                        // 1x 原始合成帧（恒 256×384）—— 截图/存档缩略图规格不变。
+                        // 1x 帧直接拷贝；HD 帧做 even-row/even-col 2:1 抽取
+                        // （与原生 0x19398 降采样分支同算法）。
+                        if (gotHd) {
+                            downsample2x(srcTop, rawComposite, 0)
+                            downsample2x(srcBottom, rawComposite, 256 * 192)
+                        } else {
+                            System.arraycopy(srcTop, 0, rawComposite, 0, topBuf.size)
+                            System.arraycopy(srcBottom, 0, rawComposite, topBuf.size, bottomBuf.size)
+                        }
                         val f = activeVideoFilter
                         val canvasFilter = !filteredGlActive && isUpscaleFilter(f)
                         if (canvasFilter) {
                             val scale = if (f == 6 || f == 8 || f == 9 || f == 10) 4 else 2
-                            val fw = 256 * scale
-                            val fh = 384 * scale
-                            val half = fw * fh / 2
+                            // 源为单屏 frameW×frameH（1x=256×192 / HD=512×384），
+                            // 合成帧 = frameW*scale × frameH*2*scale。
+                            val fw = frameW * scale
+                            val fh = frameH * 2 * scale
+                            val half = fw * (frameH * scale)
                             if (frameBuffer.size < fw * fh) frameBuffer = IntArray(fw * fh)
                             val fb = frameBuffer
                             val nTop = try {
-                                NdsNative.applyUpscaleFilterArgb(f, topBuf, 256, 192, fb, 0)
+                                NdsNative.applyUpscaleFilterArgb(f, srcTop, frameW, frameH, fb, 0)
                             } catch (e: Throwable) {
                                 android.util.Log.w(TAG, "canvas filter(top) failed", e); 0
                             }
                             if (nTop > 0) {
                                 try {
-                                    NdsNative.applyUpscaleFilterArgb(f, bottomBuf, 256, 192, fb, half)
+                                    NdsNative.applyUpscaleFilterArgb(f, srcBottom, frameW, frameH, fb, half)
                                 } catch (e: Throwable) {
                                     android.util.Log.w(TAG, "canvas filter(bottom) failed", e)
                                     System.arraycopy(rawComposite, 0, fb, 0, 256 * 384)
@@ -929,9 +1004,13 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
                                 displayW = 256; displayH = 384
                             }
                         } else {
-                            if (frameBuffer.size < 256 * 384) frameBuffer = IntArray(256 * 384)
-                            System.arraycopy(rawComposite, 0, frameBuffer, 0, 256 * 384)
-                            displayW = 256; displayH = 384
+                            // 原始合成帧（1x=256×384 / HD=512×768，上屏在前）
+                            val cw = frameW
+                            val ch = frameH * 2
+                            if (frameBuffer.size < cw * ch) frameBuffer = IntArray(cw * ch)
+                            System.arraycopy(srcTop, 0, frameBuffer, 0, cw * frameH)
+                            System.arraycopy(srcBottom, 0, frameBuffer, cw * frameH, cw * frameH)
+                            displayW = cw; displayH = ch
                         }
                     }
                     frameCount++
@@ -1386,9 +1465,10 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     override fun frameStamp(): Long = frameCount
 
     /**
-     * 画布回退路径当前呈现的合成帧尺寸：无放大滤镜时为原生 256×384；
-     * 放大类滤镜激活时为放大后的合成帧（2x → 512×768，4x → 1024×1536），
-     * 与 [frameBuffer] 内容一致（渲染线程在画布模式下填充）。
+     * 画布回退路径当前呈现的合成帧尺寸：无放大滤镜时为原生 256×384
+     * （高清会话经 CPU 路径拿到真实 HD 帧时为 512×768）；放大类滤镜激活时
+     * 为放大后的合成帧（2x → 源宽×(源高×2)再×2 …），与 [frameBuffer]
+     * 内容一致（渲染线程每帧更新，渲染消费线程之外的线程只读）。
      */
     @Volatile
     private var displayW: Int = 256
@@ -1398,6 +1478,15 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
     override fun filteredVideoWidth(): Int = displayW
 
     override fun filteredVideoHeight(): Int = displayH
+
+    /**
+     * 恒定 1x 原始合成帧（256×384，上屏在前）的只读引用。
+     * 供 DraSticGlView 在"滤镜输出超过 GL_MAX_TEXTURE_SIZE"等场景把滤镜
+     * 源回退到 1x 使用（配合 [frameStamp] 做前后一致性校验，与 frameBuffer
+     * 的取帧协议同构）。渲染线程恒把它维护为最新帧的 1x 版本 —— 高清会话
+     * 下由 512×384/屏 的 HD 帧 2:1 抽取得到。
+     */
+    fun oneXComposite(): IntArray = rawComposite
 
     override fun videoWidth(): Int = 256
 

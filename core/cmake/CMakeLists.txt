@@ -639,6 +639,12 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../melonds" "${CMAKE_BINARY_DIR}/m
 set(NDS_JNI_SOURCES
     "${APP_JNI_DIR}/nds_bridge.cpp"
     "${APP_JNI_DIR}/nds_loader.cpp"
+    # DraStic（激烈）帧一致性读取 shim：从预编译 libdrastic*.so 的 video_state
+    # 读取【刚完成的帧】（与原生 renderFrame 同一缓冲），并支持高清（bit41）
+    # 会话下返回真实 512×384/屏 帧 —— 原生 getScreenBuffers 在 HD 档只返回
+    # 2:1 抽取降采样后的 256×192，导致画布/滤镜显示路径的高清增益全部丢失。
+    # 此前该文件从未加入构建（死代码），激烈核心的高清渲染因此"无效果"。
+    "${APP_JNI_DIR}/drastic_frames.cpp"
     ${HQX_SOURCES}
 )
 
@@ -673,11 +679,14 @@ target_compile_options(ndscore PRIVATE
 
 # Link the melonDS static library. The melonds-core target brings in
 # EGL + GLESv2 + log + android transitively through its PUBLIC link
-# dependencies. `dl` is no longer needed since we no longer dlopen.
+# dependencies. `dl` is linked for drastic_frames.cpp (见下方注释).
 target_link_libraries(ndscore
     melonds-core
     log
     android
+    # drastic_frames.cpp 用 dlopen(RTLD_NOLOAD)/dlsym/dladdr 定位预编译
+    # libdrastic*.so 的 video_state（进程内唯一实例，绝不触发加载）
+    dl
 )
 
 # ---------------------------------------------------------------------------

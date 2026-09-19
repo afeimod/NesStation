@@ -273,15 +273,18 @@ private fun FirstLaunchStoragePrompt() {
  * 首次授权成功后的自动扫描：与游戏库「去授权」流程走同一套
  * [scanForRoms] 扫描 + [RomStore.add] 入库逻辑（RomStore.add 按 romPath
  * 去重，重复添加不会产生重复条目）。返回新增的游戏数量。
+ * ★ 改为批量入库（RomStore.importGames）：旧实现逐条 RomStore.add，
+ *   每条都是全量读+全量重写 —— /sdcard 下 ROM 多时拖慢授权返回后的导入。
  */
 private suspend fun runScanImport(ctx: Context): Int = withContext(Dispatchers.IO) {
     var added = 0
     try {
+        val items = mutableListOf<Triple<String, String, GamePlatform>>()
         scanForRoms(ctx).forEach { (name, path) ->
             val platform = PlatformDetector.detectFromFile(File(path))
-            RomStore.add(ctx, name.substringBeforeLast('.'), path, platform)
-            added++
+            items.add(Triple(name.substringBeforeLast('.'), path, platform))
         }
+        added = RomStore.importGames(ctx, items).size
     } catch (_: Exception) { }
     added
 }

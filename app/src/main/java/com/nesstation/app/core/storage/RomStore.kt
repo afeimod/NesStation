@@ -225,11 +225,64 @@ object RomStore {
         return added
     }
 
+    /**
+     * 批量导入（每项自带平台）—— 修复"添加大目录卡死黑屏"的性能根因之一。
+     *
+     * 旧流程在导入循环里逐个调 [add]，而 add 每次 = loadAll（全量读）+
+     * saveAll（全量清空重写）→ N 个 ROM 触发 N² 级别的 JSON/SharedPreferences
+     * 读写，上千个街机 zip 时 IO 线程被拖住几十秒（主线程路径直接 ANR）。
+     * 本函数整批只做一次 loadAll + 一次 saveAll。
+     *
+     * @param items (title, romPath, platform) 三元组列表
+     * @return 实际新增的条目（路径已存在的不重复入库）
+     */
+    fun importGames(
+        ctx: Context,
+        items: List<Triple<String, String, GamePlatform>>
+    ): List<GameEntry> {
+        if (items.isEmpty()) return emptyList()
+        val list = loadAll(ctx)
+        val existingPaths = list.map { it.romPath }.toMutableSet()
+        val added = mutableListOf<GameEntry>()
+        for ((title, path, platform) in items) {
+            if (path in existingPaths) continue
+            val accent = ACCENT_COLORS[list.size % ACCENT_COLORS.size]
+            val entry = GameEntry(
+                id = "rom_${System.currentTimeMillis()}_${list.size}",
+                title = title,
+                romPath = path,
+                accent = Color(accent),
+                platform = platform
+            )
+            list.add(entry)
+            existingPaths.add(path)
+            added.add(entry)
+        }
+        if (added.isNotEmpty()) saveAll(ctx, list)
+        return added
+    }
+
     /** Remove a ROM entry by id */
     fun remove(ctx: Context, id: String) {
         val list = loadAll(ctx)
         list.removeAll { it.id == id }
         saveAll(ctx, list)
+    }
+
+    /**
+     * 批量按 id 删除（一次 loadAll + 一次 saveAll）。
+     * 供游戏库"刷新"流程整批移除已删除文件的游戏 —— 旧实现逐个调 [remove]，
+     * 每个都是全量读写，大库里非常慢。
+     * @return 实际删除的数量
+     */
+    fun removeIds(ctx: Context, ids: Collection<String>): Int {
+        if (ids.isEmpty()) return 0
+        val idSet = ids.toHashSet()
+        val list = loadAll(ctx)
+        val before = list.size
+        list.removeAll { it.id in idSet }
+        if (list.size != before) saveAll(ctx, list)
+        return before - list.size
     }
 
     /** Update a game entry (e.g., custom icon, last played, favorite) */

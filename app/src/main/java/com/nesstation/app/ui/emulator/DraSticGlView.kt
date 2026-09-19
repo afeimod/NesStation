@@ -148,18 +148,30 @@ class DraSticGlView @JvmOverloads constructor(
     // ---- 放大滤镜路径（XBR / HQX，全局滤镜在激烈核心的实现） ----
     // 激烈核心是预编译 .so，renderFrame 只会"原样上传帧池 + glDrawArrays"，
     // 没有滤镜能力。放大型全局滤镜（HQ2X/HQ4X 等）由本视图实现：
-    //   渲染线程照常搬运 frameBuffer（256×384，上屏在前）→ GL 线程取帧、
+    //   渲染线程照常搬运合成帧到 frameBuffer（1x=256×384；高清会话经
+    //   drasticGetCompletedFrames shim 为 512×768）→ GL 线程取帧、
     //   调 NdsNative.applyUpscaleFilter（与 melonDS surface 路径同一套
     //   coreshared 滤镜实现）→ 自行 glTexSubImage2D 上传 → 自绘 12 顶点。
     // 该模式下引擎的 glDisplayActive 置 false，让渲染线程保持帧搬运。
-    private val srcFrame = IntArray(256 * 384)
-    private val srcTop = IntArray(256 * 192)
-    private val srcBottom = IntArray(256 * 192)
+    // ★ 高清会话下 frameBuffer 是真实 HD 合成帧（此前被原生 getScreenBuffers
+    //   降采样为 256×384，高清增益被抵消 —— "高清2x渲染无效果"根因之一），
+    //   滤镜源尺寸每帧从 eng.filteredVideoWidth/Height 读取，缓冲动态分配。
+    private var srcFrame = IntArray(256 * 384)
+    private var srcFrameW = 256
+    private var srcFrameH = 384
+    private var srcTop = IntArray(256 * 192)
+    private var srcBottom = IntArray(256 * 192)
 
-    /** 滤镜输出直接缓冲（4x 上限 1024×768×4 = 3MB）。 */
-    private val filterOutBuf: ByteBuffer = ByteBuffer
+    /** 滤镜输出直接缓冲（初始 1x 源 4x 滤镜 = 1024×768×4 = 3MB；
+     * 高清源 4x 滤镜需 2048×1536×4 = 12MB，按需扩容）。 */
+    private var filterOutBuf: ByteBuffer = ByteBuffer
         .allocateDirect(1024 * 768 * 4)
         .order(ByteOrder.nativeOrder())
+
+    /** GL_MAX_TEXTURE_SIZE（GL 线程 glInitResources 后查询一次）。
+     * 滤镜输出超过上限时把滤镜源回退到 1x（eng.oneXComposite），保证
+     * 纹理分配永远合法。 */
+    private var maxTexSize = 2048
 
     init {
         holder.addCallback(this)
@@ -345,6 +357,11 @@ class DraSticGlView @JvmOverloads constructor(
         GLES20.glDisable(GLES20.GL_BLEND)
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
+
+        // 滤镜输出纹理上限（HD 源 × 4x 滤镜 = 2048×1536，低端 GPU 可能超限）
+        val maxTex = IntArray(1)
+        GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, maxTex, 0)
+        if (maxTex[0] > 0) maxTexSize = maxTex[0]
         return true
     }
 
@@ -456,11 +473,10 @@ class DraSticGlView @JvmOverloads constructor(
             }
 
             // 当前滤镜档（每帧读取，支持游戏运行中热切换全局滤镜）。
-            // ★ 高清 2x 与放大滤镜共存：引擎侧 loadRom 不再因放大滤镜关闭
-            // 高清（旧“滤镜优先”策略已移除）。高清会话下 getScreenBuffers
-            // 走原生 0x19398 分支（config bit41 置位时对 512×384 帧池做
-            // even-row/even-col 2:1 抽取），滤镜管线拿到的恒为合法
-            // 256×192 源帧 —— 运行中热切换滤镜也无需回退原生路径。
+            // ★ 高清 2x 与放大滤镜共存：引擎侧渲染线程优先经
+            // drasticGetCompletedFrames shim 拿真实 HD 帧（frameBuffer =
+            // 512×768），滤镜源尺寸每帧读取（1x / HD 自适应），滤镜不再
+            // 抵消高清增益；shim 不可用时引擎自动回落 1x（行为同旧版）。
             val filter = eng.activeVideoFilter
             val fClass = filterClass(filter)
 
@@ -473,14 +489,12 @@ class DraSticGlView @JvmOverloads constructor(
                 layoutDirty = true
             }
             // 显示档切换（滤镜类变化 或 原生档下的 HD 档位变化）：重建纹理。
-            // 放大滤镜路径的纹理尺寸由滤镜倍数决定（源帧经 getScreenBuffers
-            // 恒为 256×192 —— 高清会话下为原生降采样帧），原生路径沿用
-            // HD 快照。
+            // 原生路径纹理按 HD 快照分配；放大滤镜路径的纹理尺寸取决于
+            // 滤镜源（1x/HD）×滤镜倍数 —— 源尺寸每帧才能确定，改由
+            // renderFilteredFrame 按需分配（首帧必然触发一次分配）。
             if (fClass != lastFilterClass) {
-                when (fClass) {
-                    2 -> allocTextures(SCREEN_W_2X, SCREEN_H_2X)      // 512×384
-                    4 -> allocTextures(SCREEN_W_2X * 2, SCREEN_H_2X * 2) // 1024×768
-                    else -> allocTextures(eng)                        // 原生：1x/2x 按 HD 快照
+                if (fClass == 0) {
+                    allocTextures(eng)                        // 原生：1x/2x 按 HD 快照
                 }
                 // 放大滤镜路径需要渲染线程持续搬运帧（frameBuffer）供 GL
                 // 线程取帧滤镜（且不做画布滤镜替换）；原生路径由 renderFrame
@@ -535,25 +549,55 @@ class DraSticGlView @JvmOverloads constructor(
     }
 
     /**
-     * 放大滤镜帧路径：取渲染线程搬运的 frameBuffer（256×384，上屏在前），
-     * 上/下屏分别经 NdsNative.applyUpscaleFilter 做 CPU 放大（与 melonDS
-     * surface 路径同一套 coreshared 实现），以 RGBA8888 上传到 2x/4x 纹理，
-     * 再按现有 12 顶点契约自绘。取帧用 frameStamp 前后校验，恰逢渲染线程
-     * 覆盖时跳过本帧上传（只重绘既有纹理，避免撕裂）。
+     * 放大滤镜帧路径：取渲染线程搬运的 frameBuffer（垂直堆叠合成帧：
+     * 1x 会话 256×384；高清会话经 drasticGetCompletedFrames shim 为
+     * 512×768 —— 真实 HD 帧），上/下屏分别经 NdsNative.applyUpscaleFilter
+     * 做 CPU 放大（与 melonDS surface 路径同一套 coreshared 实现），以
+     * RGBA8888 上传到 (源×倍数) 纹理，再按现有 12 顶点契约自绘。
+     * 取帧用 frameStamp 前后校验，恰逢渲染线程覆盖时跳过本帧上传
+     * （只重绘既有纹理，避免撕裂）。
+     *
+     * ★ 纹理/缓冲尺寸按【实际源尺寸 × 滤镜倍数】每帧校准：
+     *   1x 源 2x 滤镜 → 512×384 纹理；HD 源 2x 滤镜 → 1024×768；
+     *   HD 源 4x 滤镜 → 2048×1536。输出超过 GL_MAX_TEXTURE_SIZE 时把
+     *   滤镜源回退到恒定 1x 合成帧（eng.oneXComposite），保证分配合法
+     *   （此时高清让位 —— 与"纹理分配失败导致黑屏"相比是正确取舍）。
      */
     private fun renderFilteredFrame(eng: DraSticEngine, filter: Int) {
+        // 源尺寸每帧读取（渲染线程在 1x/HD 间自适应，shim 失败即回落 1x）
+        val vw = eng.filteredVideoWidth().coerceAtLeast(1)
+        val vh = eng.filteredVideoHeight().coerceAtLeast(1)
+        val scale = if (filter == 6 || filter == 8 || filter == 9 || filter == 10) 4 else 2
+
+        // 源选择：优先引擎当前合成帧（可能是 HD）；输出超 GL 上限时回退 1x
+        var srcComposite = eng.frameBuffer
+        var srcW = vw
+        var srcH = vh
+        var use1xFallback = false
+        if (srcComposite.size < vw * vh) return   // 渲染线程尚未准备好本档帧
+        if ((vw * scale > maxTexSize) || (vh * scale > maxTexSize)) {
+            srcComposite = eng.oneXComposite()
+            srcW = SCREEN_W_1X
+            srcH = SCREEN_H_1X
+            use1xFallback = true
+        }
+
+        ensureFilterBuffers(srcW, srcH, scale)
+
         var coherent = false
         var attempt = 0
         while (!coherent && attempt < 2) {
             val stamp = eng.frameStamp()
-            System.arraycopy(eng.frameBuffer, 0, srcFrame, 0, srcFrame.size)
+            System.arraycopy(srcComposite, 0, srcFrame, 0, srcW * srcH)
             coherent = eng.frameStamp() == stamp
             attempt++
         }
         if (!coherent) return
+        // 一致性窗口内源档位又变了（HD↔1x 切换瞬间）：下帧重取，避免错位
+        if (!use1xFallback && eng.filteredVideoWidth() != srcW) return
 
-        System.arraycopy(srcFrame, 0, srcTop, 0, srcTop.size)
-        System.arraycopy(srcFrame, srcTop.size, srcBottom, 0, srcBottom.size)
+        System.arraycopy(srcFrame, 0, srcTop, 0, srcW * (srcH / 2))
+        System.arraycopy(srcFrame, srcW * (srcH / 2), srcBottom, 0, srcW * (srcH / 2))
 
         val tw = texW
         val th = texH
@@ -562,16 +606,43 @@ class DraSticGlView @JvmOverloads constructor(
         // 纹理（texBottom），导致上下两屏都画出下屏画面。原生 renderFrame
         // 的契约是每屏 "bind → draw(6)" 分两次调用（反汇编 0x1ceac 验证：
         // first=0/6 各一次 count=6），这里严格对齐。
-        uploadFiltered(texTop, filter, srcTop, tw, th)
+        uploadFiltered(texTop, filter, srcTop, srcW, srcH / 2, tw, th)
         drawScreen(0, texTop)
-        uploadFiltered(texBottom, filter, srcBottom, tw, th)
+        uploadFiltered(texBottom, filter, srcBottom, srcW, srcH / 2, tw, th)
         drawScreen(6, texBottom)
     }
 
-    /** 单屏滤镜 + 上传：成功返回 true。滤镜调用失败（返回 0）时跳过。 */
-    private fun uploadFiltered(tex: Int, filter: Int, src: IntArray, tw: Int, th: Int): Boolean {
+    /** 确保滤镜源/输出缓冲与纹理按 (srcW,srcH,scale) 就绪（仅 GL 线程调用）。
+     * 尺寸变化时重建，其余帧直接复用。 */
+    private fun ensureFilterBuffers(srcW: Int, srcH: Int, scale: Int) {
+        if (srcFrameW != srcW || srcFrameH != srcH) {
+            srcFrameW = srcW
+            srcFrameH = srcH
+            srcFrame = IntArray(srcW * srcH)
+            srcTop = IntArray(srcW * (srcH / 2))
+            srcBottom = IntArray(srcW * (srcH / 2))
+        }
+        val needTexW = srcW * scale
+        val needTexH = srcH * scale
+        if (texW != needTexW || texH != needTexH) {
+            allocTextures(needTexW, needTexH)
+        }
+        val needBytes = needTexW * needTexH * 4
+        if (filterOutBuf.capacity() < needBytes) {
+            filterOutBuf = ByteBuffer
+                .allocateDirect(needBytes)
+                .order(ByteOrder.nativeOrder())
+        }
+    }
+
+    /** 单屏滤镜 + 上传：成功返回 true。滤镜调用失败（返回 0）时跳过。
+     * [sw]/[sh] 为单屏源尺寸（1x=256×192 / HD=512×384），
+     * [tw]/[th] 为目标纹理尺寸（= 源 × 滤镜倍数）。 */
+    private fun uploadFiltered(
+        tex: Int, filter: Int, src: IntArray, sw: Int, sh: Int, tw: Int, th: Int
+    ): Boolean {
         val n = try {
-            NdsNative.applyUpscaleFilter(filter, src, SCREEN_W_1X, SCREEN_H_1X, filterOutBuf)
+            NdsNative.applyUpscaleFilter(filter, src, sw, sh, filterOutBuf)
         } catch (t: Throwable) {
             Log.w(TAG, "applyUpscaleFilter failed", t)
             0

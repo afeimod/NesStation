@@ -181,20 +181,40 @@ object PlatformDetector {
 
     /**
      * 根据 zip 内条目的扩展名集合判定平台（双方共用）。
-     * 优先级：arcade 特征扩展 > 其他平台扩展 > CD-image + hint > arcade 兜底。
+     *
+     * ★ 优先级（修复"首次添加某项核心游戏目录时，其他存储的杂 zip 被刷进
+     * 街机目录"）：
+     *  1. 街机特征扩展（p1/sp1/c1/q1…）→ ARCADE：真正的 FBNeo ROM zip 几乎
+     *     必含特征扩展，任何提示下都判街机；
+     *  2. 弱街机信号（zip 内含 .bin）→ 仅在【无平台页提示】时判街机。带提示
+     *     时 .bin 太宽泛（CPS dump 与杂项数据包都可能只有 .bin），跟随用户的
+     *     平台页选择，避免把资源 zip / APK 备份 zip 等误归街机；
+     *  3. 其他平台扩展 → 按扩展判定；
+     *  4. 仅 CD-image 扩展 → 按 hint 消歧（无 hint 默认 MD）；
+     *  5. 无任何识别信号 → 有平台页提示时【跟随提示】（用户在哪个核心页
+     *     导入就归哪个核心），无提示保持旧默认 ARCADE。
      */
     private fun detectFromExtensions(
         entryExts: List<String>,
         hintPlatform: GamePlatform?
     ): GamePlatform {
         // Pass 1: 街机特征扩展名（最高优先级）
-        // 注意：.bin 在街机 zip 里非常常见（CPS/NeoGeo 的 ROM 文件），所以也作为 arcade 信号。
-        if (entryExts.any { it in ARCADE_ROM_EXTENSIONS || it == "bin" }) {
+        if (entryExts.any { it in ARCADE_ROM_EXTENSIONS }) {
             return GamePlatform.ARCADE
         }
 
-        // Pass 2: 任意一个被其他平台识别的扩展名
+        // Pass 1b: .bin 弱信号 —— 仅无提示时视为街机（旧行为）。
+        // 带提示时落到下方 Pass 2/4/5 按扩展或提示判定。
+        if (entryExts.any { it == "bin" } && hintPlatform == null) {
+            return GamePlatform.ARCADE
+        }
+
+        // Pass 2: 任意一个被其他平台识别的扩展名。
+        // CD-image 扩展（.cue/.iso/.img/.ccd/.sub/.chd/.bin）跳过 —— 统一
+        // 交给 Pass 3 按平台页提示消歧（fromExtension 把 .cue/.iso 映射到
+        // DOS，直接判会把 Mega-CD/PCE-CD 的 zip 全带偏）。
         for (entryExt in entryExts) {
+            if (entryExt in CD_IMAGE_EXTENSIONS) continue
             GamePlatform.fromExtension(entryExt)?.let { return it }
         }
 
@@ -206,12 +226,15 @@ object PlatformDetector {
                 GamePlatform.DOS -> GamePlatform.DOS
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
-                else -> GamePlatform.ARCADE
+                GamePlatform.NES -> GamePlatform.NES
+                GamePlatform.ARCADE -> GamePlatform.ARCADE
+                else -> GamePlatform.MD
             }
         }
 
-        // Pass 4: 没有任何识别信号 —— 当成街机
-        return GamePlatform.ARCADE
+        // Pass 4: 没有任何识别信号 —— 跟随平台页提示；无提示兜底街机
+        // （保持旧行为：自动扫描等无上下文场景把未知 zip 归街机）。
+        return hintPlatform ?: GamePlatform.ARCADE
     }
 
     private fun listZipEntryExtensions(context: Context, uri: Uri): List<String> {

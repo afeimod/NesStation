@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
@@ -45,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -173,6 +175,9 @@ fun LibraryScreen(
     // system SAF picker is unavailable (typical on Android TV boxes that
     // ship without DocumentsUI).
     var showFileBrowser by remember { mutableStateOf(false) }
+    // 导入/扫描进行中标志：后台扫描大目录期间显示进度对话框并禁止重复触发
+    // （"添加比较大的目录卡死黑屏"修复的配套 UX —— 扫描已移出主线程）。
+    var importing by remember { mutableStateOf(false) }
 
     // 选中的平台分类标签（NES / Java）
     var selectedPlatform by remember { mutableStateOf(initialPlatform ?: GamePlatform.NES) }
@@ -209,10 +214,21 @@ fun LibraryScreen(
         //    successful scan means the folder is genuinely empty), and local
         //    entries are removed when their file no longer exists or the
         //    folder itself is gone.
+        //
+        //    ★ 性能修复（"fbneo刷新目录特别卡"）：旧实现每个目录循环里调
+        //    RomStore.loadAll 两次 + 每个 ROM 一次 RomStore.remove（每次都是
+        //    全量读+全量重写）。现在整轮刷新只做一次 loadAll 快照 + 结束时
+        //    一次批量删除（removeIds）+ 一次批量入库（importGames）。
         var stepAdded = 0
         var stepRemoved = 0
         var lostFolderAccess = false
         val folders = RomStore.getImportedFolders(context)
+        // 库快照（本地维护增减，避免循环内反复全量 loadAll）
+        val snapshot = RomStore.loadAll(context).toMutableList()
+        val pendingRemoveIds = mutableSetOf<String>()
+        val pendingAdd = mutableListOf<Triple<String, String, GamePlatform>>()
+        val pendingAddPaths = mutableSetOf<String>()
+        val knownPaths = snapshot.mapNotNull { it.romPath }.toHashSet()
         folders.forEach { (folderUriStr, hintPlatform) ->
             if (folderUriStr.startsWith("content://")) {
                 try {
@@ -227,7 +243,6 @@ fun LibraryScreen(
                     // are safe to remove.
                     val foundUris = romFiles.map { it.second.toString() }.toMutableSet()
 
-                    val existing = RomStore.loadAll(context)
                     val folderTreePrefix = run {
                         // content://com.android.externalstorage.documents/tree/primary%3AROMs%2Fsms/document/primary%3AROMs%2Fsms%2F...
                         // Match anything that starts with the tree prefix:
@@ -244,23 +259,22 @@ fun LibraryScreen(
                     fun isUnderFolder(uriStr: String): Boolean =
                         uriStr == folderTreePrefix || uriStr.startsWith("$folderTreePrefix/document/")
 
-                    val toRemove = existing.filter { game ->
+                    val toRemove = snapshot.filter { game ->
                         val p = game.romPath ?: return@filter false
                         if (!p.startsWith("content://")) return@filter false
                         if (!isUnderFolder(p)) return@filter false
                         p !in foundUris
                     }
                     if (toRemove.isNotEmpty()) {
-                        toRemove.forEach { RomStore.remove(context, it.id) }
+                        toRemove.forEach { pendingRemoveIds.add(it.id) }
+                        snapshot.removeAll(toRemove.toSet())
                         stepRemoved += toRemove.size
                     }
 
                     // Add new ROMs found in the folder that aren't yet in the library
-                    val existingPaths = RomStore.loadAll(context).mapNotNull { it.romPath }.toSet()
-                    var added = 0
                     romFiles.forEach { (name, fileUri) ->
                         val uriStr = fileUri.toString()
-                        if (uriStr !in existingPaths) {
+                        if (uriStr !in knownPaths && uriStr !in pendingAddPaths) {
                             try {
                                 val platform = detectPlatformFromUri(context, fileUri, name, hintPlatform = hintPlatform)
                                 val title = when (platform) {
@@ -272,12 +286,11 @@ fun LibraryScreen(
                                     }
                                     else -> name.substringBeforeLast('.')
                                 }
-                                RomStore.add(context, title, uriStr, platform)
-                                added++
+                                pendingAdd.add(Triple(title, uriStr, platform))
+                                pendingAddPaths.add(uriStr)
                             } catch (_: Exception) { }
                         }
                     }
-                    stepAdded += added
                 } catch (_: SecurityException) {
                     // Persistable URI permission lost — we can't verify the
                     // folder's contents, so skip it without deleting anything.
@@ -297,19 +310,18 @@ fun LibraryScreen(
                         // The imported folder itself is gone — remove every
                         // game that lived under it.
                         val folderAbs = folder.absolutePath
-                        val existing = RomStore.loadAll(context)
-                        val toRemove = existing.filter { game ->
+                        val toRemove = snapshot.filter { game ->
                             val p = game.romPath ?: return@filter false
                             p.startsWith("/") && (p == folderAbs || p.startsWith("$folderAbs/"))
                         }
                         if (toRemove.isNotEmpty()) {
-                            toRemove.forEach { RomStore.remove(context, it.id) }
+                            toRemove.forEach { pendingRemoveIds.add(it.id) }
+                            snapshot.removeAll(toRemove.toSet())
                             stepRemoved += toRemove.size
                         }
                     } else {
                         val romFiles = scanLocalFolderForRoms(folder, maxDepth = 5)
                         val folderAbs = folder.absolutePath
-                        val existing = RomStore.loadAll(context)
 
                         // Remove games under this folder whose file no longer
                         // exists on disk. File.exists() is exact, so this works
@@ -321,7 +333,7 @@ fun LibraryScreen(
                         // Android 11+), File.exists() returns false for files
                         // that are actually still there, so only remove entries
                         // when the parent folder is readable.
-                        val toRemove = existing.filter { game ->
+                        val toRemove = snapshot.filter { game ->
                             val p = game.romPath ?: return@filter false
                             if (!p.startsWith("/")) return@filter false
                             if (p != folderAbs && !p.startsWith("$folderAbs/")) return@filter false
@@ -331,16 +343,15 @@ fun LibraryScreen(
                             parent != null && parent.canRead()
                         }
                         if (toRemove.isNotEmpty()) {
-                            toRemove.forEach { RomStore.remove(context, it.id) }
+                            toRemove.forEach { pendingRemoveIds.add(it.id) }
+                            snapshot.removeAll(toRemove.toSet())
                             stepRemoved += toRemove.size
                         }
 
                         // Add new ROMs
-                        val existingPaths = RomStore.loadAll(context).mapNotNull { it.romPath }.toSet()
-                        var added = 0
                         romFiles.forEach { file ->
                             val path = file.absolutePath
-                            if (path !in existingPaths) {
+                            if (path !in knownPaths && path !in pendingAddPaths) {
                                 try {
                                     val platform = detectPlatformFromFile(file, hintPlatform = hintPlatform)
                                     val title = when (platform) {
@@ -352,17 +363,24 @@ fun LibraryScreen(
                                         }
                                         else -> file.nameWithoutExtension
                                     }
-                                    RomStore.add(context, title, path, platform)
-                                    added++
+                                    pendingAdd.add(Triple(title, path, platform))
+                                    pendingAddPaths.add(path)
                                 } catch (_: Exception) { }
                             }
                         }
-                        stepAdded += added
                     }
                 } catch (_: Exception) {
                     // Skip failed folders rather than removing entries.
                 }
             }
+        }
+
+        // 整批落盘：一次删除 + 一次入库（替代旧的逐条全量读写）
+        if (pendingRemoveIds.isNotEmpty()) {
+            stepRemoved = RomStore.removeIds(context, pendingRemoveIds)
+        }
+        if (pendingAdd.isNotEmpty()) {
+            stepAdded = RomStore.importGames(context, pendingAdd).size
         }
 
         // 2) Load everything back from RomStore (this picks up the changes above
@@ -452,11 +470,36 @@ fun LibraryScreen(
     }
 
     // SAF file picker for importing individual ROM files
+    // （zip 探头 / PSX 标题提取可能较慢，统一放后台协程执行）
     val filePickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        if (importing) {
+            dialogMsg = "上一次导入还在进行中，请稍候再试"
+            return@rememberLauncherForActivityResult
+        }
+        importing = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                importPickedFiles(context, uris, selectedPlatform)
+            } catch (e: Exception) {
+                dialogMsg = "导入失败：${e.message}"
+            } finally {
+                importing = false
+            }
+        }
+    }
 
+    /**
+     * 导入 SAF 多选的 ROM 文件（后台协程执行）。
+     * 多文件同选一张 CD 的场景做去重（.cue 存在时跳过 .img/.bin/.ccd/.sub）。
+     */
+    suspend fun importPickedFiles(
+        context: android.content.Context,
+        uris: List<android.net.Uri>,
+        hintPlatform: GamePlatform
+    ) {
         // === Deduplicate multi-file CD images ===
         // When the user selects multiple files from the same game folder
         // (e.g. game.cue + game.bin + game.iso), only import the launch
@@ -487,6 +530,9 @@ fun LibraryScreen(
 
         var count = 0
         var skipped = picked.size - filtered.size
+        // 批量入库：先逐个判定平台/标题（zip 探头走 IO 线程），
+        // 最后 RomStore.importGames 一次落盘（替代逐条 add 的 N² 重写）。
+        val items = mutableListOf<Triple<String, String, GamePlatform>>()
         filtered.forEach { pf ->
             try {
                 context.contentResolver.takePersistableUriPermission(
@@ -497,7 +543,7 @@ fun LibraryScreen(
             // ambiguous CD-image extensions (.cue/.img/.iso/.ccd/.sub)
             // are resolved in favor of the user's intent. Without a hint,
             // SEGA-CD games would default to DOS.
-            val platform = detectPlatformFromUri(context, pf.uri, pf.name, hintPlatform = selectedPlatform)
+            val platform = detectPlatformFromUri(context, pf.uri, pf.name, hintPlatform = hintPlatform)
             // 街机游戏使用中文名映射（kof98h → 拳皇98 - ...）
             // PSX游戏从ISO/CUE头提取真实游戏名
             val title = when (platform) {
@@ -509,21 +555,28 @@ fun LibraryScreen(
                 }
                 else -> pf.name.substringBeforeLast('.')
             }
-            RomStore.add(context, title, pf.uri.toString(), platform)
+            items.add(Triple(title, pf.uri.toString(), platform))
             count++
         }
-        if (count > 0) {
+        val added = RomStore.importGames(context, items)
+        if (added.isNotEmpty() || count > 0) {
             refreshList(
                 postMessage = if (skipped > 0) {
-                    "已导入 $count 个ROM文件（自动跳过 $skipped 个CD附属文件）"
+                    "已导入 ${added.size} 个ROM文件（自动跳过 $skipped 个CD附属文件）"
                 } else {
-                    "已导入 $count 个ROM文件"
+                    "已导入 ${added.size} 个ROM文件"
                 }
             )
         }
     }
 
     // SAF folder picker — recursively scan selected folder
+    //
+    // ★ 卡死黑屏修复：旧实现把"递归 SAF 扫描 + 每个 zip 的 ZipInputStream
+    //   全量遍历 + 逐条 RomStore.add（每次全量重写库）"全部放在主线程回调里
+    //   执行 —— 目录稍大（尤其街机 zip 几百个）UI 线程就被拖死 → 黑屏/ANR。
+    //   现在整体搬到 Dispatchers.IO 协程，期间显示"正在导入"对话框，
+    //   且库写入整批一次（RomStore.importGames），主线程零阻塞。
     val folderPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -540,77 +593,99 @@ fun LibraryScreen(
             } catch (_: SecurityException) { }
             catch (_: Exception) { }
 
-            // === DOSBox folder import ===
-            // When the user is on the DOS platform tab and picks a folder, we
-            // only import the executable launcher file (play.bat / run.bat /
-            // START.BAT / setup.exe / ...). Data files in the same folder are
-            // left untouched — dosbox_pure reads them via its own VFS at run
-            // time using the launcher's parent directory as the working dir.
-            if (selectedPlatform == GamePlatform.DOS) {
-                val launcherUri = findDosLauncherInSafTree(context, uri)
-                if (launcherUri == null) {
-                    dialogMsg = "所选文件夹未找到 DOS 启动文件（支持 .bat / .exe / .com）\n" +
-                                "建议命名：play.bat / run.bat / START.BAT"
-                } else {
-                    val launcherName = queryDisplayName(launcherUri) ?: "dos_game.bat"
-                    val execName = launcherName.substringBeforeLast('.')
-                    // Build title as "folderName(execName)" — e.g. folder "pal"
-                    // + launcher "play.bat" → "pal(play)". This makes it easy to
-                    // distinguish multiple games that share the same launcher name
-                    // (e.g. several games each with their own play.bat).
-                    val folderName = extractFolderNameFromTreeUri(uri)
-                    val title = if (folderName.isNotEmpty()) {
-                        "$folderName($execName)"
-                    } else {
-                        execName
-                    }
-                    RomStore.add(context, title, launcherUri.toString(), GamePlatform.DOS)
-                    refreshList(postMessage = "已导入 DOS 游戏：$title")
-                }
+            if (importing) {
+                dialogMsg = "上一次导入还在进行中，请稍候再试"
                 return@rememberLauncherForActivityResult
             }
-
-            // Recursively scan the selected folder for ROM files
-            val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5)
-            if (romFiles.isEmpty()) {
-                dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd）"
-            } else {
-                // Save the folder URI so the Refresh button can re-scan it
-                // later (without re-asking the user to pick the folder again).
-                RomStore.setLastImportFolder(context, uri.toString(), selectedPlatform)
-                var count = 0
-                var failed = 0
-                romFiles.forEach { (name, fileUri) ->
-                    try {
-                        val platform = detectPlatformFromUri(context, fileUri, name, hintPlatform = selectedPlatform)
-                        // 街机游戏使用中文名映射
-                        // PSX游戏从ISO/CUE头提取真实游戏名
-                        val title = when (platform) {
-                            GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
-                            GamePlatform.PSX -> {
-                                com.nesstation.app.core.storage.PsxTitleExtractor
-                                    .extractTitle(context, fileUri.toString())
-                                    ?: name.substringBeforeLast('.')
-                            }
-                            else -> name.substringBeforeLast('.')
-                        }
-                        RomStore.add(context, title, fileUri.toString(), platform)
-                        count++
-                    } catch (_: Exception) {
-                        failed++
-                    }
+            importing = true
+            scope.launch(Dispatchers.IO) {
+                try {
+                    runFolderImport(context, uri, selectedPlatform)
+                } catch (e: SecurityException) {
+                    dialogMsg = "没有权限访问所选文件夹，请重试或选择其他文件夹"
+                } catch (e: Exception) {
+                    dialogMsg = "导入文件夹失败：${e.message}"
+                } finally {
+                    importing = false
                 }
-                refreshList(
-                    postMessage = if (failed > 0)
-                        "从文件夹导入 $count 个ROM文件（$failed 个失败）"
-                    else "从文件夹导入 $count 个ROM文件"
-                )
             }
-        } catch (e: SecurityException) {
-            dialogMsg = "没有权限访问所选文件夹，请重试或选择其他文件夹"
         } catch (e: Exception) {
+            importing = false
             dialogMsg = "导入文件夹失败：${e.message}"
         }
+    }
+
+    /**
+     * 从 SAF 树导入一个文件夹的 ROM（后台协程执行）。
+     * DOS 平台页：只导入启动器（play.bat / run.bat / START.BAT / setup.exe …），
+     * 数据文件留给 dosbox_pure 的 VFS 运行时读取。
+     * 其他平台页：递归扫描（CD 多文件去重），批量入库后触发一次全量刷新。
+     */
+    suspend fun runFolderImport(context: android.content.Context, uri: Uri, hintPlatform: GamePlatform) {
+        // === DOSBox folder import ===
+        if (hintPlatform == GamePlatform.DOS) {
+            val launcherUri = findDosLauncherInSafTree(context, uri)
+            if (launcherUri == null) {
+                dialogMsg = "所选文件夹未找到 DOS 启动文件（支持 .bat / .exe / .com）\n" +
+                            "建议命名：play.bat / run.bat / START.BAT"
+            } else {
+                val launcherName = queryDisplayName(launcherUri) ?: "dos_game.bat"
+                val execName = launcherName.substringBeforeLast('.')
+                // Build title as "folderName(execName)" — e.g. folder "pal"
+                // + launcher "play.bat" → "pal(play)". This makes it easy to
+                // distinguish multiple games that share the same launcher name
+                // (e.g. several games each with their own play.bat).
+                val folderName = extractFolderNameFromTreeUri(uri)
+                val title = if (folderName.isNotEmpty()) {
+                    "$folderName($execName)"
+                } else {
+                    execName
+                }
+                RomStore.add(context, title, launcherUri.toString(), GamePlatform.DOS)
+                refreshList(postMessage = "已导入 DOS 游戏：$title")
+            }
+            return
+        }
+
+        // Recursively scan the selected folder for ROM files
+        val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5)
+        if (romFiles.isEmpty()) {
+            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd）"
+            return
+        }
+        // Save the folder URI so the Refresh button can re-scan it
+        // later (without re-asking the user to pick the folder again).
+        RomStore.setLastImportFolder(context, uri.toString(), hintPlatform)
+        // 先做平台判定与标题解析（可能要逐 zip 探头 —— IO 线程执行），
+        // 再整批一次性入库（一次 loadAll + 一次 saveAll）。
+        val items = mutableListOf<Triple<String, String, GamePlatform>>()
+        var failed = 0
+        romFiles.forEach { (name, fileUri) ->
+            try {
+                val platform = detectPlatformFromUri(context, fileUri, name, hintPlatform = hintPlatform)
+                // 街机游戏使用中文名映射
+                // PSX游戏从ISO/CUE头提取真实游戏名
+                val title = when (platform) {
+                    GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
+                    GamePlatform.PSX -> {
+                        com.nesstation.app.core.storage.PsxTitleExtractor
+                            .extractTitle(context, fileUri.toString())
+                            ?: name.substringBeforeLast('.')
+                    }
+                    else -> name.substringBeforeLast('.')
+                }
+                items.add(Triple(title, fileUri.toString(), platform))
+            } catch (_: Exception) {
+                failed++
+            }
+        }
+        val added = RomStore.importGames(context, items)
+        refreshList(
+            postMessage = when {
+                failed > 0 -> "从文件夹导入 ${added.size} 个ROM文件（$failed 个失败）"
+                else -> "从文件夹导入 ${added.size} 个ROM文件"
+            }
+        )
     }
 
     // Storage permission launcher (Android <= 10)
@@ -618,24 +693,38 @@ fun LibraryScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         if (result.values.any { it }) {
-            val entries = scanForRoms(context)
-            if (entries.isNotEmpty()) {
-                entries.forEach { (name, path) ->
-                    val platform = detectPlatformFromFile(File(path), hintPlatform = selectedPlatform)
-                    val title = when (platform) {
-                        GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
-                        GamePlatform.PSX -> {
-                            com.nesstation.app.core.storage.PsxTitleExtractor
-                                .extractTitle(context, path)
-                                ?: name.substringBeforeLast('.')
+            // 全盘扫描（/sdcard 等目录递归 walk + 每个 zip 探头）很重，
+            // 放后台协程执行，避免主线程 ANR。
+            importing = true
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val entries = scanForRoms(context)
+                    if (entries.isNotEmpty()) {
+                        // 批量判定 + 批量入库（一次落盘）
+                        val items = mutableListOf<Triple<String, String, GamePlatform>>()
+                        entries.forEach { (name, path) ->
+                            try {
+                                val platform = detectPlatformFromFile(File(path), hintPlatform = selectedPlatform)
+                                val title = when (platform) {
+                                    GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(name)
+                                    GamePlatform.PSX -> {
+                                        com.nesstation.app.core.storage.PsxTitleExtractor
+                                            .extractTitle(context, path)
+                                            ?: name.substringBeforeLast('.')
+                                    }
+                                    else -> name.substringBeforeLast('.')
+                                }
+                                items.add(Triple(title, path, platform))
+                            } catch (_: Exception) { }
                         }
-                        else -> name.substringBeforeLast('.')
+                        val added = RomStore.importGames(context, items)
+                        refreshList(postMessage = "权限已授予，扫描到 ${added.size} 个ROM文件")
+                    } else {
+                        dialogMsg = "权限已授予，但未在常见目录找到ROM文件"
                     }
-                    RomStore.add(context, title, path, platform)
+                } finally {
+                    importing = false
                 }
-                refreshList(postMessage = "权限已授予，扫描到 ${entries.size} 个ROM文件")
-            } else {
-                dialogMsg = "权限已授予，但未在常见目录找到ROM文件"
             }
         } else {
             showPermissionDialog = true
@@ -1041,68 +1130,119 @@ fun LibraryScreen(
         FileBrowserDialog(
             onPicked = { folderPath ->
                 showFileBrowser = false
-                val folder = File(folderPath)
-
-                // === DOSBox folder import — local file system path ===
-                if (selectedPlatform == GamePlatform.DOS) {
-                    val launcher = findDosLauncherInLocalFolder(folder)
-                    if (launcher == null) {
-                        dialogMsg = "所选文件夹未找到 DOS 启动文件（支持 .bat / .exe / .com）\n" +
-                                    "建议命名：play.bat / run.bat / START.BAT"
-                    } else {
-                        // Build title as "folderName(execName)" — e.g. folder "pal"
-                        // + launcher "play.bat" → "pal(play)".
-                        val folderName = folder.name
-                        val execName = launcher.nameWithoutExtension
-                        val title = "$folderName($execName)"
-                        RomStore.add(
-                            context,
-                            title,
-                            launcher.absolutePath,
-                            GamePlatform.DOS
-                        )
-                        refreshList(postMessage = "已导入 DOS 游戏：$title")
-                    }
+                // 本地目录扫描 + 逐 zip 平台判定同样很重 —— 与 SAF 导入路径
+                // 一致，放后台协程执行，避免主线程卡死。
+                if (importing) {
+                    dialogMsg = "上一次导入还在进行中，请稍候再试"
                     return@FileBrowserDialog
                 }
-
-                // Recursively scan the chosen folder for ROM files (same logic
-                // as the SAF folder picker callback above).
-                val romFiles = scanLocalFolderForRoms(folder, maxDepth = 5)
-                if (romFiles.isEmpty()) {
-                    dialogMsg = "所选文件夹未找到ROM文件（支持 ${ROM_EXTENSIONS.joinToString()}）"
-                } else {
-                    // === FIX: save the local folder path so the Refresh button
-                    // can re-scan it later (previously this branch only added
-                    // games to RomStore but never called setLastImportFolder,
-                    // so refreshList() had no folder to re-scan and the button
-                    // did nothing).
-                    RomStore.setLastImportFolder(context, folder.absolutePath, selectedPlatform)
-                    var count = 0
-                    var failed = 0
-                    romFiles.forEach { file ->
-                        try {
-                            val platform = detectPlatformFromFile(file, hintPlatform = selectedPlatform)
-                            RomStore.add(
-                                context,
-                                file.nameWithoutExtension,
-                                file.absolutePath,
-                                platform
-                            )
-                            count++
-                        } catch (_: Exception) {
-                            failed++
-                        }
+                importing = true
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        runLocalFolderImport(File(folderPath), selectedPlatform)
+                    } catch (e: Exception) {
+                        dialogMsg = "导入文件夹失败：${e.message}"
+                    } finally {
+                        importing = false
                     }
-                    refreshList(
-                        postMessage = if (failed > 0)
-                            "从文件夹导入 $count 个ROM文件（$failed 个失败）"
-                        else "从文件夹导入 $count 个ROM文件"
-                    )
                 }
             },
             onDismiss = { showFileBrowser = false }
         )
+    }
+
+    /**
+     * 从本地文件系统目录导入 ROM（后台协程执行，内置文件浏览器用）。
+     * DOS 平台页只导入启动器；其他平台递归扫描 + 批量入库 + 全量刷新。
+     */
+    suspend fun runLocalFolderImport(folder: File, hintPlatform: GamePlatform) {
+        // === DOSBox folder import — local file system path ===
+        if (hintPlatform == GamePlatform.DOS) {
+            val launcher = findDosLauncherInLocalFolder(folder)
+            if (launcher == null) {
+                dialogMsg = "所选文件夹未找到 DOS 启动文件（支持 .bat / .exe / .com）\n" +
+                            "建议命名：play.bat / run.bat / START.BAT"
+            } else {
+                // Build title as "folderName(execName)" — e.g. folder "pal"
+                // + launcher "play.bat" → "pal(play)".
+                val folderName = folder.name
+                val execName = launcher.nameWithoutExtension
+                val title = "$folderName($execName)"
+                RomStore.add(
+                    context,
+                    title,
+                    launcher.absolutePath,
+                    GamePlatform.DOS
+                )
+                refreshList(postMessage = "已导入 DOS 游戏：$title")
+            }
+            return
+        }
+
+        // Recursively scan the chosen folder for ROM files (same logic
+        // as the SAF folder picker callback above).
+        val romFiles = scanLocalFolderForRoms(folder, maxDepth = 5)
+        if (romFiles.isEmpty()) {
+            dialogMsg = "所选文件夹未找到ROM文件（支持 ${ROM_EXTENSIONS.joinToString()}）"
+            return
+        }
+        // === FIX: save the local folder path so the Refresh button
+        // can re-scan it later (previously this branch only added
+        // games to RomStore but never called setLastImportFolder,
+        // so refreshList() had no folder to re-scan and the button
+        // did nothing).
+        RomStore.setLastImportFolder(context, folder.absolutePath, hintPlatform)
+        val items = mutableListOf<Triple<String, String, GamePlatform>>()
+        var failed = 0
+        romFiles.forEach { file ->
+            try {
+                val platform = detectPlatformFromFile(file, hintPlatform = hintPlatform)
+                // 街机游戏使用中文名映射（与 SAF 路径保持一致）
+                val title = when (platform) {
+                    GamePlatform.ARCADE -> ArcadeTitleMapper.resolveDisplayTitle(file.name)
+                    else -> file.nameWithoutExtension
+                }
+                items.add(Triple(title, file.absolutePath, platform))
+            } catch (_: Exception) {
+                failed++
+            }
+        }
+        val added = RomStore.importGames(context, items)
+        refreshList(
+            postMessage = if (failed > 0)
+                "从文件夹导入 ${added.size} 个ROM文件（$failed 个失败）"
+            else "从文件夹导入 ${added.size} 个ROM文件"
+        )
+    }
+
+    // 导入进行中 —— 不可关闭的进度对话框（扫描已移到后台线程，
+    // 这里只提供"正在工作"的反馈并防止重复触发导入）
+    if (importing) {
+        Dialog(onDismissRequest = { }) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = Color.White,
+                tonalElevation = 6.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        color = Color(0xFFE74C3C),
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Text(
+                        "正在扫描并导入游戏…\n大目录可能需要一些时间，请稍候",
+                        color = Color(0xFF1E2A3A),
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+        }
     }
 
     // 长按游戏卡片弹出的操作菜单 — 使用自定义 Dialog 确保

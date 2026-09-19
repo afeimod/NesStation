@@ -1034,7 +1034,24 @@ class PadLayout {
         ndsJitEnable = another.ndsJitEnable
         ndsAudioInterpolation = another.ndsAudioInterpolation
         ndsUseFwSettings = another.ndsUseFwSettings
+        ndsScreenGap = another.ndsScreenGap
+        ndsSwapscreenMode = another.ndsSwapscreenMode
+        ndsMicInput = another.ndsMicInput
+        ndsLanguage = another.ndsLanguage
+        ndsAudioBitrate = another.ndsAudioBitrate
+        ndsJitBlockSize = another.ndsJitBlockSize
+        ndsJitFastMemory = another.ndsJitFastMemory
+        ndsJitBranchOptimisations = another.ndsJitBranchOptimisations
+        ndsJitLiteralOptimisations = another.ndsJitLiteralOptimisations
+        ndsHybridSmallScreen = another.ndsHybridSmallScreen
         ndsSaveMode = another.ndsSaveMode
+        // ★ 全局存档方式必须逐字段复制：copy() 的实现是
+        //   "new PadLayout()（字段=默认值）+ copyFrom(this) + block"。
+        //   此前漏掉 globalSaveMode —— 任何其他设置的 padLayout.copy{...}
+        //   都会生成一个 globalSaveMode=默认"nesstation" 的对象并经
+        //   PadLayoutStore.save 落盘，导致用户选的「ROM 同目录同名」被
+        //   静默重置回统一存档目录（改其他设置/进激烈核心改设置即复现）。
+        globalSaveMode = another.globalSaveMode
         ndsDrasticVolume = another.ndsDrasticVolume
         ndsDrasticSound = another.ndsDrasticSound
         ndsDrasticHdRender = another.ndsDrasticHdRender

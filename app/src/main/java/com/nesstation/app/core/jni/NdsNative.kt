@@ -211,4 +211,26 @@ object NdsNative {
     @JvmStatic external fun applyUpscaleFilterArgb(
         filter: Int, src: IntArray, w: Int, h: Int, dst: IntArray, dstOffset: Int
     ): Int
+
+    /**
+     * DraStic（激烈）帧一致性读取 shim（libndscore 内 drastic_frames.cpp）。
+     *
+     * 进程内定位预编译 libdrastic*.so 的 video_state（dladdr + 固定偏移），
+     * 在互斥语义下读取【刚完成的帧】（bufs[(slot+1)&1]，与原生 renderFrame
+     * 同一缓冲，天然无撕裂），以 ARGB_8888 写入 [top] / [bottom]。
+     *
+     * ★ 高清（bit41 / _Hires3D）会话下返回帧池的真实分辨率（512×384/屏）：
+     *   原生 getScreenBuffers 在 HD 档只返回 2:1 抽取降采样后的 256×192，
+     *   高清增益全部丢失 —— 本函数是画布路径 / CPU 滤镜路径拿到高清帧的
+     *   唯一通道。
+     *
+     * @param top 上屏输出（HD 会话容量须 ≥ 512×384，1x 会话 ≥ 256×192）
+     * @param bottom 下屏输出（容量要求同上）
+     * @param outDims 长度 ≥ 4 的输出：{topW, topH, botW, botH}
+     * @return true=成功写入；false=校验失败（库未加载 / 16 位渲染 / 档位
+     *   异常 / 容量不足），调用方应回落原生 getScreenBuffers（行为同修复前）
+     */
+    @JvmStatic external fun drasticGetCompletedFrames(
+        top: IntArray, bottom: IntArray, outDims: IntArray
+    ): Boolean
 }
