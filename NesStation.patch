@@ -1,0 +1,238 @@
+diff --git a/app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt b/app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt
+index 04008c46..f798358d 100644
+--- a/app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt
++++ b/app/src/main/java/com/nesstation/app/core/engine/DraSticEngine.kt
+@@ -362,6 +362,23 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+     /** startGame 的返回值（会话结束时读取）。 */
+     private val gameResult = AtomicBoolean(false)
+ 
++    /**
++     * ★ 关闭闪退修复：原生会话是否已结束（startGame 已返回）。
++     *
++     * 反汇编实锤：libdrastic 在会话结束流程内（startGame 返回前的引擎
++     * reset/teardown 链，最终落到 0x1cc84）会 pthread_mutex_destroy 帧同步
++     * mutex（video_state+0x98c，运行时地址即 tombstone 里的 0x7b85bbdb84）。
++     * waitScreen / signalScreen 都要先 lock 这把锁 —— 会话结束后再调用
++     * 就是 "FORTIFY: pthread_mutex_lock called on a destroyed mutex"
++     * → SIGABRT（Android 12+ bionic 硬性检测，老系统只是未定义行为侥幸
++     * 不崩，所以开发者设备上未必复现）。
++     *
++     * 模拟线程在 startGame 返回后第一时间置位；此后 [signalScreenIfSessionAlive]
++     * 永远拒绝 signal。@Volatile：模拟线程写，UI/清理线程读。
++     */
++    @Volatile
++    private var nativeSessionEnded = false
++
+     @Volatile
+     override var isLoaded: Boolean = false
+         private set
+@@ -888,6 +905,13 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+         running.set(true)
+         gameEnded.set(false)
+         gameResult.set(false)
++        // ★ 新会话复位（清理闪退修复的配套）：
++        //  - frameCount 是"首帧就绪"判据，跨会话从不重置会让第 2 局的 boot
++        //    等待立即跳过（原生尚未就绪就上报 loaded，退出时序全乱）；
++        //  - nativeSessionEnded 属于上一局会话，必须清零，否则本局关闭时
++        //    所有 signal 都被会话结束守卫拒绝（渲染线程收不到唤醒）。
++        frameCount = 0L
++        nativeSessionEnded = false
+ 
+         // 渲染消费线程（帧搬运）。waitScreen 为原生 condvar 等待：核心建立
+         // 之前它阻塞在零初始化的 mutex/cond 上（pthread_*_INITIALIZER
+@@ -1056,15 +1080,23 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+                 android.util.Log.e("DraSticEngine", "startGame failed", e)
+                 lastErrorMsg = "DraStic 启动异常: ${e.message}"
+             }
++            // ★ 原生会话已结束：startGame 内部 teardown 已销毁帧同步 mutex。
++            // 第一时间置结束标志（此后 signalScreenIfSessionAlive 永远拒绝
++            // signal）并停掉渲染循环 —— 渲染线程被原生 teardown 内置的
++            // cond_signal 唤醒后看到 running=false 即退出，绝不能再回到
++            // waitScreen（否则锁已销毁的 mutex → 渲染线程 FORTIFY SIGABRT）。
++            nativeSessionEnded = true
++            running.set(false)
+             gameResult.set(ok)
+             if (!ok && lastErrorMsg.isEmpty()) {
+                 lastErrorMsg = "DraStic 无法加载 ROM（文件损坏或不受支持）"
+             }
+             gameEnded.set(true)
+             // 会话在运行中意外结束（模拟线程没了）：撤下 loaded 让视图停止
+-            // 绘制，等待用户退出重试。正常退出走 cleanup()（先置
+-            // running=false），不会命中这里。
+-            if (isLoaded && running.get()) {
++            // 绘制，等待用户退出重试。正常退出走 cleanup()，也会再置一次。
++            // （旧判断 isLoaded && running.get() —— running 现已提前置 false，
++            // 改为只看 isLoaded，否则意外结束时 loaded 撤不下来。）
++            if (isLoaded) {
+                 android.util.Log.w(TAG, "drastic session ended unexpectedly while loaded")
+                 isLoaded = false
+             }
+@@ -1091,8 +1123,20 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+             }
+             if (System.currentTimeMillis() >= deadline) {
+                 android.util.Log.e(TAG, "boot TIMEOUT after ${BOOT_TIMEOUT_MS}ms — no frames produced")
+-                // 干净收场（对齐原版拆机顺序）：quitSystem 让 startGame 返回
+-                // → 等模拟线程退出 → releaseSystem。之后可以安全重试。
++                // 干净收场（对齐原版拆机顺序）：先撤渲染线程 → pause/quit →
++                // 等模拟线程退出 → releaseSystem。之后可以安全重试。
++                // ★ 顺序修复（关闭闪退同源）：旧实现在 join 模拟线程【之后】
++                // 才 wakeAndJoinRender（内含 signalScreen）—— 原生会话结束
++                // 流程会销毁帧同步 mutex，此后 signal = "destroyed mutex"
++                // SIGABRT；且渲染线程可能在原生 teardown 时仍阻塞在
++                // waitScreen 上（cond_wait 与 destroy 竞态）。改为先撤渲染
++                // 线程（此刻会话仍挂着，signal 安全），再请求退出。
++                running.set(false)
++                signalScreenIfSessionAlive()
++                renderThread?.let { t ->
++                    try { t.join(1000) } catch (_: InterruptedException) {}
++                }
++                renderThread = null
+                 try { DraSticJNI.pauseSystem(1) } catch (_: Throwable) {}
+                 try { DraSticJNI.quitSystem() } catch (_: Throwable) {}
+                 val gt = gameThread
+@@ -1100,8 +1144,6 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+                     try { gt.join(3000) } catch (_: InterruptedException) {}
+                 }
+                 val emuDied = gt?.isAlive != true
+-                running.set(false)
+-                wakeAndJoinRender(500)
+                 gameThread = null
+                 if (emuDied) {
+                     try { DraSticJNI.releaseSystem() } catch (_: Throwable) {}
+@@ -1127,9 +1169,28 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+         return true
+     }
+ 
+-    /** 唤醒可能阻塞在 waitScreen 的渲染线程并等待其退出（毫秒上限）。 */
+-    private fun wakeAndJoinRender(timeoutMs: Long) {
++    /**
++     * ★ 仅当原生会话仍在运行（startGame 未返回）时才调用 signalScreen。
++     *
++     * 会话结束后原生 teardown 已销毁帧同步 mutex（详见 [nativeSessionEnded]），
++     * 此时 signalScreen/waitScreen 都会触发 bionic FORTIFY
++     * "pthread_mutex_lock called on a destroyed mutex" → SIGABRT。
++     * 会话结束后渲染线程的唤醒由原生 teardown 内置的 cond_signal +
++     * running=false 完成，不再需要（也不允许）手动 signal。
++     *
++     * 调用方须持有 [lifecycleLock]（与 gameThread/nativeSessionEnded 的写入侧串行）。
++     */
++    private fun signalScreenIfSessionAlive() {
++        if (nativeSessionEnded || nativePoisoned || !nativeInitialized || DraSticJNI.JniStartupError) return
++        if (gameThread?.isAlive != true) return   // 会话已结束/不存在：绝不能 signal
+         try { DraSticJNI.signalScreen() } catch (_: Throwable) {}
++    }
++
++    /** 唤醒可能阻塞在 waitScreen 的渲染线程并等待其退出（毫秒上限）。
++     * 是否 signal 由 [signalScreenIfSessionAlive] 按会话存活状态决定 ——
++     * 会话已结束时只 join 不 signal（锁已销毁，signal 即 SIGABRT）。 */
++    private fun wakeAndJoinRender(timeoutMs: Long) {
++        signalScreenIfSessionAlive()
+         renderThread?.let { t ->
+             try { t.join(timeoutMs) } catch (_: InterruptedException) {}
+         }
+@@ -1365,11 +1426,28 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+     }
+ 
+     /**
+-     * 停止模拟线程 → 停止渲染线程 → 释放核心状态（顺序对齐原版拆机流程）。
++     * 停止渲染线程 → 停止模拟线程 → 释放核心状态（顺序对齐原版拆机流程）。
+      *
+      * startGame 是模拟主循环本身：quitSystem 只是置退出标志，必须等它
+      * 真正从 startGame 返回（gameThread 结束）之后才能 releaseSystem ——
+      * 否则会释放仍在被模拟循环使用的核心状态（use-after-free）。
++     *
++     * ★★ 关闭闪退修复（FORTIFY: "pthread_mutex_lock called on a destroyed
++     * mutex" → SIGABRT，tombstone：ca.a.unload → ca.a.D → libdrastic
++     * signalScreen 体 0x1ce90）：原生在会话结束流程内（startGame 返回前的
++     * 引擎 reset/teardown，libdrastic 0x1cc84）会 pthread_mutex_destroy
++     * 帧同步 mutex（video_state+0x98c = tombstone 里的 0x7b85bbdb84）。
++     * waitScreen / signalScreen 都要先 lock 它，因此：
++     *  1. signalScreen 只能在会话仍在运行（quitSystem 之前、startGame 未
++     *     返回）时调用 —— 旧实现在 join 模拟线程【之后】调用，此时原生
++     *     teardown 已跑完、mutex 已销毁 → 锁已销毁 mutex 直接 abort
++     *     （Android 12+ bionic 硬性检测；老系统是侥幸不崩的 UB）；
++     *  2. 渲染线程必须先于 quitSystem 收回 —— 否则原生 teardown 销毁
++     *     mutex 时渲染线程仍阻塞在 waitScreen 的 cond_wait 上，唤醒后的
++     *     unlock / 重入与 destroy 竞态，同样 abort。
++     * 会话已自行结束（startGame 自己返回）时，原生 teardown 内置的
++     * cond_signal + 模拟线程侧的 running=false 已经让渲染线程退出，
++     * 这里只 join、绝不 signal。
+      */
+     private fun cleanup() {
+         if (!isLoaded && !running.get() && gameThread == null) return
+@@ -1377,7 +1455,7 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+         isLoaded = false
+         paused = false
+ 
+-        // ★ 第一步（关闭闪退修复）：同步停掉 GL 显示线程（若视图已挂载）。
++        // ★ 第一步：同步停掉 GL 显示线程（若视图已挂载）。
+         // 必须在 pauseSystem/quitSystem/releaseSystem 之前 —— renderFrame
+         // 与滤镜路径都会直接读写核心帧池，任何并发触碰都会 use-after-free。
+         var glStopped = true
+@@ -1401,7 +1479,26 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+         } catch (_: Throwable) {
+         }
+ 
+-        // 原版顺序：pauseSystem(1) → quitSystem() → 等待 startGame 返回 → releaseSystem()
++        // ★ 第二步（修复核心）：在请求退出【之前】唤醒并收回渲染线程。
++        // 此刻会话仍在运行（quitSystem 未调用，原生 teardown 不可能已执行），
++        // 帧同步 mutex 必然有效 —— signalScreen 安全；渲染线程退出后，原生
++        // teardown 销毁 mutex 时不再有任何等待者。会话已自行结束
++        // （startGame 已返回）时助手会跳过 signal —— 此时锁已销毁，
++        // 渲染线程早已由原生 teardown 的 cond_signal + running=false 收走。
++        signalScreenIfSessionAlive()
++        renderThread?.let { t ->
++            try {
++                t.join(1000)
++            } catch (_: InterruptedException) {
++            }
++        }
++        val renderDied = renderThread?.isAlive != true
++        renderThread = null
++
++        // ★ 第三步：原版顺序 pauseSystem(1) → quitSystem() → 等待 startGame
++        // 返回。从此步起【绝不能再调 signalScreen/waitScreen】—— 会话结束
++        // 流程会销毁帧同步 mutex（本函数旧实现在这里 signal，就是
++        // "关闭游戏必闪退"的直接原因）。
+         try {
+             if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
+                 DraSticJNI.pauseSystem(1)
+@@ -1418,32 +1515,12 @@ class DraSticEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+         val emuDied = gt?.isAlive != true
+         gameThread = null
+ 
+-        // 唤醒可能阻塞在 waitScreen 的渲染线程（condvar signal）——
+-        // 在 releaseSystem 释放状态内存**之前**发信号是安全的；不发的话
+-        // 渲染线程可能永远阻塞在已释放的 condvar 上（quitSystem 后原生
+-        // 模拟循环随之停止，不再有每帧 signal）。
+-        try {
+-            if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
+-                DraSticJNI.signalScreen()
+-            }
+-        } catch (_: Throwable) {
+-        }
+-
+-        // 等渲染线程退出（唤醒信号已发，正常情况立即返回；1 秒超时兜底）
+-        renderThread?.let { t ->
+-            try {
+-                t.join(1000)
+-            } catch (_: InterruptedException) {
+-            }
+-        }
+-        val renderDied = renderThread?.isAlive != true
+-        renderThread = null
+-
+-        // ★ 关闭闪退修复：只有【模拟线程、渲染线程、GL 显示线程全部确认
+-        // 退出】后才允许 releaseSystem。旧实现无条件释放 —— 任一线程仍在
+-        // 核心代码内（大游戏帧耗长/慢设备/渲染卡在 swap）都会访问已释放
+-        // 的核心状态 → SIGSEGV。未全退时置 poisoned 禁用本进程激烈核心
+-        // （宁可"重启应用再玩"也不闪退），与启动超时路径同一取舍。
++        // ★ 只有【模拟线程、渲染线程、GL 显示线程全部确认退出】后才允许
++        // releaseSystem（releaseSystem 本体不触碰帧同步 mutex，安全）。
++        // 旧实现无条件释放 —— 任一线程仍在核心代码内（大游戏帧耗长/慢
++        // 设备/渲染卡在 swap）都会访问已释放的核心状态 → SIGSEGV。
++        // 未全退时置 poisoned 禁用本进程激烈核心（宁可"重启应用再玩"
++        // 也不闪退），与启动超时路径同一取舍。
+         if (emuDied && renderDied && glStopped) {
+             try {
+                 if (!nativePoisoned && nativeInitialized && !DraSticJNI.JniStartupError) {
