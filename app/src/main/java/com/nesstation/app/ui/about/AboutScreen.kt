@@ -142,7 +142,7 @@ fun AboutScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                // Version pill: "版本 3.0.0"
+                // Version pill: "版本 3.6.3"
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
@@ -155,7 +155,7 @@ fun AboutScreen(
                         .padding(horizontal = 16.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = "版本 3.0.0",
+                        text = "版本 3.6.3",
                         color = PrimaryText,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold

@@ -3604,6 +3604,78 @@ private fun GameSurfaceView(
         videoScale
     }
     BoxWithConstraints(modifier = modifier, contentAlignment = contentAlignment) {
+        // 物理手柄 / D-pad 按键路由 —— SurfaceView 直绘与仿电视弧面两条显示
+        // 路径共用（键序与原 SurfaceView 分支的 factory/update 两段实现
+        // 完全一致：factory 初绑 + uiBlocked 变化后 update 重绑定）。本地
+        // val 在每次重组时重建，闭包捕获最新的 uiBlocked/currentPlayer。
+        val gamepadKeyListener: (android.view.View, Int, KeyEvent) -> Boolean =
+            { _, keyCode, event ->
+                if (uiBlocked) {
+                    // UI is blocking — let Compose handle all keys
+                    // (including Back, which the BackHandler will catch).
+                    false
+                } else {
+                    val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
+                    if (bits != 0) {
+                        when (event.action) {
+                            KeyEvent.ACTION_DOWN -> {
+                                gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
+                                routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                                true
+                            }
+                            KeyEvent.ACTION_UP -> {
+                                gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
+                                routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                                true
+                            }
+                            else -> false
+                        }
+                    } else if (event.action == KeyEvent.ACTION_DOWN &&
+                               (keyCode == KeyEvent.KEYCODE_MENU ||
+                                keyCode == KeyEvent.KEYCODE_BACK)) {
+                        onMenuToggle()
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
+        val gamepadKeyListenerRebind: (android.view.View, Int, KeyEvent) -> Boolean =
+            { _, keyCode, event ->
+                val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
+                if (uiBlocked) {
+                    // UI is blocking — let Compose handle D-pad navigation.
+                    // But still process KEYUP for gamepad buttons so that
+                    // any button held when the menu opened gets released
+                    // (prevents stuck buttons when menu closes).
+                    if (bits != 0 && event.action == KeyEvent.ACTION_UP) {
+                        gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
+                        routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                    }
+                    // Don't consume — let Compose UI navigate
+                    false
+                } else {
+                    // Also ensure any stale button bits are cleared on
+                    // KEYUP even if they weren't tracked as DOWN (e.g.
+                    // menu just closed while button was held).
+                    if (bits != 0 && event.action == KeyEvent.ACTION_UP) {
+                        gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
+                        routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                        true
+                    } else if (bits != 0 && event.action == KeyEvent.ACTION_DOWN) {
+                        gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
+                        routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                        true
+                    } else if (event.action == KeyEvent.ACTION_DOWN &&
+                               (keyCode == KeyEvent.KEYCODE_MENU ||
+                                keyCode == KeyEvent.KEYCODE_BACK)) {
+                        onMenuToggle()
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
         // NDS 画布渲染（两种情形都改投 NdsDualScreenView，从 engine.frameBuffer
         // 按布局切出上/下屏绘制到两个独立矩形；不做 native surface blit）：
         //   1. videoScale == "custom"（melonDS / DraStic 通用）：自由布局编辑器
@@ -3839,6 +3911,77 @@ private fun GameSurfaceView(
                     glModifier
                 )
             }
+        } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
+                   platform != GamePlatform.NDS &&
+                   engine !is com.nesstation.app.core.engine.Psx2Engine) {
+            // === 仿电视机（CRT 弧面）画布路径 ===
+            // tv 系滤镜 + 支持「无 Surface framebuffer 回退」的引擎：
+            // 不再创建 SurfaceView（引擎 hasSurface=false → 每帧写
+            // frameBuffer），由 TvCurvedGameView 拉帧后按 J2ME GL 路径
+            // nsCurve 同款数学做桶形凸起 —— 边中点处画面触到屏幕边缘、
+            // 越靠四角越以弧线向内收进（约 3%~7%），叠加扫描线 / 暗角 /
+            // 圆角边框 / 玻璃高光，与真机 CRT 照片观感一致。
+            // 例外说明：
+            //   - PS2 (ARMSX2) 必须持有真实 Surface（MTGS::UpdateDisplayWindow
+            //     依赖 surfaceChanged），保持 SurfaceView 直绘 + 平面叠加；
+            //   - NDS 双屏的触摸映射依赖平面几何，且双屏各自 4:3，不进弧面
+            //     （继续走原有路径）。
+            // 外层容器与 SurfaceView 分支共用同一套缩放比例（宽高比由容器
+            // 决定，弧面在容器内做桶形变形）。
+            val curvedModifier = when (effectiveVideoScale) {
+                "4:3" -> Modifier.aspectRatio(4f / 3f)
+                "2:3" -> Modifier.aspectRatio(2f / 3f)   // NDS 上下双屏 (256x384)
+                "8:3" -> Modifier.aspectRatio(8f / 3f)   // NDS 左右双屏 (512x192)
+                "3:2" -> Modifier.aspectRatio(3f / 2f)   // GBA 原生比例 (240x160)
+                "8:7" -> Modifier.aspectRatio(8f / 7f)
+                "16:9" -> Modifier.aspectRatio(16f / 9f)
+                "custom" -> {
+                    val maxW = constraints.maxWidth
+                    val maxH = constraints.maxHeight
+                    val leftPx = (customRect[0] * maxW).toInt().coerceIn(0, maxW)
+                    val topPx = (customRect[1] * maxH).toInt().coerceIn(0, maxH)
+                    val wPx = ((customRect[2] - customRect[0]) * maxW).toInt().coerceIn(1, maxW)
+                    val hPx = ((customRect[3] - customRect[1]) * maxH).toInt().coerceIn(1, maxH)
+                    val density = LocalDensity.current
+                    Modifier
+                        .offset { IntOffset(leftPx, topPx) }
+                        .size(width = with(density) { wPx.toDp() }, height = with(density) { hPx.toDp() })
+                }
+                else -> Modifier.fillMaxSize() // stretch (default)
+            }
+            AndroidView(
+                factory = { viewCtx ->
+                    TvCurvedGameView(viewCtx).apply {
+                        // 与 SurfaceView 分支一致：可聚焦以接收实体手柄 /
+                        // D-pad 按键（TV 盒子 + 蓝牙手柄场景）
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        requestFocus()
+                        setOnKeyListener(gamepadKeyListener)
+                    }
+                },
+                update = { v ->
+                    v.engine = engine
+                    v.uiBlocked = uiBlocked
+                    // Re-bind the key listener whenever uiBlocked changes so
+                    // the closure captures the latest value.
+                    v.setOnKeyListener(gamepadKeyListenerRebind)
+                    // When UI becomes blocked, release ALL held gamepad buttons
+                    // so the game doesn't think buttons are stuck down.
+                    if (uiBlocked && gamepadBitsHolder[0] != 0) {
+                        gamepadBitsHolder[0] = 0
+                        routePadBits(engine, currentPlayer, 0, netplayController, platform)
+                    }
+                    // When UI becomes unblocked (menu closed), re-request focus
+                    // so the view can receive gamepad keys again.
+                    if (!uiBlocked) {
+                        v.isFocusable = true
+                        v.isFocusableInTouchMode = true
+                        v.requestFocus()
+                    }
+                },
+                modifier = curvedModifier.then(gameViewTracker)
+            )
         } else {
         val surfaceModifier = when (effectiveVideoScale) {
             "4:3" -> Modifier.aspectRatio(4f / 3f)
@@ -3917,77 +4060,16 @@ private fun GameSurfaceView(
                     // propagate to the Compose UI so the user can navigate the
                     // menu with the D-pad. Only the Back/Menu key is handled
                     // here to toggle the menu open/closed.
-                    setOnKeyListener { _, keyCode, event ->
-                        if (uiBlocked) {
-                            // UI is blocking — let Compose handle all keys
-                            // (including Back, which the BackHandler will catch).
-                            false
-                        } else {
-                            val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
-                            if (bits != 0) {
-                                when (event.action) {
-                                    KeyEvent.ACTION_DOWN -> {
-                                        gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
-                                        routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                        true
-                                    }
-                                    KeyEvent.ACTION_UP -> {
-                                        gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
-                                        routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                        true
-                                    }
-                                    else -> false
-                                }
-                            } else if (event.action == KeyEvent.ACTION_DOWN &&
-                                       (keyCode == KeyEvent.KEYCODE_MENU ||
-                                        keyCode == KeyEvent.KEYCODE_BACK)) {
-                                onMenuToggle()
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                    }
+                    // （实现提取为 gamepadKeyListener，与仿电视弧面路径共用，
+                    // 行为与原内联实现完全一致。）
+                    setOnKeyListener(gamepadKeyListener)
                 }
             },
             update = { sv ->
                 // Re-bind the key listener whenever uiBlocked changes so the
                 // closure captures the latest value.
-                sv.setOnKeyListener { _, keyCode, event ->
-                    val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
-                    if (uiBlocked) {
-                        // UI is blocking — let Compose handle D-pad navigation.
-                        // But still process KEYUP for gamepad buttons so that
-                        // any button held when the menu opened gets released
-                        // (prevents stuck buttons when menu closes).
-                        if (bits != 0 && event.action == KeyEvent.ACTION_UP) {
-                            gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
-                            routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                        }
-                        // Don't consume — let Compose UI navigate
-                        false
-                    } else {
-                        // Also ensure any stale button bits are cleared on
-                        // KEYUP even if they weren't tracked as DOWN (e.g.
-                        // menu just closed while button was held).
-                        if (bits != 0 && event.action == KeyEvent.ACTION_UP) {
-                            gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
-                            routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                            true
-                        } else if (bits != 0 && event.action == KeyEvent.ACTION_DOWN) {
-                            gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
-                            routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                            true
-                        } else if (event.action == KeyEvent.ACTION_DOWN &&
-                                   (keyCode == KeyEvent.KEYCODE_MENU ||
-                                    keyCode == KeyEvent.KEYCODE_BACK)) {
-                            onMenuToggle()
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }
+                // （实现提取为 gamepadKeyListenerRebind，与仿电视弧面路径共用。）
+                sv.setOnKeyListener(gamepadKeyListenerRebind)
                 // When UI becomes blocked, release ALL held gamepad buttons
                 // so the game doesn't think buttons are stuck down.
                 if (uiBlocked && gamepadBitsHolder[0] != 0) {
