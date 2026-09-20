@@ -48,6 +48,50 @@ internal object NdsFilterPatterns {
         return bmp
     }
 
+    /**
+     * TV 四角/四边玻璃暗影遮罩（圆角矩形 SDF）。
+     *
+     * 与 J2ME GL 路径 J2meFilterShaders.TV_GLSL_HELPERS 的 nsCornerMask
+     * 同参数：corner box (0.965, 0.955)、半径 0.085、smoothstep(-0.008, 0.016)。
+     * 效果：整个画面外缘约 2% 宽的环带被压暗最多 40%（玻璃向内弯折的
+     * 反光衰减），四角按 SDF 圆弧过渡 —— 即「四边有弧度、四角圆角」的
+     * CRT 玻璃观感。归一化坐标与 GLSL 一致（x/y 各自归一化，非等方）。
+     *
+     * 生成 256x256 灰度位图（RGB 同值、alpha=暗影强度），绘制时拉伸到
+     * 目标矩形即可 —— 所有 TV 路径（TvCurvedGameView / FilterOverlay /
+     * NdsDualScreenView）共用，保证观感统一。位图进程内只生成一次。
+     */
+    fun createTvCornerMask(): Bitmap {
+        val cached = tvCornerMaskCache
+        if (cached != null) return cached
+        val size = 256
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val cornerX = 0.965f - 0.085f
+        val cornerY = 0.955f - 0.085f
+        val pixels = IntArray(size * size)
+        for (y in 0 until size) {
+            // 与 GLSL tc*2-1 一致：像素中心采样
+            val py = kotlin.math.abs((y + 0.5f) / size * 2f - 1f)
+            for (x in 0 until size) {
+                val px = kotlin.math.abs((x + 0.5f) / size * 2f - 1f)
+                val dx = (px - cornerX).coerceAtLeast(0f)
+                val dy = (py - cornerY).coerceAtLeast(0f)
+                val dist = kotlin.math.sqrt(dx * dx + dy * dy) - 0.085f
+                // GLSL smoothstep(-0.008, 0.016, dist)
+                val t = ((dist + 0.008f) / 0.024f).coerceIn(0f, 1f)
+                val s = t * t * (3f - 2f * t)
+                val dark = (0.40f * s).coerceIn(0f, 1f)
+                val a = (dark * 255f).toInt().coerceIn(0, 255)
+                pixels[y * size + x] = (a shl 24) or 0x000000
+            }
+        }
+        bmp.setPixels(pixels, 0, size, 0, 0, size, size)
+        tvCornerMaskCache = bmp
+        return bmp
+    }
+
+    @Volatile private var tvCornerMaskCache: Bitmap? = null
+
     /** Dot pattern: LCD dot matrix with smoothstep circular alpha. */
     fun createDotPattern(): Bitmap {
         val size = 4
@@ -159,6 +203,8 @@ class NdsDualScreenView @JvmOverloads constructor(
     private var vignetteBottomPaint: Paint? = null
     private var vignetteTopKey = ""
     private var vignetteBottomKey = ""
+    // TV（仿电视机）四角/四边玻璃暗影遮罩：位图进程内共享，Paint 惰性建一次
+    private var tvCornerMaskPaint: Paint? = null
     private var lastDrawnStamp = -1L
     private var rectsDirty = true
 
@@ -312,6 +358,18 @@ class NdsDualScreenView @JvmOverloads constructor(
                 vignetteBottomKey = bottomKey
             }
             vignetteBottomPaint?.let { canvas.drawRect(dstBottom, it) }
+
+            // TV 四角/四边玻璃暗影（圆角矩形 SDF，与 J2ME GL 路径 nsCornerMask
+            // 同参数）：把共享遮罩位图拉伸到每个屏幕矩形上，四边轻微压暗、
+            // 四角圆弧过渡 —— 与 TvCurvedGameView / FilterOverlay 观感一致。
+            if (isTv) {
+                if (tvCornerMaskPaint == null) {
+                    tvCornerMaskPaint = Paint().apply { isFilterBitmap = true; isAntiAlias = false }
+                }
+                val mask = NdsFilterPatterns.createTvCornerMask()
+                if (topSrc != null) canvas.drawBitmap(mask, null, dstTop, tvCornerMaskPaint)
+                if (bottomSrc != null) canvas.drawBitmap(mask, null, dstBottom, tvCornerMaskPaint)
+            }
         }
     }
 

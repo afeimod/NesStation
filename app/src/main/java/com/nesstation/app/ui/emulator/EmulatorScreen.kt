@@ -527,6 +527,41 @@ private fun psxToLibretroLayout(bits: Int): Int {
     return r
 }
 
+// 街机 (FBNeo) 专用：项目位布局 → libretro 标准 JOYPAD 布局。
+// FBNeo libretro 核心把标准手柄位映射为街机按键（官方文档的 "BAYX"
+// 四键指派 / Classic 预设）：JOYPAD_B(bit0)=街机键1(A)、JOYPAD_A(bit8)=
+// 街机键2(B)、JOYPAD_Y(bit1)=街机键3(C)、JOYPAD_X(bit9)=街机键4(D)、
+// L(bit10)=键5、R(bit11)=键6、Select=投币、Start=开始。
+// 虚拟按键标签与街机机身一致（A/B/C/D），按 label 语义直转：
+//   A (项目 A/bit0)  -> libretro bit0  (JOYPAD_B = 街机键 1 = A)
+//   B (项目 B/bit1)  -> libretro bit8  (JOYPAD_A = 街机键 2 = B)
+//   C (项目 X/bit8)  -> libretro bit1  (JOYPAD_Y = 街机键 3 = C)
+//   D (项目 Y/bit9)  -> libretro bit9  (JOYPAD_X = 街机键 4 = D)
+//   L/R/L2/R2/方向/Select/Start 与 libretro 同位。
+// 此前 FBNeo 桥接把项目位直接当 libretro 位透传（cb_input_state 原样
+// 返回 bits>>id），导致屏幕 B 输出街机 C、屏幕 X 输出街机 B —— 也就是
+// "abcd 输出不对"的根因；虚拟按键同样应显示 A/B/C/D 而非 A/B/X/Y。
+private fun arcadeToLibretroLayout(bits: Int): Int {
+    var r = 0
+    if (bits and BTN_A != 0)       r = r or (1 shl 0)   // 街机键 1 (A)
+    if (bits and BTN_B != 0)       r = r or (1 shl 8)   // 街机键 2 (B)
+    if (bits and BTN_X != 0)       r = r or (1 shl 1)   // 街机键 3 (C)
+    if (bits and BTN_Y != 0)       r = r or (1 shl 9)   // 街机键 4 (D)
+    if (bits and BTN_SELECT != 0)  r = r or (1 shl 2)   // Select = 投币
+    if (bits and BTN_START != 0)   r = r or (1 shl 3)   // Start
+    if (bits and BTN_UP != 0)      r = r or (1 shl 4)   // Up
+    if (bits and BTN_DOWN != 0)    r = r or (1 shl 5)   // Down
+    if (bits and BTN_LEFT != 0)    r = r or (1 shl 6)   // Left
+    if (bits and BTN_RIGHT != 0)   r = r or (1 shl 7)   // Right
+    if (bits and BTN_L_SNES != 0)  r = r or (1 shl 10)  // 街机键 5
+    if (bits and BTN_R_SNES != 0)  r = r or (1 shl 11)  // 街机键 6
+    if (bits and BTN_L2 != 0)      r = r or (1 shl 12)  // L2
+    if (bits and BTN_R2 != 0)      r = r or (1 shl 13)  // R2
+    if (bits and BTN_L3 != 0)      r = r or (1 shl 14)  // L3
+    if (bits and BTN_R3 != 0)      r = r or (1 shl 15)  // R3
+    return r
+}
+
 // ---------------------------------------------------------------------------
 // Game folder loader (DOS games and PCE-CD / Mega-CD games)
 // ---------------------------------------------------------------------------
@@ -2083,7 +2118,36 @@ fun EmulatorScreen(
             // === 画面遮罩（主题可配置，按核心独立存储） ===
             // 覆盖在游戏画面之上的半透明层：降亮度 / 减眩光 / 沉浸。
             // z 顺序在游戏视图之上、手柄覆盖层之下，不影响按键可读性。
-            if (overlayTheme.maskEnabled) {
+            //
+            // ★ 自定义（拖动四角）模式下的亮度修复：
+            //   1. 遮罩此前全屏铺盖 —— 自定义模式下游戏画面只是一个矩形，
+            //      画面外的主题背景图也被遮罩压暗，用户拖动四角调整屏幕
+            //      位置/大小时看不清背景，严重影响操作。现在遮罩只铺在
+            //      游戏画面矩形内（与游戏视图完全同 rect），画面外的背景
+            //      图保持明亮。
+            //   2. 打开自由布局编辑器（拖动四角）期间整个遮罩临时隐藏，
+            //      编辑区域最大亮度 —— 拖完确认后自动恢复。
+            // NDS 双屏自定义是两块独立矩形（ndsTopRect/ndsBottomRect），
+            // 单矩形约束不适用，保持全屏遮罩不变（编辑器打开时同样隐藏）。
+            val customRectModeActive = padLayout.videoScale == "custom" &&
+                platform != GamePlatform.NDS &&
+                surfaceSize != IntSize.Zero &&
+                !showCustomLayoutEditor && !showNdsCustomLayoutEditor
+            val maskModifier = if (customRectModeActive) {
+                val maxW = surfaceSize.width.coerceAtLeast(1)
+                val maxH = surfaceSize.height.coerceAtLeast(1)
+                val leftPx = (customRect[0] * maxW).toInt().coerceIn(0, maxW)
+                val topPx = (customRect[1] * maxH).toInt().coerceIn(0, maxH)
+                val wPx = ((customRect[2] - customRect[0]) * maxW).toInt().coerceIn(1, maxW)
+                val hPx = ((customRect[3] - customRect[1]) * maxH).toInt().coerceIn(1, maxH)
+                val density = LocalDensity.current
+                Modifier
+                    .offset { IntOffset(leftPx, topPx) }
+                    .size(width = with(density) { wPx.toDp() }, height = with(density) { hPx.toDp() })
+            } else {
+                Modifier.fillMaxSize()
+            }
+            if (overlayTheme.maskEnabled && !showCustomLayoutEditor && !showNdsCustomLayoutEditor) {
                 val maskImage = remember(overlayTheme.maskImageUri) {
                     overlayTheme.maskImageUri?.let { FsdImaging.decodeUri(context, it, 1280, 800) }
                 }
@@ -2092,14 +2156,12 @@ fun EmulatorScreen(
                         bitmap = maskImage.asImageBitmap(),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
+                        modifier = maskModifier
                             .alpha((overlayTheme.maskAlpha / 255f).coerceIn(0f, 1f))
                     )
                 } else {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
+                        modifier = maskModifier
                             .background(
                                 Color(overlayTheme.maskColor).copy(
                                     alpha = (overlayTheme.maskAlpha / 255f).coerceIn(0f, 1f)
@@ -3083,16 +3145,19 @@ private fun routePadBits(
     netplayController: com.nesstation.app.battle.NetplayController? = null,
     platform: GamePlatform = GamePlatform.NES
 ) {
-    // NDS / PSX / PS2 使用项目位布局到 libretro 标准位布局的转换。
+    // NDS / PSX / PS2 / ARCADE 使用项目位布局到 libretro 标准位布局的转换。
     // NDS（melonDS）按标准 libretro JOYPAD 位理解，用 projectToLibretroLayout。
     // PSX（PCSX-ReARMed）libretro 映射为：✕=bit0(B)、□=bit1(Y)、
     // ○=bit8(A)、△=bit9(X)，且 PSX 屏幕标签是 A=✕、B=○、X=△、Y=□，
     // 因此用 psxToLibretroLayout（A→bit0、B→bit8、X→bit9、Y→bit1）。
     // PS2（PCEE2）按键 label 语义不同（×=bit0、□=bit1、○=bit8、△=bit9），
     // 用 ps2ToLibretroLayout 单独转换。
+    // ARCADE（FBNeo）按 label 语义（A/B/C/D=街机键1-4，BAYX 指派）用
+    // arcadeToLibretroLayout 转换 —— 修复此前透传导致 B 输出 C、X 输出 B。
     val ndsBits = if (platform == GamePlatform.NDS) projectToLibretroLayout(bits)
                   else if (platform == GamePlatform.PSX) psxToLibretroLayout(bits)
                   else if (platform == GamePlatform.PS2) ps2ToLibretroLayout(bits)
+                  else if (platform == GamePlatform.ARCADE) arcadeToLibretroLayout(bits)
                   else bits
     if (netplayController != null) {
         // 联机对战：只接受本地 1P 输入；2P 由远端玩家控制
@@ -4023,11 +4088,16 @@ private fun GameSurfaceView(
                         isFocusableInTouchMode = true
                         requestFocus()
                         setOnKeyListener(gamepadKeyListener)
+                        // xbr/hqx + tv 组合：画布路径无 Surface，核心内部
+                        // 放大不生效 —— 由视图拉帧后做前端放大（修复
+                        // 「组合滤镜没有 xbr/hqx 效果」）
+                        upscaleFilter = tvUpscaleCodeFor(videoFilter)
                     }
                 },
                 update = { v ->
                     v.engine = engine
                     v.uiBlocked = uiBlocked
+                    v.upscaleFilter = tvUpscaleCodeFor(videoFilter)
                     // Re-bind the key listener whenever uiBlocked changes so
                     // the closure captures the latest value.
                     v.setOnKeyListener(gamepadKeyListenerRebind)
@@ -4388,6 +4458,20 @@ private fun overlayFilterTypeFor(videoFilter: String): String? = when {
     else -> null
 }
 
+/**
+ * xbr/hqx + 仿电视机组合 → 画布路径（TvCurvedGameView）的前端放大滤镜编号。
+ *
+ * 仿电视机系列（tv / *_tv）在非 NDS/非 PS2 平台走画布路径：不创建
+ * SurfaceView，引擎把原始帧写进 frameBuffer，而核心内部的 HQ2X/HQ4X/
+ * XBR 只在「渲染到 Surface」时生效 —— 组合滤镜的放大必须由视图层完成。
+ * 编号与 NdsNative.applyUpscaleFilterArgb 一致：5=HQ2X(2x)，6=HQ4X(4x)。
+ */
+private fun tvUpscaleCodeFor(videoFilter: String): Int = when (videoFilter) {
+    "xbr_tv", "hq2x_tv" -> 5
+    "4xbr_tv", "hq4x_tv" -> 6
+    else -> 0
+}
+
 // GPU-accelerated filter overlay using BitmapShader — a single GPU texture
 // draw instead of hundreds of individual drawLine calls.
 // The pattern bitmap is small (1x3 or 3x3) and tiled via REPEAT mode.
@@ -4419,6 +4503,15 @@ private fun FilterOverlay(
             }
         }
     }
+    // TV 四角/四边玻璃暗影 Paint（按滤镜类型建一次，避免逐帧分配）
+    val tvCornerMaskPaint = remember(filterType) {
+        if (filterType == "tv") {
+            android.graphics.Paint().apply {
+                isFilterBitmap = true
+                isAntiAlias = false
+            }
+        } else null
+    }
 
     Canvas(modifier = modifier) {
         if (filterType == "tv") {
@@ -4438,6 +4531,17 @@ private fun FilterOverlay(
                     radius = maxOf(size.width, size.height) * 0.72f
                 )
             )
+            // 四角/四边玻璃暗影（圆角矩形 SDF，与 J2ME GL 路径 nsCornerMask
+            // / TvCurvedGameView 同参数）：四边轻微压暗、四角圆弧过渡 ——
+            // 补上 DraStic GL 路径缺失的「四边四角弧度」。
+            tvCornerMaskPaint?.let { paint ->
+                drawIntoCanvas { canvas ->
+                    canvas.nativeCanvas.drawBitmap(
+                        NdsFilterPatterns.createTvCornerMask(), null,
+                        android.graphics.RectF(0f, 0f, size.width, size.height), paint
+                    )
+                }
+            }
         } else {
             shaderPaint?.let { paint ->
                 drawIntoCanvas { canvas ->
@@ -5296,6 +5400,8 @@ fun OnScreenController(
             GamePlatform.PS2 -> "□"  // Square
             // MD 6 键手柄：libretro X 对应 SEGA C（A/B/C/X/Y/Z 六键布局）
             GamePlatform.MD -> "C"
+            // 街机（FBNeo）：libretro Y(bit1) = 街机键 3，屏幕标签 C
+            GamePlatform.ARCADE -> "C"
             else -> "X"
         }
         val labelY = when (platform) {
@@ -5304,6 +5410,8 @@ fun OnScreenController(
             GamePlatform.PS2 -> "△"  // Triangle
             // MD 6 键手柄：libretro Y 对应 SEGA X
             GamePlatform.MD -> "X"
+            // 街机（FBNeo）：libretro X(bit9) = 街机键 4，屏幕标签 D
+            GamePlatform.ARCADE -> "D"
             else -> "Y"
         }
         val labelL = when (platform) {
@@ -7410,6 +7518,13 @@ private fun DosEditableButton(
 // ---------------------------------------------------------------------------
 // Pad layout editor — drag to move (fixed), tap to select + slider for size
 // ---------------------------------------------------------------------------
+// ★ 拖动位置无限制（用户反馈"有些按钮无法随意拖动"）：此前每个按钮的
+// onMove 都带各自的 coerceIn 区域限制（如十字键只能拖在左半屏、A 键只能
+// 拖在右半屏、摇杆只能拖在四角等），用户无法把按钮摆到自己想要的位置。
+// 现在所有按钮的拖动目标统一放开到全屏 0..1（x/y 任意位置），只在屏幕
+// 边界收口防止拖出屏幕；拖动仍走原机制（每次 move 更新 padLayout 内存
+// 状态，磁盘持久化由 400ms 防抖合并 —— 不影响拖动流畅度）。
+// ---------------------------------------------------------------------------
 @Composable
 private fun PadLayoutEditor(
     padLayout: PadLayout,
@@ -7598,8 +7713,8 @@ private fun PadLayoutEditor(
                     isSelected = selectedBtn == BtnType.DPAD,
                     isPortrait = isPortrait,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.03f, 0.5f)
-                        val ny = targetY.coerceIn(0.25f, 0.95f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.DPAD, dpad.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.DPAD }
@@ -7608,8 +7723,8 @@ private fun PadLayoutEditor(
             if (showABtn) {
                 EditableRoundBtn(if (platform == GamePlatform.PCE) "I" else "A", Color(0xFFE74C3C), btnA, surfaceSize, selectedBtn == BtnType.A,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.4f, 0.95f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.A, btnA.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.A }
@@ -7618,8 +7733,8 @@ private fun PadLayoutEditor(
             if (showBBtn) {
                 EditableRoundBtn(if (platform == GamePlatform.PCE) "II" else "B", Color(0xFFE67E22), btnB, surfaceSize, selectedBtn == BtnType.B,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.4f, 0.95f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.B, btnB.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.B }
@@ -7628,8 +7743,8 @@ private fun PadLayoutEditor(
             if (showTurboABtn) {
                 EditableRoundBtn("TA", Color(0xFFE74C3C), btnTurboA, surfaceSize, selectedBtn == BtnType.TURBO_A,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.4f, 0.95f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.TURBO_A, btnTurboA.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.TURBO_A }
@@ -7638,8 +7753,8 @@ private fun PadLayoutEditor(
             if (showTurboBBtn) {
                 EditableRoundBtn("TB", Color(0xFFE67E22), btnTurboB, surfaceSize, selectedBtn == BtnType.TURBO_B,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.4f, 0.95f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.TURBO_B, btnTurboB.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.TURBO_B }
@@ -7648,8 +7763,8 @@ private fun PadLayoutEditor(
             if (showStartBtn) {
                 EditablePillBtn(if (platform == GamePlatform.PCE) "RUN" else "START", btnStart, surfaceSize, selectedBtn == BtnType.START,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.1f, 0.9f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.START, btnStart.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.START }
@@ -7658,8 +7773,8 @@ private fun PadLayoutEditor(
             if (showSelectBtn) {
                 EditablePillBtn("SELECT", btnSelect, surfaceSize, selectedBtn == BtnType.SELECT,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.1f, 0.9f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.SELECT, btnSelect.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.SELECT }
@@ -7674,8 +7789,8 @@ private fun PadLayoutEditor(
                 }
                 EditablePillBtn(lLabel, btnL, surfaceSize, selectedBtn == BtnType.L,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.02f, 0.6f)
-                        val ny = targetY.coerceIn(0.02f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.L, btnL.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.L }
@@ -7689,8 +7804,8 @@ private fun PadLayoutEditor(
                 }
                 EditablePillBtn(rLabel, btnR, surfaceSize, selectedBtn == BtnType.R,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.4f, 0.98f)
-                        val ny = targetY.coerceIn(0.02f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.R, btnR.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.R }
@@ -7701,12 +7816,14 @@ private fun PadLayoutEditor(
                 val xLabel = when (platform) {
                     GamePlatform.PCE -> "IV"
                     GamePlatform.MD -> "C"  // libretro X → SEGA C
+                    // 街机（FBNeo）：bit8 = 街机键 3，屏幕标签 C
+                    GamePlatform.ARCADE -> "C"
                     else -> "X"
                 }
                 EditableRoundBtn(xLabel, Color(0xFF3498DB), btnX, surfaceSize, selectedBtn == BtnType.X,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.4f, 0.95f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.X, btnX.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.X }
@@ -7716,12 +7833,14 @@ private fun PadLayoutEditor(
                 val yLabel = when (platform) {
                     GamePlatform.PCE -> "III"
                     GamePlatform.MD -> "X"  // libretro Y → SEGA X
+                    // 街机（FBNeo）：bit9 = 街机键 4，屏幕标签 D
+                    GamePlatform.ARCADE -> "D"
                     else -> "Y"
                 }
                 EditableRoundBtn(yLabel, Color(0xFF2ECC71), btnY, surfaceSize, selectedBtn == BtnType.Y,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.4f, 0.95f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.Y, btnY.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.Y }
@@ -7732,8 +7851,8 @@ private fun PadLayoutEditor(
                 val l2Label = if (platform == GamePlatform.PCE) "TURBO II" else "L2"
                 EditableRoundBtn(l2Label, Color(0xFFFF9800), btnL2, surfaceSize, selectedBtn == BtnType.L2,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.02f, 0.5f)
-                        val ny = targetY.coerceIn(0.02f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.L2, btnL2.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.L2 }
@@ -7743,8 +7862,8 @@ private fun PadLayoutEditor(
                 val r2Label = if (platform == GamePlatform.PCE) "TURBO I" else "R2"
                 EditableRoundBtn(r2Label, Color(0xFFFF9800), btnR2, surfaceSize, selectedBtn == BtnType.R2,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.5f, 0.98f)
-                        val ny = targetY.coerceIn(0.02f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.R2, btnR2.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.R2 }
@@ -7754,8 +7873,8 @@ private fun PadLayoutEditor(
             if (showQuickSaveBtn) {
                 EditablePillBtn("存档", btnQuickSave, surfaceSize, selectedBtn == BtnType.QUICK_SAVE,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.1f, 0.5f)
-                        val ny = targetY.coerceIn(0.02f, 0.95f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.QUICK_SAVE, btnQuickSave.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.QUICK_SAVE }
@@ -7764,8 +7883,8 @@ private fun PadLayoutEditor(
             if (showQuickLoadBtn) {
                 EditablePillBtn("读档", btnQuickLoad, surfaceSize, selectedBtn == BtnType.QUICK_LOAD,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.5f, 0.9f)
-                        val ny = targetY.coerceIn(0.02f, 0.95f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.QUICK_LOAD, btnQuickLoad.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.QUICK_LOAD }
@@ -7775,16 +7894,16 @@ private fun PadLayoutEditor(
             if (isPs2) {
                 EditableRoundBtn("左摇杆", Color(0xFFFFD66B), ps2LStick, surfaceSize, selectedBtn == BtnType.LSTICK,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.02f, 0.45f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.LSTICK, ps2LStick.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.LSTICK }
                 )
                 EditableRoundBtn("右摇杆", Color(0xFFFFD66B), ps2RStick, surfaceSize, selectedBtn == BtnType.RSTICK,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.55f, 0.98f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.RSTICK, ps2RStick.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.RSTICK }
@@ -7792,8 +7911,8 @@ private fun PadLayoutEditor(
                 if (showL3Btn) {
                     EditableRoundBtn("L3", Color(0xFF95A5A6), ps2BtnL3, surfaceSize, selectedBtn == BtnType.L3,
                         onMove = { targetX, targetY ->
-                            val nx = targetX.coerceIn(0.02f, 0.5f)
-                            val ny = targetY.coerceIn(0.3f, 0.97f)
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
                             updateBtn(BtnType.L3, ps2BtnL3.copy(x = nx, y = ny))
                         },
                         onSelect = { selectedBtn = BtnType.L3 }
@@ -7802,8 +7921,8 @@ private fun PadLayoutEditor(
                 if (showR3Btn) {
                     EditableRoundBtn("R3", Color(0xFF95A5A6), ps2BtnR3, surfaceSize, selectedBtn == BtnType.R3,
                         onMove = { targetX, targetY ->
-                            val nx = targetX.coerceIn(0.5f, 0.98f)
-                            val ny = targetY.coerceIn(0.3f, 0.97f)
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
                             updateBtn(BtnType.R3, ps2BtnR3.copy(x = nx, y = ny))
                         },
                         onSelect = { selectedBtn = BtnType.R3 }
@@ -7820,8 +7939,8 @@ private fun PadLayoutEditor(
                     surfaceSize,
                     selectedBtn == BtnType.COMBO,
                     onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0.05f, 0.95f)
-                        val ny = targetY.coerceIn(0.3f, 0.97f)
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
                         val updated = combos.map { if (it.id == combo.id) it.copy(x = nx, y = ny) else it }
                         val json = serializeComboButtons(updated)
                         val newLayout = when (platform) {
@@ -8299,10 +8418,14 @@ private fun ComboButtonPickerDialog(
             ButtonOption("Select", BTN_SELECT)
         )
         // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX
-        if (platform == GamePlatform.SFC || platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
+        // 街机（FBNeo）屏幕标签为 A/B/C/D：bit8 显示为 C、bit9 显示为 D
+        if (platform == GamePlatform.SFC || platform == GamePlatform.MD ||
             platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX) {
             list.add(ButtonOption("X", BTN_X))
             list.add(ButtonOption("Y", BTN_Y))
+        } else if (platform == GamePlatform.ARCADE) {
+            list.add(ButtonOption("C", BTN_X))
+            list.add(ButtonOption("D", BTN_Y))
         }
         // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX
         if (platform == GamePlatform.GBA || platform == GamePlatform.SFC ||

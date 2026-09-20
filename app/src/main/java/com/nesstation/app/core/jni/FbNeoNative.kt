@@ -9,23 +9,33 @@ import android.view.Surface
  * audio on demand. The native side dlopen()s the prebuilt
  * libfbneo_libretro_android.so at runtime and forwards retro_* calls.
  *
- * FBNeo uses the standard 12-button libretro gamepad layout (same bit
- * layout as SNES). The core maps these to arcade button labels:
- *   A=Button1, B=Button2, X=Button3, Y=Button4, L=Button5, R=Button6,
- *   Select=Coin, Start=Start.
+ * ## 输入位布局（重要 —— 与其他 libretro 核心不同）
  *
- * ## Gamepad bit layout (port 0, RETRO_DEVICE_JOYPAD)
- *   bit0  = A      → arcade Button 1 (e.g. Weak Punch / Weak Kick)
- *   bit1  = B      → arcade Button 2 (e.g. Medium Punch / Medium Kick)
- *   bit2  = Select → Coin (insert coin on arcade machines)
- *   bit3  = Start  → Start (also opens service menu on some games)
+ * [setPad1]/[setPad2]/[setPad3]/[setPad4] 接收的是**已经转换过的标准
+ * libretro JOYPAD 位**（EmulatorScreen.arcadeToLibretroLayout 完成转换，
+ * 按 label 语义 A/B/C/D=街机键1-4 直转）。桥接层 cb_input_state 把位
+ * 原样作为 libretro id 透传给核心 —— FBNeo 核心的 BAYX 指派为：
+ *   JOYPAD_B(bit0)=街机键1(A)、JOYPAD_A(bit8)=街机键2(B)、
+ *   JOYPAD_Y(bit1)=街机键3(C)、JOYPAD_X(bit9)=街机键4(D)、
+ *   L(bit10)=键5、R(bit11)=键6、Select=投币、Start=开始。
+ *
+ * ★ 历史教训：此前 UI 层把项目 SNES 风格位（bit0=A、bit1=B、bit8=X、
+ * bit9=Y）直接透传给核心 —— 屏幕上的 B 输出成了街机键3(C)、屏幕上的
+ * X 输出成了街机键2(B)，即用户反馈的"abcd 输出不对"。现在转换在
+ * routePadBits 里完成，本层收到的就是标准 libretro 位。
+ *
+ * ## Gamepad bit layout (port 0, RETRO_DEVICE_JOYPAD — 标准 libretro 位)
+ *   bit0  = JOYPAD_B → arcade Button 1 (屏幕标签 A，如弱拳)
+ *   bit1  = JOYPAD_Y → arcade Button 3 (屏幕标签 C，如强拳)
+ *   bit2  = Select   → Coin (insert coin on arcade machines)
+ *   bit3  = Start    → Start (also opens service menu on some games)
  *   bit4  = Up     bit5  = Down    bit6  = Left    bit7  = Right
- *   bit8  = X      → arcade Button 3 (e.g. Strong Punch)
- *   bit9  = Y      → arcade Button 4 (e.g. Strong Kick)
- *   bit10 = L      → arcade Button 5 (e.g. Drive / EX / 5th button)
- *   bit11 = R      → arcade Button 6 (e.g. 6th button, rarely used)
+ *   bit8  = JOYPAD_A → arcade Button 2 (屏幕标签 B，如中拳)
+ *   bit9  = JOYPAD_X → arcade Button 4 (屏幕标签 D，如弱脚)
+ *   bit10 = L        → arcade Button 5
+ *   bit11 = R        → arcade Button 6
  *
- * For 4-button fighters (KOF, Street Fighter II) only A/B/X/Y are used.
+ * For 4-button fighters (KOF, Street Fighter II) only A/B/C/D are used.
  * For 6-button fighters (Street Fighter Alpha, Vampire Savior) all six are used.
  *
  * ## BIOS files

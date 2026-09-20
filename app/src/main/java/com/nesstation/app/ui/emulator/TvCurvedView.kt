@@ -12,6 +12,7 @@ import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.View
 import com.nesstation.app.core.engine.EmulatorEngine
+import com.nesstation.app.core.jni.NdsNative
 import kotlin.math.max
 
 /**
@@ -86,6 +87,20 @@ class TvCurvedGameView @JvmOverloads constructor(
      */
     var uiBlocked: Boolean = false
 
+    /**
+     * 前端放大滤镜编号（xbr/hqx + tv 组合专用）：0=不放大、5=HQ2X、6=HQ4X。
+     *
+     * ★ 为什么需要：画布路径不创建 SurfaceView（引擎 hasSurface=false →
+     * 每帧写 frameBuffer），而核心内部的 HQ2X/HQ4X/XBR 只在「渲染到
+     * Surface」的路径上生效 —— 所以 xbr_tv / hq2x_tv / 4xbr_tv / hq4x_tv
+     * 在本路径只有电视观感、没有放大效果（「组合滤镜被 TV 挡住」的根因）。
+     * 修复：拉到原始帧后调用 [NdsNative.applyUpscaleFilterArgb]（纯 CPU
+     * 前端后处理，与 melonDS 画布路径/DraSticGlView 同一套实现）把帧
+     * 放大 2x/4x，再用同一张弧面网格绘制。放大失败（源尺寸超上限等）
+     * 自动回退原始帧，不影响显示。
+     */
+    var upscaleFilter: Int = 0
+
     private companion object {
         // 与 J2ME GL 路径 nsCurve 的 vec2(5.4, 3.6) 常量一致
         const val CURVE_X = 5.4f
@@ -95,20 +110,28 @@ class TvCurvedGameView @JvmOverloads constructor(
         const val MIN_FRAME_INTERVAL_NS = 14_000_000L  // ~71fps 上限，防高刷屏冗余绘制
     }
 
-    // ── 帧位图缓存 ────────────────────────────────────────────────────────
+    // ── 帧位图缓存 ──────────────────────────────────────────────
     private var frameBitmap: Bitmap? = null
     private var frameW = 0
     private var frameH = 0
+
+    // ── 放大滤镜输出缓存（xbr/hqx + tv 组合） ───────────────────────────
+    private var upscaledBitmap: Bitmap? = null
+    private var upscaledArray: IntArray? = null
+    private var upscaledW = 0
+    private var upscaledH = 0
+    private var upscaledFilter = 0
 
     // ── 弧面网格（视图尺寸变化时重建） ────────────────────────────────────
     private val meshVerts = FloatArray((MESH_N + 1) * (MESH_N + 1) * 2)
     private var meshBuilt = false
 
-    // ── 外观 Paint（按需重建） ────────────────────────────────────────────
+    // ── 外观 Paint（按需重建） ────────────────────────────────────────
     private val meshPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private var scanlinePaint: Paint? = null       // 扫描线图案（REPEAT shader）
     private var vignettePaint: Paint? = null       // 径向暗角
     private var glossPaint: Paint? = null          // 上部玻璃高光
+    private var cornerMaskPaint: Paint? = null     // 四角/四边玻璃暗影（圆角 SDF 遮罩）
 
     private var lastFrameNs = 0L
 
@@ -173,6 +196,12 @@ class TvCurvedGameView @JvmOverloads constructor(
             )
         }
 
+        // TV 四角/四边玻璃暗影（圆角矩形 SDF，与 J2ME GL 路径 nsCornerMask
+        // 同参数）：共享遮罩位图拉伸绘制，Paint 随视图尺寸重建一次。
+        cornerMaskPaint = Paint().apply {
+            isFilterBitmap = true
+            isAntiAlias = false
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -193,6 +222,11 @@ class TvCurvedGameView @JvmOverloads constructor(
         if (width <= 0 || height <= 0) return
         if (!meshBuilt) buildMesh()
 
+        // ★ xbr/hqx + tv 组合：画布路径无 Surface，核心内部放大不生效。
+        // 在这里对拉到的原始帧做前端放大（HQ2X/HQ4X），放大后的位图
+        // 作为弧面网格的纹理源 —— 组合滤镜同时拥有放大效果与电视观感。
+        val tex = applyUpscaleIfNeeded(bmp, vw, vh)
+
         val w = width.toFloat()
         val h = height.toFloat()
 
@@ -208,7 +242,7 @@ class TvCurvedGameView @JvmOverloads constructor(
             // 1) 弧面画面（顶点已按 nsCurve 逆映射 + 四角归一化排布 →
             //    全出血桶形凸起：画面铺满视图，边中点鼓出部分被上方
             //    clipRect 裁掉 —— 无黑角 / 无黑边 / 无外溢）
-            canvas.drawBitmapMesh(bmp, MESH_N, MESH_N, meshVerts, 0, null, 0, meshPaint)
+            canvas.drawBitmapMesh(tex, MESH_N, MESH_N, meshVerts, 0, null, 0, meshPaint)
 
             // 2) 扫描线（与 FilterOverlay tv 分支同图案同密度，覆盖游戏画面）
             scanlinePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
@@ -216,7 +250,16 @@ class TvCurvedGameView @JvmOverloads constructor(
             // 3) 径向暗角（渐变玻璃观感）
             vignettePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
 
-            // 4) 上部玻璃高光弧带（立体感）
+            // 4) 四角/四边玻璃暗影（圆角矩形 SDF —— 四边轻微压暗、四角
+            //    圆弧过渡，与 J2ME GL 路径 nsCornerMask 同参数同观感）
+            cornerMaskPaint?.let { cp ->
+                canvas.drawBitmap(
+                    NdsFilterPatterns.createTvCornerMask(), null,
+                    android.graphics.RectF(0f, 0f, w, h), cp
+                )
+            }
+
+            // 5) 上部玻璃高光弧带（立体感）
             glossPaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
         } finally {
             canvas.restoreToCount(saveCount)
@@ -253,6 +296,63 @@ class TvCurvedGameView @JvmOverloads constructor(
             false
         }
     }
+
+    /**
+     * xbr/hqx + tv 组合的前端放大：对原始帧 [src]（vw×vh）执行
+     * [upscaleFilter]（5=HQ2X → 2x，6=HQ4X → 4x），返回放大后的纹理位图；
+     * 未启用/放大失败时返回原始位图（降级为无放大，不影响显示）。
+     *
+     * 实现与 DraSticEngine 画布回退路径同源：NdsNative.applyUpscaleFilterArgb
+     * 是纯 CPU 前端后处理（hqx 库 + coreshared xbr），与平台核心无关 ——
+     * 首次使用时懒加载 libndscore.so。
+     */
+    private fun applyUpscaleIfNeeded(src: Bitmap, vw: Int, vh: Int): Bitmap {
+        val filter = upscaleFilter
+        if (filter == 0) return src
+        // 与 nds_bridge.cpp 的源尺寸上限一致（超限返回 0，直接回退）
+        if (vw <= 0 || vh <= 0 || vw > 512 || vh > 384) return src
+        val scale = if (filter == 6 || filter == 8 || filter == 9 || filter == 10) 4 else 2
+        val outW = vw * scale
+        val outH = vh * scale
+
+        var arr = upscaledArray
+        if (arr == null || upscaledW != outW || upscaledH != outH || upscaledFilter != filter) {
+            arr = try { IntArray(outW * outH) } catch (_: Throwable) { return src }
+            upscaledArray = arr
+            upscaledW = outW
+            upscaledH = outH
+            upscaledFilter = filter
+            upscaledBitmap?.let { try { it.recycle() } catch (_: Throwable) {} }
+            upscaledBitmap = null
+        }
+
+        if (!NdsNative.ensureLoaded()) return src
+        val ok = try {
+            NdsNative.applyUpscaleFilterArgb(filter, engFrameBuffer(), vw, vh, arr, 0) > 0
+        } catch (_: Throwable) {
+            false
+        }
+        if (!ok) return src
+
+        var out = upscaledBitmap
+        if (out == null || out.width != outW || out.height != outH || out.isRecycled) {
+            out = try {
+                Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+            } catch (_: Throwable) {
+                return src
+            }
+            upscaledBitmap = out
+        }
+        return try {
+            out.setPixels(arr, 0, outW, 0, 0, outW, outH)
+            out
+        } catch (_: Throwable) {
+            src
+        }
+    }
+
+    /** 引擎帧缓冲引用（供放大滤镜读取；空帧缓冲时由调用方回退）。 */
+    private fun engFrameBuffer(): IntArray = engine?.frameBuffer ?: IntArray(0)
 
     /**
      * 构建弧面网格：对每个纹理网格点 (u,v)，求 GLSL nsCurve 的逆映射得到

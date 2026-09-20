@@ -2727,8 +2727,11 @@ object PadLayoutStore {
                 "start" to "START", "select" to "SELECT"
             )
             GamePlatform.ARCADE -> listOf(
+                // 街机（FBNeo）：四个动作键按街机机身命名 A/B/C/D
+                // （bit8=街机键3=C、bit9=街机键4=D），输出经
+                // arcadeToLibretroLayout 按同语义转换
                 "dpad" to "十字键", "a" to "A键", "b" to "B键",
-                "x" to "X键", "y" to "Y键",
+                "x" to "C键", "y" to "D键",
                 "ta" to "连射A", "tb" to "连射B",
                 "l" to "L键", "r" to "R键",
                 "l2" to "L2键", "r2" to "R2键",

@@ -129,7 +129,9 @@ private val JAVA_ACTIONS = listOf(
 
 // Arcade (FBNeo) — 6-button fight-stick layout (CPS / NeoGeo style).
 // Coin + Start correspond to MAME's "Insert Coin" and "Start Game" inputs.
-// L/R map to the 5th/6th buttons on NeoGeo layouts (A/B/C/D + E/F).
+// 屏幕标签与街机机身一致（A/B/C/D = 街机键 1-4，L/R = 键 5/6）：
+// EmulatorScreen.arcadeToLibretroLayout 把 bit8/bit9 按同语义转成
+// libretro Y/X —— FBNeo 的 BAYX 指派里 JOYPAD_Y=键3(C)、JOYPAD_X=键4(D)。
 private val ARCADE_ACTIONS = listOf(
     KeyAction("arc_up",     "上",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
     KeyAction("arc_down",   "下",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
@@ -137,9 +139,9 @@ private val ARCADE_ACTIONS = listOf(
     KeyAction("arc_right",  "右",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
     KeyAction("arc_a",      "A / 弱拳", Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_A, "手柄 A"),
     KeyAction("arc_b",      "B / 中拳", Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_B, "手柄 B"),
-    KeyAction("arc_x",      "X / 弱脚", Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_X, "手柄 X"),
-    KeyAction("arc_y",      "Y / 中脚", Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_Y, "手柄 Y"),
-    KeyAction("arc_l",      "L / 强拳", Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_L1, "L1"),
+    KeyAction("arc_x",      "C / 强拳", Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_X, "手柄 X"),
+    KeyAction("arc_y",      "D / 弱脚", Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_Y, "手柄 Y"),
+    KeyAction("arc_l",      "L / 中脚", Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_L1, "L1"),
     KeyAction("arc_r",      "R / 强脚", Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_R1, "R1"),
     KeyAction("arc_l2",     "L2 / 投币", Color(0xFFF57C00), KeyEvent.KEYCODE_BUTTON_L2, "L2 / 投币"),
     KeyAction("arc_r2",     "R2 / 开始", Color(0xFFF57C00), KeyEvent.KEYCODE_BUTTON_R2, "R2 / 开始"),
