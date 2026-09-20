@@ -7,22 +7,19 @@ import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RadialGradient
-import android.graphics.Path
-import android.graphics.RectF
 import android.graphics.Shader
 import android.util.AttributeSet
 import android.view.Choreographer
 import android.view.View
 import com.nesstation.app.core.engine.EmulatorEngine
 import kotlin.math.max
-import kotlin.math.min
 
 /**
  * 仿电视机（CRT 弧面）显示视图 —— 原生机型画布路径。
  *
  * 参照真机 CRT 照片（Metal Slug 实拍）：画面不是平铺的矩形，而是整体
- * 「略微凸起」—— 边中点处画面触到屏幕边缘、越靠四角越以弧线向内收进，
- * 四角被圆弧玻璃压暗，叠加扫描线 / 暗角 / 暗边框 / 上部玻璃高光。
+ * 「略微凸起」—— 弧面桶形变形 + 扫描线 / 暗角 / 上部玻璃高光，
+ * 全出血绘制（无大黑边，不遮挡扫描线遮罩）。
  *
  * 几何与 J2ME GL 路径 (J2meFilterShaders.TV_GLSL_HELPERS → nsCurve) 完全
  * 一致，保证各平台「仿电视机」观感统一：
@@ -31,17 +28,22 @@ import kotlin.math.min
  *       s.x = c.x * (1 + (c.y / 5.4)²)
  *       s.y = c.y * (1 + (c.x / 3.6)²)
  *
- * drawBitmapMesh 的隐式源映射是「纹理均匀网格 → 顶点位置」，因此本视图
- * 对每个纹理网格点求 nsCurve 的逆映射（定点迭代），把该纹素应出现的屏幕
- * 位置作为顶点坐标 —— 画面边界由几何直接形成弧线（边中点触边、四角内收
- * 约 3%~7%），边界之外不绘制，露出机身黑底。效果即照片中箭头所指的
- * 「边缘略微凸起」。
+ * ★ 全出血（full-bleed）缩放 —— 「不要有大黑边」：
+ * 弧面映射的纹理四角经逆映射后会向内收（约 3%x / 7%y），若直接绘制会在
+ * 四角留下黑色弧形空隙，既难看又遮住扫描线遮罩。本视图把逆映射结果按
+ * 「纹理四角 → 视图四角」做逐轴归一化缩放：纹理四角恰好落在视图四角，
+ * 边中点则鼓出视图边界被自然裁掉 —— 画面铺满整个视图、只有凸起没有黑边，
+ * 扫描线遮罩覆盖整个画面不被遮挡。
  *
- * 外观叠加（与 FilterOverlay 的 tv 分支同密度）：
+ * drawBitmapMesh 的隐式源映射是「纹理均匀网格 → 顶点位置」，因此本视图
+ * 对每个纹理网格点求 nsCurve 的逆映射（定点迭代）后乘归一化系数，把该
+ * 纹素应出现的屏幕位置作为顶点坐标 —— 画面边界由几何直接形成弧线。
+ * 效果即照片中箭头所指的「边缘略微凸起」，且无大黑边。
+ *
+ * 外观叠加（与 FilterOverlay 的 tv 分支同密度，全部无黑边）：
  *   1. 扫描线图案（NdsFilterPatterns.createScanlinePattern，4px 周期）
- *   2. 径向暗角（边缘 62% 黑 —— 比 CRT 滤镜更浓的电视玻璃观感）
- *   3. 四角圆弧外填黑 + 圆角暗边框（短边 4.5% 圆角，70% 黑描边）
- *   4. 上部玻璃高光弧带（微弱白色渐变 —— 立体感）
+ *   2. 径向暗角（边缘 62% 黑 —— 渐变玻璃观感，非不透明黑块）
+ *   3. 上部玻璃高光弧带（微弱白色渐变 —— 立体感）
  *
  * 帧来源：引擎在无 Surface 时会把每帧写入 [EmulatorEngine.frameBuffer]
  * （见各引擎模拟线程的 `if (!hasSurface)` 分支），本视图用 Choreographer
@@ -78,7 +80,6 @@ class TvCurvedGameView @JvmOverloads constructor(
         const val MESH_N = 40                       // 40×40 网格（41×41 顶点）
         const val CURVE_ITER = 6                    // 逆映射定点迭代次数
         const val MIN_FRAME_INTERVAL_NS = 14_000_000L  // ~71fps 上限，防高刷屏冗余绘制
-        const val CORNER_RADIUS_RATIO = 0.045f      // 圆角半径 = 短边 4.5%
     }
 
     // ── 帧位图缓存 ────────────────────────────────────────────────────────
@@ -94,13 +95,7 @@ class TvCurvedGameView @JvmOverloads constructor(
     private val meshPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private var scanlinePaint: Paint? = null       // 扫描线图案（REPEAT shader）
     private var vignettePaint: Paint? = null       // 径向暗角
-    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        color = 0xB3000000.toInt()                 // 70% 黑 —— 与 J2ME CPU 路径一致
-    }
     private var glossPaint: Paint? = null          // 上部玻璃高光
-    private val clipPath = Path()                  // 圆角裁切路径（每帧 rewind 复用）
-    private val workRect = RectF()                 // 临时矩形（每帧 set 复用）
 
     private var lastFrameNs = 0L
 
@@ -165,14 +160,13 @@ class TvCurvedGameView @JvmOverloads constructor(
             )
         }
 
-        borderPaint.strokeWidth = max(1.5f, w * 0.006f)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val eng = engine ?: return
 
-        // 机身底色（画面边界外 / 无帧时的「机壳」区域）。
+        // 机身底色（无帧时的「机壳」区域；全出血网格会完全覆盖它）。
         // 注：菜单遮挡（uiBlocked）时继续正常拉帧绘制 —— 与
         // NdsDualScreenView 行为一致，关闭菜单后画面无缝衔接。
         canvas.drawColor(0xFF000000.toInt())
@@ -187,29 +181,19 @@ class TvCurvedGameView @JvmOverloads constructor(
 
         val w = width.toFloat()
         val h = height.toFloat()
-        val r = min(w, h) * CORNER_RADIUS_RATIO
 
-        // 四角圆弧裁切：圆角矩形外的弧面四角不绘制（玻璃圆角）
-        val save = canvas.save()
-        workRect.set(0f, 0f, w, h)
-        clipPath.rewind()
-        clipPath.addRoundRect(workRect, r, r, Path.Direction.CW)
-        canvas.clipPath(clipPath)
-
-        // 1) 弧面画面（顶点已按 nsCurve 逆映射排布 → 弧形边界 + 桶形凸起）
+        // 1) 弧面画面（顶点已按 nsCurve 逆映射 + 四角归一化排布 →
+        //    全出血桶形凸起：画面铺满视图，边中点鼓出被视图边界裁掉，
+        //    无黑角 / 无黑边 —— 不遮挡扫描线遮罩）
         canvas.drawBitmapMesh(bmp, MESH_N, MESH_N, meshVerts, 0, null, 0, meshPaint)
 
-        // 2) 扫描线（与 FilterOverlay tv 分支同图案同密度）
+        // 2) 扫描线（与 FilterOverlay tv 分支同图案同密度，覆盖全屏）
         scanlinePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
 
-        // 3) 径向暗角
+        // 3) 径向暗角（渐变玻璃观感）
         vignettePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
-        canvas.restoreToCount(save)
 
-        // 4) 暗边框（圆角描边 —— 电视机边框内侧阴影）
-        canvas.drawRoundRect(0f, 0f, w, h, r, r, borderPaint)
-
-        // 5) 上部玻璃高光弧带（立体感）
+        // 4) 上部玻璃高光弧带（立体感）
         glossPaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
     }
 
@@ -253,11 +237,25 @@ class TvCurvedGameView @JvmOverloads constructor(
      *   c.x ← s.x / (1 + (c.y/5.4)²)
      *   c.y ← s.y / (1 + (c.x/3.6)²)
      *
-     * 结果：纹理边中点顶点恰落在视图边缘，四角顶点向内收 —— 弧面凸起。
+     * ★ 全出血归一化（「不要有大黑边」）：纹理四角 (±1,±1) 的逆映射落点
+     * 在 (±0.971, ±0.932) 附近 —— 直接绘制会在四角留下黑隙。这里求出
+     * 四角逆映射落点，把所有顶点逐轴除以它：纹理四角恰落在视图四角、
+     * 边中点鼓出视图边界（被裁掉）—— 画面铺满、凸起保留、无黑边。
+     * 与 J2ME GL 路径 nsCurve 内置的 vec2(1.0298, 1.0727) 预缩放
+     * （1/0.9710 ≈ 1.0298，1/0.9322 ≈ 1.0727）严格一致。
      */
     private fun buildMesh() {
         val w = width.toFloat()
         val h = height.toFloat()
+
+        // 纹理四角 (1,1) 的逆映射落点（与网格内迭代同一收敛路径）
+        var ex = 1f
+        var ey = 1f
+        repeat(CURVE_ITER) {
+            ex = 1f / (1f + (ey / CURVE_X) * (ey / CURVE_X))
+            ey = 1f / (1f + (ex / CURVE_Y) * (ex / CURVE_Y))
+        }
+
         var idx = 0
         for (j in 0..MESH_N) {
             val ty = (j.toFloat() / MESH_N) * 2f - 1f      // 纹理点 c.y
@@ -269,6 +267,9 @@ class TvCurvedGameView @JvmOverloads constructor(
                     cx = tx / (1f + (cy / CURVE_X) * (cy / CURVE_X))
                     cy = ty / (1f + (cx / CURVE_Y) * (cx / CURVE_Y))
                 }
+                // 全出血：除以四角落点 → 纹理四角贴齐视图四角
+                cx /= ex
+                cy /= ey
                 meshVerts[idx++] = (cx * 0.5f + 0.5f) * w
                 meshVerts[idx++] = (cy * 0.5f + 0.5f) * h
             }

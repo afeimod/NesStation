@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -82,6 +83,9 @@ fun FsdCoverFlow(
     grabFocusOnLaunch: Boolean = false,
     content: @Composable (Int) -> Unit
 ) {
+    // 单次拖拽手势允许的最大翻页步数（修复“长列表滑动受限”）
+    val maxSwipeSteps = 16
+
     BoxWithConstraints(modifier = modifier) {
         if (count <= 0) return@BoxWithConstraints
 
@@ -96,10 +100,23 @@ fun FsdCoverFlow(
         // 旧版 pointerInput(count) 的协程闭包捕获首次组合时的 sel/onIndexChange，
         // count 不变时手势协程永不重启，拖动翻页永远基于过期索引计算目标，
         // clamp 之后直接卡死；D-pad 路径每次重组重建闭包所以正常。
-        val currentSel by rememberUpdatedState(selectedIndex)
         val currentOnIndexChange by rememberUpdatedState(onIndexChange)
         val currentOnItemClick by rememberUpdatedState(onItemClick)
         val currentOnItemLongClick by rememberUpdatedState(onItemLongClick)
+        // ★ 列表长度也必须实时读取：pointerInput(Unit) 的手势闭包只捕获
+        // 首次组合的 move，若直接引用参数 count，切换平台标签后（如 NES
+        // 切到街机，列表变长）滑动仍按旧列表长度 clamp ——
+        // “部分核心滑动一定程度无法继续滑动只能点击过去”的根因。
+        // 经 rememberUpdatedState 读取，闭包里永远拿到最新长度。
+        val currentCount by rememberUpdatedState(count)
+
+        // ★ 同步影子索引（“滑动一定程度无法继续滑动只能点击过去”修复之二）：
+        // currentSel 只有等重组后才会更新；列表大/封面重的核心（如街机）
+        // 重组慢，快速连滑时第二滑仍读到旧索引 → move 结果被 clamp 回原地，
+        // 滑动“卡死”只能点击侧边封面。影子索引在 move() 内同步推进，
+        // 不等重组；外部重置（切平台/搜索回 0）通过 LaunchedEffect 回写同步。
+        var shadowSel by remember { mutableIntStateOf(selectedIndex) }
+        LaunchedEffect(selectedIndex) { shadowSel = selectedIndex }
 
         val stepPx = with(LocalDensity.current) { (itemWidth + gap).toPx() }
         var dragAccum by remember { mutableFloatStateOf(0f) }
@@ -129,7 +146,10 @@ fun FsdCoverFlow(
         }
 
         fun move(delta: Int) {
-            currentOnIndexChange((currentSel.coerceIn(0, count - 1) + delta).coerceIn(0, count - 1))
+            val n = currentCount.coerceAtLeast(1)
+            val target = (shadowSel.coerceIn(0, n - 1) + delta).coerceIn(0, n - 1)
+            shadowSel = target
+            currentOnIndexChange(target)
         }
 
         Box(
@@ -144,10 +164,10 @@ fun FsdCoverFlow(
                         Key.DirectionLeft -> { move(-1); true }
                         Key.DirectionRight -> { move(1); true }
                         Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
-                            onItemClick(currentSel.coerceIn(0, count - 1)); true
+                            onItemClick(shadowSel.coerceIn(0, currentCount - 1)); true
                         }
                         Key.Y, Key.ButtonY -> {
-                            onItemLongClick(currentSel.coerceIn(0, count - 1)); true
+                            onItemLongClick(shadowSel.coerceIn(0, currentCount - 1)); true
                         }  // Y = 选项（长按等效）
                         else -> false
                     }
@@ -179,14 +199,18 @@ fun FsdCoverFlow(
                         onDragEnd = {
                             // 半步即翻页 + fling：慢拖按位移，快甩按速度
                             // （900 px/s 起翻，每 1800 px/s 额外多翻一步），
-                            // 翻页与回弹动画并行，落位顺滑
+                            // 翻页与回弹动画并行，落位顺滑。
+                            // ★ 单次手势步数上限从 visibleHalfWindow(4) 提高
+                            // 到 MAX_SWIPE_STEPS(16)：旧上限导致长列表（街机等）
+                            // 一次拖拽无论拖多远最多只翻 4 个，
+                            // “滑动一定程度无法继续滑动只能点击过去”。
                             var steps = (-dragAccum / (stepPx * 0.45f)).roundToInt()
                             if (abs(emaV) > 900f) {
                                 val fling = (abs(emaV) / 1800f).toInt() + 1
                                 val dir = if (emaV < 0f) 1 else -1   // 向左甩 → 翻下一页
                                 if (steps * dir < fling) steps = fling * dir
                             }
-                            if (steps != 0) move(steps.coerceIn(-visibleHalfWindow, visibleHalfWindow))
+                            if (steps != 0) move(steps.coerceIn(-maxSwipeSteps, maxSwipeSteps))
                             settling = true
                         },
                         onDragCancel = { settling = true }

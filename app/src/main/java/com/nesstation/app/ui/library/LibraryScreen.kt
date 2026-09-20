@@ -220,10 +220,17 @@ fun LibraryScreen(
         //    RomStore.loadAll 两次 + 每个 ROM 一次 RomStore.remove（每次都是
         //    全量读+全量重写）。现在整轮刷新只做一次 loadAll 快照 + 结束时
         //    一次批量删除（removeIds）+ 一次批量入库（importGames）。
+        //
+        //    ★ 核心隔离（"扫描某一核心列表时不要刷新其他核心列表游戏"）：
+        //    只重扫当前平台页导入的文件夹、只对当前平台的游戏做
+        //    新增/移除/文件有效性校验；其他核心的列表数据原封不动，
+        //    不会被本次扫描重算或误删。
+        val scopePlatform = selectedPlatform
         var stepAdded = 0
         var stepRemoved = 0
         var lostFolderAccess = false
         val folders = RomStore.getImportedFolders(context)
+            .filter { it.second == scopePlatform }
         // 库快照（本地维护增减，避免循环内反复全量 loadAll）
         val snapshot = RomStore.loadAll(context).toMutableList()
         val pendingRemoveIds = mutableSetOf<String>()
@@ -263,6 +270,8 @@ fun LibraryScreen(
                     val toRemove = snapshot.filter { game ->
                         val p = game.romPath ?: return@filter false
                         if (!p.startsWith("content://")) return@filter false
+                        // ★ 只动当前核心的游戏，其他核心列表不受本次扫描影响
+                        if (game.platform != scopePlatform) return@filter false
                         if (!isUnderFolder(p)) return@filter false
                         p !in foundUris
                     }
@@ -318,6 +327,8 @@ fun LibraryScreen(
                         val folderAbs = folder.absolutePath
                         val toRemove = snapshot.filter { game ->
                             val p = game.romPath ?: return@filter false
+                            // ★ 仅限当前核心的游戏（其他核心列表不受影响）
+                            if (game.platform != scopePlatform) return@filter false
                             p.startsWith("/") && (p == folderAbs || p.startsWith("$folderAbs/"))
                         }
                         if (toRemove.isNotEmpty()) {
@@ -342,6 +353,8 @@ fun LibraryScreen(
                         val toRemove = snapshot.filter { game ->
                             val p = game.romPath ?: return@filter false
                             if (!p.startsWith("/")) return@filter false
+                            // ★ 只动当前核心的游戏，其他核心列表不受本次扫描影响
+                            if (game.platform != scopePlatform) return@filter false
                             if (p != folderAbs && !p.startsWith("$folderAbs/")) return@filter false
                             val f = java.io.File(p)
                             if (f.exists()) return@filter false
@@ -407,7 +420,10 @@ fun LibraryScreen(
         // is still there — the app simply can't see it. Only treat a local
         // ROM as deleted when its parent directory is readable (meaning the
         // scan has permission to know it's really gone).
+        // ★ 核心隔离：只对当前平台页的游戏做存在性校验；其他核心的条目
+        // 直接保留，避免在 A 核心页扫描时误删/抖动 B 核心的列表。
         val validNes = finalNes.filter { game ->
+            if (game.platform != scopePlatform) return@filter true
             val path = game.romPath ?: ""
             if (path.startsWith("content://")) return@filter true
             if (!path.startsWith("/")) return@filter false

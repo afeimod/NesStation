@@ -959,18 +959,23 @@ public final class J2meFilterShaders {
     private static final String TV_GLSL_HELPERS =
             "// ===== NesStation TV appearance helpers (curved glass / rounded corners / vignette / scanlines) =====\n" +
             "// 桶形弯曲 —— 模拟 CRT 弧面玻璃：屏幕边缘向外鼓\n" +
+            "// ★ 全出血预缩放（除以 vec2(1.0298, 1.0727)）：弯曲后的采样坐标恰好\n" +
+            "//   在屏幕四角落在纹理四角 (1,1)、边中点不超过边界 —— 画面铺满\n" +
+            "//   整屏、无采样越界黑边（黑边会遮挡扫描线遮罩）。\n" +
             "vec2 nsCurve(vec2 tc) {\n" +
             "    vec2 c = tc * 2.0 - 1.0;\n" +
+            "    c /= vec2(1.0298, 1.0727);\n" +
             "    vec2 off = abs(c.yx) / vec2(5.4, 3.6);\n" +
             "    c = c + c * off * off;\n" +
             "    return c * 0.5 + 0.5;\n" +
             "}\n" +
-            "// 四角圆弧遮罩 —— 圆角矩形 SDF：屏幕四角圆弧外渐黑\n" +
+            "// 四角玻璃暗影 —— 圆角矩形 SDF：四角弧外仅轻微压暗（不再填黑，\n" +
+            "// 大黑边会遮挡遮罩），玻璃圆角观感由暗影 + 暗角共同营造\n" +
             "float nsCornerMask(vec2 tc) {\n" +
             "    vec2 p = abs(tc * 2.0 - 1.0);\n" +
             "    vec2 corner = vec2(0.965, 0.955) - 0.085;\n" +
             "    float dist = length(max(p - corner, vec2(0.0))) - 0.085;\n" +
-            "    return 1.0 - smoothstep(-0.008, 0.016, dist);\n" +
+            "    return 1.0 - 0.40 * smoothstep(-0.008, 0.016, dist);\n" +
             "}\n" +
             "// 暗角 —— CRT 玻璃边缘自然压暗\n" +
             "float nsVignette(vec2 tc) {\n" +
@@ -986,7 +991,7 @@ public final class J2meFilterShaders {
             // 立体凸起：屏幕边缘内侧压暗模拟玻璃向内弯折的反光衰减
             "float nsBevel(vec2 tc) {\n" +
             "    vec2 e = min(tc, 1.0 - tc);\n" +
-            "    return mix(0.55, 1.0, smoothstep(0.0, 0.05, min(e.x, e.y)));\n" +
+            "    return mix(0.75, 1.0, smoothstep(0.0, 0.05, min(e.x, e.y)));\n" +
             "}\n";
 
     /**
@@ -1007,28 +1012,21 @@ public final class J2meFilterShaders {
             "\n" +
             "void main() {\n" +
             "    float corner = nsCornerMask(v_texcoord0);\n" +
-            "    if (corner < 0.004) {\n" +
-            "        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);\n" +
-            "        return;\n" +
-            "    }\n" +
-            "    // 桶形弯曲采样：屏幕外缘鼓出 —— 真正的弧面透视，而非平面拉伸\n" +
-            "    vec2 cuv = nsCurve(v_texcoord0);\n" +
-            "    vec3 res;\n" +
-            "    if (cuv.x < 0.0 || cuv.x > 1.0 || cuv.y < 0.0 || cuv.y > 1.0) {\n" +
-            "        res = vec3(0.0);\n" +
-            "    } else {\n" +
-            "        res = texture2D(sampler0, cuv).xyz;\n" +
-            "    }\n" +
+            "    // 桶形弯曲采样：屏幕外缘鼓出 —— 真正的弧面透视，而非平面拉伸。\n" +
+            "    // nsCurve 内置全出血预缩放，弯曲后坐标恒在 [0,1] 内；clamp 仅作\n" +
+            "    // 浮点误差防护，不再产生任何黑边。\n" +
+            "    vec2 cuv = clamp(nsCurve(v_texcoord0), 0.0, 1.0);\n" +
+            "    vec3 res = texture2D(sampler0, cuv).xyz;\n" +
             "    // 立体凸起：屏幕四周边缘内侧压暗（玻璃向内弯折的反光衰减）\n" +
             "    res *= nsBevel(v_texcoord0);\n" +
             "    // 扫描线随弧面弯曲（用弯曲后坐标）\n" +
             "    res *= nsScanlines(cuv);\n" +
-            "    // 暗角 + 四角圆弧\n" +
+            "    // 暗角 + 四角玻璃暗影（轻微压暗，无黑边）\n" +
             "    res *= nsVignette(v_texcoord0);\n" +
             "    res *= corner;\n" +
             "    // 玻璃高光：屏幕上部一道微弱的弧形反光，立体感的关键\n" +
             "    float gloss = 0.055 * smoothstep(0.42, 0.02, abs(v_texcoord0.y - 0.20));\n" +
-            "    res += gloss * corner;\n" +
+            "    res += gloss;\n" +
             "    res = clamp(res, vec3(0.0), vec3(1.0));\n" +
             "    gl_FragColor = vec4(res, 1.0);\n" +
             "}\n";

@@ -783,7 +783,7 @@ public final class J2meBitmapFilter {
 
     // ════════════════════════════════════════════════════════════════════
     //  TV appearance (仿电视机) — CPU 路径
-    //  drawTvFrame：20×20 网格桶形弧面绘制 + 四角圆弧裁剪 + 暗边框；
+    //  drawTvFrame：20×20 网格桶形弧面绘制（矩形裁剪，全出血无黑边）；
     //  applyTvMask：扫描线 + 暗角 + 玻璃高光。
     //  异常时全部退化保护（普通绘制），绝不因滤镜崩溃。
     // ════════════════════════════════════════════════════════════════════
@@ -799,7 +799,7 @@ public final class J2meBitmapFilter {
     /**
      * 只取活动区域 srcW×srcH 绘制到弧面（Image.setSize 缩小位图时避免
      * 把陈旧边缘像素画出来）。用 20×20 drawBitmapMesh 网格做桶形变形，
-     * 四周向外鼓；圆角 Path 裁剪 + 暗边框营造「立体凸起屏幕」。
+     * 四周向外鼓；矩形裁剪保证全出血（无大黑边、不遮挡扫描线遮罩）。
      */
     private static void drawTvFrame(Bitmap bmp, int srcW, int srcH,
                                     Canvas canvas, RectF rect) {
@@ -814,10 +814,9 @@ public final class J2meBitmapFilter {
                 }
             }
 
-            // 四角圆弧裁剪（圆角半径 ≈ 短边 4.5%）
-            float radius = Math.min(rect.width(), rect.height()) * 0.045f;
+            // 矩形裁剪（★ 不再圆角裁剪/不画黑边框 —— 大黑边会遮挡扫描线遮罩）
             android.graphics.Path clip = new android.graphics.Path();
-            clip.addRoundRect(rect, radius, radius, android.graphics.Path.Direction.CW);
+            clip.addRect(rect, android.graphics.Path.Direction.CW);
 
             canvas.save();
             canvas.clipPath(clip);
@@ -846,13 +845,7 @@ public final class J2meBitmapFilter {
             canvas.drawBitmapMesh(work, N, N, verts, 0, null, 0, meshPaint);
             canvas.restore();
 
-            // 暗边框：模拟电视机边框内侧的阴影
-            sMaskPaint.setAntiAlias(true);
-            sMaskPaint.setStyle(android.graphics.Paint.Style.STROKE);
-            sMaskPaint.setStrokeWidth(Math.max(1.5f, rect.width() * 0.006f));
-            sMaskPaint.setColor(0xB3000000);   // 70% 黑
-            canvas.drawRoundRect(rect, radius, radius, sMaskPaint);
-            sMaskPaint.setStyle(android.graphics.Paint.Style.FILL);
+            // ★ 不再绘制 70% 黑暗边框 —— 黑边会遮挡扫描线遮罩（用户要求）
 
             if (work != bmp) work.recycle();
         } catch (Throwable ignored) {

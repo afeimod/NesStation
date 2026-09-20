@@ -83,7 +83,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -3575,6 +3574,9 @@ private fun GameSurfaceView(
     val drasticGlFailed = remember { mutableStateOf(false) }
     val useDrasticGl = isDrasticEngine &&
         (drasticDisplayMode == "gl" || drasticHdRender) && !drasticGlFailed.value
+    // PS2 弧面显示路径（Ps2CurvedView）的 EGL 失败标志：失败时回退普通
+    // SurfaceView + 平面 FilterOverlay（画面可能无凸起，但绝不黑屏）。
+    val ps2GlFailed = remember { mutableStateOf(false) }
     // In custom layout mode the user controls position/size directly, so the
     // surface is anchored top-start and moved via offset; otherwise align the
     // game to top (portrait) or center (landscape).
@@ -3912,18 +3914,81 @@ private fun GameSurfaceView(
                 )
             }
         } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
+                   engine is com.nesstation.app.core.engine.Psx2Engine &&
+                   !ps2GlFailed.value) {
+            // === PS2（ARMSX2）仿电视机（CRT 弧面）路径 ===
+            // ★ 修复「ps2核心画面没生效电视滤镜凸起」：PS2 引擎是 push 模型，
+            // 直接把画面画到传入的 Surface 上且无帧回读，此前被排除在弧面
+            // 路径外，选「仿电视机」只有平面扫描线。现在用 Ps2CurvedView：
+            // 引擎画进 SurfaceTexture（离屏中转，仍是带正尺寸的真实
+            // Surface，MTGS::UpdateDisplayWindow 契约不变），本视图用与
+            // TvCurvedGameView / J2ME GL 路径同款 nsCurve 弧面着色器把
+            // 每帧桶形凸起后上屏，叠扫描线/暗角/玻璃高光 —— 凸起与其他
+            // 核心一致；全出血预缩放，无大黑边（不遮挡遮罩）。
+            // 外观由视图自绘，不再叠加平面 FilterOverlay（避免双重扫描线）。
+            val ps2CurvedModifier = when (effectiveVideoScale) {
+                "4:3" -> Modifier.aspectRatio(4f / 3f)
+                "2:3" -> Modifier.aspectRatio(2f / 3f)
+                "8:3" -> Modifier.aspectRatio(8f / 3f)
+                "3:2" -> Modifier.aspectRatio(3f / 2f)
+                "8:7" -> Modifier.aspectRatio(8f / 7f)
+                "16:9" -> Modifier.aspectRatio(16f / 9f)
+                "custom" -> {
+                    val maxW = constraints.maxWidth
+                    val maxH = constraints.maxHeight
+                    val leftPx = (customRect[0] * maxW).toInt().coerceIn(0, maxW)
+                    val topPx = (customRect[1] * maxH).toInt().coerceIn(0, maxH)
+                    val wPx = ((customRect[2] - customRect[0]) * maxW).toInt().coerceIn(1, maxW)
+                    val hPx = ((customRect[3] - customRect[1]) * maxH).toInt().coerceIn(1, maxH)
+                    val density = LocalDensity.current
+                    Modifier
+                        .offset { IntOffset(leftPx, topPx) }
+                        .size(width = with(density) { wPx.toDp() }, height = with(density) { hPx.toDp() })
+                }
+                else -> Modifier.fillMaxSize() // stretch (default)
+            }
+            AndroidView(
+                factory = { viewCtx ->
+                    Ps2CurvedView(viewCtx).apply {
+                        // 与 SurfaceView 分支一致：可聚焦以接收实体手柄 /
+                        // D-pad 按键（TV 盒子 + 蓝牙手柄场景）
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        requestFocus()
+                        setOnKeyListener(gamepadKeyListener)
+                        // EGL 失败回退普通 SurfaceView + 平面叠加
+                        onGlFailed = { ps2GlFailed.value = true }
+                    }
+                },
+                update = { v ->
+                    v.engine = engine
+                    v.uiBlocked = uiBlocked
+                    v.setOnKeyListener(gamepadKeyListenerRebind)
+                    if (uiBlocked && gamepadBitsHolder[0] != 0) {
+                        gamepadBitsHolder[0] = 0
+                        routePadBits(engine, currentPlayer, 0, netplayController, platform)
+                    }
+                    if (!uiBlocked) {
+                        v.isFocusable = true
+                        v.isFocusableInTouchMode = true
+                        v.requestFocus()
+                    }
+                },
+                modifier = ps2CurvedModifier.then(gameViewTracker)
+            )
+        } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
                    platform != GamePlatform.NDS &&
                    engine !is com.nesstation.app.core.engine.Psx2Engine) {
             // === 仿电视机（CRT 弧面）画布路径 ===
             // tv 系滤镜 + 支持「无 Surface framebuffer 回退」的引擎：
             // 不再创建 SurfaceView（引擎 hasSurface=false → 每帧写
             // frameBuffer），由 TvCurvedGameView 拉帧后按 J2ME GL 路径
-            // nsCurve 同款数学做桶形凸起 —— 边中点处画面触到屏幕边缘、
-            // 越靠四角越以弧线向内收进（约 3%~7%），叠加扫描线 / 暗角 /
-            // 圆角边框 / 玻璃高光，与真机 CRT 照片观感一致。
+            // nsCurve 同款数学做桶形凸起 —— 全出血弧面变形（画面铺满、
+            // 无大黑边），叠加扫描线 / 暗角 / 玻璃高光，与真机 CRT 观感
+            // 一致。
             // 例外说明：
-            //   - PS2 (ARMSX2) 必须持有真实 Surface（MTGS::UpdateDisplayWindow
-            //     依赖 surfaceChanged），保持 SurfaceView 直绘 + 平面叠加；
+            //   - PS2 (ARMSX2) 在上方独立分支走 Ps2CurvedView（弧面 +
+            //     真实 Surface 中转）；
             //   - NDS 双屏的触摸映射依赖平面几何，且双屏各自 4:3，不进弧面
             //     （继续走原有路径）。
             // 外层容器与 SurfaceView 分支共用同一套缩放比例（宽高比由容器
@@ -4357,32 +4422,21 @@ private fun FilterOverlay(
 
     Canvas(modifier = modifier) {
         if (filterType == "tv") {
-            // 仿电视机：扫描线打底 + 强暗角 + 四角圆弧裁切 + 暗边框
-            val r = minOf(size.width, size.height) * 0.045f
-            drawIntoCanvas { canvas ->
-                val n = canvas.nativeCanvas
-                val save = n.save()
-                val clip = android.graphics.Path().apply {
-                    addRoundRect(0f, 0f, size.width, size.height, r, r,
-                            android.graphics.Path.Direction.CW)
+            // 仿电视机：扫描线铺满全屏（★ 不再圆角裁剪/暗边框 —— 大黑边会
+            // 遮挡遮罩；玻璃圆角观感由下方渐变暗角营造，全出血无黑边）
+            shaderPaint?.let { paint ->
+                drawIntoCanvas { canvas ->
+                    canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
                 }
-                n.clipPath(clip)
-                shaderPaint?.let { n.drawRect(0f, 0f, size.width, size.height, it) }
-                n.restoreToCount(save)
             }
-            // 强暗角（径向渐变，边缘 62% 黑 —— 比 CRT 更浓的电视观感）
+            // 强暗角（径向渐变，边缘 62% 黑 —— 比 CRT 更浓的电视观感，
+            // 渐变过渡、非不透明黑块）
             drawRect(
                 brush = Brush.radialGradient(
                     colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.62f)),
                     center = Offset(size.width / 2, size.height / 2),
                     radius = maxOf(size.width, size.height) * 0.72f
                 )
-            )
-            // 暗边框
-            drawRoundRect(
-                color = Color.Black.copy(alpha = 0.7f),
-                cornerRadius = CornerRadius(r, r),
-                style = Stroke(width = 2.dp.toPx())
             )
         } else {
             shaderPaint?.let { paint ->
