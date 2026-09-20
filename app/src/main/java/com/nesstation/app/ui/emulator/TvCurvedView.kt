@@ -32,15 +32,28 @@ import kotlin.math.max
  * 弧面映射的纹理四角经逆映射后会向内收（约 3%x / 7%y），若直接绘制会在
  * 四角留下黑色弧形空隙，既难看又遮住扫描线遮罩。本视图把逆映射结果按
  * 「纹理四角 → 视图四角」做逐轴归一化缩放：纹理四角恰好落在视图四角，
- * 边中点则鼓出视图边界被自然裁掉 —— 画面铺满整个视图、只有凸起没有黑边，
- * 扫描线遮罩覆盖整个画面不被遮挡。
+ * 边中点则鼓出视图边界 —— 鼓出部分由本视图 onDraw 里的 clipRect 裁掉
+ * （见下），画面铺满整个视图、只有凸起没有黑边，扫描线遮罩覆盖整个
+ * 画面不被遮挡。
+ *
+ * ★ 严格限定在游戏画面矩形内（「滤镜只作用于游戏画面」）：
+ *   1. 视图不铺任何不透明底色（不再整块涂黑 —— 旧行为是一片「全屏遮布」，
+ *      会把用户的遮罩主题背景图盖成黑屏）。视图透明：弧面网格没画到的
+ *      区域（加载前 / 无帧时）直接透出 Compose 层的主题背景色 / 主题背景图，
+ *      游戏画面外的区域始终显示用户自己的遮罩主题。
+ *   2. 全出血网格的边中点会鼓出视图边界约 1.5%x / 3.6%y。Compose 的
+ *      AndroidView 不会自动裁剪子 View 越界绘制（真机实测画面会溢出到
+ *      游戏画面外的主题图上，且溢出部分没有扫描线/暗角 —— 「部分画面
+ *      没被滤镜覆盖」），因此 onDraw 里显式 clipRect(0,0,w,h)：所有绘制
+ *      （画面 + 扫描线 + 暗角 + 高光）严格限定在视图矩形 = 游戏画面矩形
+ *      内，既不污染周边主题图，也保证可见画面 100% 被滤镜效果覆盖。
  *
  * drawBitmapMesh 的隐式源映射是「纹理均匀网格 → 顶点位置」，因此本视图
  * 对每个纹理网格点求 nsCurve 的逆映射（定点迭代）后乘归一化系数，把该
  * 纹素应出现的屏幕位置作为顶点坐标 —— 画面边界由几何直接形成弧线。
  * 效果即照片中箭头所指的「边缘略微凸起」，且无大黑边。
  *
- * 外观叠加（与 FilterOverlay 的 tv 分支同密度，全部无黑边）：
+ * 外观叠加（与 FilterOverlay 的 tv 分支同密度，全部限定在游戏画面矩形内）：
  *   1. 扫描线图案（NdsFilterPatterns.createScanlinePattern，4px 周期）
  *   2. 径向暗角（边缘 62% 黑 —— 渐变玻璃观感，非不透明黑块）
  *   3. 上部玻璃高光弧带（微弱白色渐变 —— 立体感）
@@ -166,10 +179,11 @@ class TvCurvedGameView @JvmOverloads constructor(
         super.onDraw(canvas)
         val eng = engine ?: return
 
-        // 机身底色（无帧时的「机壳」区域；全出血网格会完全覆盖它）。
+        // ★ 视图保持透明 —— 不再整块涂黑（旧「全屏遮布」行为）：
+        // 加载前 / 无帧时直接透出下层 Compose 的主题背景色 / 主题背景图，
+        // 游戏画面周边永远显示用户自己的遮罩主题，而不是一片黑。
         // 注：菜单遮挡（uiBlocked）时继续正常拉帧绘制 —— 与
         // NdsDualScreenView 行为一致，关闭菜单后画面无缝衔接。
-        canvas.drawColor(0xFF000000.toInt())
         if (!eng.isLoaded) return
 
         val vw = eng.videoWidth().coerceAtLeast(1)
@@ -182,19 +196,31 @@ class TvCurvedGameView @JvmOverloads constructor(
         val w = width.toFloat()
         val h = height.toFloat()
 
-        // 1) 弧面画面（顶点已按 nsCurve 逆映射 + 四角归一化排布 →
-        //    全出血桶形凸起：画面铺满视图，边中点鼓出被视图边界裁掉，
-        //    无黑角 / 无黑边 —— 不遮挡扫描线遮罩）
-        canvas.drawBitmapMesh(bmp, MESH_N, MESH_N, meshVerts, 0, null, 0, meshPaint)
+        // ★ 裁剪到视图矩形 = 游戏画面矩形：
+        // 全出血网格的边中点会鼓出视图边界（约 1.5%x / 3.6%y），Compose 的
+        // AndroidView 不自动裁剪子 View 越界绘制 —— 不裁剪的话画面会溢出到
+        // 周边的遮罩主题图上，且溢出部分没有扫描线/暗角。显式 clip 后所有
+        // 绘制严格限定在游戏画面矩形内：不污染主题图，可见画面 100% 被滤镜
+        // 效果覆盖。
+        val saveCount = canvas.save()
+        canvas.clipRect(0f, 0f, w, h)
+        try {
+            // 1) 弧面画面（顶点已按 nsCurve 逆映射 + 四角归一化排布 →
+            //    全出血桶形凸起：画面铺满视图，边中点鼓出部分被上方
+            //    clipRect 裁掉 —— 无黑角 / 无黑边 / 无外溢）
+            canvas.drawBitmapMesh(bmp, MESH_N, MESH_N, meshVerts, 0, null, 0, meshPaint)
 
-        // 2) 扫描线（与 FilterOverlay tv 分支同图案同密度，覆盖全屏）
-        scanlinePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
+            // 2) 扫描线（与 FilterOverlay tv 分支同图案同密度，覆盖游戏画面）
+            scanlinePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
 
-        // 3) 径向暗角（渐变玻璃观感）
-        vignettePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
+            // 3) 径向暗角（渐变玻璃观感）
+            vignettePaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
 
-        // 4) 上部玻璃高光弧带（立体感）
-        glossPaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
+            // 4) 上部玻璃高光弧带（立体感）
+            glossPaint?.let { canvas.drawRect(0f, 0f, w, h, it) }
+        } finally {
+            canvas.restoreToCount(saveCount)
+        }
     }
 
     /** 确保 frameBitmap 与引擎当前帧尺寸一致（尺寸变化时重建）。 */
