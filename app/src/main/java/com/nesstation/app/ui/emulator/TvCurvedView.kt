@@ -315,16 +315,19 @@ class TvCurvedGameView @JvmOverloads constructor(
         val outW = vw * scale
         val outH = vh * scale
 
-        var arr = upscaledArray
-        if (arr == null || upscaledW != outW || upscaledH != outH || upscaledFilter != filter) {
-            arr = try { IntArray(outW * outH) } catch (_: Throwable) { return src }
-            upscaledArray = arr
+        var buf = upscaledArray
+        if (buf == null || upscaledW != outW || upscaledH != outH || upscaledFilter != filter) {
+            buf = try { IntArray(outW * outH) } catch (_: Throwable) { return src }
+            upscaledArray = buf
             upscaledW = outW
             upscaledH = outH
             upscaledFilter = filter
             upscaledBitmap?.let { try { it.recycle() } catch (_: Throwable) {} }
             upscaledBitmap = null
         }
+        // try 块内的赋值会让 Kotlin 流分析放弃对 var 的 smart-cast，
+        // 这里显式收口为不可空局部值（buf 为空只可能是分配失败前的残留状态）。
+        val arr = buf ?: return src
 
         if (!NdsNative.ensureLoaded()) return src
         val ok = try {
@@ -334,15 +337,16 @@ class TvCurvedGameView @JvmOverloads constructor(
         }
         if (!ok) return src
 
-        var out = upscaledBitmap
-        if (out == null || out.width != outW || out.height != outH || out.isRecycled) {
-            out = try {
+        var cand = upscaledBitmap
+        if (cand == null || cand.width != outW || cand.height != outH || cand.isRecycled) {
+            cand = try {
                 Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
             } catch (_: Throwable) {
                 return src
             }
-            upscaledBitmap = out
+            upscaledBitmap = cand
         }
+        val out = cand ?: return src
         return try {
             out.setPixels(arr, 0, outW, 0, 0, outW, outH)
             out
