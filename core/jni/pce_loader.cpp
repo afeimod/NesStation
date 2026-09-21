@@ -871,6 +871,14 @@ void unload() {
     // Clear the pre-loaded ROM buffer so memory is freed between games.
     s_extRomData.clear();
     s_extRomData.shrink_to_fit();
+
+    // ★ 与 fbneo_loader 同款"关闭后再打开闪退"预防性修复：dlclose 核心
+    // 库，下次 loadFromFile 重新 dlopen —— 核心静态状态完全归零。
+    if (s_coreLib) {
+        LOGI("dlclose(libgeargrafx_libretro_android.so) — full core state reset");
+        dlclose(s_coreLib);
+        s_coreLib = nullptr;
+    }
 }
 
 void resetEmulation(bool /*hard*/) {

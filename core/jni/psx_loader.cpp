@@ -928,6 +928,16 @@ void unload() {
     s_pad2.store(0, std::memory_order_relaxed);
     s_pad3.store(0, std::memory_order_relaxed);
     s_pad4.store(0, std::memory_order_relaxed);
+
+    // ★ 与 fbneo_loader 同款"关闭后再打开闪退"预防性修复：dlclose 核心
+    // 库，下次 loadFromFile 重新 dlopen —— 核心静态状态完全归零。
+    // PCSX-ReARMed 在 RetroArch 中同样按内容关闭 → dlclose 的生命周期
+    // 运行，重新打开时 dynarec/内存池静态全部重建。
+    if (s_coreLib) {
+        LOGI("dlclose(libpcsx_rearmed_libretro_android.so) — full core state reset");
+        dlclose(s_coreLib);
+        s_coreLib = nullptr;
+    }
 }
 
 void resetEmulation(bool /*hard*/) {

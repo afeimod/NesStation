@@ -725,6 +725,22 @@ void unload() {
     s_pad2.store(0, std::memory_order_relaxed);
     s_pad3.store(0, std::memory_order_relaxed);
     s_pad4.store(0, std::memory_order_relaxed);
+
+    // ★ 街机关闭后再打开闪退修复：dlclose 核心库。
+    // FBNeo 核心内部有大量静态状态（驱动表、ROM 缓存指针、内存池、
+    // 一次性的全局初始化标志）。此前 unload() 只调 retro_deinit 不
+    // dlclose —— 进程内第二次 retro_init + retro_load_game 复用旧的
+    // 静态状态时核心会崩溃（"关闭街机游戏后再打开街机游戏必闪退"，
+    // 且换别的街机 ROM 也一样崩）。与 RetroArch 关闭内容时的生命周期
+    // 对齐：retro_deinit 之后立即 dlclose，下次 loadFromFile 里的
+    // loadCoreLib() 会重新 dlopen —— 核心所有静态回到首次启动的干净
+    // 状态。dlclose 前模拟/音频线程已被 Kotlin 侧 cleanup() join 完毕，
+    // 不存在核心代码仍在执行的窗口。
+    if (s_coreLib) {
+        LOGI("dlclose(libfbneo_libretro_android.so) — full core state reset");
+        dlclose(s_coreLib);
+        s_coreLib = nullptr;
+    }
 }
 
 void resetEmulation(bool /*hard*/) {

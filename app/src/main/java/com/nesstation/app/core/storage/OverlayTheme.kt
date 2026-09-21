@@ -31,7 +31,9 @@ data class ButtonTheme(
  *                    null = 默认纯黑
  *  - [bgImageUri]  ：背景图片（png/jpg，SAF 持久 URI）；设置后优先于 [bgColor]
  *  - [maskEnabled] ：是否在游戏画面上叠加一层半透明遮罩
- *  - [maskColor]   ：遮罩颜色（ARGB），常与 [maskAlpha] 配合
+ *  - [maskColor]   ：遮罩颜色（ARGB）；null = 不叠加颜色层（✕ 可取消选择，
+ *                    修复"选了遮罩图片/不想用颜色时颜色还是黑色"）。
+ *                    常与 [maskAlpha] 配合
  *  - [maskAlpha]   ：遮罩强度 0–255（叠加到 maskColor 的 alpha 上）
  *  - [maskImageUri]：遮罩图片（png/jpg，SAF 持久 URI）；设置后优先于 [maskColor]
  *
@@ -45,7 +47,7 @@ data class OverlayTheme(
     val bgColor: Long? = null,
     val bgImageUri: String? = null,
     val maskEnabled: Boolean = false,
-    val maskColor: Long = 0xFF000000,
+    val maskColor: Long? = null,
     val maskAlpha: Int = 80,
     val maskImageUri: String? = null,
     val buttons: MutableMap<String, ButtonTheme> = mutableMapOf()

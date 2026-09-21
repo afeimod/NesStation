@@ -274,8 +274,23 @@ private fun OverlayThemeDialog(
                         )
                         Text("${edit.maskAlpha}", fontSize = 12.sp)
                     }
+                    // maskColor 可空：末尾 ✕（默认）= 不叠加颜色层。
+                    // 已设置遮罩图片时图片优先，颜色层不再参与显示。
                     ColorPaletteRow(current = edit.maskColor) { c ->
-                        edit = edit.copy(maskColor = c ?: 0xFF000000)
+                        edit = edit.copy(maskColor = c)
+                    }
+                    if (edit.maskImageUri != null) {
+                        Text(
+                            "已设置遮罩图片：图片优先显示，颜色层不再参与",
+                            fontSize = 11.sp,
+                            color = Color(0xFF1E7D4B)
+                        )
+                    } else if (edit.maskColor == null) {
+                        Text(
+                            "当前未选择颜色：遮罩不会叠加任何颜色（可选图片或点 ✕ 以外的色块）",
+                            fontSize = 11.sp,
+                            color = Color(0x88000000)
+                        )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                         Text(

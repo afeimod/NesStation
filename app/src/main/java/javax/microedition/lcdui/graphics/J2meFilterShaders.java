@@ -971,16 +971,22 @@ public final class J2meFilterShaders {
             "}\n" +
             "// 四角玻璃暗影 —— 圆角矩形 SDF：四角弧外仅轻微压暗（不再填黑，\n" +
             "// 大黑边会遮挡遮罩），玻璃圆角观感由暗影 + 暗角共同营造\n" +
+            "// ★ 灰边收窄：SDF 内缩 0.085 → 0.035，边缘暗带约 6.5% → 3.5%\n" +
+            "//   全幅宽度，与 NdsFilterPatterns.createTvCornerMask 同参数\n" +
             "float nsCornerMask(vec2 tc) {\n" +
             "    vec2 p = abs(tc * 2.0 - 1.0);\n" +
-            "    vec2 corner = vec2(0.965, 0.955) - 0.085;\n" +
-            "    float dist = length(max(p - corner, vec2(0.0))) - 0.085;\n" +
+            "    vec2 corner = vec2(0.965, 0.955) - 0.035;\n" +
+            "    float dist = length(max(p - corner, vec2(0.0))) - 0.035;\n" +
             "    return 1.0 - 0.40 * smoothstep(-0.008, 0.016, dist);\n" +
             "}\n" +
             "// 暗角 —— CRT 玻璃边缘自然压暗\n" +
+            "// ★ 灰边收窄：旧实现 dot(p*0.72,p*0.72) 二次曲线从中心向外渐变，\n" +
+            "//   整幅画面都被压暗；改为只在外缘 15%（半幅）内渐变到 32% 暗，\n" +
+            "//   画面中心完全不受影响，与画布路径的窄带暗角观感一致\n" +
             "float nsVignette(vec2 tc) {\n" +
-            "    vec2 p = tc * 2.0 - 1.0;\n" +
-            "    return clamp(1.0 - 0.30 * dot(p * 0.72, p * 0.72), 0.0, 1.0);\n" +
+            "    vec2 p = abs(tc * 2.0 - 1.0);\n" +
+            "    float m = max(p.x, p.y);\n" +
+            "    return 1.0 - 0.32 * smoothstep(0.85, 1.0, m);\n" +
             "}\n" +
             "// 扫描线 —— 按源分辨率行数明暗相间；传入弯曲后坐标时扫描线随弧面弯曲\n" +
             "float nsScanlines(vec2 tc) {\n" +
@@ -991,7 +997,7 @@ public final class J2meFilterShaders {
             // 立体凸起：屏幕边缘内侧压暗模拟玻璃向内弯折的反光衰减
             "float nsBevel(vec2 tc) {\n" +
             "    vec2 e = min(tc, 1.0 - tc);\n" +
-            "    return mix(0.75, 1.0, smoothstep(0.0, 0.05, min(e.x, e.y)));\n" +
+            "    return mix(0.75, 1.0, smoothstep(0.0, 0.02, min(e.x, e.y)));\n" +
             "}\n";
 
     /**

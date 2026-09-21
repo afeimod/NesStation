@@ -1318,6 +1318,28 @@ fun EmulatorScreen(
     BackHandler(enabled = showCustomLayoutEditor) { showCustomLayoutEditor = false }
     BackHandler(enabled = showNdsCustomLayoutEditor) { showNdsCustomLayoutEditor = false }
 
+    // ★ 编辑器提示改为一次性 Toast（上下菜单条已按用户要求移除）：
+    // 自由布局编辑器是全屏无遮挡的拖动界面，进入时短暂提示操作方式与
+    // 退出方式（松手即保存，返回键退出）。
+    LaunchedEffect(showCustomLayoutEditor) {
+        if (showCustomLayoutEditor) {
+            Toast.makeText(
+                context,
+                "自由布局：拖动四角调整大小 · 拖动内部移动位置 · 松手即保存，返回键完成",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    LaunchedEffect(showNdsCustomLayoutEditor) {
+        if (showNdsCustomLayoutEditor) {
+            Toast.makeText(
+                context,
+                "NDS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     // === 联机对战：把 NetplayController 挂到引擎的 frameHook 上 ===
     // 必须在 LaunchedEffect(game) 之前设置，否则引擎模拟线程的第 0 帧会
     // 没有这个 hook 而按单机模式跑（虽然之后会自动切换，但前 inputDelay 帧
@@ -1590,7 +1612,11 @@ fun EmulatorScreen(
             if (result == null) {
                 errorMsg = "DOS 游戏加载失败：无法读取文件夹内容"
             } else {
-                val ok = engine.loadRom(result, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                // ★ 全核心统一 IO 线程加载（重开闪退/ANR 防护）：loadRom 内部
+                // 要 join 上一局线程 + 原生卸载，主线程执行会冻结 UI。
+                val ok = withContext(Dispatchers.IO) {
+                    engine.loadRom(result, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                }
                 if (!ok) {
                     val err = engine.lastError()
                     errorMsg = err.ifEmpty { "DOS 游戏加载失败" }
@@ -1620,11 +1646,10 @@ fun EmulatorScreen(
             // NDS（melonDS / DraStic 激烈）与 JAVA 一样有重 IO / native 阻塞的
             // loadRom：DraStic 的 startGame 在主线程同步执行会卡死 5s+ 触发
             // ANR 闪退（红米实测 Input dispatching timed out），必须移出主线程。
-            val ok = if (platform == GamePlatform.JAVA || platform == GamePlatform.NDS) {
-                withContext(Dispatchers.IO) {
-                    engine.loadRom(romFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
-                }
-            } else {
+            // ★ 重开闪退修复（全核心）：重开时 loadRom 还要等 lifecycleLock
+            // 里的上一局完整卸载（join 线程 + 原生 unload，街机可达数秒），
+            // 主线程同步等待会被 ANR 杀进程 —— 所有平台统一移到 IO 线程。
+            val ok = withContext(Dispatchers.IO) {
                 engine.loadRom(romFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
             }
             if (!ok) {
@@ -1651,7 +1676,10 @@ fun EmulatorScreen(
             if (cdFile == null) {
                 errorMsg = "Mega-CD 加载失败：无法读取文件夹内容（.cue/.bin 音轨）"
             } else {
-                val ok = engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                // ★ 全核心统一 IO 线程加载（重开闪退/ANR 防护）
+                val ok = withContext(Dispatchers.IO) {
+                    engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                }
                 if (!ok) {
                     val err = engine.lastError()
                     errorMsg = err.ifEmpty { "Mega-CD 加载失败" }
@@ -1676,7 +1704,10 @@ fun EmulatorScreen(
             if (cdFile == null) {
                 errorMsg = "PCE-CD 加载失败：无法读取文件夹内容（.cue/.bin 音轨）"
             } else {
-                val ok = engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                // ★ 全核心统一 IO 线程加载（重开闪退/ANR 防护）
+                val ok = withContext(Dispatchers.IO) {
+                    engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                }
                 if (!ok) {
                     val err = engine.lastError()
                     errorMsg = err.ifEmpty { "PCE-CD 加载失败" }
@@ -1708,7 +1739,10 @@ fun EmulatorScreen(
                 errorMsg = if (platform == GamePlatform.PS2) "PS2 加载失败：无法读取文件夹内容（.cue/.bin 音轨）"
                            else "PS1 加载失败：无法读取文件夹内容（.cue/.bin 音轨）"
             } else {
-                val ok = engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                // ★ 全核心统一 IO 线程加载（重开闪退/ANR 防护）
+                val ok = withContext(Dispatchers.IO) {
+                    engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                }
                 if (!ok) {
                     val err = engine.lastError()
                     errorMsg = err.ifEmpty { if (platform == GamePlatform.PS2) "PS2 加载失败" else "PS1 加载失败" }
@@ -2119,33 +2153,77 @@ fun EmulatorScreen(
             // 覆盖在游戏画面之上的半透明层：降亮度 / 减眩光 / 沉浸。
             // z 顺序在游戏视图之上、手柄覆盖层之下，不影响按键可读性。
             //
-            // ★ 自定义（拖动四角）模式下的亮度修复：
-            //   1. 遮罩此前全屏铺盖 —— 自定义模式下游戏画面只是一个矩形，
-            //      画面外的主题背景图也被遮罩压暗，用户拖动四角调整屏幕
-            //      位置/大小时看不清背景，严重影响操作。现在遮罩只铺在
-            //      游戏画面矩形内（与游戏视图完全同 rect），画面外的背景
-            //      图保持明亮。
-            //   2. 打开自由布局编辑器（拖动四角）期间整个遮罩临时隐藏，
-            //      编辑区域最大亮度 —— 拖完确认后自动恢复。
-            // NDS 双屏自定义是两块独立矩形（ndsTopRect/ndsBottomRect），
-            // 单矩形约束不适用，保持全屏遮罩不变（编辑器打开时同样隐藏）。
+            // ★ 遮罩只压在游戏画面矩形内（"核心背景图片很暗"修复）：
+            //   遮罩此前在所有非 custom 缩放模式下都 fillMaxSize 全屏铺盖 ——
+            //   4:3 / 16:9 等比例模式下游戏画面只是一个居中（竖屏置顶）矩形，
+            //   画面外的主题背景图 / 背景色也被遮罩一起压暗，用户设置的
+            //   背景图片显示发暗。现在遮罩矩形与游戏视图完全同 rect：
+            //   1. custom 模式 → 自定义四角矩形（原有行为）；
+            //   2. 标准比例模式（4:3 / 2:3 / 3:2 / 8:7 / 16:9，含 NDS 按屏幕
+            //      布局推导的等效比例）→ 与 GameSurfaceView 相同的
+            //      aspectRatio + contentAlignment（竖屏 TopCenter / 横屏
+            //      Center）推出的游戏画面矩形；
+            //   3. stretch（游戏铺满全屏）与 NDS 双屏 custom（两块独立矩形
+            //      ndsTopRect/ndsBottomRect，单矩形约束不适用）→ 全屏。
+            //   打开自由布局编辑器（拖动四角）期间整个遮罩临时隐藏，
+            //   编辑区域最大亮度 —— 拖完确认后自动恢复。
+            val density = LocalDensity.current
             val customRectModeActive = padLayout.videoScale == "custom" &&
                 platform != GamePlatform.NDS &&
                 surfaceSize != IntSize.Zero &&
                 !showCustomLayoutEditor && !showNdsCustomLayoutEditor
-            val maskModifier = if (customRectModeActive) {
-                val maxW = surfaceSize.width.coerceAtLeast(1)
-                val maxH = surfaceSize.height.coerceAtLeast(1)
-                val leftPx = (customRect[0] * maxW).toInt().coerceIn(0, maxW)
-                val topPx = (customRect[1] * maxH).toInt().coerceIn(0, maxH)
-                val wPx = ((customRect[2] - customRect[0]) * maxW).toInt().coerceIn(1, maxW)
-                val hPx = ((customRect[3] - customRect[1]) * maxH).toInt().coerceIn(1, maxH)
-                val density = LocalDensity.current
+            // 标准（非 custom）比例模式下游戏画面的实际显示矩形；
+            // null = stretch / NDS 双屏 custom / surface 尺寸未知 → 全屏遮罩。
+            val gameAreaModifier: Modifier? = run {
+                if (surfaceSize == IntSize.Zero) return@run null
+                val effScale = if (platform == GamePlatform.NDS) {
+                    when (padLayout.ndsScreenLayout) {
+                        "Left/Right", "Right/Left" -> "8:3"
+                        "Top Only", "Bottom Only" -> "4:3"
+                        else -> "2:3" // Top/Bottom、Bottom/Top
+                    }
+                } else {
+                    padLayout.videoScale
+                }
+                val aspect = when (effScale) {
+                    "4:3" -> 4f / 3f
+                    "2:3" -> 2f / 3f
+                    "3:2" -> 3f / 2f
+                    "8:7" -> 8f / 7f
+                    "16:9" -> 16f / 9f
+                    else -> return@run null
+                }
+                val sw = surfaceSize.width.toFloat()
+                val sh = surfaceSize.height.toFloat()
+                var w = sw
+                var h = w / aspect
+                if (h > sh) {
+                    h = sh
+                    w = h * aspect
+                }
+                val leftPx = ((sw - w) / 2f).toInt().coerceAtLeast(0)
+                val topPx = if (isPortrait) 0 else ((sh - h) / 2f).toInt().coerceAtLeast(0)
                 Modifier
                     .offset { IntOffset(leftPx, topPx) }
-                    .size(width = with(density) { wPx.toDp() }, height = with(density) { hPx.toDp() })
-            } else {
-                Modifier.fillMaxSize()
+                    .size(
+                        width = with(density) { w.toInt().coerceAtLeast(1).toDp() },
+                        height = with(density) { h.toInt().coerceAtLeast(1).toDp() }
+                    )
+            }
+            val maskModifier = when {
+                customRectModeActive -> {
+                    val maxW = surfaceSize.width.coerceAtLeast(1)
+                    val maxH = surfaceSize.height.coerceAtLeast(1)
+                    val leftPx = (customRect[0] * maxW).toInt().coerceIn(0, maxW)
+                    val topPx = (customRect[1] * maxH).toInt().coerceIn(0, maxH)
+                    val wPx = ((customRect[2] - customRect[0]) * maxW).toInt().coerceIn(1, maxW)
+                    val hPx = ((customRect[3] - customRect[1]) * maxH).toInt().coerceIn(1, maxH)
+                    Modifier
+                        .offset { IntOffset(leftPx, topPx) }
+                        .size(width = with(density) { wPx.toDp() }, height = with(density) { hPx.toDp() })
+                }
+                gameAreaModifier != null -> gameAreaModifier
+                else -> Modifier.fillMaxSize()
             }
             if (overlayTheme.maskEnabled && !showCustomLayoutEditor && !showNdsCustomLayoutEditor) {
                 val maskImage = remember(overlayTheme.maskImageUri) {
@@ -2159,7 +2237,9 @@ fun EmulatorScreen(
                         modifier = maskModifier
                             .alpha((overlayTheme.maskAlpha / 255f).coerceIn(0f, 1f))
                     )
-                } else {
+                } else if (overlayTheme.maskColor != null) {
+                    // maskColor = null（色板里选了 ✕）表示不叠加颜色层 ——
+                    // 只开遮罩而不选任何颜色/图片时不再强制压一层黑。
                     Box(
                         modifier = maskModifier
                             .background(
@@ -2472,7 +2552,11 @@ fun EmulatorScreen(
             )
         }
 
-        if (loaded && showMenu && !showLayoutEditor && !showSettings) {
+        // ★ 自定义缩放拖动界面去上下菜单：编辑器打开期间隐藏游戏内菜单栏
+        // （竖屏顶部 / 横屏底部的 MenuOverlay），否则菜单条叠在拖动界面
+        // 上方/下方挡住画面。退出编辑器（返回键）后菜单自动恢复。
+        if (loaded && showMenu && !showLayoutEditor && !showSettings &&
+            !showCustomLayoutEditor && !showNdsCustomLayoutEditor) {
             if (platform == GamePlatform.JAVA && engine is com.nesstation.app.core.engine.J2meEngine) {
                 J2meMenuOverlay(
                     gameTitle = game.title,
@@ -2691,8 +2775,8 @@ fun EmulatorScreen(
 
         // Custom free-form layout editor — 4-corner drag to resize, drag the
         // rectangle body to move. ScreenPositionEditor (a native View) draws
-        // the handles and intercepts touches; this Compose block only adds the
-        // hint bar + confirm/reset buttons on top.
+        // the handles and intercepts touches. ★ 上下菜单已按用户要求移除：
+        // 界面全屏无遮挡，松手即保存（confirm=true），返回键退出。
         if (showCustomLayoutEditor) {
             AndroidView(
                 factory = { ctx ->
@@ -2729,72 +2813,11 @@ fun EmulatorScreen(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-            // Top hint bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xCC000000))
-                    .padding(8.dp)
-            ) {
-                Text(
-                    "自由布局:拖动 4 角调整大小,拖动矩形内部移动位置",
-                    color = Color.White,
-                    fontSize = 13.sp
-                )
-            }
-            // Bottom-right confirm button
-            androidx.compose.material3.Button(
-                onClick = {
-                    showCustomLayoutEditor = false
-                    // Persist the current rect even if the last drag was cancelled
-                    padLayout = if (isPortrait) {
-                        padLayout.copy {
-                            customLayoutLeftP = customRect[0]
- customLayoutTopP = customRect[1]
-                            customLayoutRightP = customRect[2]
- customLayoutBottomP = customRect[3]
-                        }
-                    } else {
-                        padLayout.copy {
-                            customLayoutLeft = customRect[0]
- customLayoutTop = customRect[1]
-                            customLayoutRight = customRect[2]
- customLayoutBottom = customRect[3]
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-            ) {
-                Text("完成")
-            }
-            // Bottom-left reset button (restore fullscreen rect)
-            androidx.compose.material3.OutlinedButton(
-                onClick = {
-                    customRect = floatArrayOf(0f, 0f, 1f, 1f)
-                    padLayout = if (isPortrait) {
-                        padLayout.copy {
-                            customLayoutLeftP = 0f
- customLayoutTopP = 0f
-                            customLayoutRightP = 1f
- customLayoutBottomP = 1f
-                        }
-                    } else {
-                        padLayout.copy {
-                            customLayoutLeft = 0f
- customLayoutTop = 0f
-                            customLayoutRight = 1f
- customLayoutBottom = 1f
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(16.dp)
-            ) {
-                Text("重置")
-            }
+            // ★ 去掉上下菜单（用户要求）：顶部提示条与底部「完成/重置」按钮
+            // 全部移除，拖动界面全屏无遮挡。持久化时机不变 —— 松手即存
+            //（ScreenPositionEditor.Listener.onRectChanged confirm=true）；
+            // 退出 = 返回键/返回手势（上方 BackHandler）。进入时的 Toast
+            // 提示操作方式。
         }
 
         // NDS 双屏自由布局编辑器 — 上屏/下屏各自独立矩形，可分别拖动调整。
@@ -2845,98 +2868,9 @@ fun EmulatorScreen(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-            // Top hint bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xCC000000))
-                    .padding(8.dp)
-            ) {
-                Text(
-                    "NDS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部",
-                    color = Color.White,
-                    fontSize = 13.sp
-                )
-            }
-            // Bottom-right confirm button
-            androidx.compose.material3.Button(
-                onClick = {
-                    showNdsCustomLayoutEditor = false
-                    padLayout = if (isPortrait) {
-                        padLayout.copy {
-                            ndsTopLayoutLeftP = ndsTopRect[0]
-                                            ndsTopLayoutTopP = ndsTopRect[1]
-                            ndsTopLayoutRightP = ndsTopRect[2]
-                                            ndsTopLayoutBottomP = ndsTopRect[3]
-                            ndsBottomLayoutLeftP = ndsBottomRect[0]
-                                            ndsBottomLayoutTopP = ndsBottomRect[1]
-                            ndsBottomLayoutRightP = ndsBottomRect[2]
-                                            ndsBottomLayoutBottomP = ndsBottomRect[3]
-                        }
-                    } else {
-                        padLayout.copy {
-                            ndsTopLayoutLeft = ndsTopRect[0]
-                                            ndsTopLayoutTop = ndsTopRect[1]
-                            ndsTopLayoutRight = ndsTopRect[2]
-                                            ndsTopLayoutBottom = ndsTopRect[3]
-                            ndsBottomLayoutLeft = ndsBottomRect[0]
-                                            ndsBottomLayoutTop = ndsBottomRect[1]
-                            ndsBottomLayoutRight = ndsBottomRect[2]
-                                            ndsBottomLayoutBottom = ndsBottomRect[3]
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-            ) {
-                Text("完成")
-            }
-            // Bottom-left reset button (restore default stacked layout)
-            androidx.compose.material3.OutlinedButton(
-                onClick = {
-                    val defaultTop = if (isPortrait) {
-                        floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f)
-                    } else {
-                        floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f)
-                    }
-                    val defaultBottom = if (isPortrait) {
-                        floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
-                    } else {
-                        floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
-                    }
-                    ndsTopRect = defaultTop
-                    ndsBottomRect = defaultBottom
-                    padLayout = if (isPortrait) {
-                        padLayout.copy {
-                            ndsTopLayoutLeftP = defaultTop[0]
-                                            ndsTopLayoutTopP = defaultTop[1]
-                            ndsTopLayoutRightP = defaultTop[2]
-                                            ndsTopLayoutBottomP = defaultTop[3]
-                            ndsBottomLayoutLeftP = defaultBottom[0]
-                                            ndsBottomLayoutTopP = defaultBottom[1]
-                            ndsBottomLayoutRightP = defaultBottom[2]
-                                            ndsBottomLayoutBottomP = defaultBottom[3]
-                        }
-                    } else {
-                        padLayout.copy {
-                            ndsTopLayoutLeft = defaultTop[0]
-                                            ndsTopLayoutTop = defaultTop[1]
-                            ndsTopLayoutRight = defaultTop[2]
-                                            ndsTopLayoutBottom = defaultTop[3]
-                            ndsBottomLayoutLeft = defaultBottom[0]
-                                            ndsBottomLayoutTop = defaultBottom[1]
-                            ndsBottomLayoutRight = defaultBottom[2]
-                                            ndsBottomLayoutBottom = defaultBottom[3]
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(16.dp)
-            ) {
-                Text("重置")
-            }
+            // ★ 去掉上下菜单（与单屏拖动界面一致）：顶部提示条与底部
+            // 「完成/重置」按钮全部移除。松手即存（onRectChanged
+            // confirm=true），退出 = 返回键/返回手势（BackHandler）。
         }
     }
 }
@@ -4522,13 +4456,20 @@ private fun FilterOverlay(
                     canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
                 }
             }
-            // 强暗角（径向渐变，边缘 62% 黑 —— 比 CRT 更浓的电视观感，
-            // 渐变过渡、非不透明黑块）
+            // 强暗角（径向渐变 —— 比 CRT 更浓的电视观感，渐变过渡、
+            // 非不透明黑块）。★ 灰边收窄：旧实现从画面中心线性渐变到
+            // 边缘 62% 黑，整幅画面都被压暗、边缘灰带很宽；改为
+            // 75% 半径内全透明、75%→100% 才渐变到 62% 黑（radius
+            // 0.62*max）—— 暗角只保留外缘一圈窄带，画面中心不受影响。
             drawRect(
                 brush = Brush.radialGradient(
-                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.62f)),
+                    colorStops = listOf(
+                        0f to Color.Transparent,
+                        0.75f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.62f)
+                    ),
                     center = Offset(size.width / 2, size.height / 2),
-                    radius = maxOf(size.width, size.height) * 0.72f
+                    radius = maxOf(size.width, size.height) * 0.62f
                 )
             )
             // 四角/四边玻璃暗影（圆角矩形 SDF，与 J2ME GL 路径 nsCornerMask

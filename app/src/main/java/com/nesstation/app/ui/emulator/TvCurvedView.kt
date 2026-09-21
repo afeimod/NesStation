@@ -178,11 +178,16 @@ class TvCurvedGameView @JvmOverloads constructor(
         }
 
         vignettePaint = Paint().apply {
+            // ★ 灰边收窄（用户反馈"四周灰色边缘太宽"）：旧参数
+            // radius=0.72*max + 55% 起渐变，在 16:9 横屏上左右两侧会形成
+            // 约 10% 全宽、最高 62% 黑的灰色竖带。改为 radius=0.62*max、
+            // 75% 半径内全透明、75%→100% 才渐变到 62% 黑 —— 暗角只剩外缘
+            // 一圈约 3.5% 全宽的窄带，中间画面完全不受影响。
             shader = RadialGradient(
                 w * 0.5f, h * 0.5f,
-                max(w, h) * 0.72f,
+                max(w, h) * 0.62f,
                 intArrayOf(0x00000000, 0x00000000, 0x9E000000.toInt()),
-                floatArrayOf(0f, 0.55f, 1f),
+                floatArrayOf(0f, 0.75f, 1f),
                 Shader.TileMode.CLAMP
             )
         }

@@ -964,6 +964,16 @@ void unload() {
     s_extRomExt.clear();
     std::memset(&s_extGameInfo, 0, sizeof(s_extGameInfo));
     s_extGameInfoValid = false;
+
+    // ★ 与 fbneo_loader 同款"关闭后再打开闪退"预防性修复：dlclose 核心
+    // 库，下次 loadFromFile 重新 dlopen —— 核心静态状态完全归零，进程内
+    // 二次 retro_init/retro_load_game 不再复用旧静态。dlclose 前模拟/
+    // 音频线程已被 Kotlin 侧 join 完毕。
+    if (s_coreLib) {
+        LOGI("dlclose(libgenesis_plus_gx_libretro_android.so) — full core state reset");
+        dlclose(s_coreLib);
+        s_coreLib = nullptr;
+    }
 }
 
 void resetEmulation(bool /*hard*/) {

@@ -66,8 +66,13 @@ internal object NdsFilterPatterns {
         if (cached != null) return cached
         val size = 256
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val cornerX = 0.965f - 0.085f
-        val cornerY = 0.955f - 0.085f
+        // ★ 灰边收窄（用户反馈"四周灰色边缘太宽"）：SDF 内缩从 0.085 减到
+        // 0.035 —— 边缘暗带宽度从约 13%（半幅）收窄到约 7%（半幅），即
+        // 全幅单侧约 6.5% → 约 3.5%；圆角弧半径同步收小，四角过渡更贴边。
+        // 与 J2ME GL 路径 nsCornerMask / Ps2CurvedView 同参数。
+        val inset = 0.035f
+        val cornerX = 0.965f - inset
+        val cornerY = 0.955f - inset
         val pixels = IntArray(size * size)
         for (y in 0 until size) {
             // 与 GLSL tc*2-1 一致：像素中心采样
@@ -76,7 +81,7 @@ internal object NdsFilterPatterns {
                 val px = kotlin.math.abs((x + 0.5f) / size * 2f - 1f)
                 val dx = (px - cornerX).coerceAtLeast(0f)
                 val dy = (py - cornerY).coerceAtLeast(0f)
-                val dist = kotlin.math.sqrt(dx * dx + dy * dy) - 0.085f
+                val dist = kotlin.math.sqrt(dx * dx + dy * dy) - inset
                 // GLSL smoothstep(-0.008, 0.016, dist)
                 val t = ((dist + 0.008f) / 0.024f).coerceIn(0f, 1f)
                 val s = t * t * (3f - 2f * t)
@@ -277,12 +282,17 @@ class NdsDualScreenView @JvmOverloads constructor(
 
     /** 为某个屏幕矩形创建 CRT/TV 边缘暗角 Paint（按矩形尺寸缓存，调用方管理键）。 */
     private fun makeVignettePaint(rect: RectF, edgeAlpha: Float = 0.35f): Paint {
-        val radius = kotlin.math.min(rect.width(), rect.height()) * 0.7f
+        // ★ 灰边收窄：旧实现 radius=min(w,h)*0.7 + 从中心线性渐变到边缘，
+        // 整幅画面都被压暗、边缘灰带很宽。改为 radius=max(w,h)*0.62 +
+        // 「0~75% 全透明、75%~100% 才渐变到边缘暗度」—— 暗角只保留在外缘
+        // 一圈窄带（与 TvCurvedGameView / FilterOverlay 同形状）。
+        val radius = kotlin.math.max(rect.width(), rect.height()) * 0.62f
+        val edge = (edgeAlpha.coerceIn(0f, 1f) * 255f).toInt().shl(24)
         return Paint().apply {
             shader = RadialGradient(
                 rect.centerX(), rect.centerY(), radius.coerceAtLeast(1f),
-                intArrayOf(Color.TRANSPARENT, (edgeAlpha.coerceIn(0f, 1f) * 255f).toInt().shl(24)),
-                floatArrayOf(0f, 1f),
+                intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT, edge),
+                floatArrayOf(0f, 0.75f, 1f),
                 Shader.TileMode.CLAMP
             )
         }

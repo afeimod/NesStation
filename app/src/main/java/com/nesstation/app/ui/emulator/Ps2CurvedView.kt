@@ -153,11 +153,12 @@ class Ps2CurvedView @JvmOverloads constructor(
 
         // 四角/四边玻璃暗影（圆角矩形 SDF）—— 与 J2ME GL 路径
         // J2meFilterShaders.TV_GLSL_HELPERS 的 nsCornerMask 同参数：
-        // 外缘约 2% 环带压暗最多 40%，四角按圆弧过渡（无黑边不遮挡遮罩）
+        // ★ 灰边收窄：SDF 内缩 0.085 → 0.035，边缘暗带约 6.5% → 3.5%
+        // 全幅宽度，四角按圆弧过渡（无黑边不遮挡遮罩）
         float nsCornerMask(vec2 tc) {
             vec2 p = abs(tc * 2.0 - 1.0);
-            vec2 corner = vec2(0.965, 0.955) - 0.085;
-            float dist = length(max(p - corner, vec2(0.0))) - 0.085;
+            vec2 corner = vec2(0.965, 0.955) - 0.035;
+            float dist = length(max(p - corner, vec2(0.0))) - 0.035;
             return 1.0 - 0.40 * smoothstep(-0.008, 0.016, dist);
         }
 
@@ -172,8 +173,11 @@ class Ps2CurvedView @JvmOverloads constructor(
             res *= 1.0 - 0.55 * smoothstep(0.70, 0.88, f);
 
             // 径向暗角（渐变玻璃观感，非不透明黑块）
+            // ★ 灰边收窄：与 J2ME 路径 nsVignette 同步 —— 只在外缘 15%
+            // （半幅）内渐变到 32% 暗，画面中心不受影响
             vec2 p = vUV * 2.0 - 1.0;
-            res *= clamp(1.0 - 0.30 * dot(p * 0.72, p * 0.72), 0.0, 1.0);
+            vec2 ap = abs(p);
+            res *= 1.0 - 0.32 * smoothstep(0.85, 1.0, max(ap.x, ap.y));
 
             // 四角/四边玻璃暗影（与 TvCurvedGameView / FilterOverlay 一致）
             res *= nsCornerMask(vUV);
