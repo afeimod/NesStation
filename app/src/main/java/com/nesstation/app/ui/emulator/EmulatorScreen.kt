@@ -4463,11 +4463,9 @@ private fun FilterOverlay(
             // 0.62*max）—— 暗角只保留外缘一圈窄带，画面中心不受影响。
             drawRect(
                 brush = Brush.radialGradient(
-                    colorStops = listOf(
-                        0f to Color.Transparent,
-                        0.75f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.62f)
-                    ),
+                    0f to Color.Transparent,
+                    0.75f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.62f),
                     center = Offset(size.width / 2, size.height / 2),
                     radius = maxOf(size.width, size.height) * 0.62f
                 )
