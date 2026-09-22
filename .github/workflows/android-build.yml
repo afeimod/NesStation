@@ -11,7 +11,7 @@ on:
         description: 构建类型
         required: true
         type: choice
-        default: debug
+        default: release
         options:
           - debug
           - release
