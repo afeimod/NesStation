@@ -299,7 +299,12 @@ static bool loadCoreLib() {
 
     std::vector<std::string> candidates;
     if (!s_coreLibPath.empty()) candidates.push_back(s_coreLibPath);
+    // Canonical name first (lib* convention — matches the file shipped in
+    // jniLibs and every other core), then the legacy un-prefixed spelling
+    // used by early builds ("lib 文本缺失" fix: jniLibs 里的核心文件此前
+    // 缺少 lib 前缀，导致按规范名 dlopen 失败).
     candidates.push_back("libflycast_libretro_android.so");
+    candidates.push_back("flycast_libretro_android.so");
 
     const char* lastDlError = nullptr;
     for (const auto& name : candidates) {
@@ -573,6 +578,18 @@ static retro_proc_address_t hw_get_proc_address(const char* sym) {
 // ---------------------------------------------------------------------------
 // Blit the core's FBO to the window backbuffer and present it.
 // Called on the emulation thread right after retro_run() in HW mode.
+// A no-op when no window surface is attached (TV-curved canvas path — the
+// caller falls back to an FBO readback so CPU-side consumers keep getting
+// frames).
+//
+// ★ Blit ONLY the region the core actually rendered, not the whole FBO.
+// The FBO is sized from the core's MAX geometry (internal resolution head
+// room), but flycast renders each frame into the bottom-left viewport of
+// that FBO sized to the dims it reports via video_cb (cb_video → s_videoW/H,
+// e.g. 640x480 or 320x240 — often SMALLER than max). Blitting the entire FBO
+// therefore showed the rendered frame squeezed into the bottom-left corner
+// of the screen (GL origin = bottom-left). RetroArch behaves the same way:
+// present the per-frame region reported by video_cb.
 // ---------------------------------------------------------------------------
 static void blitAndSwap() {
     if (s_eglWindowSurface == EGL_NO_SURFACE || !s_fbo) return;
@@ -582,13 +599,21 @@ static void blitAndSwap() {
     eglQuerySurface(s_eglDisplay, s_eglWindowSurface, EGL_HEIGHT, &drawH);
     if (drawW <= 0 || drawH <= 0) return;
 
+    // Source rect = the rendered frame region (clamped to the FBO). Falls
+    // back to the full FBO until the core has reported a frame once.
+    unsigned srcW = s_videoW ? s_videoW : s_fboW;
+    unsigned srcH = s_videoH ? s_videoH : s_fboH;
+    if (srcW > s_fboW) srcW = s_fboW;
+    if (srcH > s_fboH) srcH = s_fboH;
+    if (srcW == 0 || srcH == 0) return;
+
     glBindFramebuffer(GL_READ_FRAMEBUFFER, s_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_STENCIL_TEST);
     glDisable(GL_SCISSOR_TEST);
     // 1:1 GL→GL blit preserves orientation (both are bottom-left GL spaces).
-    glBlitFramebuffer(0, 0, s_fboW, s_fboH,
+    glBlitFramebuffer(0, 0, srcW, srcH,
                       0, 0, drawW, drawH,
                       GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -597,25 +622,40 @@ static void blitAndSwap() {
 }
 
 // ---------------------------------------------------------------------------
-// Screenshot: glReadPixels from the core's FBO (bottom-up) → ARGB buffer.
-// Runs on the emulation thread while the context/FBO are current.
+// Screenshot / CPU-side frame: glReadPixels from the core's FBO (bottom-up)
+// → ARGB buffer. Runs on the emulation thread while the context/FBO are
+// current.
+//
+// ★ Reads ONLY the region the core actually rendered (s_videoW x s_videoH —
+// the dims reported by video_cb), NOT the whole FBO. The FBO is sized from
+// the max geometry, but the core renders into the bottom-left viewport of
+// the reported size; reading the full FBO would (a) waste bandwidth and
+// (b) put the content into a bigger buffer whose top rows are black —
+// breaking every consumer that assumes s_frame is videoWidth x videoHeight
+// (screenshots, getFrameBuffer, the TV-curved view). Row flip: glReadPixels
+// is bottom-up → flip to top-down; RGBA bytes → 0xAARRGGBB.
 // ---------------------------------------------------------------------------
 static void captureFrameFromFbo() {
     if (!s_fbo || s_fboW == 0 || s_fboH == 0) return;
-    std::vector<uint8_t> rgba((size_t)s_fboW * s_fboH * 4);
+    unsigned w = s_videoW ? s_videoW : s_fboW;
+    unsigned h = s_videoH ? s_videoH : s_fboH;
+    if (w > s_fboW) w = s_fboW;
+    if (h > s_fboH) h = s_fboH;
+    if (w == 0 || h == 0) return;
+
+    std::vector<uint8_t> rgba((size_t)w * h * 4);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, s_fbo);
-    glReadPixels(0, 0, s_fboW, s_fboH, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 
     std::lock_guard<std::mutex> lk(s_frameMtx);
-    s_frame.resize((size_t)s_fboW * s_fboH);
-    s_frameW = s_fboW;
-    s_frameH = s_fboH;
-    // glReadPixels rows are bottom-up → flip vertically; RGBA bytes → 0xAARRGGBB.
-    for (unsigned y = 0; y < s_fboH; ++y) {
-        const uint8_t* src = rgba.data() + (size_t)(s_fboH - 1 - y) * s_fboW * 4;
-        uint32_t* dst = s_frame.data() + (size_t)y * s_fboW;
-        for (unsigned x = 0; x < s_fboW; ++x) {
+    s_frame.resize((size_t)w * h);
+    s_frameW = w;
+    s_frameH = h;
+    for (unsigned y = 0; y < h; ++y) {
+        const uint8_t* src = rgba.data() + (size_t)(h - 1 - y) * w * 4;
+        uint32_t* dst = s_frame.data() + (size_t)y * w;
+        for (unsigned x = 0; x < w; ++x) {
             dst[x] = 0xFF000000u |
                      ((uint32_t)src[x * 4 + 0] << 16) |   // R
                      ((uint32_t)src[x * 4 + 1] << 8)  |   // G
@@ -1198,11 +1238,24 @@ void stepFrame() {
             return;
         }
         s_retro_run();
+        bool captured = false;
         if (s_captureRequested.exchange(false, std::memory_order_acq_rel)) {
             captureFrameFromFbo();
             s_captureDone.store(true, std::memory_order_release);
+            captured = true;
         }
-        blitAndSwap();
+        if (s_eglWindowSurface != EGL_NO_SURFACE) {
+            blitAndSwap();
+        } else if (!captured) {
+            // ★ No window surface — TV-curved canvas path (仿电视机滤镜) and
+            // any other headless consumer. Flycast is a HW-render core: its
+            // output only exists in OUR FBO, and without this readback the
+            // CPU-side buffer (s_frame → getFrameBuffer → Kotlin frameBuffer)
+            // stayed permanently black while software cores keep filling
+            // theirs when hasSurface=false. Read the rendered region back
+            // every frame so copyFramebufferARGB serves live frames.
+            captureFrameFromFbo();
+        }
     } else {
         // Software fallback (defensive).
         s_retro_run();

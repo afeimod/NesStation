@@ -111,12 +111,17 @@ for abi in arm64-v8a armeabi-v7a x86_64; do
 done
 
 # Flycast (Dreamcast / NAOMI / AtomisWave)
+# NOTE: the buildbot zip extracts as flycast_libretro_android.so (no "lib"
+# prefix). It MUST be renamed to libflycast_libretro_android.so to match the
+# dlopen name used by dc_loader.cpp and the lib* convention of every other
+# core (files without the lib prefix are skipped by the package extractor on
+# some Android versions — "DC 核心文件缺少 lib 文本" fix).
 for abi in arm64-v8a armeabi-v7a x86_64; do
   curl -L -o /tmp/flycast.zip \
     "https://buildbot.libretro.com/nightly/android/latest/${abi}/flycast_libretro_android.so.zip"
   unzip -o /tmp/flycast.zip -d /tmp/flycast_extract
   cp /tmp/flycast_extract/flycast_libretro_android.so \
-     app/src/main/jniLibs/${abi}/
+     app/src/main/jniLibs/${abi}/libflycast_libretro_android.so
 done
 ```
 

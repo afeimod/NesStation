@@ -68,15 +68,24 @@ object DcNative {
     }
 
     /**
-     * Find the absolute path to `libflycast_libretro_android.so` in
-     * the app's native library directory. Returns null if not found.
+     * Find the absolute path to the flycast core library in the app's native
+     * library directory. The canonical name is `libflycast_libretro_android.so`
+     * (same `lib` prefix convention as every other dlopen'd core); older
+     * builds shipped it un-prefixed (`flycast_libretro_android.so`), so both
+     * spellings are probed for robustness. Returns null if not found.
      */
     private fun findCoreLibPath(): String? {
         return try {
             val ctx = appContext ?: return null
             val nativeDir = ctx.applicationInfo.nativeLibraryDir
-            val libFile = java.io.File(nativeDir, "libflycast_libretro_android.so")
-            if (libFile.exists()) libFile.absolutePath else null
+            for (name in arrayOf(
+                "libflycast_libretro_android.so",   // canonical (lib* convention)
+                "flycast_libretro_android.so"       // legacy un-prefixed name
+            )) {
+                val f = java.io.File(nativeDir, name)
+                if (f.exists()) return f.absolutePath
+            }
+            null
         } catch (_: Throwable) { null }
     }
 

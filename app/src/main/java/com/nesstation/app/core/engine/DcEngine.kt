@@ -147,6 +147,17 @@ class DcEngine private constructor() : EmulatorEngine {
 
                     if (!running.get()) break
 
+                    // 无 Surface 时把核心帧拷进 CPU 侧 frameBuffer（与
+                    // FbNeoEngine/PsxEngine 的 hasSurface 分支同模式）。
+                    // Flycast 是硬件渲染核心，画面平时只存在于原生 FBO 里；
+                    // 仿电视机（TvCurvedGameView）等无 Surface 显示路径靠
+                    // 轮询 frameBuffer 拉帧 —— 缺了这一步会永远拉到黑屏。
+                    // 原生侧配套修复：无窗口 Surface 时每帧做一次 FBO 回读
+                    // （见 dc_loader.cpp stepFrame），否则这里拷到的仍是黑帧。
+                    if (!hasSurface) {
+                        DcNative.getFrameBuffer(frameBuffer)
+                    }
+
                     onFrame()
 
                     // Pacing — melonDS/PSX-style fast-forward, paced to the

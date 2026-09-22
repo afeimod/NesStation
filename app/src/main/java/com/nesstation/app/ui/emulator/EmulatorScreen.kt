@@ -5016,17 +5016,19 @@ fun OnScreenController(
     //   bit12 (BTN_L2) → Toggle Turbo II
     //   bit13 (BTN_R2) → Toggle Turbo I
     // PCE uses the SNES/ARCADE/MD bit layout (L/R on bit10/11), not GBA.
+    // ★ DC（Dreamcast 实体手柄）同样拥有 X/Y 四键 + L/R 肩键（与 SNES
+    // 同一 12 键布局，经 dcToLibretroLayout 语义直转）。此前 showLR/showXY
+    // 都漏掉了 DC，导致 DC 只显示 A/B 两个虚拟键（"DC 虚拟按键缺少太多"）。
     val showLR = platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     val showXY = platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
-    // L2/R2 (Turbo toggle for PCE, L2/R2 for PSX) — show for ARCADE when explicitly enabled,
-    // always for PCE (PCE has turbo toggle as a standard feature), and for PSX
-    // (DualShock L2/R2 mapped to libretro bits 12/13).
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE ||
                    platform == GamePlatform.PSX || platform == GamePlatform.PS2
@@ -5053,12 +5055,12 @@ fun OnScreenController(
     val showYBtn = !PadLayoutStore.isButtonHidden(padLayout, platform, "y")
     val showL2Btn = !PadLayoutStore.isButtonHidden(padLayout, platform, "l2")
     val showR2Btn = !PadLayoutStore.isButtonHidden(padLayout, platform, "r2")
-    // 连发 A/B 仅在支持的平台提供（NES/GB/GBA/SFC/MD/NDS/街机）。
+    // 连发 A/B 仅在支持的平台提供（NES/GB/GBA/SFC/MD/NDS/街机/DC）。
     // PCE 已有专用 TURBO I/II 切换键（L2/R2），PSX 不提供连发 —— 都不渲染。
     val supportsTurboAB = platform == GamePlatform.NES || platform == GamePlatform.GB ||
                           platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                           platform == GamePlatform.MD || platform == GamePlatform.NDS ||
-                          platform == GamePlatform.ARCADE
+                          platform == GamePlatform.ARCADE || platform == GamePlatform.DC
     val showTurboABtn = supportsTurboAB && !PadLayoutStore.isButtonHidden(padLayout, platform, "ta")
     val showTurboBBtn = supportsTurboAB && !PadLayoutStore.isButtonHidden(padLayout, platform, "tb")
 
@@ -7788,16 +7790,20 @@ private fun PadLayoutEditor(
     // the user pick 2-4 buttons to combine into a single on-screen combo key.
     var showComboPickerDialog by remember { mutableStateOf(false) }
 
+    // ★ 编辑器的 showLR/showXY 与 OnScreenController 保持同步：DC 与 SNES
+    // 同一 12 键布局，漏掉 DC 会导致布局编辑器里不渲染/拖不到 X/Y/L/R。
     val showLR = platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     // JAVA（J2ME）手柄模式的虚拟按键同样带 X/Y 两个键（X=右软键，Y=*键），
     // 布局编辑器必须允许拖动它们 —— 旧版没包含 JAVA，编辑器里缺少 X/Y。
     val showXY = platform == GamePlatform.SFC || platform == GamePlatform.JAVA ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-                 platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                 platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                 platform == GamePlatform.DC
     // L2/R2 editable in edit mode for Arcade (when enabled) and PCE (turbo toggle)
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE || platform == GamePlatform.PSX ||
@@ -7822,12 +7828,12 @@ private fun PadLayoutEditor(
     val showYBtn = !PadLayoutStore.isButtonHidden(padLayout, platform, "y")
     val showL2Btn = !PadLayoutStore.isButtonHidden(padLayout, platform, "l2")
     val showR2Btn = !PadLayoutStore.isButtonHidden(padLayout, platform, "r2")
-    // 连发 A/B 仅在支持的平台提供（NES/GB/GBA/SFC/MD/NDS/街机）。
+    // 连发 A/B 仅在支持的平台提供（NES/GB/GBA/SFC/MD/NDS/街机/DC）。
     // PCE 已有专用 TURBO I/II 切换键（L2/R2），PSX 不提供连发 —— 都不渲染。
     val supportsTurboAB = platform == GamePlatform.NES || platform == GamePlatform.GB ||
                           platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                           platform == GamePlatform.MD || platform == GamePlatform.NDS ||
-                          platform == GamePlatform.ARCADE
+                          platform == GamePlatform.ARCADE || platform == GamePlatform.DC
     val showTurboABtn = supportsTurboAB && !PadLayoutStore.isButtonHidden(padLayout, platform, "ta")
     val showTurboBBtn = supportsTurboAB && !PadLayoutStore.isButtonHidden(padLayout, platform, "tb")
 
@@ -10679,9 +10685,131 @@ private fun SettingsPanel(
                 }
             }
 
-            // DC (Dreamcast/NAOMI) —— libretro Flycast 核心，平台专属设置
-            // 在主设置面板 CoreSettingsPanel 的 DC 区（与 PSX/PS2 同模式）。
-            GamePlatform.DC -> { /* DC 专属游戏内设置已由 applyCoreOptions 统一下发 */ }
+            // DC (Dreamcast/NAOMI) —— libretro Flycast 核心专属设置。
+            // ★ 补全：此前游戏内设置面板的 DC 分支是空的，玩 DC 游戏时
+            // 菜单里没有任何 DC 专属选项（主界面"系统设置"里有，但游戏中
+            // 没有）。现在与 PSX/PS2/JAVA 面板同一模式补齐全部 reicast_*
+            // 核心选项；修改经 onLayoutChange → LaunchedEffect →
+            // applyCoreOptions → DcEngine.setCoreOption 即时下发核心。
+            // 键名/取值与预编译 libflycast_libretro_android.so 逐字匹配
+            // （见 dc_loader.cpp initDefaultOptions 与 DcNative 注释）。
+            GamePlatform.DC -> {
+                Text("DC (Flycast) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Spacer(Modifier.size(6.dp))
+
+                Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("内部分辨率",
+                    listOf(
+                        "320x240 (Half)" to "0.5x (320x240, 提速)",
+                        "640x480 (Native)" to "1x (640x480 原生, 默认)",
+                        "1280x960 (x2)" to "2x (1280x960)",
+                        "1600x1200 (x2.5)" to "2.5x (1600x1200)",
+                        "1920x1440 (x3)" to "3x (1920x1440)",
+                        "2560x1920 (x4)" to "4x (2560x1920)",
+                        "3840x2880 (x6)" to "6x (3840x2880 高配专用)"
+                    ),
+                    padLayout.dcResolution
+                ) { onLayoutChange(padLayout.copy {dcResolution = it}) }
+
+                DropdownSetting("透明排序精度",
+                    listOf(
+                        "per-strip (fast, least accurate)" to "按条带 (最快, 可能闪面)",
+                        "per-triangle (normal)" to "按三角形 (默认, 推荐)",
+                        "per-pixel (accurate)" to "逐像素 (精确, 较慢)"
+                    ),
+                    padLayout.dcAlphaSorting
+                ) { onLayoutChange(padLayout.copy {dcAlphaSorting = it}) }
+
+                DropdownSetting("渲染线程化",
+                    listOf("enabled" to "开启 (推荐·多核提速明显)", "disabled" to "关闭"),
+                    padLayout.dcThreadedRendering
+                ) { onLayoutChange(padLayout.copy {dcThreadedRendering = it}) }
+
+                DropdownSetting("宽屏 16:9 视锥拉伸",
+                    listOf("disabled" to "关闭 (4:3 原生)", "enabled" to "开启 (16:9)"),
+                    padLayout.dcWidescreenHack
+                ) { onLayoutChange(padLayout.copy {dcWidescreenHack = it}) }
+
+                DropdownSetting("宽屏游戏兼容补丁",
+                    listOf("disabled" to "关闭", "enabled" to "开启 (部分游戏 16:9 无拉伸)"),
+                    padLayout.dcWidescreenCheats
+                ) { onLayoutChange(padLayout.copy {dcWidescreenCheats = it}) }
+
+                DropdownSetting("延迟帧交换 (防撕裂)",
+                    listOf("enabled" to "开启 (推荐)", "disabled" to "关闭 (低延迟)"),
+                    padLayout.dcDelayFrameSwapping
+                ) { onLayoutChange(padLayout.copy {dcDelayFrameSwapping = it}) }
+
+                DropdownSetting("跳帧",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (保帧率)"),
+                    padLayout.dcFrameSkipping
+                ) { onLayoutChange(padLayout.copy {dcFrameSkipping = it}) }
+
+                Spacer(Modifier.size(8.dp))
+                Text("系统 / BIOS", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("主机区域",
+                    listOf(
+                        "Default" to "默认 (跟随游戏)",
+                        "Japan" to "日本",
+                        "USA" to "美国",
+                        "Europe" to "欧洲"
+                    ),
+                    padLayout.dcRegion
+                ) { onLayoutChange(padLayout.copy {dcRegion = it}) }
+
+                DropdownSetting("主机语言",
+                    listOf(
+                        "Default" to "默认", "Japanese" to "日语", "English" to "英语 (默认)",
+                        "German" to "德语", "French" to "法语", "Spanish" to "西班牙语",
+                        "Italian" to "意大利语"
+                    ),
+                    padLayout.dcLanguage
+                ) { onLayoutChange(padLayout.copy {dcLanguage = it}) }
+
+                DropdownSetting("电视制式",
+                    listOf(
+                        "Default" to "默认", "NTSC" to "NTSC (默认)",
+                        "PAL" to "PAL", "PAL-M" to "PAL-M", "PAL-N" to "PAL-N"
+                    ),
+                    padLayout.dcBroadcast
+                ) { onLayoutChange(padLayout.copy {dcBroadcast = it}) }
+
+                DropdownSetting("视频输出",
+                    listOf(
+                        "TV (Composite)" to "TV 复合 (默认)",
+                        "VGA" to "VGA"
+                    ),
+                    padLayout.dcCableType
+                ) { onLayoutChange(padLayout.copy {dcCableType = it}) }
+
+                DropdownSetting("HLE BIOS (免真实 BIOS)",
+                    listOf("disabled" to "关闭 (已内置真实 BIOS, 推荐)", "enabled" to "开启"),
+                    padLayout.dcHleBios
+                ) { onLayoutChange(padLayout.copy {dcHleBios = it}) }
+
+                DropdownSetting("32MB 内存改机",
+                    listOf("disabled" to "关闭 (16MB 原生)", "enabled" to "开启 (个别游戏/补丁需要)"),
+                    padLayout.dcRam32mb
+                ) { onLayoutChange(padLayout.copy {dcRam32mb = it}) }
+
+                DropdownSetting("强制 WinCE 模式",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别 WinCE 游戏需要)"),
+                    padLayout.dcForceWince
+                ) { onLayoutChange(padLayout.copy {dcForceWince = it}) }
+
+                Spacer(Modifier.size(8.dp))
+                Text("性能 / 音频", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("GD-ROM 快速读盘",
+                    listOf("enabled" to "开启 (推荐, 缩短读盘时间)", "disabled" to "关闭 (原机速度)"),
+                    padLayout.dcGdromFastLoading
+                ) { onLayoutChange(padLayout.copy {dcGdromFastLoading = it}) }
+
+                DropdownSetting("AICA DSP 音效",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别游戏音效需要, 较慢)"),
+                    padLayout.dcEnableDsp
+                ) { onLayoutChange(padLayout.copy {dcEnableDsp = it}) }
+            }
         }
 
         Spacer(Modifier.size(8.dp))
