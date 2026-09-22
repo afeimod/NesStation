@@ -162,3 +162,11 @@
 # libflycast.so 内置 swappy 通过 FindClass 访问的 Java 胶水类
 -keep class com.google.androidgamesdk.** { *; }
 # httpclient5/slf4j 由 R8 处理依赖即可，flycast 的 HttpClient 经 JNI 调用已被上面 keep 覆盖
+
+# ─── httpclient5 引用的 JDK 专属 GSS-API/Kerberos 类 ───────────────────────
+# org.apache.hc.client5.http.impl.auth.GGSSchemeBase / KerberosCredentials
+# (SPNEGO/Negotiate 认证) 引用 org.ietf.jgss.*，这些类只在 JDK 里存在、
+# Android 运行时没有，且 App 在 Android 上从不使用 Kerberos 认证。
+# 不加此规则 R8 报 "Missing class org.ietf.jgss.GSS*" → minifyReleaseWithR8
+# 构建失败（即 R8 自动生成的 missing_rules.txt 内容，通配符覆盖全部 6 个类）。
+-dontwarn org.ietf.jgss.**
