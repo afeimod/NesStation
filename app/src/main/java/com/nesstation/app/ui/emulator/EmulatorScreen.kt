@@ -2813,11 +2813,72 @@ fun EmulatorScreen(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-            // ★ 去掉上下菜单（用户要求）：顶部提示条与底部「完成/重置」按钮
-            // 全部移除，拖动界面全屏无遮挡。持久化时机不变 —— 松手即存
-            //（ScreenPositionEditor.Listener.onRectChanged confirm=true）；
-            // 退出 = 返回键/返回手势（上方 BackHandler）。进入时的 Toast
-            // 提示操作方式。
+            // Top hint bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xCC000000))
+                    .padding(8.dp)
+            ) {
+                Text(
+                    "自由布局:拖动 4 角调整大小,拖动矩形内部移动位置",
+                    color = Color.White,
+                    fontSize = 13.sp
+                )
+            }
+            // Bottom-right confirm button
+            androidx.compose.material3.Button(
+                onClick = {
+                    showCustomLayoutEditor = false
+                    // Persist the current rect even if the last drag was cancelled
+                    padLayout = if (isPortrait) {
+                        padLayout.copy {
+                            customLayoutLeftP = customRect[0]
+                            customLayoutTopP = customRect[1]
+                            customLayoutRightP = customRect[2]
+                            customLayoutBottomP = customRect[3]
+                        }
+                    } else {
+                        padLayout.copy {
+                            customLayoutLeft = customRect[0]
+                            customLayoutTop = customRect[1]
+                            customLayoutRight = customRect[2]
+                            customLayoutBottom = customRect[3]
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+            ) {
+                Text("完成")
+            }
+            // Bottom-left reset button (restore fullscreen rect)
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    customRect = floatArrayOf(0f, 0f, 1f, 1f)
+                    padLayout = if (isPortrait) {
+                        padLayout.copy {
+                            customLayoutLeftP = 0f
+                            customLayoutTopP = 0f
+                            customLayoutRightP = 1f
+                            customLayoutBottomP = 1f
+                        }
+                    } else {
+                        padLayout.copy {
+                            customLayoutLeft = 0f
+                            customLayoutTop = 0f
+                            customLayoutRight = 1f
+                            customLayoutBottom = 1f
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(16.dp)
+            ) {
+                Text("重置")
+            }
         }
 
         // NDS 双屏自由布局编辑器 — 上屏/下屏各自独立矩形，可分别拖动调整。
@@ -2868,9 +2929,98 @@ fun EmulatorScreen(
                 },
                 modifier = Modifier.fillMaxSize()
             )
-            // ★ 去掉上下菜单（与单屏拖动界面一致）：顶部提示条与底部
-            // 「完成/重置」按钮全部移除。松手即存（onRectChanged
-            // confirm=true），退出 = 返回键/返回手势（BackHandler）。
+            // Top hint bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xCC000000))
+                    .padding(8.dp)
+            ) {
+                Text(
+                    "NDS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部",
+                    color = Color.White,
+                    fontSize = 13.sp
+                )
+            }
+            // Bottom-right confirm button
+            androidx.compose.material3.Button(
+                onClick = {
+                    showNdsCustomLayoutEditor = false
+                    padLayout = if (isPortrait) {
+                        padLayout.copy {
+                            ndsTopLayoutLeftP = ndsTopRect[0]
+                            ndsTopLayoutTopP = ndsTopRect[1]
+                            ndsTopLayoutRightP = ndsTopRect[2]
+                            ndsTopLayoutBottomP = ndsTopRect[3]
+                            ndsBottomLayoutLeftP = ndsBottomRect[0]
+                            ndsBottomLayoutTopP = ndsBottomRect[1]
+                            ndsBottomLayoutRightP = ndsBottomRect[2]
+                            ndsBottomLayoutBottomP = ndsBottomRect[3]
+                        }
+                    } else {
+                        padLayout.copy {
+                            ndsTopLayoutLeft = ndsTopRect[0]
+                            ndsTopLayoutTop = ndsTopRect[1]
+                            ndsTopLayoutRight = ndsTopRect[2]
+                            ndsTopLayoutBottom = ndsTopRect[3]
+                            ndsBottomLayoutLeft = ndsBottomRect[0]
+                            ndsBottomLayoutTop = ndsBottomRect[1]
+                            ndsBottomLayoutRight = ndsBottomRect[2]
+                            ndsBottomLayoutBottom = ndsBottomRect[3]
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+            ) {
+                Text("完成")
+            }
+            // Bottom-left reset button (restore default stacked layout)
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    val defaultTop = if (isPortrait) {
+                        floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f)
+                    } else {
+                        floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f)
+                    }
+                    val defaultBottom = if (isPortrait) {
+                        floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
+                    } else {
+                        floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
+                    }
+                    ndsTopRect = defaultTop
+                    ndsBottomRect = defaultBottom
+                    padLayout = if (isPortrait) {
+                        padLayout.copy {
+                            ndsTopLayoutLeftP = defaultTop[0]
+                            ndsTopLayoutTopP = defaultTop[1]
+                            ndsTopLayoutRightP = defaultTop[2]
+                            ndsTopLayoutBottomP = defaultTop[3]
+                            ndsBottomLayoutLeftP = defaultBottom[0]
+                            ndsBottomLayoutTopP = defaultBottom[1]
+                            ndsBottomLayoutRightP = defaultBottom[2]
+                            ndsBottomLayoutBottomP = defaultBottom[3]
+                        }
+                    } else {
+                        padLayout.copy {
+                            ndsTopLayoutLeft = defaultTop[0]
+                            ndsTopLayoutTop = defaultTop[1]
+                            ndsTopLayoutRight = defaultTop[2]
+                            ndsTopLayoutBottom = defaultTop[3]
+                            ndsBottomLayoutLeft = defaultBottom[0]
+                            ndsBottomLayoutTop = defaultBottom[1]
+                            ndsBottomLayoutRight = defaultBottom[2]
+                            ndsBottomLayoutBottom = defaultBottom[3]
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(16.dp)
+            ) {
+                Text("重置")
+            }
         }
     }
 }
