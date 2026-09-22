@@ -350,6 +350,25 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_start", KeyEvent.KEYCODE_BUTTON_START)
         )
+        // DC (Dreamcast) — same 12-button layout. libretro flycast maps
+        // JOYPAD_B→DC A / JOYPAD_A→DC B / JOYPAD_Y→DC X / JOYPAD_X→DC Y,
+        // and dcToLibretroLayout() converts the on-screen A/B/X/Y labels
+        // onto those ids, so the physical gamepad keys map 1:1 to the
+        // on-screen labels (dc_a = DC A, dc_b = DC B, ...).
+        GamePlatform.DC -> listOf(
+            KeyActionInternal("dc_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("dc_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("dc_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("dc_right", KeyEvent.KEYCODE_DPAD_RIGHT),
+            KeyActionInternal("dc_a", KeyEvent.KEYCODE_BUTTON_A),
+            KeyActionInternal("dc_b", KeyEvent.KEYCODE_BUTTON_B),
+            KeyActionInternal("dc_x", KeyEvent.KEYCODE_BUTTON_X),
+            KeyActionInternal("dc_y", KeyEvent.KEYCODE_BUTTON_Y),
+            KeyActionInternal("dc_l", KeyEvent.KEYCODE_BUTTON_L1),
+            KeyActionInternal("dc_r", KeyEvent.KEYCODE_BUTTON_R1),
+            KeyActionInternal("dc_select", KeyEvent.KEYCODE_BUTTON_SELECT),
+            KeyActionInternal("dc_start", KeyEvent.KEYCODE_BUTTON_START)
+        )
         // PS2 (PCEE2 — PCSX2 core) — full DualShock 2: 16 buttons, incl. L2/R2/L3/R3.
         // Analog sticks come from physical gamepads via the OS — only button
         // events reach this key-action table.
@@ -371,10 +390,8 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ps2_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START)
         )
-        // DC (Dreamcast/NAOMI) —— Flycast 独立核心，自带原生虚拟手柄与按键映射，
-        // 不走进程内 KeyActionInternal 表（详见 core/dc/FlycastLauncher.kt）。
-        // 此分支仅满足 Kotlin when 的 exhaustive 约束；EmulatorScreen 入口已对 DC
-        // 提前 return 到 FlycastLauncherScreen，运行时不会走到这里。
+        // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
+        // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
         GamePlatform.DC -> emptyList()
     }
     return base
@@ -869,15 +886,10 @@ fun EmulatorScreen(
         return
     }
 
-    // === DC (Dreamcast / NAOMI) —— Flycast 独立核心 ===
-    // Flycast 是自带运行循环 / 原生 ImGui 菜单 / 原生虚拟手柄的独立模拟器，
-    // 不走进程内引擎路径：交给 FlycastLauncherScreen 渲染启动页并拉起
-    // com.flycast.emulator.NativeGLActivity（详见 core/dc/FlycastLauncher.kt）。
-    // 必须在 engine 创建之前 return（EmulatorEngine.forPlatform 对 DC 抛错）。
-    if (platform == GamePlatform.DC) {
-        FlycastLauncherScreen(game = game, onExit = onExit)
-        return
-    }
+    // DC (Dreamcast / NAOMI) —— libretro Flycast 核心（与 PSX 等核心同一
+    // dlopen 模式，进程内引擎 DcEngine，经标准 EmulatorScreen 全链路运行）。
+    // 历史注：此前的 Flycast 独立核心在此处提前 return 到
+    // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
 
     val engine = remember(ndsCoreChoice) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
@@ -1462,6 +1474,10 @@ fun EmulatorScreen(
         // PCEE2 (PCSX2) expects PS2 BIOS files in <filesDir>/ps2/pcsx2/bios/
         // (e.g. scph10000.bin); the native loader auto-migrates a legacy
         // <filesDir>/ps2/bios/ folder from previous releases on first load.
+        // Flycast (DC) follows the RetroArch convention: the core derives
+        // <systemDir>/dc/ from the system directory, so with systemDir =
+        // <filesDir> the BIOS files (dc_boot.bin / dc_flash.bin / naomi.zip
+        // / awbios.zip ...) live in <filesDir>/dc/ — seeded from assets/dc/.
         // Other cores (NES/SNES/GBA/DOS) use the root filesDir.
         val systemDir = when (platform) {
             GamePlatform.ARCADE -> java.io.File(context.filesDir, "fbneo").apply { mkdirs() }.absolutePath
@@ -1470,6 +1486,10 @@ fun EmulatorScreen(
             GamePlatform.NDS    -> java.io.File(context.filesDir, "nds").apply { mkdirs() }.absolutePath
             GamePlatform.PSX    -> java.io.File(context.filesDir, "psx").apply { mkdirs() }.absolutePath
             GamePlatform.PS2    -> java.io.File(context.filesDir, "ps2").apply { mkdirs() }.absolutePath
+            // DC 传根 filesDir：核心自己拼 <system>/dc/ 子目录。
+            GamePlatform.DC     -> context.filesDir.apply {
+                java.io.File(this, "dc").mkdirs()
+            }.absolutePath
             else                -> context.filesDir.absolutePath
         }
         val filesDir = systemDir  // pass the platform-specific system dir to the core
@@ -1726,6 +1746,38 @@ fun EmulatorScreen(
                 if (!ok) {
                     val err = engine.lastError()
                     errorMsg = err.ifEmpty { "PCE-CD 加载失败" }
+                } else {
+                    loaded = true
+                }
+            }
+        } else if (platform == GamePlatform.DC &&
+                   (romPath.endsWith(".gdi", ignoreCase = true) ||
+                    romPath.endsWith(".cue", ignoreCase = true) ||
+                    romPath.endsWith(".chd", ignoreCase = true) ||
+                    romPath.endsWith(".cdi", ignoreCase = true) ||
+                    romPath.endsWith(".iso", ignoreCase = true) ||
+                    romPath.endsWith(".lst", ignoreCase = true) ||
+                    romPath.endsWith(".zip", ignoreCase = true) ||
+                    romPath.endsWith(".7z", ignoreCase = true))) {
+            // === DC disc image / NAOMI archive via SAF (content://) ===
+            // DC 光盘镜像（.gdi/.cue+.bin 多轨道 / .chd）引用同目录的轨道
+            // 文件；NAOMI/AtomisWave .zip 的文件名决定游戏识别。与 PSX 的
+            // 处理一致：content:// 时复制整个游戏文件夹，把轨道文件放回
+            // 主文件旁边，再传复制后的真实路径给核心。flycast 核心按路径
+            // 自行打开镜像（见 dc_loader.cpp）。
+            val cdFile = withContext(Dispatchers.IO) {
+                loadGameFolder(context, romPath, game.id, "dc_cd")
+            }
+            if (cdFile == null) {
+                errorMsg = "DC 加载失败：无法读取文件夹内容（.gdi/.cue/.bin 轨道）"
+            } else {
+                // ★ 全核心统一 IO 线程加载（重开闪退/ANR 防护）
+                val ok = withContext(Dispatchers.IO) {
+                    engine.loadRom(cdFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                }
+                if (!ok) {
+                    val err = engine.lastError()
+                    errorMsg = err.ifEmpty { "DC 加载失败" }
                 } else {
                     loaded = true
                 }
@@ -3237,6 +3289,34 @@ private fun shiftTurboDefault(
     }
 }
 
+// DC (Dreamcast) 专用：项目位布局 → libretro 标准 JOYPAD 布局。
+// libretro flycast 的官方映射（与 RetroArch 完全一致）：
+//   JOYPAD_B(bit0)=DC A、JOYPAD_Y(bit1)=DC X、JOYPAD_A(bit8)=DC B、
+//   JOYPAD_X(bit9)=DC Y、Select(bit2)="D"、Start(bit3)、方向 bit4-7、
+//   L(bit10)/R(bit11)=DC 模拟扳机的数字值。
+// 屏幕标签保持 A/B/X/Y 语义直转（与街机 arcadeToLibretroLayout 同思路）：
+//   A (项目 A/bit0)  -> libretro bit0  (JOYPAD_B = DC A)
+//   B (项目 B/bit1)  -> libretro bit8  (JOYPAD_A = DC B)
+//   X (项目 X/bit8)  -> libretro bit1  (JOYPAD_Y = DC X)
+//   Y (项目 Y/bit9)  -> libretro bit9  (JOYPAD_X = DC Y)
+//   方向/Select/Start/L/R 与 libretro 同位。
+private fun dcToLibretroLayout(bits: Int): Int {
+    var r = 0
+    if (bits and BTN_A != 0)       r = r or (1 shl 0)   // DC A
+    if (bits and BTN_B != 0)       r = r or (1 shl 8)   // DC B
+    if (bits and BTN_X != 0)       r = r or (1 shl 1)   // DC X
+    if (bits and BTN_Y != 0)       r = r or (1 shl 9)   // DC Y
+    if (bits and BTN_SELECT != 0)  r = r or (1 shl 2)   // "D"
+    if (bits and BTN_START != 0)   r = r or (1 shl 3)   // Start
+    if (bits and BTN_UP != 0)      r = r or (1 shl 4)   // Up
+    if (bits and BTN_DOWN != 0)    r = r or (1 shl 5)   // Down
+    if (bits and BTN_LEFT != 0)    r = r or (1 shl 6)   // Left
+    if (bits and BTN_RIGHT != 0)   r = r or (1 shl 7)   // Right
+    if (bits and BTN_L_SNES != 0)  r = r or (1 shl 10)  // L
+    if (bits and BTN_R_SNES != 0)  r = r or (1 shl 11)  // R
+    return r
+}
+
 private fun routePadBits(
     engine: EmulatorEngine,
     player: Int,
@@ -3244,7 +3324,7 @@ private fun routePadBits(
     netplayController: com.nesstation.app.battle.NetplayController? = null,
     platform: GamePlatform = GamePlatform.NES
 ) {
-    // NDS / PSX / PS2 / ARCADE 使用项目位布局到 libretro 标准位布局的转换。
+    // NDS / PSX / PS2 / ARCADE / DC 使用项目位布局到 libretro 标准位布局的转换。
     // NDS（melonDS）按标准 libretro JOYPAD 位理解，用 projectToLibretroLayout。
     // PSX（PCSX-ReARMed）libretro 映射为：✕=bit0(B)、□=bit1(Y)、
     // ○=bit8(A)、△=bit9(X)，且 PSX 屏幕标签是 A=✕、B=○、X=△、Y=□，
@@ -3253,10 +3333,14 @@ private fun routePadBits(
     // 用 ps2ToLibretroLayout 单独转换。
     // ARCADE（FBNeo）按 label 语义（A/B/C/D=街机键1-4，BAYX 指派）用
     // arcadeToLibretroLayout 转换 —— 修复此前透传导致 B 输出 C、X 输出 B。
+    // DC（flycast）按 label 语义（屏幕 A/B/X/Y = 手柄 A/B/X/Y）用
+    // dcToLibretroLayout 转换 —— flycast 的 JOYPAD 映射是 B→A、A→B、
+    // Y→X、X→Y，透传会导致屏幕 B 输出 DC X、屏幕 X 输出 DC B。
     val ndsBits = if (platform == GamePlatform.NDS) projectToLibretroLayout(bits)
                   else if (platform == GamePlatform.PSX) psxToLibretroLayout(bits)
                   else if (platform == GamePlatform.PS2) ps2ToLibretroLayout(bits)
                   else if (platform == GamePlatform.ARCADE) arcadeToLibretroLayout(bits)
+                  else if (platform == GamePlatform.DC) dcToLibretroLayout(bits)
                   else bits
     if (netplayController != null) {
         // 联机对战：只接受本地 1P 输入；2P 由远端玩家控制
@@ -3267,7 +3351,13 @@ private fun routePadBits(
         0 -> engine.setPad1(ndsBits)
         1 -> engine.setPad2(ndsBits)
         2 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad3(ndsBits)
+             ?: (engine as? com.nesstation.app.core.engine.DcEngine)?.setPad3(ndsBits)
+             ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad3(ndsBits)
+             ?: Unit
         3 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad4(ndsBits)
+             ?: (engine as? com.nesstation.app.core.engine.DcEngine)?.setPad4(ndsBits)
+             ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad4(ndsBits)
+             ?: Unit
     }
 }
 
@@ -3681,10 +3771,27 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             // 触摸输入支持（MIDlet hasPointerEvents() 的返回值）
             javax.microedition.lcdui.Canvas.setHasTouchInput(layout.javaTouchInput)
         }
-        // DC (Dreamcast/NAOMI) —— Flycast 独立核心，核心选项由其自带 ImGui 菜单
-        // 配置（详见 core/dc/FlycastLauncher.kt），不走 EmulatorEngine.setCoreOption。
-        // 此分支仅满足 Kotlin when 的 exhaustive 约束；运行时不会走到这里。
-        GamePlatform.DC -> { /* no-op: Flycast 独立核心选项 */ }
+        // DC (Dreamcast/NAOMI) —— libretro Flycast 核心选项（reicast_*），
+        // 键名/取值已对照预编译 libflycast_libretro_android.so 校验。
+        // 详见 CoreSettingsPanel 的 DC 设置面板。
+        GamePlatform.DC -> {
+            engine.setCoreOption("reicast_internal_resolution", layout.dcResolution)
+            engine.setCoreOption("reicast_alpha_sorting", layout.dcAlphaSorting)
+            engine.setCoreOption("reicast_threaded_rendering", layout.dcThreadedRendering)
+            engine.setCoreOption("reicast_delay_frame_swapping", layout.dcDelayFrameSwapping)
+            engine.setCoreOption("reicast_frame_skipping", layout.dcFrameSkipping)
+            engine.setCoreOption("reicast_widescreen_hack", layout.dcWidescreenHack)
+            engine.setCoreOption("reicast_widescreen_cheats", layout.dcWidescreenCheats)
+            engine.setCoreOption("reicast_gdrom_fast_loading", layout.dcGdromFastLoading)
+            engine.setCoreOption("reicast_hle_bios", layout.dcHleBios)
+            engine.setCoreOption("reicast_dc_32mb_mod", layout.dcRam32mb)
+            engine.setCoreOption("reicast_force_wince", layout.dcForceWince)
+            engine.setCoreOption("reicast_enable_dsp", layout.dcEnableDsp)
+            engine.setCoreOption("reicast_region", layout.dcRegion)
+            engine.setCoreOption("reicast_language", layout.dcLanguage)
+            engine.setCoreOption("reicast_broadcast", layout.dcBroadcast)
+            engine.setCoreOption("reicast_cable_type", layout.dcCableType)
+        }
     }
 }
 
@@ -4713,9 +4820,9 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         GamePlatform.PSX    -> padLayout.comboButtonsSfc  // PSX uses SNES-style combos
         GamePlatform.PS2    -> padLayout.comboButtonsSfc  // PS2 uses SNES-style combos
         GamePlatform.JAVA   -> ""
-        // DC (Dreamcast/NAOMI) —— Flycast 独立核心，自带虚拟手柄与组合键 UI，
-        // 不复用 PadLayout.comboButtons* 表。返回空串以让 parseComboButtons 退化为空列表。
-        GamePlatform.DC    -> ""
+        // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准虚拟手柄体系，
+        // 组合键与 NES 共用同一 PadLayout.comboButtons 表。
+        GamePlatform.DC     -> padLayout.comboButtons
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -10572,10 +10679,9 @@ private fun SettingsPanel(
                 }
             }
 
-            // DC (Dreamcast/NAOMI) —— Flycast 独立核心，平台专属设置见 FlycastCoreSettings.kt
-            // （ImGui 菜单 + 独立 Compose 设置面板）。此处仅满足 Kotlin when 的 exhaustive 约束；
-            // EmulatorScreen 入口已对 DC 提前 return，运行时不会走到这里。
-            GamePlatform.DC -> { /* no-op: 见 FlycastCoreSettings.kt */ }
+            // DC (Dreamcast/NAOMI) —— libretro Flycast 核心，平台专属设置
+            // 在主设置面板 CoreSettingsPanel 的 DC 区（与 PSX/PS2 同模式）。
+            GamePlatform.DC -> { /* DC 专属游戏内设置已由 applyCoreOptions 统一下发 */ }
         }
 
         Spacer(Modifier.size(8.dp))

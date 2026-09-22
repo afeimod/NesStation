@@ -308,7 +308,7 @@ fun SettingsScreen(
                             SettingsRow("PSX", "PCSX-ReARMed 核心 · DRC/GPU线程/超频/SPU/手柄", trailing = { Arrow() }) { selectedCore = GamePlatform.PSX }
                             SettingsRow("PS2", "PCSX2 (PCEE2) 核心 · 渲染器/分辨率倍数/双摇杆/肩键", trailing = { Arrow() }) { selectedCore = GamePlatform.PS2 }
                             SettingsRow("Java / J2ME", "J2ME 虚拟机 · 分辨率/缩放/按键映射/数字键盘", trailing = { Arrow() }) { selectedCore = GamePlatform.JAVA }
-                            SettingsRow("DC / Dreamcast", "Flycast 核心 · 渲染/分辨率/宽屏/主机区域/BIOS/成就", trailing = { Arrow() }) { selectedCore = GamePlatform.DC }
+                            SettingsRow("DC / Dreamcast", "Flycast 核心 · 分辨率/宽屏/排序/主机区域/GD-ROM", trailing = { Arrow() }) { selectedCore = GamePlatform.DC }
                         }
                     }
 

@@ -563,6 +563,63 @@ target_compile_options(psxcore PRIVATE
 target_link_libraries(psxcore log android dl)
 
 # ---------------------------------------------------------------------------
+# Flycast (SEGA Dreamcast / NAOMI / AtomisWave) — built as libdccore.so,
+# which dlopen()s the prebuilt libflycast_libretro_android.so from
+# app/src/main/jniLibs/<abi>/. Same dlopen pattern as FBNeo / Genesis-Plus-GX
+# / PCSX-ReARMed — DC integrates exactly like the other libretro cores.
+#
+# The prebuilt .so comes from the libretro buildbot
+# (https://buildbot.libretro.com/nightly/android/latest/<abi>/).
+#
+# Our JNI bridge (dc_bridge.cpp) + libretro frontend (dc_loader.cpp) drive
+# the core through the standard retro_* API. Flycast is a HARDWARE-RENDERING
+# core (GLES3): dc_loader.cpp implements the EGL context + FBO presentation
+# path (see the file header for the full frontend contract). BIOS files
+# (dc_boot.bin / dc_flash.bin / naomi.zip / awbios.zip ...) are looked up by
+# the core in <systemDir>/dc/ (RetroArch convention) — seeded from
+# assets/dc/ on startup, see NesApp.ensureDcBios.
+#
+# EGL + GLESv3 are linked for the frontend's own presentation code
+# (FBO creation + glBlitFramebuffer + eglSwapBuffers).
+# ---------------------------------------------------------------------------
+set(DC_JNI_SOURCES
+    "${APP_JNI_DIR}/dc_bridge.cpp"
+    "${APP_JNI_DIR}/dc_loader.cpp"
+    ${HQX_SOURCES}
+)
+
+add_library(dccore SHARED ${DC_JNI_SOURCES})
+
+target_include_directories(dccore PRIVATE
+    "${APP_JNI_DIR}"
+    "${APP_JNI_DIR}/shared"
+    "${HQX_DIR}"
+)
+
+target_compile_definitions(dccore PRIVATE
+    __LIBRETRO__
+    ANDROID
+    NDEBUG
+)
+
+target_compile_options(dccore PRIVATE
+    -O2
+    -fvisibility=hidden
+    -ffunction-sections -fdata-sections
+    -fno-rtti
+    -fno-exceptions
+    -Wno-unused-parameter
+    -Wno-unused-variable
+    -Wno-sign-compare
+    -Wno-write-strings
+    -Wno-deprecated-declarations
+)
+
+# `dl` is required for dlopen() / dlsym() on the prebuilt flycast .so;
+# EGL + GLESv3 power the frontend presentation path (FBO blit + swap).
+target_link_libraries(dccore log android dl EGL GLESv3)
+
+# ---------------------------------------------------------------------------
 # ARMSX2 (Sony PlayStation 2) — source-compiled emucore (PCSX2 fork with
 # ARM64 JIT via vixl). Replaces the previous PCEE2 dlopen approach.
 #

@@ -19,7 +19,6 @@ import com.nesstation.app.core.storage.JAVA_PHONE_KEY_OPTIONS
 import com.nesstation.app.core.storage.javaButtonKeyMapGet
 import com.nesstation.app.core.storage.javaButtonKeyMapSet
 import com.nesstation.app.ui.emulator.Psx2BiosImportSection
-import com.nesstation.app.ui.settings.FlycastCoreSettingsContent
 
 /**
  * 核心设置子页：进入后展示该核心专属的模拟器选项。
@@ -1473,18 +1472,120 @@ fun CoreSettingsPanel(
                 }
             }
             GamePlatform.DC -> item {
-                // Flycast 独立核心 —— 设置直接读写 <filesDir>/dc/emu.cfg（核心自身的
-                // 配置文件），与游戏内 Flycast 原生菜单双向同步。见 FlycastCoreSettings.kt。
-                FlycastCoreSettingsContent()
+                // libretro Flycast 核心选项（reicast_*）。与 PSX/PS2 面板同一
+                // 模式：设置存 PadLayout，启动/运行时经 applyCoreOptions →
+                // DcEngine.setCoreOption 下发。键名/取值已对照预编译
+                // libflycast_libretro_android.so 字符串提取校验。
+                SettingsSection("DC (Flycast) · 画面") {
+                    DropdownRow("内部分辨率",
+                        listOf(
+                            "320x240 (Half)" to "0.5x (320x240, 提速)",
+                            "640x480 (Native)" to "1x (640x480 原生, 默认)",
+                            "1280x960 (x2)" to "2x (1280x960)",
+                            "1600x1200 (x2.5)" to "2.5x (1600x1200)",
+                            "1920x1440 (x3)" to "3x (1920x1440)",
+                            "2560x1920 (x4)" to "4x (2560x1920)",
+                            "3840x2880 (x6)" to "6x (3840x2880 高配专用)"
+                        ),
+                        padLayout.dcResolution
+                    ) { updateLayout(padLayout.copy {dcResolution = it}) }
+                    DropdownRow("透明排序精度",
+                        listOf(
+                            "per-strip (fast, least accurate)" to "按条带 (最快, 可能闪面)",
+                            "per-triangle (normal)" to "按三角形 (默认, 推荐)",
+                            "per-pixel (accurate)" to "逐像素 (精确, 较慢)"
+                        ),
+                        padLayout.dcAlphaSorting
+                    ) { updateLayout(padLayout.copy {dcAlphaSorting = it}) }
+                    DropdownRow("渲染线程化",
+                        listOf("enabled" to "开启 (推荐·多核提速明显)", "disabled" to "关闭"),
+                        padLayout.dcThreadedRendering
+                    ) { updateLayout(padLayout.copy {dcThreadedRendering = it}) }
+                    DropdownRow("宽屏 16:9 视锥拉伸",
+                        listOf("disabled" to "关闭 (4:3 原生)", "enabled" to "开启 (16:9)"),
+                        padLayout.dcWidescreenHack
+                    ) { updateLayout(padLayout.copy {dcWidescreenHack = it}) }
+                    DropdownRow("宽屏游戏兼容补丁",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (部分游戏 16:9 无拉伸)"),
+                        padLayout.dcWidescreenCheats
+                    ) { updateLayout(padLayout.copy {dcWidescreenCheats = it}) }
+                    DropdownRow("延迟帧交换 (防撕裂)",
+                        listOf("enabled" to "开启 (推荐)", "disabled" to "关闭 (低延迟)"),
+                        padLayout.dcDelayFrameSwapping
+                    ) { updateLayout(padLayout.copy {dcDelayFrameSwapping = it}) }
+                    DropdownRow("跳帧",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (保帧率)"),
+                        padLayout.dcFrameSkipping
+                    ) { updateLayout(padLayout.copy {dcFrameSkipping = it}) }
+                }
+
+                SettingsSection("DC (Flycast) · 系统") {
+                    DropdownRow("主机区域",
+                        listOf(
+                            "Default" to "默认 (跟随游戏)",
+                            "Japan" to "日本",
+                            "USA" to "美国",
+                            "Europe" to "欧洲"
+                        ),
+                        padLayout.dcRegion
+                    ) { updateLayout(padLayout.copy {dcRegion = it}) }
+                    DropdownRow("主机语言",
+                        listOf(
+                            "Default" to "默认", "Japanese" to "日语", "English" to "英语 (默认)",
+                            "German" to "德语", "French" to "法语", "Spanish" to "西班牙语",
+                            "Italian" to "意大利语"
+                        ),
+                        padLayout.dcLanguage
+                    ) { updateLayout(padLayout.copy {dcLanguage = it}) }
+                    DropdownRow("电视制式",
+                        listOf(
+                            "Default" to "默认", "NTSC" to "NTSC (默认)",
+                            "PAL" to "PAL", "PAL-M" to "PAL-M", "PAL-N" to "PAL-N"
+                        ),
+                        padLayout.dcBroadcast
+                    ) { updateLayout(padLayout.copy {dcBroadcast = it}) }
+                    DropdownRow("视频输出",
+                        listOf(
+                            "TV (Composite)" to "TV 复合 (默认)",
+                            "VGA" to "VGA"
+                        ),
+                        padLayout.dcCableType
+                    ) { updateLayout(padLayout.copy {dcCableType = it}) }
+                    DropdownRow("HLE BIOS (免真实 BIOS)",
+                        listOf("disabled" to "关闭 (已内置真实 BIOS, 推荐)", "enabled" to "开启"),
+                        padLayout.dcHleBios
+                    ) { updateLayout(padLayout.copy {dcHleBios = it}) }
+                    DropdownRow("32MB 内存改机",
+                        listOf("disabled" to "关闭 (16MB 原生)", "enabled" to "开启 (个别游戏/补丁需要)"),
+                        padLayout.dcRam32mb
+                    ) { updateLayout(padLayout.copy {dcRam32mb = it}) }
+                    DropdownRow("强制 WinCE 模式",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别 WinCE 游戏需要)"),
+                        padLayout.dcForceWince
+                    ) { updateLayout(padLayout.copy {dcForceWince = it}) }
+                }
+
+                SettingsSection("DC (Flycast) · 性能 / 音频") {
+                    DropdownRow("GD-ROM 快速读盘",
+                        listOf("enabled" to "开启 (推荐, 缩短读盘时间)", "disabled" to "关闭 (原机速度)"),
+                        padLayout.dcGdromFastLoading
+                    ) { updateLayout(padLayout.copy {dcGdromFastLoading = it}) }
+                    DropdownRow("AICA DSP 音效",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别游戏音效需要, 较慢)"),
+                        padLayout.dcEnableDsp
+                    ) { updateLayout(padLayout.copy {dcEnableDsp = it}) }
+                    Text(
+                        "BIOS 与街机 BIOS 包 (dc_boot.bin / dc_flash.bin / naomi.zip / " +
+                        "awbios.zip ...) 已内置在 assets/dc/，首次启动自动识别部署到 " +
+                        "filesDir/dc/。NAOMI / AtomisWave 游戏 (.zip) 与 DC 光盘游戏" +
+                        " (.gdi/.cdi/.cue/.chd/.iso) 均无需手动导入 BIOS。",
+                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                }
             }
         }
 
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在
         // PadLayout.overlayThemeJson，见 OverlayTheme.kt） ===
-        // DC (Flycast) 虚拟手柄由核心原生渲染/编辑（游戏内菜单 → Edit Virtual
-        // Gamepad），NesStation 皮肤系统对其不生效，跳过。
-        if (platform != GamePlatform.DC) {
-            item { OverlayThemeSection(platform, padLayout, updateLayout) }
-        }
+        item { OverlayThemeSection(platform, padLayout, updateLayout) }
     }
 }

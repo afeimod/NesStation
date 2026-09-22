@@ -150,29 +150,12 @@ android {
 
     packaging {
         jniLibs {
-            // Flycast (DC/NAOMI) 要求 useLegacyPackaging = true（extractNativeLibs）：
-            // 其自定义 Adreno GPU 驱动功能（rend.CustomGpuDriver）运行时经
-            // adrenotools/linkernsbypass 从 nativeLibraryDir dlopen 钩子库
-            // (libmain_hook/libhook_impl/libfile_redirect_hook/libgsl_alloc_hook.so)，
-            // 未解压态（so 以符号链接指向 APK 内部）时该加载路径不可靠。
-            // 上游 flycast shell/android-studio 同样强制 useLegacyPackaging = true。
-            // 代价仅为安装时解压 so（安装包占用略增），对其它核心无影响。
+            // useLegacyPackaging = true（extractNativeLibs）：安装时解压 so。
+            // ARMSX2 的 Adreno 自定义 GPU 驱动链（rend.CustomGpuDriver，
+            // adrenotools/linkernsbypass 从 nativeLibraryDir dlopen 钩子库）
+            // 与各核心运行时 dlopen 预编译 libretro 核心 .so 的加载路径在
+            // 解压态下最可靠；代价仅为安装包占用略增。
             useLegacyPackaging = true
-
-            // 4 个 adrenotools 钩子库同时来自两条输入：
-            //   1) app/src/main/jniLibs/arm64-v8a/lib*.so —— Flycast 上游 shell 预编译产物；
-            //   2) ARMSX2/platforms/android/.../3rdparty/adrenotools/CMakeLists.txt
-            //      以 add_library(... SHARED ...) 现场编译（仅 arm64-v8a）。
-            // 二者在 mergeReleaseNativeLibs 阶段命中 DuplicateRelativeFileException:
-            //   "2 files found with path 'lib/arm64-v8a/libfile_redirect_hook.so'"
-            // 用 pickFirsts 让 AGP 取其一即可（两个版本均来自同一 adrenotools 上游，
-            // ABI/符号接口一致，运行时 dlopen 不会因版本差异崩）。
-            pickFirsts += setOf(
-                "lib/arm64-v8a/libfile_redirect_hook.so",
-                "lib/arm64-v8a/libgsl_alloc_hook.so",
-                "lib/arm64-v8a/libhook_impl.so",
-                "lib/arm64-v8a/libmain_hook.so"
-            )
         }
         resources {
             excludes += setOf(
@@ -254,15 +237,6 @@ dependencies {
     implementation(libs.camerax.view)
     implementation(libs.filepicker)
     implementation(libs.ambilwarna)
-
-    // Flycast (Dreamcast/NAOMI) core — Java 层依赖（见 core/dc/ 与 com/flycast/emulator/）。
-    // 版本与上游 flycast shell/android-studio/gradle/libs.versions.toml 保持一致：
-    //   commons-lang3  → InputDeviceManager/FileBrowser 的 ArrayUtils/StringUtils
-    //   httpclient5    → emu.HttpClient（RetroAchievements 上传/下载、网络对战）
-    //   slf4j-android  → httpclient5 运行时日志绑定
-    implementation(libs.commons.lang3)
-    implementation(libs.httpclient5)
-    implementation(libs.slf4j.android)
 
     compileOnly(libs.auto.service.annotations)
     kapt(libs.auto.service)

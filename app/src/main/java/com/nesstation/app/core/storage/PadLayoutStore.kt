@@ -628,6 +628,26 @@ class PadLayout {
     var pscxGpuOddEven: String = "disabled"         // disabled | enabled (Peops odd/even GPU hack — Chrono Cross)
     var pscxAnalogAxis: String = "square"           // circle | square (analog stick bounds)
 
+    // === DC (libretro Flycast — Dreamcast / NAOMI / AtomisWave) core options ===
+    // 键名/取值已对照预编译 libflycast_libretro_android.so（libretro buildbot）
+    // 字符串提取校验；reicast_* 键由 dc_loader.cpp 下发（见 applyCoreOptions）。
+    var dcResolution: String = "640x480 (Native)"     // 内部分辨率（与核心选项值逐字匹配）
+    var dcAlphaSorting: String = "per-triangle (normal)"  // per-strip (fast, least accurate) | per-triangle (normal) | per-pixel (accurate)
+    var dcThreadedRendering: String = "enabled"       // enabled | disabled (渲染线程化, 性能关键)
+    var dcDelayFrameSwapping: String = "enabled"      // enabled | disabled (延迟帧交换, 防撕裂)
+    var dcFrameSkipping: String = "disabled"          // enabled | disabled (跳帧)
+    var dcWidescreenHack: String = "disabled"         // enabled | disabled (16:9 视锥拉伸)
+    var dcWidescreenCheats: String = "disabled"       // enabled | disabled (宽屏兼容补丁)
+    var dcGdromFastLoading: String = "enabled"        // enabled | disabled (GD-ROM 快速读盘)
+    var dcHleBios: String = "disabled"                // disabled | enabled (HLE BIOS, 已内置真实 BIOS)
+    var dcRam32mb: String = "disabled"                // disabled | enabled (32MB 内存改机)
+    var dcForceWince: String = "disabled"             // disabled | enabled (WinCE 游戏强制模式)
+    var dcEnableDsp: String = "disabled"              // disabled | enabled (AICA DSP 音效)
+    var dcRegion: String = "Default"                  // Default | Japan | USA | Europe (主机区域)
+    var dcLanguage: String = "Default"                // Default | Japanese | English | German | French | Spanish | Italian
+    var dcBroadcast: String = "Default"               // Default | NTSC | PAL | PAL-M | PAL-N (电视制式)
+    var dcCableType: String = "TV (Composite)"        // VGA | TV (Composite) (视频输出)
+
     // === PS2 (PCEE2 — PCSX2 v2.7.523 core) core options ===
     // ps2ResMulti: 内部分辨率倍数，发给核心的 pcsx2_upscale_multiplier。
     // 核心取值是纯数字字符串 "1".."4"（1=原生 640x448；2x=1280x896；
@@ -1134,6 +1154,22 @@ class PadLayout {
         pscxMultitap = another.pscxMultitap
         pscxGpuOddEven = another.pscxGpuOddEven
         pscxAnalogAxis = another.pscxAnalogAxis
+        dcResolution = another.dcResolution
+        dcAlphaSorting = another.dcAlphaSorting
+        dcThreadedRendering = another.dcThreadedRendering
+        dcDelayFrameSwapping = another.dcDelayFrameSwapping
+        dcFrameSkipping = another.dcFrameSkipping
+        dcWidescreenHack = another.dcWidescreenHack
+        dcWidescreenCheats = another.dcWidescreenCheats
+        dcGdromFastLoading = another.dcGdromFastLoading
+        dcHleBios = another.dcHleBios
+        dcRam32mb = another.dcRam32mb
+        dcForceWince = another.dcForceWince
+        dcEnableDsp = another.dcEnableDsp
+        dcRegion = another.dcRegion
+        dcLanguage = another.dcLanguage
+        dcBroadcast = another.dcBroadcast
+        dcCableType = another.dcCableType
         ps2ResMulti = another.ps2ResMulti
         ps2Renderer = another.ps2Renderer
         ps2Bilinear = another.ps2Bilinear
@@ -1962,6 +1998,23 @@ object PadLayoutStore {
             }
             pscxGpuOddEven = p.getString("psx_gpu_odd_even", "disabled") ?: "disabled"
             pscxAnalogAxis = p.getString("psx_analog_axis", "square") ?: "square"
+            // DC (libretro Flycast) options
+            dcResolution = p.getString("dc_resolution", "640x480 (Native)") ?: "640x480 (Native)"
+            dcAlphaSorting = p.getString("dc_alpha_sorting", "per-triangle (normal)") ?: "per-triangle (normal)"
+            dcThreadedRendering = p.getString("dc_threaded_rendering", "enabled") ?: "enabled"
+            dcDelayFrameSwapping = p.getString("dc_delay_frame_swapping", "enabled") ?: "enabled"
+            dcFrameSkipping = p.getString("dc_frame_skipping", "disabled") ?: "disabled"
+            dcWidescreenHack = p.getString("dc_widescreen_hack", "disabled") ?: "disabled"
+            dcWidescreenCheats = p.getString("dc_widescreen_cheats", "disabled") ?: "disabled"
+            dcGdromFastLoading = p.getString("dc_gdrom_fast_loading", "enabled") ?: "enabled"
+            dcHleBios = p.getString("dc_hle_bios", "disabled") ?: "disabled"
+            dcRam32mb = p.getString("dc_ram_32mb", "disabled") ?: "disabled"
+            dcForceWince = p.getString("dc_force_wince", "disabled") ?: "disabled"
+            dcEnableDsp = p.getString("dc_enable_dsp", "disabled") ?: "disabled"
+            dcRegion = p.getString("dc_region", "Default") ?: "Default"
+            dcLanguage = p.getString("dc_language", "Default") ?: "Default"
+            dcBroadcast = p.getString("dc_broadcast", "Default") ?: "Default"
+            dcCableType = p.getString("dc_cable_type", "TV (Composite)") ?: "TV (Composite)"
             // === PS2 (PCEE2 — PCSX2 core) core options + 专属按键布局 ===
             // PCEE2 迁移：旧值 "1x"/"2x"/"4x"/"8x" 自动归一到 "1".."4"
             ps2ResMulti = PadLayout.normalizePs2ResMulti(p.getString("ps2_res_multi", null))
@@ -2486,6 +2539,23 @@ object PadLayoutStore {
             putString("psx_multitap", layout.pscxMultitap)
             putString("psx_gpu_odd_even", layout.pscxGpuOddEven)
             putString("psx_analog_axis", layout.pscxAnalogAxis)
+            // === DC (libretro Flycast) ===
+            putString("dc_resolution", layout.dcResolution)
+            putString("dc_alpha_sorting", layout.dcAlphaSorting)
+            putString("dc_threaded_rendering", layout.dcThreadedRendering)
+            putString("dc_delay_frame_swapping", layout.dcDelayFrameSwapping)
+            putString("dc_frame_skipping", layout.dcFrameSkipping)
+            putString("dc_widescreen_hack", layout.dcWidescreenHack)
+            putString("dc_widescreen_cheats", layout.dcWidescreenCheats)
+            putString("dc_gdrom_fast_loading", layout.dcGdromFastLoading)
+            putString("dc_hle_bios", layout.dcHleBios)
+            putString("dc_ram_32mb", layout.dcRam32mb)
+            putString("dc_force_wince", layout.dcForceWince)
+            putString("dc_enable_dsp", layout.dcEnableDsp)
+            putString("dc_region", layout.dcRegion)
+            putString("dc_language", layout.dcLanguage)
+            putString("dc_broadcast", layout.dcBroadcast)
+            putString("dc_cable_type", layout.dcCableType)
             // === PS2 (PCEE2 — PCSX2 core) core options + 专属按键布局 ===
             putString("ps2_res_multi", layout.ps2ResMulti)
             putString("ps2_renderer", layout.ps2Renderer)
@@ -2766,6 +2836,15 @@ object PadLayoutStore {
                 "l3" to "L3键", "r3" to "R3键",
                 "start" to "START", "select" to "SELECT"
                 // 双摇杆为 PS2 常驻控件，不参与显隐
+            )
+            GamePlatform.DC -> listOf(
+                // DC（libretro Flycast）：屏幕 A/B/X/Y 按标签语义直转
+                //（dcToLibretroLayout：A→DC A、B→DC B、X→DC X、Y→DC Y）
+                "dpad" to "十字键", "a" to "A键", "b" to "B键",
+                "x" to "X键", "y" to "Y键",
+                "ta" to "连射A", "tb" to "连射B",
+                "l" to "L键", "r" to "R键",
+                "start" to "START", "select" to "SELECT"
             )
             else -> emptyList()
         } + listOf("qs" to "即时存档", "ql" to "即时读档")

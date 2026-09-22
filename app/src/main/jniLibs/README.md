@@ -21,21 +21,22 @@ jniLibs/
 │   ├── libdosbox_pure_libretro_android.so   # DOSBox-Pure (DOS core)
 │   ├── libfbneo_libretro_android.so         # FBNeo (Arcade core)
 │   ├── libgenesis_plus_gx_libretro_android.so  # Genesis-Plus-GX (MD core)
-│   ├── libflycast.so                        # Flycast (Dreamcast/NAOMI standalone core, v2.7-119)
-│   ├── libmain_hook.so                      # Flycast adrenotools 自定义 GPU 驱动钩子链
-│   ├── libhook_impl.so                      #   (rend.CustomGpuDriver 功能，见
-│   ├── libfile_redirect_hook.so             #    flycast 上游 shell/android 构建)
-│   └── libgsl_alloc_hook.so                 #
+│   ├── libgeargrafx_libretro_android.so     # Geargrafx (PCE core)
+│   ├── libmelonds_libretro_android.so       # melonDS (NDS core)
+│   ├── libpcsx_rearmed_libretro_android.so  # PCSX-ReARMed (PSX core)
+│   ├── libflycast_libretro_android.so       # Flycast (Dreamcast/NAOMI libretro core)
+│   ├── libdrastic_arm64.so / libdrastic_cpu.so  # DraStic（激烈 NDS 备选核心）
+│   └── libfile_redirect_hook.so 等          # ARMSX2 adrenotools 驱动钩子链（arm64）
 ├── armeabi-v7a/
 │   ├── libdosbox_pure_libretro_android.so
 │   ├── libfbneo_libretro_android.so
-│   └── libgenesis_plus_gx_libretro_android.so
-│   # 注：libflycast.so 仅提供 arm64-v8a（与上游 APK 一致）；
-│   # 32 位设备上 DC 平台在启动前给出明确提示，不加载。
+│   ├── libgenesis_plus_gx_libretro_android.so
+│   └── libflycast_libretro_android.so
 └── x86_64/
     ├── libdosbox_pure_libretro_android.so
     ├── libfbneo_libretro_android.so
-    └── libgenesis_plus_gx_libretro_android.so
+    ├── libgenesis_plus_gx_libretro_android.so
+    └── libflycast_libretro_android.so
 ```
 
 The CMake build also produces the following `.so` files from source
@@ -108,12 +109,22 @@ for abi in arm64-v8a armeabi-v7a x86_64; do
   cp /tmp/dosbox_extract/dosbox_pure_libretro_android.so \
      app/src/main/jniLibs/${abi}/
 done
+
+# Flycast (Dreamcast / NAOMI / AtomisWave)
+for abi in arm64-v8a armeabi-v7a x86_64; do
+  curl -L -o /tmp/flycast.zip \
+    "https://buildbot.libretro.com/nightly/android/latest/${abi}/flycast_libretro_android.so.zip"
+  unzip -o /tmp/flycast.zip -d /tmp/flycast_extract
+  cp /tmp/flycast_extract/flycast_libretro_android.so \
+     app/src/main/jniLibs/${abi}/
+done
 ```
 
 Or build from source — see the README in each upstream repository:
   - FBNeo: https://github.com/finalburnneo/FBNeo
   - Genesis-Plus-GX: https://github.com/libretro/Genesis-Plus-GX
   - DOSBox-Pure: https://github.com/schellingb/dosbox-pure
+  - Flycast: https://github.com/libretro/flycast
 
 ## When the file is missing
 

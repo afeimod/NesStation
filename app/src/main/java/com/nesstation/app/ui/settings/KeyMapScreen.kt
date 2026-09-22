@@ -228,6 +228,25 @@ private val PS2_ACTIONS = listOf(
     KeyAction("ps2_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
 )
 
+// DC (Dreamcast) — standard 12-button pad. Ids match EmulatorScreen's DC
+// KeyActionInternal table. flycast's libretro mapping (JOYPAD_B→DC A,
+// JOYPAD_A→DC B, JOYPAD_Y→DC X, JOYPAD_X→DC Y) is applied at output time by
+// dcToLibretroLayout, so screen labels map 1:1 to in-game DC buttons.
+private val DC_ACTIONS = listOf(
+    KeyAction("dc_up",     "上",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("dc_down",   "下",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("dc_left",   "左",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("dc_right",  "右",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("dc_a",      "A",      Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_A,   "手柄 A"),
+    KeyAction("dc_b",      "B",      Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_B,   "手柄 B"),
+    KeyAction("dc_x",      "X",      Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_X,   "手柄 X"),
+    KeyAction("dc_y",      "Y",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_Y,   "手柄 Y"),
+    KeyAction("dc_l",      "L",      Color(0xFF9C27B0), KeyEvent.KEYCODE_BUTTON_L1,  "L 扳机"),
+    KeyAction("dc_r",      "R",      Color(0xFF00BCD4), KeyEvent.KEYCODE_BUTTON_R1,  "R 扳机"),
+    KeyAction("dc_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select (\"D\")"),
+    KeyAction("dc_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
+)
+
 private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction> {
     val suffix = "_p${player + 1}"
     return when (platform) {
@@ -244,10 +263,10 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         GamePlatform.PSX    -> SNES_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.PS2    -> PS2_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.JAVA   -> JAVA_ACTIONS.map { it.copy(id = it.id + suffix) }
-        // DC (Flycast) 不在上方平台 tab 列表里：物理手柄/键盘映射由核心自身的
-        // 映射系统管理（游戏内 Flycast 菜单 → Controllers → 按键绑定），
-        // NesStation 的 KeyMapStore 对其不生效，此处仅为枚举穷尽性保留。
-        GamePlatform.DC     -> emptyList()
+        // DC（libretro Flycast）与其他核心同一按键映射体系：id 对应
+        // EmulatorScreen 的 KeyActionInternal DC 表（dc_*），输出经
+        // dcToLibretroLayout 转换为 flycast 官方 JOYPAD 映射。
+        GamePlatform.DC     -> DC_ACTIONS.map { it.copy(id = it.id + suffix) }
     }
 }
 

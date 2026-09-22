@@ -12,10 +12,10 @@ import com.nesstation.app.core.engine.PceEngine
 import com.nesstation.app.core.engine.PsxEngine
 import com.nesstation.app.core.engine.Psx2Engine
 import com.nesstation.app.core.engine.NdsEngine
+import com.nesstation.app.core.engine.DcEngine
 import com.nesstation.app.core.storage.AppContainer
 import com.nesstation.app.core.storage.RomStore
 import com.nesstation.app.core.storage.SettingsRepository
-import com.flycast.emulator.Emulator as FlycastEmulator
 import java.io.File
 
 /**
@@ -29,14 +29,10 @@ import java.io.File
  *  3. A global UncaughtExceptionHandler logs every uncaught throw and
  *     swallows non-fatal ones so a rogue background thread can't kill the app.
  */
-class NesApp : FlycastEmulator() {
-    // 继承 com.flycast.emulator.Emulator（Application 子类）：Flycast 的
-    // BaseGLActivity.onCreate 会校验 getApplicationContext() instanceof Emulator，
-    // 且 JNIdc.initEnvironment 把 Application 强转为 Emulator 后回调其
-    // getAppContext()/getCurrentActivity()/SaveAndroidSettings() 等方法 ——
-    // 宿主 Application 必须是（或继承）Emulator 才能启动 Flycast 游戏。
-    // Emulator.onCreate 只做 Emulator.context 静态赋值，本类 onCreate 首行
-    // super.onCreate() 已覆盖。
+class NesApp : Application() {
+    // DC (Dreamcast) 已改为与其他核心一致的 libretro Flycast 集成
+    // （libdccore.so + libflycast_libretro_android.so，见 core/jni/dc_loader.cpp），
+    // Application 不再继承 Flycast 独立模拟器的 Emulator 类。
 
     override fun onCreate() {
         super.onCreate()
@@ -101,6 +97,12 @@ class NesApp : FlycastEmulator() {
             com.nesstation.app.core.jni.Psx2Native.appContext = this
             Psx2Engine.ensureLoaded()
         }
+        tryInit("DcEngine")            {
+            // libretro Flycast DC core — dlopen()s
+            // libflycast_libretro_android.so.
+            com.nesstation.app.core.jni.DcNative.appContext = this
+            DcEngine.ensureLoaded()
+        }
         tryInit("NdsEngine")           {
             // melonDS NDS core — dlopen()s
             // libmelonds_libretro_android.so.
@@ -126,13 +128,7 @@ class NesApp : FlycastEmulator() {
         tryInit("PceBios")            { ensurePceBios() }
         tryInit("NdsBios")            { ensureNdsBios() }
         tryInit("PsxBios")            { ensurePsxBios() }
-        tryInit("DcFlycast")          {
-            // Flycast (Dreamcast/NAOMI) —— home 目录 + emu.cfg 位置 + BIOS 播种。
-            // 详见 core/dc/FlycastPaths.kt；启动时序上必须先于首次
-            // NativeGLActivity 启动（FlycastLauncher 内也会兑底调用）。
-            com.nesstation.app.core.dc.FlycastPaths.ensureHomePref(this)
-            com.nesstation.app.core.dc.FlycastPaths.ensureBiosFromAssets(this)
-        }
+        tryInit("DcBios")             { ensureDcBios() }
         tryInit("ArcadeTitleMigrate") { migrateArcadeTitles() }
         tryInit("LibraryJunkSanitize") { sanitizeLibraryOnce() }
     }
@@ -608,6 +604,92 @@ class NesApp : FlycastEmulator() {
         } else {
             Log.i("NesApp", "PSX BIOS: no bundled BIOS files found in assets/psx/. " +
                     "Import via Settings → PSX → BIOS Management, or use HLE BIOS (pcsx_rearmed_bios = HLE).")
+        }
+    }
+
+    /**
+     * Auto-extract Dreamcast / NAOMI / AtomisWave BIOS files from APK assets
+     * to the system directory (<filesDir>/dc/).
+     *
+     * libretro Flycast follows the RetroArch convention: with the app passing
+     * <filesDir> as the system directory (EmulatorScreen → DcEngine →
+     * dc_loader.cpp → GET_SYSTEM_DIRECTORY), the core looks for its content
+     * under <system>/dc/:
+     *   - dc_boot.bin  — Dreamcast BIOS ROM (required for disc games)
+     *   - dc_bios.bin  — accepted boot-ROM alias (core tries dc_boot first)
+     *   - dc_flash.bin — Dreamcast flash (required for disc games)
+     *   - dc_nvmem.bin — Dreamcast NVMEM flash (some builds / games)
+     *   - naomi.zip / naomi2.zip — NAOMI BIOS sets
+     *   - awbios.zip   — AtomisWave BIOS set
+     *   - f355bios.zip / f355dlx.zip / hod2bios.zip / airlbios.zip —
+     *     per-system NAOMI variants
+     * VMU saves (vmu_save_*.bin) live in the saves directory (<filesDir>/saves/)
+     * like every other core's save data — also seeded here when bundled.
+     *
+     * This method extracts any BIOS files found in `assets/dc/` to
+     * <filesDir>/dc/ (and VMU files to <filesDir>/saves/). If the destination
+     * already exists, it is kept (user-imported files take precedence).
+     */
+    private fun ensureDcBios() {
+        val destDir = File(filesDir, "dc")
+        if (!destDir.exists()) destDir.mkdirs()
+
+        // Known BIOS filenames flycast looks for in <system>/dc/. We only
+        // extract those that actually exist in assets/dc/ — no error if none.
+        val biosFiles = listOf(
+            "dc_boot.bin", "dc_bios.bin", "dc_flash.bin", "dc_nvmem.bin",
+            "naomi.zip", "naomi2.zip", "awbios.zip",
+            "f355bios.zip", "f355dlx.zip", "hod2bios.zip", "airlbios.zip"
+        )
+
+        var extracted = 0
+        for (name in biosFiles) {
+            val dest = File(destDir, name)
+            if (dest.exists() && dest.length() > 0) continue  // keep existing
+            try {
+                assets.open("dc/$name").use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                extracted++
+                Log.i("NesApp", "DC BIOS extracted: $name")
+            } catch (_: java.io.FileNotFoundException) {
+                // Not bundled — normal for the open-source build
+            } catch (e: Exception) {
+                Log.w("NesApp", "Failed to extract DC BIOS $name", e)
+                if (dest.exists()) dest.delete()
+            }
+        }
+
+        // VMU templates (vmu_save_A1.bin .. vmu_save_D1.bin) — flycast keeps
+        // them in the save directory, so seed them there as well.
+        val savesDir = File(filesDir, "saves")
+        if (!savesDir.exists()) savesDir.mkdirs()
+        val vmuFiles = listOf("vmu_save_A1.bin", "vmu_save_B1.bin",
+                              "vmu_save_C1.bin", "vmu_save_D1.bin")
+        for (name in vmuFiles) {
+            val dest = File(savesDir, name)
+            if (dest.exists() && dest.length() > 0) continue  // keep existing
+            try {
+                assets.open("dc/$name").use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                extracted++
+                Log.i("NesApp", "DC VMU seeded: $name")
+            } catch (_: java.io.FileNotFoundException) {
+                // Not bundled — flycast creates fresh VMUs on first boot
+            } catch (e: Exception) {
+                Log.w("NesApp", "Failed to seed DC VMU $name", e)
+                if (dest.exists()) dest.delete()
+            }
+        }
+
+        if (extracted > 0) {
+            Log.i("NesApp", "DC BIOS/VMU: $extracted file(s) deployed " +
+                    "(BIOS → ${destDir.absolutePath}, VMU → ${savesDir.absolutePath})")
+        } else {
+            Log.i("NesApp", "DC BIOS: no bundled BIOS files found in assets/dc/. " +
+                    "Dreamcast disc games require dc_boot.bin + dc_flash.bin " +
+                    "in <filesDir>/dc/ (import via Settings → DC).")
         }
     }
 

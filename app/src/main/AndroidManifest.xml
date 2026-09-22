@@ -5,9 +5,6 @@
     <!-- Network permission -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Flycast (Dreamcast/NAOMI) 网络对战：Wi-Fi 状态读取与组播锁（Naomi 多机联机发现） -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <!-- Storage permissions (Android 12 and below) -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -206,22 +203,10 @@
             android:name="com.nokia.mid.ui.NotificationBroadcastReceiver"
             android:process=":midlet" />
 
-        <!-- ═══════════════════════════════════════════════════════════════
-             Flycast (Dreamcast / NAOMI / AtomisWave 核心) 独立模拟器 Activity。
-             由前端 DcLauncherScreen 通过 EXTRA_GAME_URI extra 启动（不经
-             Intent.setData 传 file://，避免 StrictMode FileUriExposedException）。
-             configChanges 与上游 flycast 官方清单保持一致：画面旋转/密度等变化
-             由 Activity 自行处理（native 渲染线程不重建）。
-             主题用平台全屏主题：BaseGLActivity 继承 android.app.Activity，
-             不依赖 appcompat 主题体系。
-             ═══════════════════════════════════════════════════════════════ -->
-        <activity
-            android:name="com.flycast.emulator.NativeGLActivity"
-            android:configChanges="orientation|navigation|screenSize|screenLayout|uiMode|keyboard|keyboardHidden"
-            android:exported="false"
-            android:hardwareAccelerated="true"
-            android:screenOrientation="sensorLandscape"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
+        <!-- DC (Dreamcast / NAOMI / AtomisWave) 由进程内引擎 DcEngine
+             (libretro Flycast) 运行，与其他核心同一 EmulatorScreen 路径，
+             无独立 Activity（历史注：旧版在此注册过
+             com.flycast.emulator.NativeGLActivity，已随独立集成一并移除）。 -->
 
     </application>
 </manifest>
