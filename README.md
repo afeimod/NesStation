@@ -5,9 +5,9 @@
 
 一个为 Android 手机与 Android TV 打造的高质感多平台复古游戏模拟器。
 
-支持 **10 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME，通过
+支持 **11 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)**，通过
 统一的 Compose UI 与一致的游戏内菜单体验，让你在 TV 大屏和手机小屏上都能
-畅玩从 8-bit 到街机的所有经典游戏。
+畅玩从 8-bit 到街机再到 128-bit 的所有经典游戏。
 
 | 平台 | 核心 | 文件扩展名 | 是否需要 BIOS |
 | --- | --- | --- | --- |
@@ -21,6 +21,7 @@
 | **MD / SEGA**  | **Genesis-Plus-GX** | `.md` `.smd` `.sms` `.gg` `.sg` `.cue` `.chd` | Mega-CD 游戏需要 |
 | **NDS**        | **melonDS / DraStic（激烈）双核心，启动时二选一** | `.nds` | 否（melonDS 内置 FreeBIOS；DraStic 自带） |
 | **Java ME**    | J2ME-Loader       | `.jar` `.jad`                 | 否 |
+| **DC / Dreamcast** | **Flycast 独立核心**（NAOMI / AtomisWave） | `.gdi` `.cdi` `.chd` `.cue` `.lst` `.zip` | 光盘游戏需要 `dc_boot.bin` + `dc_flash.bin`（NAOMI zip 自带 BIOS 无需） |
 
 > 主界面参考 Pico-8 / Analogue Pocket 的视觉语言：像素云朵天空 + 玻璃拟态卡片 + 圆角高亮。
 
@@ -100,6 +101,46 @@
 - 9 种视频滤镜（无 / 扫描线 / CRT / 点阵 / XBR / 4XBR / XBR+点阵 / 4XBR+点阵 / HQ4x）
 - 滤镜直接作用于游戏渲染管线而非全屏覆盖
 - 独立的 J2ME 滤镜偏好存储（与 NES 滤镜完全隔离）
+
+### **DC / Dreamcast（Flycast 独立核心）**
+- Flycast 是 Dreamcast / NAOMI / AtomisWave 的高精度开源模拟器，
+  以 **独立模拟器形态** 集成（区别于其它进程内 libretro 核心）
+- 支持 DC 商业游戏（`.gdi` / `.cdi` / `.chd` / `.cue` / `.iso`）与
+  NAOMI / AtomisWave 街机 ROM（`.zip`，含合并集 `.lst`）
+- **渲染**：Vulkan / OpenGL 双后端（含逐像素排序 OIT 变体）、内部分辨率
+  0.5x-8x 无级缩放、xBRZ 纹理放大、各向异性过滤、宽屏 16:9 补丁、
+  超宽屏、整数缩放、自动跳帧、线程渲染
+- **主机**：区域 / 电视制式 / 主机语言 / 视频输出制式、32MB 内存改机、
+  快速 GD-ROM 读取、HLE BIOS（免真实 BIOS 启动部分游戏）、
+  自动存读档（启动/退出时）
+- **音频**：AICA DSP 音效、缓冲大小 23ms-128ms、自动延迟调节、VMU 蜂鸣
+- **网络**：DC 调制解调器 / BBA 宽带适配器模拟、NAOMI 多机互联（主机端/分机）、
+  GGPO 回滚联机
+- **RetroAchievements 成就**：连接 retroachievements.org，硬核模式
+- **原生 ImGui 菜单**：游戏内按返回键呼出 —— 全部设置实时调整、
+  即时存档/读档（10 槽）、手柄映射（含物理手柄按键绑定）、
+  原生虚拟手柄（可编辑按键布局，支持模拟摇杆/扳机）
+- 仅提供 **arm64-v8a**（64 位）原生库；32 位设备会收到明确提示
+- 集成实现：`core/dc/FlycastLauncher.kt`（启动）＋
+  `ui/settings/FlycastCoreSettings.kt`（设置页直读直写 emu.cfg）＋
+  `com/flycast/emulator/`（vendored 上游 Java 宿主层，见下节）
+
+#### Flycast 集成架构说明
+
+Flycast 的 Java 宿主层（`com.flycast.emulator.*`，22 个类）与 swappy 胶水
+（`com.google.androidgamesdk.*`）自上游 v2.7-119 源码原样 vendor 进本工程，
+保持原包名以匹配 `libflycast.so` 的静态 JNI 符号绑定；预编译核心库
+（`libflycast.so` + adrenotools 自定义驱动钩子链 `libmain_hook/libhook_impl/
+libfile_redirect_hook/libgsl_alloc_hook.so`）位于 `app/src/main/jniLibs/arm64-v8a/`。
+仅做了三处最小补丁（均有 `NesStation 集成补丁` 注释）：
+
+1. `Emulator.java`：移除 appcompat 静态初始化（宿主为 Compose，无需 appcompat）；
+2. `BaseGLActivity.java`：新增 `EXTRA_GAME_URI` extra 传游戏路径（避免
+   StrictMode FileUriExposedException）＋ 字符串资源前缀；
+3. `AndroidStorage.java` / `HomeMover.java`：字符串资源引用加 `flycast_` 前缀，
+   R 类改指向宿主 `com.nesstation.app.R`。
+
+release 构建的 keep 规则见 `app/proguard-rules.pro`（JNI 按名绑定，不可混淆）。
 
 ---
 
@@ -190,6 +231,17 @@ J2ME 游戏使用 J2ME-Loader 的虚拟键盘系统，支持：
 - BIOS 文件位置：`<filesDir>/pce/`
 - **两种添加方式**：同 FBNeo —— ① 将 `.pce` 文件放入 `app/src/main/assets/pce/` 后重新构建，应用启动时自动识别并解压到 `<filesDir>/pce/`；② 游戏内按返回键 → 设置 → PCE BIOS 导入，从文件选择器导入 `.pce` 文件并自动命名
 - 详见 `app/src/main/assets/pce/README.txt`
+
+### Flycast（Dreamcast）BIOS
+- **必需**：DC 光盘游戏 → `dc_boot.bin`（BIOS ROM）+ `dc_flash.bin`（闪存）
+- 无需 BIOS：NAOMI / AtomisWave 街机游戏（`.zip`，BIOS 内置于 ROM 集中）
+- BIOS 文件位置：`<filesDir>/dc/data/`
+- **两种添加方式**：
+  1. **打包到 APK**（私有构建）：放入 `app/src/main/assets/dc/`，启动时自动解压
+  2. **运行时导入**：设置 → DC / Dreamcast → BIOS 管理，从文件选择器导入（按文件名自动归类 dc_boot/dc_flash）
+- VMU 存档（`vmu_save_A1.bin`…）与即时存档（`*.state`）自动保存在同目录，
+  首次启动由核心自动创建 VMU，无需手动准备
+- 详见 `app/src/main/assets/dc/README.txt`
 
 > ⚠️ **法律声明**：所有 BIOS 文件（neogeo.zip、pgm.zip、bios_CD_*.zip 等）都包含受版权保护的代码（SNK、IGS、SEGA 等）。本仓库不包含任何 BIOS 文件，仅提供占位说明文档。你只能将合法获取的 BIOS 文件打包到私有 APK 中供个人使用，不能在公开渠道（GitHub、应用商店等）分发包含 BIOS 的 APK。
 

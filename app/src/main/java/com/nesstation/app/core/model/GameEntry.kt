@@ -21,6 +21,9 @@ import androidx.compose.ui.graphics.Color
  * PS2    = Sony PlayStation 2 (PCEE2 libretro core — the official libretro
  *          Android build of upstream PCSX2, shipped by the buildbot)
  * JAVA   = J2ME/Java ME games (J2ME-Loader engine)
+ * DC     = SEGA Dreamcast / NAOMI / AtomisWave (Flycast standalone core ——
+ *          自带运行循环/原生菜单/原生虚拟手柄的独立模拟器，以独立 Activity
+ *          形式运行，见 core/dc/FlycastLauncher.kt)
  */
 enum class GamePlatform(val displayName: String) {
     NES("NES"),
@@ -34,7 +37,8 @@ enum class GamePlatform(val displayName: String) {
     NDS("NDS"),
     PSX("PSX"),
     PS2("PS2"),
-    JAVA("Java");
+    JAVA("Java"),
+    DC("DC");
 
     companion object {
         /**
@@ -91,6 +95,8 @@ enum class GamePlatform(val displayName: String) {
                 "pcsxrearmed", "pcsxr" -> PSX
                 // Sony PlayStation 2 (PCEE2 libretro core — PCSX2)
                 "ps2", "playstation2", "play", "psx2", "pcsx2" -> PS2
+                // SEGA Dreamcast / NAOMI / AtomisWave (Flycast standalone)
+                "dc", "dreamcast", "naomi", "atomiswave", "flycast" -> DC
                 // J2ME
                 "java", "j2me", "midlet" -> JAVA
                 // 兜底：未识别的字符串保持 NES 行为不变（旧 API 兼容）
@@ -169,6 +175,12 @@ enum class GamePlatform(val displayName: String) {
                 // extensions: .cso/.zso (compressed iso), .isz (legacy,
                 // kept for old libraries), .elf (PS2 homebrew/executable).
                 "cso", "isz", "elf", "zso" -> PS2
+                // SEGA Dreamcast / NAOMI (Flycast standalone)
+                // .gdi = 原生 GD-ROM 镜像（多轨道文本描述，必含同名轨道文件），
+                // .cdi = DiscJuggler 镜像，.lst = Naomi 合并 ROM 清单。
+                // .cue/.chd/.iso 与 MD/PCE/DOS/PSX/PS2 共用，由
+                // detectPlatformFromUri 的平台页 hint 消歧。
+                "gdi", "cdi", "lst" -> DC
                 "jar", "jad" -> JAVA
                 // .zip is intentionally NOT mapped — see detectPlatformFromUri
                 // for the disambiguation logic.

@@ -276,4 +276,23 @@
     <string name="default_label">"%s (default)"</string>
     <string name="not_saved_exists">Already exists</string>
     <string name="alert_rewrite_profile">A profile named \"%1$s\" already exists.\nDo you want to overwrite it?</string>
+
+    <!-- Flycast (Dreamcast/NAOMI core) — libflycast.so 宿主 Java 层引用的字符串。
+         名称与上游 flycast res/values/strings.xml 一一对应并加 flycast_ 前缀，
+         引用点见 com/flycast/emulator/BaseGLActivity.java、AndroidStorage.java、
+         HomeMover.java（NesStation 集成补丁已同步改写引用）。 -->
+    <string name="flycast_ok">OK</string>
+    <string name="flycast_storage_error">Storage Error</string>
+    <string name="flycast_folder_permissions">Can\'t get permissions to access this folder.\nPlease select a different one.</string>
+    <string name="flycast_file_manager_not_found">File Manager not found</string>
+    <string name="flycast_no_file_manager_android10">No appropriate file manager was found on your device.\nPlease install a Storage Access Framework compatible file manager</string>
+    <string name="flycast_no_file_manager_android9">No appropriate file manager was found on your device.\nPlease install a file manager or try to disable \'Use SAF File Picker\' in the general settings</string>
+    <string name="flycast_select_an_export_folder">Select an export folder</string>
+    <string name="flycast_exporting_home_folder">Exporting home folder</string>
+    <string name="flycast_select_an_import_folder">Select an import folder</string>
+    <string name="flycast_importing_home_folder">Importing home folder</string>
+    <string name="flycast_error">Flycast Error</string>
+    <string name="flycast_init_failed_message">Initialization failed. Please try again or reinstall.\n\nError: </string>
+    <string name="flycast_exit">Exit</string>
+    <string name="flycast_copying">Copying</string>
 </resources>

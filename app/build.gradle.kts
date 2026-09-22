@@ -150,7 +150,14 @@ android {
 
     packaging {
         jniLibs {
-            useLegacyPackaging = false
+            // Flycast (DC/NAOMI) 要求 useLegacyPackaging = true（extractNativeLibs）：
+            // 其自定义 Adreno GPU 驱动功能（rend.CustomGpuDriver）运行时经
+            // adrenotools/linkernsbypass 从 nativeLibraryDir dlopen 钩子库
+            // (libmain_hook/libhook_impl/libfile_redirect_hook/libgsl_alloc_hook.so)，
+            // 未解压态（so 以符号链接指向 APK 内部）时该加载路径不可靠。
+            // 上游 flycast shell/android-studio 同样强制 useLegacyPackaging = true。
+            // 代价仅为安装时解压 so（安装包占用略增），对其它核心无影响。
+            useLegacyPackaging = true
         }
         resources {
             excludes += setOf(
@@ -232,6 +239,16 @@ dependencies {
     implementation(libs.camerax.view)
     implementation(libs.filepicker)
     implementation(libs.ambilwarna)
+
+    // Flycast (Dreamcast/NAOMI) core — Java 层依赖（见 core/dc/ 与 com/flycast/emulator/）。
+    // 版本与上游 flycast shell/android-studio/gradle/libs.versions.toml 保持一致：
+    //   commons-lang3  → InputDeviceManager/FileBrowser 的 ArrayUtils/StringUtils
+    //   httpclient5    → emu.HttpClient（RetroAchievements 上传/下载、网络对战）
+    //   slf4j-android  → httpclient5 运行时日志绑定
+    implementation(libs.commons.lang3)
+    implementation(libs.httpclient5)
+    implementation(libs.slf4j.android)
+
     compileOnly(libs.auto.service.annotations)
     kapt(libs.auto.service)
 

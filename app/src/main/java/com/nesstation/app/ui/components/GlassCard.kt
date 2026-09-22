@@ -267,6 +267,7 @@ private fun PlatformBadge(platform: GamePlatform, modifier: Modifier = Modifier)
         GamePlatform.PSX    -> "PSX"  to Color(0xFF5D4037)   // brown — PlayStation 1
         GamePlatform.PS2    -> "PS2"  to Color(0xFF37474F)   // blue-grey — PlayStation 2 (PCEE2/PCSX2)
         GamePlatform.JAVA   -> "Java" to Color(0xFF4E342E)   // brown — J2ME
+        GamePlatform.DC     -> "DC"   to Color(0xFF1B6FE0)   // blue — Dreamcast/NAOMI (Flycast)
     }
     Box(
         modifier = modifier

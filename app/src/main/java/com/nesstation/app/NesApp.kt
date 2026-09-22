@@ -15,6 +15,7 @@ import com.nesstation.app.core.engine.NdsEngine
 import com.nesstation.app.core.storage.AppContainer
 import com.nesstation.app.core.storage.RomStore
 import com.nesstation.app.core.storage.SettingsRepository
+import com.flycast.emulator.Emulator as FlycastEmulator
 import java.io.File
 
 /**
@@ -28,7 +29,14 @@ import java.io.File
  *  3. A global UncaughtExceptionHandler logs every uncaught throw and
  *     swallows non-fatal ones so a rogue background thread can't kill the app.
  */
-class NesApp : Application() {
+class NesApp : FlycastEmulator() {
+    // 继承 com.flycast.emulator.Emulator（Application 子类）：Flycast 的
+    // BaseGLActivity.onCreate 会校验 getApplicationContext() instanceof Emulator，
+    // 且 JNIdc.initEnvironment 把 Application 强转为 Emulator 后回调其
+    // getAppContext()/getCurrentActivity()/SaveAndroidSettings() 等方法 ——
+    // 宿主 Application 必须是（或继承）Emulator 才能启动 Flycast 游戏。
+    // Emulator.onCreate 只做 Emulator.context 静态赋值，本类 onCreate 首行
+    // super.onCreate() 已覆盖。
 
     override fun onCreate() {
         super.onCreate()
@@ -118,6 +126,13 @@ class NesApp : Application() {
         tryInit("PceBios")            { ensurePceBios() }
         tryInit("NdsBios")            { ensureNdsBios() }
         tryInit("PsxBios")            { ensurePsxBios() }
+        tryInit("DcFlycast")          {
+            // Flycast (Dreamcast/NAOMI) —— home 目录 + emu.cfg 位置 + BIOS 播种。
+            // 详见 core/dc/FlycastPaths.kt；启动时序上必须先于首次
+            // NativeGLActivity 启动（FlycastLauncher 内也会兑底调用）。
+            com.nesstation.app.core.dc.FlycastPaths.ensureHomePref(this)
+            com.nesstation.app.core.dc.FlycastPaths.ensureBiosFromAssets(this)
+        }
         tryInit("ArcadeTitleMigrate") { migrateArcadeTitles() }
         tryInit("LibraryJunkSanitize") { sanitizeLibraryOnce() }
     }

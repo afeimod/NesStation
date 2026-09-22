@@ -101,7 +101,9 @@ object PlatformDetector {
         // PC-Engine / SuperGrafx
         "pce" to GamePlatform.PCE, "sgx" to GamePlatform.PCE,
         // Nintendo DS（排除 app —— 撞 APK / macOS 应用 / 应用数据）
-        "nds" to GamePlatform.NDS, "srl" to GamePlatform.NDS
+        "nds" to GamePlatform.NDS, "srl" to GamePlatform.NDS,
+        // SEGA Dreamcast / NAOMI（.gdi/.cdi 为 DC 专属格式，日常文件不撞名）
+        "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC
     )
 
     /**
@@ -197,7 +199,7 @@ object PlatformDetector {
         if (entryExts.any { it in CD_IMAGE_EXTENSIONS }) {
             return when (hintPlatform) {
                 GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
-                GamePlatform.PSX, GamePlatform.PS2 -> hintPlatform
+                GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC -> hintPlatform
                 else -> GamePlatform.MD
             }
         }
@@ -208,7 +210,7 @@ object PlatformDetector {
     /** 刷新重扫时允许跟随 hint 消歧的平台集合（CD 镜像类）。 */
     private val REFRESH_HINT_ALLOWED = setOf(
         GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
-        GamePlatform.PSX, GamePlatform.PS2
+        GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC
     )
 
     /**
@@ -285,6 +287,7 @@ object PlatformDetector {
                 GamePlatform.PCE -> GamePlatform.PCE
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
+                GamePlatform.DC -> GamePlatform.DC
                 else -> GamePlatform.MD
             }
         }
@@ -347,12 +350,16 @@ object PlatformDetector {
                 if (psxHints.any { lowerPath.contains(it) }) return GamePlatform.PSX
                 val ps2Hints = listOf("ps2", "playstation2", "psx2")
                 if (ps2Hints.any { lowerPath.contains(it) }) return GamePlatform.PS2
+                // DC 专属关键字放最后（"dc" 过短，避免误伤其它路径）
+                val dcHints = listOf("dreamcast", "naomi", "atomiswave", "flycast", "/dc/")
+                if (dcHints.any { lowerPath.contains(it) }) return GamePlatform.DC
             }
             return when (hintPlatform) {
                 GamePlatform.DOS -> GamePlatform.DOS
                 GamePlatform.PCE -> GamePlatform.PCE
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
+                GamePlatform.DC -> GamePlatform.DC
                 else -> GamePlatform.MD
             }
         }
@@ -436,6 +443,7 @@ object PlatformDetector {
                 GamePlatform.PS2 -> GamePlatform.PS2
                 GamePlatform.NES -> GamePlatform.NES
                 GamePlatform.ARCADE -> GamePlatform.ARCADE
+                GamePlatform.DC -> GamePlatform.DC
                 else -> GamePlatform.MD
             }
         }

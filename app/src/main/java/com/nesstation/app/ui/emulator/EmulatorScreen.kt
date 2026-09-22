@@ -864,6 +864,16 @@ fun EmulatorScreen(
         return
     }
 
+    // === DC (Dreamcast / NAOMI) —— Flycast 独立核心 ===
+    // Flycast 是自带运行循环 / 原生 ImGui 菜单 / 原生虚拟手柄的独立模拟器，
+    // 不走进程内引擎路径：交给 FlycastLauncherScreen 渲染启动页并拉起
+    // com.flycast.emulator.NativeGLActivity（详见 core/dc/FlycastLauncher.kt）。
+    // 必须在 engine 创建之前 return（EmulatorEngine.forPlatform 对 DC 抛错）。
+    if (platform == GamePlatform.DC) {
+        FlycastLauncherScreen(game = game, onExit = onExit)
+        return
+    }
+
     val engine = remember(ndsCoreChoice) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
             com.nesstation.app.core.engine.DraSticEngine.get()

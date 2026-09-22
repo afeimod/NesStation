@@ -19,6 +19,7 @@ import com.nesstation.app.core.storage.JAVA_PHONE_KEY_OPTIONS
 import com.nesstation.app.core.storage.javaButtonKeyMapGet
 import com.nesstation.app.core.storage.javaButtonKeyMapSet
 import com.nesstation.app.ui.emulator.Psx2BiosImportSection
+import com.nesstation.app.ui.settings.FlycastCoreSettingsContent
 
 /**
  * 核心设置子页：进入后展示该核心专属的模拟器选项。
@@ -1471,10 +1472,19 @@ fun CoreSettingsPanel(
                     Psx2BiosImportSection()
                 }
             }
+            GamePlatform.DC -> item {
+                // Flycast 独立核心 —— 设置直接读写 <filesDir>/dc/emu.cfg（核心自身的
+                // 配置文件），与游戏内 Flycast 原生菜单双向同步。见 FlycastCoreSettings.kt。
+                FlycastCoreSettingsContent()
+            }
         }
 
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在
         // PadLayout.overlayThemeJson，见 OverlayTheme.kt） ===
-        item { OverlayThemeSection(platform, padLayout, updateLayout) }
+        // DC (Flycast) 虚拟手柄由核心原生渲染/编辑（游戏内菜单 → Edit Virtual
+        // Gamepad），NesStation 皮肤系统对其不生效，跳过。
+        if (platform != GamePlatform.DC) {
+            item { OverlayThemeSection(platform, padLayout, updateLayout) }
+        }
     }
 }

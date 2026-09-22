@@ -331,6 +331,23 @@ object RomStore {
         }
     }
 
+    /**
+     * 累计游玩时长（毫秒）。
+     *
+     * 目前由 DC (Flycast) 启动页在会话结束时调用 —— Flycast 是独立 Activity
+     * 接管游戏会话，返回 NesStation 后一次性结算本次会话时长（≥1 秒才写），
+     * 供游戏库「游玩时长」展示与排序使用。其它平台的时长统计保持现状不变。
+     */
+    fun addPlayTime(ctx: Context, gameId: String, deltaMs: Long) {
+        if (deltaMs <= 0L) return
+        val list = loadAll(ctx)
+        val idx = list.indexOfFirst { it.id == gameId }
+        if (idx >= 0) {
+            list[idx] = list[idx].copy(playTimeMs = list[idx].playTimeMs + deltaMs)
+            saveAll(ctx, list)
+        }
+    }
+
     /** Toggle favorite status */
     fun toggleFavorite(ctx: Context, gameId: String) {
         val list = loadAll(ctx)

@@ -19,6 +19,9 @@ androidxJunit = "1.2.1"
 espresso = "3.6.1"
 webkit = "1.12.1"
 appcompat = "1.6.1"
+commonsLang3 = "3.12.0"
+httpclient5 = "5.0.3"
+slf4jAndroid = "1.7.35"
 material = "1.9.0"
 preference = "1.2.0"
 multidex = "2.0.1"
@@ -73,6 +76,10 @@ androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "a
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }
 # J2ME dependencies
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+# Flycast (Dreamcast/NAOMI) core — Java 层依赖（与上游 shell/android-studio 构建一致）
+commons-lang3 = { group = "org.apache.commons", name = "commons-lang3", version.ref = "commonsLang3" }
+httpclient5 = { group = "org.apache.httpcomponents.client5", name = "httpclient5", version.ref = "httpclient5" }
+slf4j-android = { group = "org.slf4j", name = "slf4j-android", version.ref = "slf4jAndroid" }
 androidx-material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 androidx-preference = { group = "androidx.preference", name = "preference", version.ref = "preference" }
 androidx-multidex = { group = "androidx.multidex", name = "multidex", version.ref = "multidex" }

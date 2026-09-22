@@ -20,11 +20,18 @@ jniLibs/
 ├── arm64-v8a/
 │   ├── libdosbox_pure_libretro_android.so   # DOSBox-Pure (DOS core)
 │   ├── libfbneo_libretro_android.so         # FBNeo (Arcade core)
-│   └── libgenesis_plus_gx_libretro_android.so  # Genesis-Plus-GX (MD core)
+│   ├── libgenesis_plus_gx_libretro_android.so  # Genesis-Plus-GX (MD core)
+│   ├── libflycast.so                        # Flycast (Dreamcast/NAOMI standalone core, v2.7-119)
+│   ├── libmain_hook.so                      # Flycast adrenotools 自定义 GPU 驱动钩子链
+│   ├── libhook_impl.so                      #   (rend.CustomGpuDriver 功能，见
+│   ├── libfile_redirect_hook.so             #    flycast 上游 shell/android 构建)
+│   └── libgsl_alloc_hook.so                 #
 ├── armeabi-v7a/
 │   ├── libdosbox_pure_libretro_android.so
 │   ├── libfbneo_libretro_android.so
 │   └── libgenesis_plus_gx_libretro_android.so
+│   # 注：libflycast.so 仅提供 arm64-v8a（与上游 APK 一致）；
+│   # 32 位设备上 DC 平台在启动前给出明确提示，不加载。
 └── x86_64/
     ├── libdosbox_pure_libretro_android.so
     ├── libfbneo_libretro_android.so

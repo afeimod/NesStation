@@ -244,6 +244,10 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         GamePlatform.PSX    -> SNES_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.PS2    -> PS2_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.JAVA   -> JAVA_ACTIONS.map { it.copy(id = it.id + suffix) }
+        // DC (Flycast) 不在上方平台 tab 列表里：物理手柄/键盘映射由核心自身的
+        // 映射系统管理（游戏内 Flycast 菜单 → Controllers → 按键绑定），
+        // NesStation 的 KeyMapStore 对其不生效，此处仅为枚举穷尽性保留。
+        GamePlatform.DC     -> emptyList()
     }
 }
 

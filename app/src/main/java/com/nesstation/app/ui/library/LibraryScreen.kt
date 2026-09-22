@@ -137,6 +137,11 @@ val ROM_EXTENSIONS = listOf(
     "nds", "app", "ids", "srl", "dsi",
     // PlayStation 1 (PCSX-ReARMed)
     "pbp", "m3u", "ecm", "mdf", "mds",
+    // SEGA Dreamcast / NAOMI (Flycast standalone)
+    // .gdi = 原生 GD-ROM 镜像（多轨道），.cdi = DiscJuggler 镜像，
+    // .lst = Naomi 合并 ROM 清单；.chd/.cue/.iso 共用上面的 CD 镜像段，
+    // 由平台页 hint 消歧；.zip/.7z 在 DC 页导入时归 NAOMI 街机（见 detectFromExtensions）。
+    "gdi", "cdi", "lst",
     // Arcade (FBNeo) — archives only; the filename IS the driver name
     "zip", "7z", "gz"
 )
@@ -988,7 +993,8 @@ fun LibraryScreen(
                     GamePlatform.NDS,
                     GamePlatform.PSX,
                     GamePlatform.PS2,
-                    GamePlatform.JAVA
+                    GamePlatform.JAVA,
+                    GamePlatform.DC
                 )) { platform ->
                     FilterChip(
                         text = platform.displayName,

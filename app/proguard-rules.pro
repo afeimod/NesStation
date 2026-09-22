@@ -145,3 +145,20 @@
 # 引用，不 keep 会在 release 构建被裁剪/混淆，运行时抛 NoSuchMethodError /
 # UnsatisfiedLinkError（NDS 选 DraStic 核心启动闪退）。整个包 keep。
 -keep class com.dsemu.drastic.** { *; }
+
+# ─── Flycast (Dreamcast/NAOMI core) ────────────────────────────────────────
+# libflycast.so 通过 JNI 符号 (Java_com_flycast_emulator_*) 与 GetMethodID 按名
+# 查找宿主 Java 类/方法/字段（静态绑定包名+类名+方法名）。release 构建 R8 混淆
+# 会改名导致 UnsatisfiedLinkError / NoSuchMethodError，因此整包 keep：
+#   · native 方法声明（JNIdc/AudioBackend/HttpClient/VGamepad/InputDeviceManager/
+#     AndroidStorage/BaseGLActivity.register 等）
+#   · native → Java 回调（Emulator.getAppContext/getCurrentActivity、
+#     AudioBackend.init/term/writeBuffer、HttpClient.init/openUrl/post、
+#     InputDeviceManager.rumble、BaseGLActivity.onGameStateChange/
+#     showScreenKeyboard/getNativeLibDir、AndroidStorage.openFile/listContent/
+#     getFileInfo、FileInfo getter/setter、SipEmulator、LocaleUtils 等）
+-keep class com.flycast.emulator.** { *; }
+-keepclassmembers class com.flycast.emulator.** { *; }
+# libflycast.so 内置 swappy 通过 FindClass 访问的 Java 胶水类
+-keep class com.google.androidgamesdk.** { *; }
+# httpclient5/slf4j 由 R8 处理依赖即可，flycast 的 HttpClient 经 JNI 调用已被上面 keep 覆盖

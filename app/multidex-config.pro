@@ -15,3 +15,7 @@
 
 # Keep BuildConfig
 -keep class com.nesstation.app.BuildConfig { *; }
+
+# ─── Flycast (Dreamcast/NAOMI core)：JNI 按名绑定，multidex 调试构建同样 keep ───
+-keep class com.flycast.emulator.** { *; }
+-keep class com.google.androidgamesdk.** { *; }

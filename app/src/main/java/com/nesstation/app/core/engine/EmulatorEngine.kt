@@ -231,6 +231,10 @@ interface EmulatorEngine {
          *           [DraSticEngine.get]）。本工厂保持只返回 melonDS。
          * PSX    -> PsxEngine (PCSX-ReARMed — Sony PlayStation 1)
          * PS2    -> Psx2Engine (PCEE2 — PCSX2 — Sony PlayStation 2)
+         * DC     -> 无进程内引擎：Flycast 是独立模拟器（自带运行循环/原生
+         *           菜单），以独立 Activity 运行（见 core/dc/FlycastLauncher.kt），
+         *           EmulatorScreen 对 DC 分支提前返回，永远不该走到本工厂。
+         *           保留分支仅为枚举穷尽性 + 防御性报错。
          */
         fun forPlatform(platform: GamePlatform): EmulatorEngine = when (platform) {
             GamePlatform.NES    -> NesEngine.get()
@@ -245,6 +249,9 @@ interface EmulatorEngine {
             GamePlatform.PSX    -> PsxEngine.get()
             GamePlatform.PS2    -> Psx2Engine.get()
             GamePlatform.JAVA   -> J2meEngine.get()
+            GamePlatform.DC     -> throw IllegalStateException(
+                "Dreamcast (Flycast) 使用独立 Activity 运行，无进程内引擎 —— "
+                + "EmulatorScreen 应在创建引擎前对 DC 提前返回")
         }
     }
 }
