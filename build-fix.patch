@@ -1,0 +1,26 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index df86ff36..635c9a68 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -158,6 +158,21 @@ android {
+             // 上游 flycast shell/android-studio 同样强制 useLegacyPackaging = true。
+             // 代价仅为安装时解压 so（安装包占用略增），对其它核心无影响。
+             useLegacyPackaging = true
++
++            // 4 个 adrenotools 钩子库同时来自两条输入：
++            //   1) app/src/main/jniLibs/arm64-v8a/lib*.so —— Flycast 上游 shell 预编译产物；
++            //   2) ARMSX2/platforms/android/.../3rdparty/adrenotools/CMakeLists.txt
++            //      以 add_library(... SHARED ...) 现场编译（仅 arm64-v8a）。
++            // 二者在 mergeReleaseNativeLibs 阶段命中 DuplicateRelativeFileException:
++            //   "2 files found with path 'lib/arm64-v8a/libfile_redirect_hook.so'"
++            // 用 pickFirsts 让 AGP 取其一即可（两个版本均来自同一 adrenotools 上游，
++            // ABI/符号接口一致，运行时 dlopen 不会因版本差异崩）。
++            pickFirsts += setOf(
++                "lib/arm64-v8a/libfile_redirect_hook.so",
++                "lib/arm64-v8a/libgsl_alloc_hook.so",
++                "lib/arm64-v8a/libhook_impl.so",
++                "lib/arm64-v8a/libmain_hook.so"
++            )
+         }
+         resources {
+             excludes += setOf(
