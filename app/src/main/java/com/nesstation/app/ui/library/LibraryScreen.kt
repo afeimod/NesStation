@@ -1910,6 +1910,7 @@ private fun FsdPlatformBadge(platform: GamePlatform, modifier: Modifier = Modifi
         GamePlatform.PSX    -> "PSX"
         GamePlatform.PS2    -> "PS2"
         GamePlatform.JAVA   -> "Java"
+        GamePlatform.DC    -> "DC"
     }
     Box(
         modifier = modifier
