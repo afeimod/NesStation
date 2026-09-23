@@ -23,6 +23,7 @@ import com.nesstation.app.core.storage.JAVA_PHONE_KEY_OPTIONS
 import com.nesstation.app.core.storage.javaButtonKeyMapGet
 import com.nesstation.app.core.storage.javaButtonKeyMapSet
 import com.nesstation.app.ui.emulator.Psx2BiosImportSection
+import kotlinx.coroutines.launch
 
 /**
  * 核心设置子页：进入后展示该核心专属的模拟器选项。
@@ -1587,74 +1588,204 @@ fun CoreSettingsPanel(
                 }
             }
             GamePlatform.TG3DS -> item {
-                // 外部独立核心 Azahar / 爱吾 AzaharPlus —— NesStation 负责
-                // 状态检测 / 解密密钥 / CIA 导入 / 启动桥接；模拟专属设置在核心内。
-                ExternalCoreStatusSection(coreName = "3DS 核心 (AzaharPlus / 爱吾3DS)")
+                // 3DS 进程内 Azahar 核心 —— 设置写 <userDir>/config/config.ini，
+                // 与 DC 设置页（emu.cfg 直写）同一模式；解密/CIA 走核心原生安装器。
+                InProcessCoreStatusSection(coreName = "3DS 核心 (Azahar)")
                 SettingsSection("3DS · 游戏解密") {
                     DropdownRow("启动前加密校验",
                         listOf("enabled" to "开启 (推荐·加密游戏给出提示)", "disabled" to "关闭 (直接交给核心)"),
                         padLayout.tg3dsDecryptCheck
                     ) { updateLayout(padLayout.copy {tg3dsDecryptCheck = it}) }
-                    Text(
-                        "加密检测原理：NCCH 容器头 0x188 的 crypto 标志位。" +
-                        "已解密游戏直接启动；加密游戏需要 Azahar 用户目录下的 " +
-                        "keys/aes_keys.txt（下方导入一次即全局生效）。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
-                    AzaharKeysImportSection()
+                    AzaharKeysAndDecryptSection()
                 }
                 SettingsSection("3DS · CIA 安装") {
-                    DropdownRow("CIA 导入策略",
-                        listOf("launch" to "启动即安装 (引导 CIA 自动装入 NAND)",
-                               "copy" to "复制到 import/ 目录 (在核心内批量安装)"),
+                    CiaInstallSection()
+                    DropdownRow("CIA 启动策略",
+                        listOf("launch" to "启动即安装 (CIA 引导时自动装入 NAND)",
+                               "copy" to "仅复制文件 (不自动安装)"),
                         padLayout.tg3dsCiaMode
                     ) { updateLayout(padLayout.copy {tg3dsCiaMode = it}) }
-                    Text(
-                        ".cia 导入游戏列表后即可启动：Azahar 引导 CIA 时自动安装。\n" +
-                        "支持扩展名：.3ds / .cci / .cxi / .app / .cia / .3dsx。" +
-                        "如需批量安装，可在下方选定 Azahar 数据目录后使用「复制到 import/」。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                }
+                SettingsSection("3DS · 画面") {
+                    DropdownRow("内部分辨率",
+                        listOf("0" to "自动", "1" to "1x (原生)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x", "6" to "6x", "7" to "7x", "8" to "8x"),
+                        padLayout.tg3dsResolution
+                    ) { updateLayout(padLayout.copy {tg3dsResolution = it}) }
+                    DropdownRow("图形 API",
+                        listOf("1" to "OpenGL ES (默认·兼容)", "2" to "Vulkan (高性能)", "0" to "OpenGL"),
+                        padLayout.tg3dsGraphicsApi
+                    ) { updateLayout(padLayout.copy {tg3dsGraphicsApi = it}) }
+                    DropdownRow("垂直同步", listOf("1" to "开启", "0" to "关闭"), padLayout.tg3dsVsync)
+                    { updateLayout(padLayout.copy {tg3dsVsync = it}) }
+                    DropdownRow("硬件着色器", listOf("1" to "开启 (推荐)", "0" to "关闭 (更慢)"), padLayout.tg3dsHwShader)
+                    { updateLayout(padLayout.copy {tg3dsHwShader = it}) }
+                    DropdownRow("着色器精确乘法", listOf("1" to "开启", "0" to "关闭"), padLayout.tg3dsAccurateMul)
+                    { updateLayout(padLayout.copy {tg3dsAccurateMul = it}) }
+                    DropdownRow("磁盘着色器缓存", listOf("1" to "开启 (推荐)", "0" to "关闭"), padLayout.tg3dsDiskShader)
+                    { updateLayout(padLayout.copy {tg3dsDiskShader = it}) }
+                    DropdownRow("异步着色器编译", listOf("1" to "开启 (减少卡顿)", "0" to "关闭"), padLayout.tg3dsAsyncShader)
+                    { updateLayout(padLayout.copy {tg3dsAsyncShader = it}) }
+                    DropdownRow("显示过滤",
+                        listOf("1" to "线性 (默认)", "0" to "最近邻 (像素风)"),
+                        padLayout.tg3dsFilterMode
+                    ) { updateLayout(padLayout.copy {tg3dsFilterMode = it}) }
+                    DropdownRow("纹理过滤",
+                        listOf("0" to "无 (默认)", "1" to "Anime4K", "2" to "Bicubic", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
+                        padLayout.tg3dsTextureFilter
+                    ) { updateLayout(padLayout.copy {tg3dsTextureFilter = it}) }
+                }
+                SettingsSection("3DS · 双屏布局") {
+                    DropdownRow("横屏布局",
+                        listOf("2" to "大屏 + 小屏 (推荐)", "0" to "默认 (上下)", "1" to "单屏", "3" to "侧并", "4" to "混合", "5" to "自定义"),
+                        padLayout.tg3dsLayout
+                    ) { updateLayout(padLayout.copy {tg3dsLayout = it}) }
+                    DropdownRow("竖屏布局",
+                        listOf("2" to "大屏 + 小屏 (推荐)", "0" to "默认 (上下)", "1" to "单屏", "3" to "侧并", "4" to "混合", "5" to "自定义"),
+                        padLayout.tg3dsPortraitLayout
+                    ) { updateLayout(padLayout.copy {tg3dsPortraitLayout = it}) }
+                    DropdownRow("交换上下屏", listOf("0" to "正常", "1" to "交换"), padLayout.tg3dsSwapScreen)
+                    { updateLayout(padLayout.copy {tg3dsSwapScreen = it}) }
+                    DropdownRow("竖持模式 (纵长游戏)", listOf("0" to "关闭", "1" to "开启"), padLayout.tg3dsUpright)
+                    { updateLayout(padLayout.copy {tg3dsUpright = it}) }
+                    DropdownRow("立体 3D 渲染",
+                        listOf("0" to "关闭", "1" to "并排 (半宽)", "2" to "并排 (全宽)", "3" to "红蓝分色", "4" to "隔行", "5" to "反隔行", "6" to "Cardboard VR"),
+                        padLayout.tg3dsRender3d
+                    ) { updateLayout(padLayout.copy {tg3dsRender3d = it}) }
+                    DropdownRow("3D 深度",
+                        listOf("0" to "0%", "64" to "25%", "128" to "50%", "191" to "75%", "255" to "100%"),
+                        padLayout.tg3dsFactor3d
+                    ) { updateLayout(padLayout.copy {tg3dsFactor3d = it}) }
+                }
+                SettingsSection("3DS · 音频") {
+                    DropdownRow("音频输出",
+                        listOf("0" to "自动选择", "1" to "无音频", "2" to "Cubeb", "3" to "OpenAL", "4" to "SDL2"),
+                        padLayout.tg3dsAudioOutput
+                    ) { updateLayout(padLayout.copy {tg3dsAudioOutput = it}) }
+                    DropdownRow("音频模拟",
+                        listOf("1" to "开启 (默认)", "0" to "关闭 (最快)"),
+                        padLayout.tg3dsAudioEmulation
+                    ) { updateLayout(padLayout.copy {tg3dsAudioEmulation = it}) }
+                    DropdownRow("音频拉伸", listOf("1" to "开启 (消除爆音)", "0" to "关闭 (低延迟)"), padLayout.tg3dsAudioStretch)
+                    { updateLayout(padLayout.copy {tg3dsAudioStretch = it}) }
+                    DropdownRow("音量",
+                        listOf("0" to "静音", "50" to "50%", "80" to "80%", "100" to "100%"),
+                        padLayout.tg3dsVolume
+                    ) { updateLayout(padLayout.copy {tg3dsVolume = it}) }
+                }
+                SettingsSection("3DS · 系统 / 性能") {
+                    DropdownRow("机型 (New 3DS 模式)",
+                        listOf("0" to "老 3DS (默认·兼容)", "1" to "New 3DS (专属游戏需要)"),
+                        padLayout.tg3dsNew3ds
+                    ) { updateLayout(padLayout.copy {tg3dsNew3ds = it}) }
+                    DropdownRow("区域",
+                        listOf("-1" to "自动", "0" to "日本", "1" to "美国", "2" to "欧洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                        padLayout.tg3dsRegion
+                    ) { updateLayout(padLayout.copy {tg3dsRegion = it}) }
+                    DropdownRow("CPU JIT",
+                        listOf("1" to "开启 (推荐)", "0" to "解释器 (兼容性调试)"),
+                        padLayout.tg3dsCpuJit
+                    ) { updateLayout(padLayout.copy {tg3dsCpuJit = it}) }
+                    DropdownRow("CPU 时钟",
+                        listOf("50" to "50%", "75" to "75%", "100" to "100% (原生)", "150" to "150%", "200" to "200%", "300" to "300%"),
+                        padLayout.tg3dsCpuClock
+                    ) { updateLayout(padLayout.copy {tg3dsCpuClock = it}) }
+                    DropdownRow("限帧",
+                        listOf("1" to "开启 (原速)", "0" to "不限帧 (快进)"),
+                        padLayout.tg3dsFrameLimit
+                    ) { updateLayout(padLayout.copy {tg3dsFrameLimit = it}) }
+                    DropdownRow("系统应用 LLE",
+                        listOf("1" to "开启 (默认)", "0" to "关闭 (HLE 模拟)"),
+                        padLayout.tg3dsLleApplets
+                    ) { updateLayout(padLayout.copy {tg3dsLleApplets = it}) }
                 }
             }
             GamePlatform.NGCWII -> item {
-                // 外部独立核心 Ishiruka (Dolphin fork) —— 控制器切换 / 体感 /
-                // 全量虚拟按键(核心 overlay) / 启动桥接；模拟专属设置在核心内，
-                // 下方开关直读直写核心 Config/*.ini（同 DC 设置页 emu.cfg 模式）。
-                val context = androidx.compose.ui.platform.LocalContext.current
-                ExternalCoreStatusSection(coreName = "NGC/WII 核心 (Ishiruka)")
+                // NGC/WII 进程内 Ishiruka (Dolphin fork) —— Dolphin.ini/GFX.ini
+                // 经 native SetUserSetting 直写热生效；控制器扩展热切换。
+                InProcessCoreStatusSection(coreName = "NGC/WII 核心 (Ishiruka)")
                 SettingsSection("NGC/WII · 控制器切换 / 体感") {
-                    DropdownRow("默认控制器",
+                    DropdownRow("控制器方案",
                         listOf(
                             "gc" to "GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机)",
-                            "wiimote" to "Wii 遥控器 (1/2/A/B/±/HOME + 十字键)",
-                            "nunchuk" to "双节棍 (Wii 遥控器 + C/Z + 副摇杆)",
+                            "wii" to "Wii 遥控器 + 双节棍 (C/Z + 副摇杆 + 体感)",
+                            "wiimote" to "Wii 遥控器横握 (1/2/A/B/±/HOME)",
                             "classic" to "经典手柄 (双摇杆 + 全键)"
                         ),
                         padLayout.ngcwiiController
-                    ) {
-                        updateLayout(padLayout.copy {ngcwiiController = it})
-                        val err = com.nesstation.app.core.external.ExternalCores.applyNgcwiiControllerMode(
-                            context, it, padLayout.ngcwiiMotion)
-                        if (err != null) android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
-                    }
+                    ) { updateLayout(padLayout.copy {ngcwiiController = it}) }
                     DropdownRow("体感操作",
-                        listOf("enabled" to "开启 (摇动/倾斜/IR 指针)",
+                        listOf("enabled" to "开启 (倾斜传感器 + 摇晃 + IR 指针)",
                                "disabled" to "关闭 (避免误触发摇一摇)"),
                         padLayout.ngcwiiMotion
-                    ) {
-                        updateLayout(padLayout.copy {ngcwiiMotion = it})
-                        val err = com.nesstation.app.core.external.ExternalCores.applyNgcwiiControllerMode(
-                            context, padLayout.ngcwiiController, it)
-                        if (err != null) android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
-                    }
+                    ) { updateLayout(padLayout.copy {ngcwiiMotion = it}) }
                     Text(
-                        "全量虚拟按键（GC 手柄 / Wii 遥控器 / 双节棍 / 经典手柄 / 体感）由\n" +
-                        "Ishiruka 触摸层呈现，游戏内布局编辑器可逐键显隐与拖动。控制器切换\n" +
-                        "写入核心 Config/WiimoteNew.ini 的 Extension 字段，下次启动生效。",
+                        "全量虚拟按键（GC 手柄 / Wii 遥控器 / 双节棍 / 经典手柄）随控制器方案自动切换；" +
+                        "IR 指针 = 游戏画面触摸拖动；倾斜 = 手机陀螺仪（首次开机自动校准水平）；" +
+                        "摇晃 = 虚拟 L3/R3 键；挥动/IR 重定位 = 组合键。全部热生效。",
                         color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
-                IshirukaIniQuickSettings()
+                SettingsSection("NGC/WII · 画面") {
+                    DropdownRow("内部分辨率",
+                        listOf("1" to "1x (720p)", "2" to "1.5x", "3" to "2x (1080p)", "4" to "2.5x", "5" to "3x", "6" to "4x", "7" to "5x", "8" to "6x"),
+                        padLayout.ngcwiiInternalRes
+                    ) { updateLayout(padLayout.copy {ngcwiiInternalRes = it}) }
+                    DropdownRow("画面比例",
+                        listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口", "4" to "强制原始"),
+                        padLayout.ngcwiiAspect
+                    ) { updateLayout(padLayout.copy {ngcwiiAspect = it}) }
+                    DropdownRow("Wii 宽屏模式",
+                        listOf("0" to "4:3", "1" to "16:9 (宽屏游戏)"),
+                        padLayout.ngcwiiWiiAspect
+                    ) { updateLayout(padLayout.copy {ngcwiiWiiAspect = it}) }
+                    DropdownRow("抗锯齿 MSAA",
+                        listOf("1" to "关闭", "2" to "2x", "4" to "4x", "8" to "8x"),
+                        padLayout.ngcwiiMsaa
+                    ) { updateLayout(padLayout.copy {ngcwiiMsaa = it}) }
+                    DropdownRow("各向异性过滤",
+                        listOf("1" to "关闭", "2" to "2x", "4" to "4x", "8" to "8x", "16" to "16x"),
+                        padLayout.ngcwiiAniso
+                    ) { updateLayout(padLayout.copy {ngcwiiAniso = it}) }
+                    DropdownRow("等待着色器编译",
+                        listOf("True" to "开启 (防闪烁, 略卡)", "False" to "关闭 (闪烁但流畅)"),
+                        padLayout.ngcwiiWaitShaders
+                    ) { updateLayout(padLayout.copy {ngcwiiWaitShaders = it}) }
+                    DropdownRow("显示 FPS",
+                        listOf("False" to "关闭", "True" to "开启"),
+                        padLayout.ngcwiiShowFps
+                    ) { updateLayout(padLayout.copy {ngcwiiShowFps = it}) }
+                }
+                SettingsSection("NGC/WII · 核心 / 系统") {
+                    DropdownRow("CPU 模式",
+                        listOf("1" to "JIT (推荐)", "0" to "解释器 (慢)", "2" to "JITIL (实验)"),
+                        padLayout.ngcwiiCpuCore
+                    ) { updateLayout(padLayout.copy {ngcwiiCpuCore = it}) }
+                    DropdownRow("DSP 音频",
+                        listOf("True" to "HLE (推荐)", "False" to "LLE (需要 DSP ROM)"),
+                        padLayout.ngcwiiDspHle
+                    ) { updateLayout(padLayout.copy {ngcwiiDspHle = it}) }
+                    DropdownRow("音频后端",
+                        listOf("OpenSL ES" to "OpenSL ES (推荐)", "AAudio" to "AAudio", "No audio output" to "无音频"),
+                        padLayout.ngcwiiAudioBackend
+                    ) { updateLayout(padLayout.copy {ngcwiiAudioBackend = it}) }
+                    DropdownRow("模拟速度",
+                        listOf("1.0" to "100% (原速)", "2.0" to "200%", "0" to "不限帧 (快进)"),
+                        padLayout.ngcwiiEmulationSpeed
+                    ) { updateLayout(padLayout.copy {ngcwiiEmulationSpeed = it}) }
+                    DropdownRow("Wii 系统语言",
+                        listOf("0" to "日语", "1" to "英语", "2" to "德语", "3" to "法语", "4" to "西班牙语", "5" to "意大利语", "6" to "荷兰语", "7" to "简体中文", "8" to "繁体中文", "9" to "韩语"),
+                        padLayout.ngcwiiWiiLanguage
+                    ) { updateLayout(padLayout.copy {ngcwiiWiiLanguage = it}) }
+                    DropdownRow("金手指",
+                        listOf("False" to "关闭", "True" to "开启 (配合游戏 INI)"),
+                        padLayout.ngcwiiCheats
+                    ) { updateLayout(padLayout.copy {ngcwiiCheats = it}) }
+                    DropdownRow("蓝牙连续扫描",
+                        listOf("False" to "关闭", "True" to "开启 (真实 Wiimote 连接)"),
+                        padLayout.ngcwiiScan
+                    ) { updateLayout(padLayout.copy {ngcwiiScan = it}) }
+                }
             }
-        }
+        } // when (platform)
 
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在
         // PadLayout.overlayThemeJson，见 OverlayTheme.kt） ===
@@ -1663,180 +1794,184 @@ fun CoreSettingsPanel(
 }
 
 // ===========================================================================
-// 外部独立核心（3DS / NGC-WII）设置辅助 Composable
+// 3DS / NGC-WII 进程内核心 设置辅助 Composable
 // ===========================================================================
 
-/** 外部核心安装状态卡（Azahar / Ishiruka 共用）。 */
+/** 进程内核心状态卡（Azahar / Ishiruka 共用：库加载 + 版本号）。 */
 @Composable
-internal fun ExternalCoreStatusSection(coreName: String) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val (installed, version) = remember {
-        when (coreName) {
-            "NGC/WII 核心 (Ishiruka)" ->
-                com.nesstation.app.core.external.ExternalCores.isIshirukaInstalled(context) to
-                com.nesstation.app.core.external.ExternalCores.coreVersion(
-                    context, com.nesstation.app.core.external.ExternalCores.ISHIRUKA_PACKAGE)
-            else ->
-                com.nesstation.app.core.external.ExternalCores.isAzaharInstalled(context) to
-                com.nesstation.app.core.external.ExternalCores.coreVersion(
-                    context, com.nesstation.app.core.external.ExternalCores.AZAHAR_PACKAGE)
+internal fun InProcessCoreStatusSection(coreName: String) {
+    val (loaded, version) = remember {
+        if (coreName.contains("3DS")) {
+            val ok = try {
+                com.nesstation.app.core.jni.AzaharNative.isLoaded
+            } catch (_: Throwable) { false }
+            ok to ""
+        } else {
+            val ok = try {
+                com.nesstation.app.core.jni.IshirukaNative.isLoaded
+            } catch (_: Throwable) { false }
+            ok to ""
         }
     }
     SettingsSection("$coreName · 核心状态") {
         SettingsRow(
-            title = if (installed) "已安装" + (if (version.isNotBlank()) " · v$version" else "") else "未安装",
-            subtitle = if (installed) "游戏点击即可桥接启动" else "请先安装核心 APK（独立模拟器形态集成）"
+            title = if (loaded) "已就绪（进程内嵌入）" else "待启动（首次进入游戏时加载）",
+            subtitle = if (coreName.contains("3DS"))
+                "libcitra-android.so 随 NesStation 发布，无需安装任何外部 APK"
+            else
+                "libmain.so 随 NesStation 发布，无需安装任何外部 APK"
         )
         Text(
-            "该平台以独立模拟器形态集成：模拟画面与虚拟按键由核心 APK 呈现，" +
-            "NesStation 负责游戏库 / 扫描 / 启动桥接 / 控制器配置。核心的模拟专属设置" +
-            "（画面 / 音频 / 插件等）请在其自身设置界面调整。",
+            "该平台与 DC/PS2 同为进程内核心：模拟画面、虚拟按键、设置全部在 " +
+            "NesStation 内完成。3DS 需要 arm64 设备；NGC/WII 需要 arm64 设备。",
             color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
     }
 }
 
 /**
- * 3DS 解密密钥导入（aes_keys.txt → Azahar 用户目录 keys/ 子目录）。
- * 两步：① 选择 Azahar 数据目录（与 Azahar 首启「选择数据目录」为同一目录）；
- *       ② 选择标准工具导出的 aes_keys.txt 文件，自动写入 <目录>/keys/。
+ * 3DS 解密密钥导入 + 独立解密工具。
+ *  ① 导入 aes_keys.txt（SAF 选择 → 写入 <userDir>/keys/ 与 sysdata/ 双位置）
+ *  ② 密钥状态展示（areKeysAvailable）
+ *  ③ 「解密工具」：选择加密的 .3ds/.cci/.cxi/.cia → 解密导出到
+ *     Download/NesStation/decrypted/
  */
 @Composable
-internal fun AzaharKeysImportSection() {
+internal fun AzaharKeysAndDecryptSection() {
     val context = androidx.compose.ui.platform.LocalContext.current
-    var dirUri by remember {
-        mutableStateOf(com.nesstation.app.core.external.ExternalCores.getAzaharUserDirUri(context))
-    }
     var message by remember { mutableStateOf<String?>(null) }
+    var keysOk by remember { mutableStateOf(false) }
 
-    val dirPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            } catch (_: Exception) { }
-            dirUri = uri.toString()
-            com.nesstation.app.core.external.ExternalCores.setAzaharUserDirUri(context, uri.toString())
-            message = "已记录 Azahar 数据目录"
+    // 进入时检查密钥可用性（核心未加载时静默失败，UI 显示未知态）
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            if (com.nesstation.app.core.jni.AzaharNative.ensureLoaded()) {
+                com.nesstation.app.core.jni.AzaharNative.ensureUserDirectory()
+                keysOk = com.nesstation.app.core.jni.AzaharNative.areKeysAvailable()
+            }
         }
     }
+
     val keysPicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null && dirUri != null) {
+        if (uri != null) {
             try {
                 val text = context.contentResolver.openInputStream(uri)?.use {
                     it.readBytes().toString(Charsets.UTF_8)
                 } ?: ""
-                val err = com.nesstation.app.core.external.ExternalCores.writeAesKeys(
-                    context, dirUri!!, text)
-                message = err ?: "aes_keys.txt 已写入 <数据目录>/keys/ —— 加密游戏下次启动即可解密"
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    val ok = AzaharDirs.importKeys(context, text)
+                    if (ok && com.nesstation.app.core.jni.AzaharNative.ensureLoaded()) {
+                        keysOk = com.nesstation.app.core.jni.AzaharNative.areKeysAvailable()
+                    }
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        message = if (ok) "aes_keys.txt 已导入 —— " +
+                            (if (keysOk) "密钥校验通过 ✓" else "已写入（核心启动后校验）")
+                        else "导入失败：无法写入用户目录"
+                    }
+                }
             } catch (t: Throwable) {
                 message = "导入失败：${t.message}"
             }
-        } else if (dirUri == null) {
-            message = "请先选择 Azahar 数据目录"
         }
     }
-
     SettingsRow(
-        title = if (dirUri != null) "Azahar 数据目录：已选定" else "① 选择 Azahar 数据目录",
-        subtitle = if (dirUri != null) "点击可重新选择" else "与 Azahar 首次启动时选择的目录一致"
-    ) { dirPicker.launch(null) }
-    SettingsRow(
-        title = "② 导入 aes_keys.txt（解密密钥）",
-        subtitle = "加密 3DS 游戏解密所需，导入一次全局生效"
+        title = "① 导入 aes_keys.txt（3DS 解密密钥）",
+        subtitle = if (keysOk) "密钥已就绪 ✓（加密游戏可直接运行/安装）"
+                   else "加密游戏解密所需；Azahar 标准格式，导入一次全局生效"
     ) { keysPicker.launch(arrayOf("*/*")) }
 
-    // === CIA 批量导入（copy 模式）：把 .cia 复制到 <数据目录>/import/ ===
-    val ciaPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isNotEmpty() && dirUri != null) {
-            try {
-                var ok = 0
-                var lastErr: String? = null
-                for (u in uris) {
-                    val name = queryLastSegment(u) ?: "title_${ok + 1}.cia"
-                    val input = context.contentResolver.openInputStream(u)
-                        ?: continue
-                    val err = com.nesstation.app.core.external.ExternalCores.importCia(
-                        context, dirUri!!, input, name)
-                    if (err == null) ok++ else { lastErr = err; input.close() }
+    // === 独立解密工具 ===
+    val decryptPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            message = "解密中…（大文件需要数分钟）"
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                // content uri → 缓存文件 → 解密
+                val cache = java.io.File(context.cacheDir, "decrypt_input.bin")
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        cache.outputStream().use { input.copyTo(it) }
+                    }
+                    val result = CiaInstaller.decrypt(context, cache.absolutePath)
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        message = if (result.ok) result.message else "解密失败：${result.message}"
+                    }
+                } catch (t: Throwable) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        message = "解密失败：${t.message}"
+                    }
+                } finally {
+                    cache.delete()
                 }
-                message = "已导入 $ok 个 CIA 到 <数据目录>/import/" +
-                    (lastErr?.let { "（$it）" } ?: "")
-            } catch (t: Throwable) {
-                message = "CIA 导入失败：${t.message}"
             }
-        } else if (dirUri == null) {
-            message = "请先选择 Azahar 数据目录"
         }
     }
     SettingsRow(
-        title = "③ 批量导入 CIA 到 import/ 目录",
-        subtitle = "可多选；导入后在 Azahar 内安装（配合下方 CIA 导入策略）"
-    ) { ciaPicker.launch(arrayOf("*/*")) }
+        title = "② 解密工具（.3ds/.cci/.cxi/.cia → 解密文件）",
+        subtitle = "导出到 Download/NesStation/decrypted/，可直接导入游戏库"
+    ) { decryptPicker.launch(arrayOf("*/*")) }
+
     message?.let {
         Text(it, color = Color(0xFF2E7D32), fontSize = 11.sp,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
     }
 }
 
-/** SAF Uri 末段文件名（可能被 URL 编码）。 */
-private fun queryLastSegment(uri: android.net.Uri): String? {
-    return try {
-        val seg = uri.lastPathSegment ?: return null
-        java.net.URLDecoder.decode(seg.substringAfterLast('/'), "UTF-8")
-            .substringBefore('?')
-    } catch (_: Exception) {
-        null
-    }
-}
-
 /**
- * NGC/WII（Ishiruka）数据目录状态 + 快捷入口。
- * 自动探测 <外部存储>/Android/data/org.dolphin.ishiiruka/files/dolphin-emu
- * （需「所有文件访问」权限）；控制器/体感开关的 INI 写入依赖该目录。
+ * CIA 批量安装：选择一个或多个 .cia → 核心原生安装器逐个装入 NAND
+ * （加密 CIA 自动用已导入密钥解密）。安装完成的标题出现在已安装列表，
+ * 可直接从游戏库启动。
  */
 @Composable
-internal fun IshirukaIniQuickSettings() {
+internal fun CiaInstallSection() {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val userDir = remember {
-        com.nesstation.app.core.external.ExternalCores.locateIshirukaUserDir(context)
+    var message by remember { mutableStateOf<String?>(null) }
+    var installing by remember { mutableStateOf(false) }
+
+    val ciaPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            installing = true
+            message = "安装中…（0/${uris.size}）"
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                var ok = 0
+                val errors = mutableListOf<String>()
+                uris.forEachIndexed { idx, u ->
+                    val cache = java.io.File(context.cacheDir, "cia_install_${idx}.cia")
+                    try {
+                        context.contentResolver.openInputStream(u)?.use { input ->
+                            cache.outputStream().use { input.copyTo(it) }
+                        }
+                        val result = CiaInstaller.installCia(context, cache.absolutePath)
+                        if (result.ok) ok++ else errors.add(result.message)
+                    } catch (t: Throwable) {
+                        errors.add(t.message ?: "未知错误")
+                    } finally {
+                        cache.delete()
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            message = "安装中…（${idx + 1}/${uris.size}）"
+                        }
+                    }
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    installing = false
+                    message = "安装完成：$ok/${uris.size} 成功" +
+                        (errors.take(2).joinToString("；").let { if (it.isNotBlank()) " — $it" else "" })
+                }
+            }
+        }
     }
-    SettingsSection("NGC/WII · 核心配置直读直写") {
-        SettingsRow(
-            title = if (userDir != null) "数据目录：已找到" else "数据目录：未找到",
-            subtitle = userDir?.absolutePath
-                ?: "先启动一次 Ishiruka 让其初始化目录（需「所有文件访问」权限），再回到本页"
-        )
-        SettingsRow(
-            title = "打开核心设置界面",
-            subtitle = "Ishiruka 完整设置（画面 / 音频 / 手柄 / 路径）"
-        ) {
-            com.nesstation.app.core.external.ExternalCores.launchCoreMainActivity(
-                context,
-                com.nesstation.app.core.external.ExternalCores.ISHIRUKA_PACKAGE,
-                "org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity")
-        }
-        SettingsRow(
-            title = "打开核心主界面",
-            subtitle = "游戏库 / 系统更新 / 每游戏设置"
-        ) {
-            com.nesstation.app.core.external.ExternalCores.launchCoreMainActivity(
-                context,
-                com.nesstation.app.core.external.ExternalCores.ISHIRUKA_PACKAGE,
-                com.nesstation.app.core.external.ExternalCores.ISHIRUKA_MAIN_ACTIVITY)
-        }
-        Text(
-            "控制器切换 / 体感开关写入 Config/WiimoteNew.ini 与 Config/Dolphin.ini；" +
-            "其余模拟专属设置（内部分辨率 / 抗锯齿 / 音频后端等）在核心设置界面调整，" +
-            "NesStation 启动桥接后即刻生效。",
-            color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+    SettingsRow(
+        title = "选择 .cia 文件安装（可多选）",
+        subtitle = if (installing) "正在安装…" else "加密 CIA 自动用已导入密钥解密后装入 NAND"
+    ) { if (!installing) ciaPicker.launch(arrayOf("*/*")) }
+
+    message?.let {
+        Text(it, color = Color(0xFF2E7D32), fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
     }
 }

@@ -769,6 +769,12 @@ class PadLayout {
     var comboButtonsArcade: String = ""   // Arcade combo list (JSON)
     var comboButtonsMd: String = ""       // MD combo list (JSON)
     var comboButtonsPce: String = ""      // PCE combo list (JSON)
+    // 3DS / NGC-WII 组合键（JSON，与其它平台同一形状）。伪位说明：
+    //  3DS: bit16=HOME(706) bit17=换屏(800)；NGC-WII: bit16-19=挥动四向
+    //  (轴 120-123) bit20=IR/Recenter(139)。
+    var hiddenButtonsTg3ds: String = ""   // 3DS hidden button keys
+    var comboButtons3ds: String = ""      // 3DS combo list (JSON)
+    var comboButtonsNgcwii: String = ""   // NGC/WII combo list (JSON)
 
     // === PCE button visibility toggles (which on-screen buttons are shown) ===
     // PCE uses the shared SNES/Arcade/MD layout slots (D-pad, I/II, RUN,
@@ -807,27 +813,72 @@ class PadLayout {
     var hiddenButtonsDc: String = ""      // DC hidden button keys
     var hiddenButtonsNgcwii: String = ""  // NGC/WII hidden button keys (外部核心 Ishiruka 配置态)
 
-    // === NGC/WII 控制器切换（外部核心 Ishiruka 启动时的默认控制器形态）===
+    // === NGC/WII 控制器切换（进程内 Ishiruka 核心的控制器方案）===
     // "gc"      = GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机)
+    // "wii"     = Wii Remote + 双节棍 (C/Z + 副摇杆 + 体感)
     // "wiimote" = Wii Remote 横握 (1/2/A/B/±/HOME + 十字键)
-    // "nunchuk" = Wii Remote + Nunchuk (CC/Z + 双摇杆)
     // "classic" = 经典手柄 Classic Controller (双摇杆 + 全键)
-    // 该设置同时写入 Ishiruka 的 WiimoteNew.ini Extension 字段（见
-    // ExternalCores.applyNgcwiiControllerMode），并在启动页提供快捷切换。
+    // Wii 游戏按方案热写 WiimoteNew.ini Extension + ReloadWiimoteConfig
+    // （见 IshirukaEngine.setExtension / applyCoreOptions），游戏内菜单即可切换。
     var ngcwiiController: String = "gc"
     // NGC/WII 体感开关：开启时启动 Ishiruka 前保留体感（摇动/倾斜/IR 指针）
     // 绑定并提示开启设备传感器；关闭时写禁用（避免误触发摇一摇）。
-    // 经 ExternalCores.applyNgcwiiControllerMode 写入核心配置。
+    // 体感倾斜走设备传感器（EmulatorScreen SensorListener），摇晃/IR 见虚拟按键。
     var ngcwiiMotion: String = "enabled"
 
-    // === 3DS（外部核心 Azahar/爱吾）配置 ===
+    // === 3DS（进程内 Azahar 核心）配置 ===
     // 启动前是否校验游戏加密状态（NCCH 标志位）：
     // "enabled"  = 校验 + 加密游戏提示导入 aes_keys.txt（推荐）
-    // "disabled" = 直接交给核心处理（爱吾商店版多自带解密）
+    // "disabled" = 直接交给核心处理
     var tg3dsDecryptCheck: String = "enabled"
     // CIA 导入策略："launch" = 启动即安装（Azahar 引导 CIA 时自动装 NAND）；
     // "copy"  = 先复制到核心数据目录 import/ 再启动。
     var tg3dsCiaMode: String = "launch"
+
+    // 3DS 核心设置（config.ini 键值，由 applyCoreOptions 下发 + reloadSettings）
+    var tg3dsCpuJit: String = "1"            // JIT（0=解释器）
+    var tg3dsCpuClock: String = "100"        // CPU 时钟 %（50..400）
+    var tg3dsFrameLimit: String = "1"        // 限帧开关
+    var tg3dsFrameSpeed: String = "100"      // 限帧速度 %（100=原速）
+    var tg3dsResolution: String = "1"        // 内部分辨率倍数 0-8（0=自动）
+    var tg3dsVsync: String = "1"             // 垂直同步
+    var tg3dsHwShader: String = "1"          // 硬件着色器
+    var tg3dsAccurateMul: String = "1"       // 精确乘法
+    var tg3dsDiskShader: String = "1"        // 磁盘着色器缓存
+    var tg3dsAsyncShader: String = "0"       // 异步着色器编译
+    var tg3dsGraphicsApi: String = "1"       // 0=OpenGL 1=GLES(默认) 2=Vulkan
+    var tg3dsRender3d: String = "0"          // 0=关 1=并排半宽 2=并排全宽 3=分色 4=隔行 5=反隔行 6=Cardboard
+    var tg3dsFactor3d: String = "0"          // 3D 深度 0-255
+    var tg3dsLayout: String = "2"            // 横屏布局 0=上下 1=单屏 2=大屏+小屏 3=侧并 4=混合 5=自定义
+    var tg3dsPortraitLayout: String = "2"    // 竖屏布局（同上枚举）
+    var tg3dsSwapScreen: String = "0"        // 交换上下屏
+    var tg3dsUpright: String = "0"           // 竖持模式
+    var tg3dsFilterMode: String = "1"        // 显示过滤 0-2
+    var tg3dsTextureFilter: String = "0"     // 纹理过滤 0-6
+    var tg3dsAudioOutput: String = "0"       // 0=自动 1=单声道
+    var tg3dsAudioEmulation: String = "1"    // 1=开启(默认) 0=关闭
+    var tg3dsAudioStretch: String = "1"      // 音频拉伸
+    var tg3dsVolume: String = "100"          // 音量 %
+    var tg3dsNew3ds: String = "0"            // 0=老3DS(默认) 1=New 3DS
+    var tg3dsRegion: String = "-1"           // 区域 -1=自动
+    var tg3dsInitClock: String = "0"         // 0=真实时钟 1=固定时间
+    var tg3dsLleApplets: String = "0"        // LLE 系统应用
+
+    // NGC/WII 核心设置（Dolphin.ini/GFX.ini，经 native SetUserSetting 直写）
+    var ngcwiiCpuCore: String = "1"          // 0=解释器 1=JIT 2=JITIL 3=JITARM
+    var ngcwiiDspHle: String = "True"        // DSP HLE（False=LLE）
+    var ngcwiiAudioBackend: String = "OpenSL ES" // 音频后端（GetAudioBackendList）
+    var ngcwiiEmulationSpeed: String = "1.0" // 模拟速度（0=不限帧）
+    var ngcwiiCheats: String = "False"       // 金手指
+    var ngcwiiScan: String = "False"         // Wii 连续扫描蓝牙外设
+    var ngcwiiWiiLanguage: String = "0"      // Wii 系统语言 0-9
+    var ngcwiiWiiAspect: String = "0"        // Wii 宽屏 0=4:3 1=16:9
+    var ngcwiiInternalRes: String = "2"      // 内部分辨率 1-6（2=1x）
+    var ngcwiiAspect: String = "1"           // 画面比例 0=自动 1=强制16:9 2=强制4:3 ... 6=拉伸
+    var ngcwiiMsaa: String = "1"             // MSAA 1/2/4/8
+    var ngcwiiAniso: String = "1"            // 各向异性过滤 1/2/4/8/16
+    var ngcwiiWaitShaders: String = "False"  // 着色器编译等待（防闪烁）
+    var ngcwiiShowFps: String = "False"      // 显示 FPS
 
     // === Input mode (joystick vs D-pad) ===
     // "dpad" = cross-shaped digital D-pad (default); "analog" = circular
@@ -1256,6 +1307,47 @@ class PadLayout {
         ngcwiiMotion = another.ngcwiiMotion
         tg3dsDecryptCheck = another.tg3dsDecryptCheck
         tg3dsCiaMode = another.tg3dsCiaMode
+        tg3dsCpuJit = another.tg3dsCpuJit
+        tg3dsCpuClock = another.tg3dsCpuClock
+        tg3dsFrameLimit = another.tg3dsFrameLimit
+        tg3dsFrameSpeed = another.tg3dsFrameSpeed
+        tg3dsResolution = another.tg3dsResolution
+        tg3dsVsync = another.tg3dsVsync
+        tg3dsHwShader = another.tg3dsHwShader
+        tg3dsAccurateMul = another.tg3dsAccurateMul
+        tg3dsDiskShader = another.tg3dsDiskShader
+        tg3dsAsyncShader = another.tg3dsAsyncShader
+        tg3dsGraphicsApi = another.tg3dsGraphicsApi
+        tg3dsRender3d = another.tg3dsRender3d
+        tg3dsFactor3d = another.tg3dsFactor3d
+        tg3dsLayout = another.tg3dsLayout
+        tg3dsPortraitLayout = another.tg3dsPortraitLayout
+        tg3dsSwapScreen = another.tg3dsSwapScreen
+        tg3dsUpright = another.tg3dsUpright
+        tg3dsFilterMode = another.tg3dsFilterMode
+        tg3dsTextureFilter = another.tg3dsTextureFilter
+        tg3dsAudioOutput = another.tg3dsAudioOutput
+        tg3dsAudioEmulation = another.tg3dsAudioEmulation
+        tg3dsAudioStretch = another.tg3dsAudioStretch
+        tg3dsVolume = another.tg3dsVolume
+        tg3dsNew3ds = another.tg3dsNew3ds
+        tg3dsRegion = another.tg3dsRegion
+        tg3dsInitClock = another.tg3dsInitClock
+        tg3dsLleApplets = another.tg3dsLleApplets
+        ngcwiiCpuCore = another.ngcwiiCpuCore
+        ngcwiiDspHle = another.ngcwiiDspHle
+        ngcwiiAudioBackend = another.ngcwiiAudioBackend
+        ngcwiiEmulationSpeed = another.ngcwiiEmulationSpeed
+        ngcwiiCheats = another.ngcwiiCheats
+        ngcwiiScan = another.ngcwiiScan
+        ngcwiiWiiLanguage = another.ngcwiiWiiLanguage
+        ngcwiiWiiAspect = another.ngcwiiWiiAspect
+        ngcwiiInternalRes = another.ngcwiiInternalRes
+        ngcwiiAspect = another.ngcwiiAspect
+        ngcwiiMsaa = another.ngcwiiMsaa
+        ngcwiiAniso = another.ngcwiiAniso
+        ngcwiiWaitShaders = another.ngcwiiWaitShaders
+        ngcwiiShowFps = another.ngcwiiShowFps
         btnL2 = another.btnL2
         btnR2 = another.btnR2
         btnL2P = another.btnL2P
@@ -1268,6 +1360,9 @@ class PadLayout {
         comboButtonsArcade = another.comboButtonsArcade
         comboButtonsMd = another.comboButtonsMd
         comboButtonsPce = another.comboButtonsPce
+        hiddenButtonsTg3ds = another.hiddenButtonsTg3ds
+        comboButtons3ds = another.comboButtons3ds
+        comboButtonsNgcwii = another.comboButtonsNgcwii
         pceShowDpad = another.pceShowDpad
         pceShowA = another.pceShowA
         pceShowB = another.pceShowB
@@ -2131,6 +2226,47 @@ object PadLayoutStore {
             // 3DS 解密校验 / CIA 策略
             tg3dsDecryptCheck = p.getString("tg3ds_decrypt_check", "enabled") ?: "enabled"
             tg3dsCiaMode = p.getString("tg3ds_cia_mode", "launch") ?: "launch"
+            tg3dsCpuJit = p.getString("tg3ds_cpu_jit", "1") ?: "1"
+            tg3dsCpuClock = p.getString("tg3ds_cpu_clock", "100") ?: "100"
+            tg3dsFrameLimit = p.getString("tg3ds_frame_limit", "1") ?: "1"
+            tg3dsFrameSpeed = p.getString("tg3ds_frame_speed", "100") ?: "100"
+            tg3dsResolution = p.getString("tg3ds_resolution", "1") ?: "1"
+            tg3dsVsync = p.getString("tg3ds_vsync", "1") ?: "1"
+            tg3dsHwShader = p.getString("tg3ds_hw_shader", "1") ?: "1"
+            tg3dsAccurateMul = p.getString("tg3ds_accurate_mul", "1") ?: "1"
+            tg3dsDiskShader = p.getString("tg3ds_disk_shader", "1") ?: "1"
+            tg3dsAsyncShader = p.getString("tg3ds_async_shader", "0") ?: "0"
+            tg3dsGraphicsApi = p.getString("tg3ds_graphics_api", "2") ?: "2"
+            tg3dsRender3d = p.getString("tg3ds_render_3d", "0") ?: "0"
+            tg3dsFactor3d = p.getString("tg3ds_factor_3d", "0") ?: "0"
+            tg3dsLayout = p.getString("tg3ds_layout", "0") ?: "0"
+            tg3dsPortraitLayout = p.getString("tg3ds_portrait_layout", "2") ?: "2"
+            tg3dsSwapScreen = p.getString("tg3ds_swap_screen", "0") ?: "0"
+            tg3dsUpright = p.getString("tg3ds_upright", "0") ?: "0"
+            tg3dsFilterMode = p.getString("tg3ds_filter_mode", "1") ?: "1"
+            tg3dsTextureFilter = p.getString("tg3ds_texture_filter", "0") ?: "0"
+            tg3dsAudioOutput = p.getString("tg3ds_audio_output", "0") ?: "0"
+            tg3dsAudioEmulation = p.getString("tg3ds_audio_emulation", "2") ?: "2"
+            tg3dsAudioStretch = p.getString("tg3ds_audio_stretch", "1") ?: "1"
+            tg3dsVolume = p.getString("tg3ds_volume", "100") ?: "100"
+            tg3dsNew3ds = p.getString("tg3ds_new_3ds", "1") ?: "1"
+            tg3dsRegion = p.getString("tg3ds_region", "-1") ?: "-1"
+            tg3dsInitClock = p.getString("tg3ds_init_clock", "0") ?: "0"
+            tg3dsLleApplets = p.getString("tg3ds_lle_applets", "0") ?: "0"
+            ngcwiiCpuCore = p.getString("ngcwii_cpu_core", "1") ?: "1"
+            ngcwiiDspHle = p.getString("ngcwii_dsp_hle", "True") ?: "True"
+            ngcwiiAudioBackend = p.getString("ngcwii_audio_backend", "OpenSL ES") ?: "OpenSL ES"
+            ngcwiiEmulationSpeed = p.getString("ngcwii_emulation_speed", "1.0") ?: "1.0"
+            ngcwiiCheats = p.getString("ngcwii_cheats", "False") ?: "False"
+            ngcwiiScan = p.getString("ngcwii_scan", "False") ?: "False"
+            ngcwiiWiiLanguage = p.getString("ngcwii_wii_language", "0") ?: "0"
+            ngcwiiWiiAspect = p.getString("ngcwii_wii_aspect", "0") ?: "0"
+            ngcwiiInternalRes = p.getString("ngcwii_internal_res", "2") ?: "2"
+            ngcwiiAspect = p.getString("ngcwii_aspect", "1") ?: "1"
+            ngcwiiMsaa = p.getString("ngcwii_msaa", "1") ?: "1"
+            ngcwiiAniso = p.getString("ngcwii_aniso", "1") ?: "1"
+            ngcwiiWaitShaders = p.getString("ngcwii_wait_shaders", "False") ?: "False"
+            ngcwiiShowFps = p.getString("ngcwii_show_fps", "False") ?: "False"
             // === Arcade extras ===
             btnL2 = loadBtn(p, "btn_l2", ButtonLayout(x = 0.08f, y = 0.32f, sizeDp = 48))
             btnR2 = loadBtn(p, "btn_r2", ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48))
@@ -2145,6 +2281,9 @@ object PadLayoutStore {
             comboButtonsArcade = p.getString("combo_buttons_arcade", "") ?: ""
             comboButtonsMd = p.getString("combo_buttons_md", "") ?: ""
             comboButtonsPce = p.getString("combo_buttons_pce", "") ?: ""
+            hiddenButtonsTg3ds = p.getString("hidden_buttons_tg3ds", "") ?: ""
+            comboButtons3ds = p.getString("combo_buttons_3ds", "") ?: ""
+            comboButtonsNgcwii = p.getString("combo_buttons_ngcwii", "") ?: ""
             // PCE button visibility toggles
             pceShowDpad = p.getBoolean("pce_show_dpad", true)
             pceShowA = p.getBoolean("pce_show_a", true)
@@ -2659,6 +2798,47 @@ object PadLayoutStore {
             putString("ngcwii_motion", layout.ngcwiiMotion)
             putString("tg3ds_decrypt_check", layout.tg3dsDecryptCheck)
             putString("tg3ds_cia_mode", layout.tg3dsCiaMode)
+            putString("tg3ds_cpu_jit", layout.tg3dsCpuJit)
+            putString("tg3ds_cpu_clock", layout.tg3dsCpuClock)
+            putString("tg3ds_frame_limit", layout.tg3dsFrameLimit)
+            putString("tg3ds_frame_speed", layout.tg3dsFrameSpeed)
+            putString("tg3ds_resolution", layout.tg3dsResolution)
+            putString("tg3ds_vsync", layout.tg3dsVsync)
+            putString("tg3ds_hw_shader", layout.tg3dsHwShader)
+            putString("tg3ds_accurate_mul", layout.tg3dsAccurateMul)
+            putString("tg3ds_disk_shader", layout.tg3dsDiskShader)
+            putString("tg3ds_async_shader", layout.tg3dsAsyncShader)
+            putString("tg3ds_graphics_api", layout.tg3dsGraphicsApi)
+            putString("tg3ds_render_3d", layout.tg3dsRender3d)
+            putString("tg3ds_factor_3d", layout.tg3dsFactor3d)
+            putString("tg3ds_layout", layout.tg3dsLayout)
+            putString("tg3ds_portrait_layout", layout.tg3dsPortraitLayout)
+            putString("tg3ds_swap_screen", layout.tg3dsSwapScreen)
+            putString("tg3ds_upright", layout.tg3dsUpright)
+            putString("tg3ds_filter_mode", layout.tg3dsFilterMode)
+            putString("tg3ds_texture_filter", layout.tg3dsTextureFilter)
+            putString("tg3ds_audio_output", layout.tg3dsAudioOutput)
+            putString("tg3ds_audio_emulation", layout.tg3dsAudioEmulation)
+            putString("tg3ds_audio_stretch", layout.tg3dsAudioStretch)
+            putString("tg3ds_volume", layout.tg3dsVolume)
+            putString("tg3ds_new_3ds", layout.tg3dsNew3ds)
+            putString("tg3ds_region", layout.tg3dsRegion)
+            putString("tg3ds_init_clock", layout.tg3dsInitClock)
+            putString("tg3ds_lle_applets", layout.tg3dsLleApplets)
+            putString("ngcwii_cpu_core", layout.ngcwiiCpuCore)
+            putString("ngcwii_dsp_hle", layout.ngcwiiDspHle)
+            putString("ngcwii_audio_backend", layout.ngcwiiAudioBackend)
+            putString("ngcwii_emulation_speed", layout.ngcwiiEmulationSpeed)
+            putString("ngcwii_cheats", layout.ngcwiiCheats)
+            putString("ngcwii_scan", layout.ngcwiiScan)
+            putString("ngcwii_wii_language", layout.ngcwiiWiiLanguage)
+            putString("ngcwii_wii_aspect", layout.ngcwiiWiiAspect)
+            putString("ngcwii_internal_res", layout.ngcwiiInternalRes)
+            putString("ngcwii_aspect", layout.ngcwiiAspect)
+            putString("ngcwii_msaa", layout.ngcwiiMsaa)
+            putString("ngcwii_aniso", layout.ngcwiiAniso)
+            putString("ngcwii_wait_shaders", layout.ngcwiiWaitShaders)
+            putString("ngcwii_show_fps", layout.ngcwiiShowFps)
             // === Arcade extras ===
             saveBtn("btn_l2", layout.btnL2)
             saveBtn("btn_r2", layout.btnR2)
@@ -2673,6 +2853,9 @@ object PadLayoutStore {
             putString("combo_buttons_arcade", layout.comboButtonsArcade)
             putString("combo_buttons_md", layout.comboButtonsMd)
             putString("combo_buttons_pce", layout.comboButtonsPce)
+            putString("hidden_buttons_tg3ds", layout.hiddenButtonsTg3ds)
+            putString("combo_buttons_3ds", layout.comboButtons3ds)
+            putString("combo_buttons_ngcwii", layout.comboButtonsNgcwii)
             // PCE button visibility toggles
             putBoolean("pce_show_dpad", layout.pceShowDpad)
             putBoolean("pce_show_a", layout.pceShowA)
@@ -2739,6 +2922,7 @@ object PadLayoutStore {
             GamePlatform.PS2 -> isHiddenInList(layout.hiddenButtonsPs2, key)
             // ★ DC 显隐修复：旧版落到 else 恒 false，显隐对话框对 DC 完全无效。
             GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
+            GamePlatform.TG3DS -> isHiddenInList(layout.hiddenButtonsTg3ds, key)
             GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcwii, key)
             else -> false
         }
@@ -2778,6 +2962,7 @@ object PadLayoutStore {
             GamePlatform.PS2 -> layout.copy {hiddenButtonsPs2 = updateHiddenList(layout.hiddenButtonsPs2, key, hidden)}
             // ★ DC 显隐修复：与 NES/PSX 同模式持久化到专属列表。
             GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
+            GamePlatform.TG3DS -> layout.copy {hiddenButtonsTg3ds = updateHiddenList(layout.hiddenButtonsTg3ds, key, hidden)}
             GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcwii = updateHiddenList(layout.hiddenButtonsNgcwii, key, hidden)}
             else -> layout
         }
@@ -2901,31 +3086,33 @@ object PadLayoutStore {
                 "start" to "START", "select" to "SELECT"
             )
             GamePlatform.TG3DS -> listOf(
-                // 3DS（外部核心 Azahar/爱吾）：NesStation 侧的虚拟按键配置态。
-                // 实机触摸层由 Azahar 自带 overlay 呈现；这里的显隐/布局配置
-                // 与按键映射页共用一份键位语义（A/B/X/Y/L/R + START/SELECT）。
+                // 3DS（进程内 Azahar）：全量虚拟按键 —— 与 dispatchNativePadBits
+                // 的位→ButtonType 映射一致（ZL=bit12/L2 槽、ZR=bit13/R2 槽、
+                // L/R 扳机=bit10/11、HOME/换屏=组合键伪位 bit16/17）。
                 "dpad" to "十字键", "a" to "A键", "b" to "B键",
                 "x" to "X键", "y" to "Y键",
                 "ta" to "连射A", "tb" to "连射B",
-                "l" to "L键", "r" to "R键",
+                "l" to "L扳机", "r" to "R扳机",
+                "l2" to "ZL键 (New 3DS)", "r2" to "ZR键 (New 3DS)",
                 "start" to "START", "select" to "SELECT"
+                // Circle Pad / C 摇杆为常驻控件；HOME/换屏见组合键
             )
             GamePlatform.NGCWII -> listOf(
-                // NGC/WII（外部核心 Ishiruka）：全量虚拟按键配置态 ——
+                // NGC/WII（进程内 Ishiruka）：全量虚拟按键配置态 ——
                 // GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机) 与
-                // Wii Remote (1/2/A/B/±/HOME + 十字键 + C/Z + 体感)
-                // 全键位均可在显隐对话框单独开关（控制器切换见
-                // ngcwiiController，在启动页与核心设置页可改）。
+                // Wii Remote (+双节棍/经典手柄) 全键位均可在显隐对话框
+                // 单独开关（控制器切换见 ngcwiiController，游戏内菜单与
+                // 核心设置页可热切换）。
                 "dpad" to "十字键 (GC/Wii)",
-                "a" to "A键 (GC A / Wii 2H A)",
+                "a" to "A键 (GC A / Wii A)",
                 "b" to "B键 (GC B / Wii B)",
-                "x" to "X键 (GC X)", "y" to "Y键 (GC Y)",
-                "l" to "Z/扳机L (GC Z / L)",
-                "r" to "R扳机 (GC R)",
-                "l2" to "1键 (Wii 1)", "r2" to "2键 (Wii 2)",
-                "ta" to "±/−键 (Wii Plus/Minus)",
-                "tb" to "HOME键",
-                "l3" to "C键 (Nunchuk)", "r3" to "Z键 (Nunchuk)",
+                "x" to "X键 (GC X / Wii 1)", "y" to "Y键 (GC Y / Wii 2)",
+                "l" to "Z/C键 (GC Z / 双节棍 C)",
+                "r" to "R键 (双节棍 Z / 经典 ZL)",
+                "l2" to "L/−键 (GC L扳机 / Wii − / 经典 Home)",
+                "r2" to "R/+键 (GC R扳机 / Wii + / IR Hide)",
+                "l3" to "摇晃Wii (体感)", "r3" to "摇晃双节棍 (体感)",
+                "ta" to "连射A", "tb" to "连射B",
                 "start" to "START", "select" to "SELECT"
                 // 体感开关 / 摇杆切换 / 即时存读档为通用尾项（qs/ql 全局追加，
                 // 体感见 ngcwiiMotion，摇杆切换见 inputMode）

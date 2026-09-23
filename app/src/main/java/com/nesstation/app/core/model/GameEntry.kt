@@ -25,15 +25,14 @@ import androidx.compose.ui.graphics.Color
  *          与其他核心同一 dlopen 模式：libdccore.so 桥接运行时加载
  *          libflycast_libretro_android.so，进程内引擎 DcEngine，见
  *          core/jni/dc_loader.cpp)
- * TG3DS  = Nintendo 3DS（外部独立核心桥 —— Azahar/爱吾 AzaharPlus，
- *          启动经 ExternalCores 桥接 com.aiwu.citra_emu 的
- *          EmulationActivity，游戏路径经 Game Parcelable extra 传递，
- *          见 core/external/ExternalCores.kt）
- * NGCWII = Nintendo GameCube / Wii（外部独立核心桥 —— Ishiruka
- *          (Dolphin fork)，启动经 ExternalCores 桥接
- *          org.dolphin.ishiiruka 的 EmulationActivity，extras:
- *          SelectedGames/Platform；控制器切换(手柄/双节棍/经典)/
- *          体感/全部虚拟按键配置见 PadLayout.ngcwii* 字段）
+ * TG3DS  = Nintendo 3DS（进程内 Azahar 核心 —— libcitra-android.so 随 APK
+ *          发布，JNI 契约类 org.citra.citra_emu.* 随源码打包；与 DC/PS2
+ *          同为进程内推模型引擎 AzaharEngine。CIA 安装/3DS 解密见
+ *          core/storage/CiaInstaller.kt）
+ * NGCWII = Nintendo GameCube / Wii（进程内 Ishiruka 核心 — Dolphin fork,
+ *          libmain.so 随 APK 发布，JNI 契约类 org.dolphinemu.dolphinemu.*
+ *          随源码打包；GC/Wii 全量虚拟按键 + 控制器切换(手柄/双节棍/经典)/
+ *          体感(倾斜/摇晃/IR) 见 IshirukaEngine 与 PadLayout.ngcwii* 字段）
  */
 enum class GamePlatform(val displayName: String) {
     NES("NES"),

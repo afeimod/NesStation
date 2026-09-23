@@ -309,8 +309,8 @@ fun SettingsScreen(
                             SettingsRow("PS2", "PCSX2 (PCEE2) 核心 · 渲染器/分辨率倍数/双摇杆/肩键", trailing = { Arrow() }) { selectedCore = GamePlatform.PS2 }
                             SettingsRow("Java / J2ME", "J2ME 虚拟机 · 分辨率/缩放/按键映射/数字键盘", trailing = { Arrow() }) { selectedCore = GamePlatform.JAVA }
                             SettingsRow("DC / Dreamcast", "Flycast 核心 · 分辨率/宽屏/排序/主机区域/GD-ROM", trailing = { Arrow() }) { selectedCore = GamePlatform.DC }
-                            SettingsRow("3DS", "Azahar 核心(独立) · 核心状态/解密密钥/CIA 安装", trailing = { Arrow() }) { selectedCore = GamePlatform.TG3DS }
-                            SettingsRow("NGC / WII", "Ishiruka 核心(独立) · 控制器切换/体感/全量虚拟按键", trailing = { Arrow() }) { selectedCore = GamePlatform.NGCWII }
+                            SettingsRow("3DS", "Azahar 核心(进程内) · 画面/双屏/音频/解密/CIA 安装", trailing = { Arrow() }) { selectedCore = GamePlatform.TG3DS }
+                            SettingsRow("NGC / WII", "Ishiruka 核心(进程内) · 控制器切换/体感/画面/系统", trailing = { Arrow() }) { selectedCore = GamePlatform.NGCWII }
                         }
                     }
 

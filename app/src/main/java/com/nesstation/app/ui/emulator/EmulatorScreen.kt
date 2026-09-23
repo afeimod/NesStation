@@ -390,16 +390,54 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ps2_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START)
         )
-        // 3DS / NGC-WII 为外部独立核心（Azahar / Ishiruka）：游戏画面与触摸层
-        // 由核心 APK 呈现，NesStation 在 EmulatorScreen 入口提前路由到
-        // ExternalCoreScreen，不会走到这里的按键表（保留分支保证 when 穷举）。
-        GamePlatform.TG3DS, GamePlatform.NGCWII -> emptyList()
+        // 3DS：全量键位 —— A/B/X/Y/L/R/ZL/ZR/START/SELECT + 十字键 +
+        // 双摇杆（Circle Pad / C 摇杆）；HOME/换屏经组合键伪位（bit16/17）。
+        GamePlatform.TG3DS -> listOf(
+            KeyActionInternal("3ds_a", KeyEvent.KEYCODE_BUTTON_A),
+            KeyActionInternal("3ds_b", KeyEvent.KEYCODE_BUTTON_B),
+            KeyActionInternal("3ds_x", KeyEvent.KEYCODE_BUTTON_X),
+            KeyActionInternal("3ds_y", KeyEvent.KEYCODE_BUTTON_Y),
+            KeyActionInternal("3ds_l", KeyEvent.KEYCODE_BUTTON_L1),      // L 扳机
+            KeyActionInternal("3ds_r", KeyEvent.KEYCODE_BUTTON_R1),      // R 扳机
+            KeyActionInternal("3ds_zl", KeyEvent.KEYCODE_BUTTON_L2),     // ZL (New 3DS)
+            KeyActionInternal("3ds_zr", KeyEvent.KEYCODE_BUTTON_R2),     // ZR (New 3DS)
+            KeyActionInternal("3ds_start", KeyEvent.KEYCODE_BUTTON_START),
+            KeyActionInternal("3ds_select", KeyEvent.KEYCODE_BUTTON_SELECT),
+            KeyActionInternal("3ds_home", KeyEvent.KEYCODE_BUTTON_THUMBL),    // HOME（伪位）
+            KeyActionInternal("3ds_swap", KeyEvent.KEYCODE_BUTTON_THUMBR)     // 上下屏交换（伪位）
+        )
+        // NGC-WII：双方案全量键位（启动页/设置页可切换 GC 手柄与
+        // Wii 遥控器+双节棍/经典手柄；体感：摇晃 L3/R3、倾斜=设备传感器、
+        // IR 指针=游戏区触摸；挥动经组合键伪位 bit16-19）。
+        GamePlatform.NGCWII -> listOf(
+            KeyActionInternal("ngc_a", KeyEvent.KEYCODE_BUTTON_A),      // GC A / Wii A
+            KeyActionInternal("ngc_b", KeyEvent.KEYCODE_BUTTON_B),      // GC B / Wii B
+            KeyActionInternal("ngc_x", KeyEvent.KEYCODE_BUTTON_X),      // GC X / Wii 1
+            KeyActionInternal("ngc_y", KeyEvent.KEYCODE_BUTTON_Y),      // GC Y / Wii 2
+            KeyActionInternal("ngc_l", KeyEvent.KEYCODE_BUTTON_L1),     // GC Z / 双节棍 Z
+            KeyActionInternal("ngc_r", KeyEvent.KEYCODE_BUTTON_R1),     // 双节棍 C / 经典 ZL
+            KeyActionInternal("ngc_l2", KeyEvent.KEYCODE_BUTTON_L2),    // GC L 扳机 / Wii −/Home
+            KeyActionInternal("ngc_r2", KeyEvent.KEYCODE_BUTTON_R2),    // GC R 扳机 / Wii +/IR Hide
+            KeyActionInternal("ngc_l3", KeyEvent.KEYCODE_BUTTON_THUMBL),// 摇晃 Wii / 经典 Home
+            KeyActionInternal("ngc_r3", KeyEvent.KEYCODE_BUTTON_THUMBR),// 摇晃双节棍
+            KeyActionInternal("ngc_start", KeyEvent.KEYCODE_BUTTON_START),
+            KeyActionInternal("ngc_select", KeyEvent.KEYCODE_BUTTON_SELECT)
+        )
     }
     return base
 }
 
 // Convert an internal action to its bit mask, matching gamepadKeyToBits logic.
 private fun actionToBits(action: KeyActionInternal, platform: GamePlatform): Int {
+    // 3DS / NGC-WII 专属键位（含组合键伪位 —— bit16-20）优先按 id 判定，
+    // 避免与标准 keycode 位映射冲突。
+    when (action.id) {
+        "3ds_home"  -> return 1 shl 16   // HOME（Azahar BUTTON_HOME=706）
+        "3ds_swap"  -> return 1 shl 17   // 上下屏交换（BUTTON_SWAP=800）
+        "ngc_home"  -> return 1 shl 20   // IR/Recenter（Ishiruka 139）
+        "ngc_l3"    -> return BTN_L3     // 摇晃 Wii（132）
+        "ngc_r3"    -> return BTN_R3     // 摇晃双节棍（220）
+    }
     val lBit = if (platform == GamePlatform.GBA) BTN_L_GBA else BTN_L_SNES
     val rBit = if (platform == GamePlatform.GBA) BTN_R_GBA else BTN_R_SNES
     return when (action.defaultKeyCode) {
@@ -892,14 +930,11 @@ fun EmulatorScreen(
     // 历史注：此前的 Flycast 独立核心在此处提前 return 到
     // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
 
-    // 3DS (Azahar/爱吾) 与 NGC/WII (Ishiruka) —— 外部独立核心桥：
-    // 游戏画面与触摸层（NGC/WII 全量虚拟按键/控制器切换/体感）由核心 APK
-    // 自带 EmulationActivity 呈现，NesStation 侧负责状态检测/解密提示/
-    // 控制器切换写入/启动桥接（见 ExternalCoreScreen + ExternalCores）。
-    if (platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII) {
-        ExternalCoreScreen(game = game, onExit = onExit)
-        return
-    }
+    // 3DS (Azahar) 与 NGC/WII (Ishiruka) —— 进程内嵌入核心（与 DC/PS2 同一
+    // 形态）：核心 .so 随 APK 发布，JNI 契约类随源码打包，游戏画面/音频/
+    // 双屏布局/体感全部在核内完成；虚拟按键/触摸/IR/控制器切换由 NesStation
+    // 的 EmulatorScreen 全链路负责（与 DC/PS2 同一交互体系），不再依赖
+    // 任何外部 APK。
 
     val engine = remember(ndsCoreChoice) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
@@ -984,6 +1019,97 @@ fun EmulatorScreen(
             val counted = fpsFrameCounter.getAndSet(0)
             val real = try { engine.realtimeFps() } catch (_: Throwable) { 0.0 }
             fpsDisplay = if (real > 0.5) Math.round(real).toInt() else counted
+        }
+    }
+
+    // === 3DS / NGC-WII 进程内核心会话挂接（native 回调路由 + 体感传感器） ===
+    //  - 退出/弹窗/状态回调：native 的 exitEmulationActivity / panic alert /
+    //    onCoreError 等经 CitraHost / DolphinHost 路由到本界面
+    //  - 体感（NGC-WII）：TYPE_GAME_ROTATION_VECTOR → getOrientation →
+    //    IshirukaEngine.feedOrientation（倾斜轴 127-130，官方 overlay 同公式）
+    DisposableEffect(platform, padLayout.ngcwiiMotion) {
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        val activity = context as? android.app.Activity
+        if (platform == GamePlatform.TG3DS) {
+            com.nesstation.app.core.jni.AzaharNative.attachSessionHooks(
+                activity,
+                onExit = { code -> mainHandler.post { onExit() } },
+                onStatus = { msg -> mainHandler.post {
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                } },
+                onCoreError = { title, msg ->
+                    mainHandler.post {
+                        Toast.makeText(context, "$title: $msg", Toast.LENGTH_LONG).show()
+                    }
+                    true // native 侧默认继续
+                }
+            )
+        } else if (platform == GamePlatform.NGCWII) {
+            com.nesstation.app.core.jni.IshirukaNative.attachSessionHooks(
+                activity,
+                onExit = { mainHandler.post { onExit() } },
+                onAlert = { title, msg, yesNo ->
+                    val holder = booleanArrayOf(true)
+                    mainHandler.post {
+                        // panic alert：非阻塞提示（native 默认继续）
+                        Toast.makeText(context, "$title: $msg", Toast.LENGTH_LONG).show()
+                        holder[0] = true
+                        synchronized(holder) { holder.notifyAll() }
+                    }
+                    true
+                }
+            )
+        }
+        // 体感传感器（仅 NGC-WII 且体感开启）
+        var sensorManager: android.hardware.SensorManager? = null
+        var registeredListener: android.hardware.SensorEventListener? = null
+        if (platform == GamePlatform.NGCWII && padLayout.ngcwiiMotion != "disabled") {
+            val sm = context.getSystemService(android.content.Context.SENSOR_SERVICE)
+                as? android.hardware.SensorManager
+            if (sm != null) {
+                val sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_GAME_ROTATION_VECTOR)
+                    ?: sm.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)
+                if (sensor != null) {
+                    val rotMatrix = FloatArray(9)
+                    val orient = FloatArray(3)
+                    val listener = object : android.hardware.SensorEventListener {
+                        override fun onSensorChanged(event: android.hardware.SensorEvent) {
+                            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
+                                ?: return
+                            android.hardware.SensorManager.getRotationMatrixFromVector(
+                                rotMatrix, event.values
+                            )
+                            android.hardware.SensorManager.remapCoordinateSystem(
+                                rotMatrix,
+                                android.hardware.SensorManager.AXIS_X,
+                                android.hardware.SensorManager.AXIS_Z,
+                                rotMatrix
+                            )
+                            android.hardware.SensorManager.getOrientation(rotMatrix, orient)
+                            ishiruka.feedOrientation(orient)
+                        }
+
+                        override fun onAccuracyChanged(
+                            sensor: android.hardware.Sensor?, accuracy: Int
+                        ) {}
+                    }
+                    sensorManager = sm
+                    registeredListener = listener
+                    sm.registerListener(listener, sensor,
+                        android.hardware.SensorManager.SENSOR_DELAY_GAME)
+                }
+            }
+        }
+        onDispose {
+            if (platform == GamePlatform.TG3DS) {
+                com.nesstation.app.core.jni.AzaharNative.detachSessionHooks()
+            } else if (platform == GamePlatform.NGCWII) {
+                com.nesstation.app.core.jni.IshirukaNative.detachSessionHooks()
+                nativePrevBits[GamePlatform.NGCWII.name] = 0
+            }
+            try {
+                sensorManager?.unregisterListener(registeredListener)
+            } catch (_: Throwable) {}
         }
     }
 
@@ -1169,6 +1295,11 @@ fun EmulatorScreen(
     // (fast, GPU upscales) or display resolution (sharp, CPU scales).
     LaunchedEffect(padLayout.highQualityScaling) {
         engine.setHighQualityScaling(padLayout.highQualityScaling)
+    }
+
+    // NGC-WII 控制器方案 → 物理手柄派发（routePadBits 读取）
+    LaunchedEffect(padLayout.ngcwiiController) {
+        currentNgcwiiController = padLayout.ngcwiiController.ifBlank { "wii" }
     }
 
     // Apply core options on load and when they change
@@ -1442,6 +1573,35 @@ fun EmulatorScreen(
             errorMsg = "该游戏未关联 ROM 文件"
             return@LaunchedEffect
         }
+
+        // === 3DS 加密校验（tg3dsDecryptCheck 开启时） ===
+        // 进程内 Azahar 加载加密游戏（未导入 aes_keys.txt）会黑屏退出，
+        // 启动前用 GameInfo.isEncrypted 预检并给出明确的导入指引。
+        if (platform == GamePlatform.TG3DS && padLayout.tg3dsDecryptCheck == "enabled" &&
+            !romPath.startsWith("content://") &&
+            romPath.substringAfterLast('.', "").lowercase() in
+            setOf("3ds", "cci", "cxi", "cia", "app")
+        ) {
+            val encrypted = withContext(Dispatchers.IO) {
+                try {
+                    com.nesstation.app.core.jni.AzaharNative.ensureLoaded() &&
+                        com.nesstation.app.core.storage.CiaInstaller.isEncrypted(romPath)
+                } catch (_: Throwable) { false }
+            }
+            if (encrypted) {
+                val keysOk = withContext(Dispatchers.IO) {
+                    com.nesstation.app.core.jni.AzaharNative.ensureUserDirectory()
+                    com.nesstation.app.core.jni.AzaharNative.areKeysAvailable()
+                }
+                if (!keysOk) {
+                    errorMsg = "该游戏已加密，需要 3DS 解密密钥才能运行。\n\n" +
+                        "请先到 设置 → 核心 → 3DS →「① 导入 aes_keys.txt」导入解密密钥，\n" +
+                        "或使用「② 解密工具」导出解密版后再导入游戏。"
+                    return@LaunchedEffect
+                }
+            }
+        }
+        // CIA：进程内 Azahar 支持 launch 策略 —— 启动即安装（tg3dsCiaMode）。
 
         // === 直接读取优化：content:// → 外部存储真实路径 ===
         // libretro/ARMSX2 等 native 核心只能通过文件系统路径读 ROM；SAF
@@ -2069,7 +2229,10 @@ fun EmulatorScreen(
         // 等设置（组合时先于 loadRom 运行的那次 applyCoreOptions 会被整个
         // 覆盖掉）。加载成功后重新应用 GameBox 的 J2ME 设置，保证
         // “游戏内设置 / 全局 Java 设置”真正生效且优先级高于旧配置文件。
-        if (loaded && platform == GamePlatform.JAVA) {
+        // 加载成功后重新应用设置：J2ME（每游戏配置覆盖）与 3DS/NGC-WII
+        // （首次 apply 时引擎尚未 load 完成，扩展切换等热项需要再下发一次）
+        if (loaded && (platform == GamePlatform.JAVA ||
+                       platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII)) {
             applyCoreOptions(engine, padLayout, platform)
         }
     }
@@ -2520,6 +2683,47 @@ fun EmulatorScreen(
                                 }
                             }
                         }
+                    } else if (platform == GamePlatform.TG3DS) {
+                        // 3DS 下屏触摸：未命中按键的游戏区触摸以视图局部像素坐标
+                        // 喂给核心（Azahar 按当前布局自动映射到 3DS 下屏）。
+                        { rootPos, action ->
+                            val azahar = engine as? com.nesstation.app.core.engine.AzaharEngine
+                            if (azahar != null) {
+                                val lx = rootPos.x - gameViewPosInRoot.x
+                                val ly = rootPos.y - gameViewPosInRoot.y
+                                when (action) {
+                                    android.view.MotionEvent.ACTION_DOWN,
+                                    android.view.MotionEvent.ACTION_POINTER_DOWN ->
+                                        azahar.touch(lx, ly, true)
+                                    android.view.MotionEvent.ACTION_MOVE ->
+                                        azahar.touchMoved(lx, ly)
+                                    else -> azahar.touch(0f, 0f, false)
+                                }
+                            }
+                        }
+                    } else if (platform == GamePlatform.NGCWII) {
+                        // NGC-WII IR 指针（体感）：游戏区拖动 → 绝对 IR 坐标
+                        // （仅 Wii 游戏；GC 游戏无用）。官方 IR overlay 同款公式。
+                        { rootPos, action ->
+                            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
+                            if (ishiruka != null && ishiruka.isWiiGame) {
+                                when (action) {
+                                    android.view.MotionEvent.ACTION_DOWN,
+                                    android.view.MotionEvent.ACTION_POINTER_DOWN,
+                                    android.view.MotionEvent.ACTION_MOVE -> {
+                                        val lx = (rootPos.x - gameViewPosInRoot.x)
+                                            .coerceIn(0f, gameViewSize.width.toFloat())
+                                        val ly = (rootPos.y - gameViewPosInRoot.y)
+                                            .coerceIn(0f, gameViewSize.height.toFloat())
+                                        ishiruka.irPointer(
+                                            lx, ly,
+                                            gameViewSize.width, gameViewSize.height
+                                        )
+                                    }
+                                    else -> ishiruka.irReset()
+                                }
+                            }
+                        }
                     } else null,
                     onPadBits = { bits ->
                         // 联机对战：把本地输入送给 NetplayController，由它打包
@@ -2527,6 +2731,14 @@ fun EmulatorScreen(
                         // 推回 setPad1/setPad2。本地路径：直接 routePadBits。
                         if (netplayController != null) {
                             netplayController.setLocalPad(bits)
+                        } else if (platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII) {
+                            // 3DS / NGC-WII 进程内核心：事件式输入，
+                            // 位掩码 → 核心按键 id 沿派发（见 dispatchNativePadBits）
+                            dispatchNativePadBits(
+                                engine, platform, bits,
+                                if (platform == GamePlatform.NGCWII)
+                                    (padLayout.ngcwiiController.ifBlank { "wii" }) else ""
+                            )
                         } else {
                             routePadBits(engine, currentPlayer, bits, platform = platform)
                         }
@@ -2541,6 +2753,37 @@ fun EmulatorScreen(
                                 (rx * 32767).toInt(),
                                 (ry * 32767).toInt()
                             )
+                        }
+                    } else if (platform == GamePlatform.TG3DS) {
+                        // 3DS：左摇杆 = Circle Pad（713），右摇杆 = C 摇杆（718）。
+                        // 注意 Azahar 轴约定：x 右正，y 上正 —— 覆盖层给的 y 是
+                        // 屏幕坐标向下正，需取负。
+                        { lx, ly, rx, ry ->
+                            val azahar = engine as? com.nesstation.app.core.engine.AzaharEngine
+                            azahar?.circlePad(lx, -ly)
+                            azahar?.cStick(rx, -ry)
+                        }
+                    } else if (platform == GamePlatform.NGCWII) {
+                        // NGC-WII：按控制器方案映射双摇杆（±配对轴在引擎内处理）
+                        { lx, ly, rx, ry ->
+                            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
+                            if (ishiruka != null) {
+                                when (padLayout.ngcwiiController.ifBlank { "wii" }) {
+                                    "gc" -> {
+                                        ishiruka.gcStick(lx, -ly)
+                                        ishiruka.gcCStick(rx, -ry)
+                                    }
+                                    "classic" -> {
+                                        ishiruka.classicLeftStick(lx, -ly)
+                                        ishiruka.classicRightStick(rx, -ry)
+                                    }
+                                    else -> {
+                                        // wii / wiimote_only：左摇杆 = 双节棍摇杆；
+                                        // 右摇杆作 IR 平移（相对模式备用）
+                                        ishiruka.nunchukStick(lx, -ly)
+                                    }
+                                }
+                            }
                         }
                     } else null,
                     // 即时存档 / 即时读档：直接操作当前槽位 saveLoadSlot，
@@ -3357,6 +3600,12 @@ private fun routePadBits(
         if (player == 0) netplayController.setLocalPad(ndsBits)
         return
     }
+    // 3DS / NGC-WII：事件式核心 —— 物理 gamepad / 键盘位掩码同样走
+    // 沿派发（虚拟手柄的 onPadBits 已在调用方单独分流）。
+    if (platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII) {
+        dispatchNativePadBits(engine, platform, bits, currentNgcwiiController)
+        return
+    }
     when (player) {
         0 -> engine.setPad1(ndsBits)
         1 -> engine.setPad2(ndsBits)
@@ -3369,6 +3618,162 @@ private fun routePadBits(
              ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad4(ndsBits)
              ?: Unit
     }
+}
+
+// ---------------------------------------------------------------------------
+// 3DS / NGC-WII 进程内核心输入派发
+//
+// Azahar / Ishiruka 是事件式输入（每键独立 id + 按下/抬起沿），与位掩码
+// 式引擎（setPad1(bits)）不同。虚拟手柄层仍统一输出位掩码（visualState），
+// 这里负责位掩码 → 核心按键 id 的映射与沿检测（prevBits vs bits 的变化位
+// 才发事件），避免重复注入。
+//
+// 位布局沿用标准位（bit0=A ... bit15=R3），另用 bit16-19 作组合键专用
+// 伪按键（NGC-WII 挥动四向；3DS HOME/换屏）—— 见 ComboButtonPickerDialog。
+// ---------------------------------------------------------------------------
+
+/** 每平台记录上一次位掩码（沿检测用；0 = 全部抬起）。 */
+private val nativePrevBits = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+/**
+ * 当前 NGC-WII 控制器方案（"gc"/"wii"/"wiimote"/"classic"）。
+ * EmulatorScreen 组合 padLayout 时刷新；routePadBits 的物理 gamepad
+ * 路径（拿不到 padLayout）经它读取。
+ */
+@Volatile
+private var currentNgcwiiController: String = "wii"
+
+/** 3DS 位 → Azahar ButtonType id。 */
+private fun tg3dsBitToButton(bit: Int): Int? = when (bit) {
+    BTN_A      -> 700  // BUTTON_A
+    BTN_B      -> 701  // BUTTON_B
+    BTN_X      -> 702  // BUTTON_X
+    BTN_Y      -> 703  // BUTTON_Y
+    BTN_L2     -> 707  // ZL (New 3DS)
+    BTN_R2     -> 708  // ZR (New 3DS)
+    BTN_START  -> 704  // BUTTON_START
+    BTN_SELECT -> 705  // BUTTON_SELECT
+    BTN_UP     -> 709
+    BTN_DOWN   -> 710
+    BTN_LEFT   -> 711
+    BTN_RIGHT  -> 712
+    BTN_L_SNES -> 773  // TRIGGER_L (bit10)
+    BTN_R_SNES -> 774  // TRIGGER_R (bit11)
+    1 shl 16   -> 706  // HOME（组合键伪位）
+    1 shl 17   -> 800  // BUTTON_SWAP 上下屏交换（组合键伪位）
+    else -> null
+}
+
+/**
+ * NGC-WII 位 → 核心按键 id。返回 null 表示该位在本方案不可用。
+ * @param controller "gc" | "wii"（Wiimote+双节棍） | "classic" | "wiimote_only"
+ */
+private fun ngcwiiBitToButton(bit: Int, controller: String): Int? = when (controller) {
+    "gc" -> when (bit) {
+        BTN_A      -> 0   // GCPAD_BUTTON_A
+        BTN_B      -> 1   // GCPAD_BUTTON_B
+        BTN_START  -> 2   // GCPAD_BUTTON_START
+        BTN_X      -> 3   // GCPAD_BUTTON_X
+        BTN_Y      -> 4   // GCPAD_BUTTON_Y
+        BTN_L_SNES -> 5   // GCPAD_BUTTON_Z (bit10)
+        BTN_UP     -> 6
+        BTN_DOWN   -> 7
+        BTN_LEFT   -> 8
+        BTN_RIGHT  -> 9
+        // L2/R2 → 扳机（轴），在 dispatchNgcwiiBits 特殊处理
+        else -> null
+    }
+    "classic" -> when (bit) {
+        BTN_A      -> 300
+        BTN_B      -> 301
+        BTN_X      -> 302
+        BTN_Y      -> 303
+        BTN_SELECT -> 304  // −
+        BTN_START  -> 305  // +
+        BTN_L_SNES -> 307  // ZL (bit10)
+        BTN_R_SNES -> 308  // ZR (bit11)
+        BTN_UP     -> 309
+        BTN_DOWN   -> 310
+        BTN_LEFT   -> 311
+        BTN_RIGHT  -> 312
+        BTN_L3     -> 306  // HOME（L3 位复用）
+        else -> null
+    }
+    else -> when (bit) { // "wii" / "wiimote_only"：Wiimote(+双节棍)
+        BTN_A      -> 100  // WIIMOTE_BUTTON_A
+        BTN_B      -> 101  // WIIMOTE_BUTTON_B
+        BTN_SELECT -> 102  // −
+        BTN_START  -> 103  // +
+        BTN_X      -> 105  // 1
+        BTN_Y      -> 106  // 2
+        BTN_UP     -> 107
+        BTN_DOWN   -> 108
+        BTN_LEFT   -> 109
+        BTN_RIGHT  -> 110
+        BTN_L_SNES -> 201  // Nunchuk Z (bit10)
+        BTN_R_SNES -> 200  // Nunchuk C (bit11)
+        BTN_L3     -> 132  // 摇晃 Wiimote（体感）
+        BTN_R3     -> 220  // 摇晃双节棍（体感）
+        BTN_L2     -> 104  // HOME
+        BTN_R2     -> 118  // IR/Hide（指针隐藏切换）
+        1 shl 20   -> 139  // IR/Recenter（组合键伪位）
+        else -> null
+    }
+}
+
+/** NGC-WII 组合键挥动伪位 → 摇动轴 id（1.0 脉冲）。 */
+private fun ngcwiiSwingAxis(bit: Int): Int? = when (bit) {
+    1 shl 16 -> 120  // Swing/Up
+    1 shl 17 -> 121  // Swing/Down
+    1 shl 18 -> 122  // Swing/Left
+    1 shl 19 -> 123  // Swing/Right
+    else -> null
+}
+
+/**
+ * 3DS / NGC-WII 位掩码沿派发：对比 prevBits，变化位逐键发按下/抬起事件。
+ * GC 扳机（L2/R2）以轴值注入（满行程 1.0 / 释放 0）。
+ */
+private fun dispatchNativePadBits(
+    engine: EmulatorEngine,
+    platform: GamePlatform,
+    bits: Int,
+    ngcwiiController: String
+) {
+    val key = platform.name
+    val prev = nativePrevBits[key] ?: 0
+    if (prev == bits) return
+    val changed = prev xor bits
+    val azahar = engine as? com.nesstation.app.core.engine.AzaharEngine
+    val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
+    // 遍历 0-20 位（bit16-19 挥动伪位，bit20 IR/Recenter 伪位）
+    var mask = changed
+    var b = 0
+    while (mask != 0 && b < 21) {
+        val bit = 1 shl b
+        if (mask and bit != 0) {
+            mask = mask and bit.inv()
+            val down = bits and bit != 0
+            if (azahar != null) {
+                tg3dsBitToButton(bit)?.let { azahar.buttonEvent(it, down) }
+            } else if (ishiruka != null) {
+                if (platform == GamePlatform.NGCWII && ngcwiiController == "gc" && bit == BTN_L2) {
+                    ishiruka.gcTrigger(left = true, pressed = down)
+                } else if (platform == GamePlatform.NGCWII && ngcwiiController == "gc" && bit == BTN_R2) {
+                    ishiruka.gcTrigger(left = false, pressed = down)
+                } else {
+                    ngcwiiSwingAxis(bit)?.let { axis ->
+                        // 挥动是轴：按下 1.0 / 抬起 0
+                        com.nesstation.app.core.jni.IshirukaNative.axisEvent(axis, if (down) 1f else 0f)
+                    } ?: ngcwiiBitToButton(bit, ngcwiiController)?.let { id ->
+                        ishiruka.buttonEvent(id, down)
+                    }
+                }
+            }
+        }
+        b++
+    }
+    nativePrevBits[key] = bits
 }
 
 // ---------------------------------------------------------------------------
@@ -3802,11 +4207,68 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("reicast_broadcast", layout.dcBroadcast)
             engine.setCoreOption("reicast_cable_type", layout.dcCableType)
         }
-        // 3DS / NGC-WII 为外部独立核心（Azahar / Ishiruka）：设置由核心
-        // APK 自行管理，NesStation 侧的专属设置见 CoreSettingsPanel 的
-        // TG3DS / NGCWII 面板与 ExternalCoreScreen 启动页。
-        GamePlatform.TG3DS, GamePlatform.NGCWII -> {
-            // 无进程内引擎可下发核心选项 —— 空实现保当穷举
+        // 3DS：进程内 Azahar —— NesStation 侧设置写 <userDir>/config/config.ini，
+        // engine.setCoreOption(key="Section.key", value) 由 AzaharEngine 落盘，
+        // 随后 reloadSettings 热生效。
+        GamePlatform.TG3DS -> {
+            engine.setCoreOption("Core.use_cpu_jit", layout.tg3dsCpuJit)
+            engine.setCoreOption("Core.cpu_clock_percentage", layout.tg3dsCpuClock)
+            engine.setCoreOption("Core.use_frame_limit", layout.tg3dsFrameLimit)
+            engine.setCoreOption("Core.frame_limit", layout.tg3dsFrameSpeed)
+            engine.setCoreOption("Renderer.resolution_factor", layout.tg3dsResolution)
+            engine.setCoreOption("Renderer.use_vsync", layout.tg3dsVsync)
+            engine.setCoreOption("Renderer.use_hw_shader", layout.tg3dsHwShader)
+            engine.setCoreOption("Renderer.shaders_accurate_mul", layout.tg3dsAccurateMul)
+            engine.setCoreOption("Renderer.use_disk_shader_cache", layout.tg3dsDiskShader)
+            engine.setCoreOption("Renderer.async_shader_compilation", layout.tg3dsAsyncShader)
+            engine.setCoreOption("Renderer.graphics_api", layout.tg3dsGraphicsApi)
+            engine.setCoreOption("Renderer.render_3d", layout.tg3dsRender3d)
+            engine.setCoreOption("Renderer.factor_3d", layout.tg3dsFactor3d)
+            engine.setCoreOption("Renderer.layout_option", layout.tg3dsLayout)
+            engine.setCoreOption("Renderer.portrait_layout_option", layout.tg3dsPortraitLayout)
+            engine.setCoreOption("Renderer.swap_screen", layout.tg3dsSwapScreen)
+            engine.setCoreOption("Renderer.upright_screen", layout.tg3dsUpright)
+            engine.setCoreOption("Renderer.filter_mode", layout.tg3dsFilterMode)
+            engine.setCoreOption("Renderer.texture_filter", layout.tg3dsTextureFilter)
+            engine.setCoreOption("Audio.output_type", layout.tg3dsAudioOutput)
+            engine.setCoreOption("Audio.audio_emulation", layout.tg3dsAudioEmulation)
+            engine.setCoreOption("Audio.enable_audio_stretching", layout.tg3dsAudioStretch)
+            engine.setCoreOption("Audio.volume", layout.tg3dsVolume)
+            engine.setCoreOption("System.is_new_3ds", layout.tg3dsNew3ds)
+            engine.setCoreOption("System.region_value", layout.tg3dsRegion)
+            engine.setCoreOption("System.init_clock", layout.tg3dsInitClock)
+            engine.setCoreOption("System.lle_applets", layout.tg3dsLleApplets)
+            if (isLoaded) {
+                try { com.nesstation.app.core.jni.AzaharNative.reloadSettings() } catch (_: Throwable) {}
+            }
+        }
+        // NGC-WII：进程内 Ishiruka —— Dolphin.ini/GFX.ini 经 native
+        // SetUserSetting 直写（引擎内热生效）；控制器扩展切换热重载。
+        GamePlatform.NGCWII -> {
+            engine.setCoreOption("Dolphin.ini/Core/CPUCore", layout.ngcwiiCpuCore)
+            engine.setCoreOption("Dolphin.ini/Core/DSPHLE", layout.ngcwiiDspHle)
+            engine.setCoreOption("Dolphin.ini/Core/SoundBackend", layout.ngcwiiAudioBackend)
+            engine.setCoreOption("Dolphin.ini/Core/EmulationSpeed", layout.ngcwiiEmulationSpeed)
+            engine.setCoreOption("Dolphin.ini/Core/CheatsEnabled", layout.ngcwiiCheats)
+            engine.setCoreOption("Dolphin.ini/Core/ContinuousScanning", layout.ngcwiiScan)
+            engine.setCoreOption("Dolphin.ini/Core/WiiLanguage", layout.ngcwiiWiiLanguage)
+            engine.setCoreOption("Dolphin.ini/Core/AspectRatio", layout.ngcwiiWiiAspect)
+            engine.setCoreOption("GFX.ini/Settings/InternalResolution", layout.ngcwiiInternalRes)
+            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.ngcwiiAspect)
+            engine.setCoreOption("GFX.ini/Settings/MSAA", layout.ngcwiiMsaa)
+            engine.setCoreOption("GFX.ini/Settings/AnisotropicFiltering", layout.ngcwiiAniso)
+            engine.setCoreOption("GFX.ini/Settings/WaitForShaders", layout.ngcwiiWaitShaders)
+            engine.setCoreOption("GFX.ini/Settings/ShowFPS", layout.ngcwiiShowFps)
+            // 控制器扩展（仅 Wii 游戏有意义；GC 由 GCPadNew.ini 直读）
+            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
+            if (ishiruka != null && ishiruka.isWiiGame && isLoaded) {
+                val extension = when (layout.ngcwiiController.ifBlank { "wii" }) {
+                    "classic" -> "Classic"
+                    "wiimote" -> "None"
+                    else -> "Nunchuk"   // "wii" / "nunchuk"
+                }
+                ishiruka.setExtension(extension)
+            }
         }
     }
 }
@@ -4839,9 +5301,10 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准虚拟手柄体系，
         // 组合键与 NES 共用同一 PadLayout.comboButtons 表。
         GamePlatform.DC     -> padLayout.comboButtons
-        // 3DS / NGC-WII：外部独立核心，组合键由核心自身 overlay 提供
-        GamePlatform.TG3DS  -> ""
-        GamePlatform.NGCWII -> ""
+        // 3DS / NGC-WII：进程内核心 —— 组合键经 dispatchNativePadBits
+        // 派发（伪位 bit16-20：HOME/换屏/挥动/IR 重定位）。
+        GamePlatform.TG3DS  -> padLayout.comboButtons3ds
+        GamePlatform.NGCWII -> padLayout.comboButtonsNgcwii
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -8196,6 +8659,8 @@ private fun PadLayoutEditor(
                             GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
                             GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
                                 padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
+                            GamePlatform.TG3DS -> padLayout.copy {comboButtons3ds = json}
+                            GamePlatform.NGCWII -> padLayout.copy {comboButtonsNgcwii = json}
                             else -> padLayout
                         }
                         onLayoutChange(newLayout)
@@ -8467,6 +8932,8 @@ private fun PadLayoutEditor(
                                 GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
                                 GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
                                     padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
+                                GamePlatform.TG3DS -> padLayout.copy {comboButtons3ds = json}
+                                GamePlatform.NGCWII -> padLayout.copy {comboButtonsNgcwii = json}
                                 else -> padLayout
                             }
                             onLayoutChange(newLayout)
@@ -8511,6 +8978,8 @@ private fun PadLayoutEditor(
                         GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
                         GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
                             padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
+                        GamePlatform.TG3DS -> padLayout.copy {comboButtons3ds = json}
+                        GamePlatform.NGCWII -> padLayout.copy {comboButtonsNgcwii = json}
                         else -> padLayout
                     }
                     onLayoutChange(newLayout)
@@ -8701,6 +9170,32 @@ private fun ComboButtonPickerDialog(
         if (platform == GamePlatform.PS2) {
             list.add(ButtonOption("L3", BTN_L3))
             list.add(ButtonOption("R3", BTN_R3))
+        }
+        // ★ 3DS / NGC-WII 进程内核心：全量组合键（含 HOME/换屏/挥动/IR 伪位）
+        if (platform == GamePlatform.TG3DS) {
+            list.add(ButtonOption("X", BTN_X))
+            list.add(ButtonOption("Y", BTN_Y))
+            list.add(ButtonOption("L", BTN_L2))     // ZL
+            list.add(ButtonOption("R", BTN_R2))     // ZR
+            list.add(ButtonOption("L2", BTN_L_SNES)) // L 扳机
+            list.add(ButtonOption("R2", BTN_R_SNES)) // R 扳机
+            list.add(ButtonOption("HOME", 1 shl 16))
+            list.add(ButtonOption("换屏", 1 shl 17))
+        }
+        if (platform == GamePlatform.NGCWII) {
+            list.add(ButtonOption("X", BTN_X))
+            list.add(ButtonOption("Y", BTN_Y))
+            list.add(ButtonOption("L", BTN_L2))
+            list.add(ButtonOption("R", BTN_R2))
+            list.add(ButtonOption("L2", BTN_L_SNES))
+            list.add(ButtonOption("R2", BTN_R_SNES))
+            list.add(ButtonOption("L3", BTN_L3))
+            list.add(ButtonOption("R3", BTN_R3))
+            list.add(ButtonOption("挥上", 1 shl 16))   // Swing/Up（轴 120）
+            list.add(ButtonOption("挥下", 1 shl 17))   // Swing/Down
+            list.add(ButtonOption("挥左", 1 shl 18))   // Swing/Left
+            list.add(ButtonOption("挥右", 1 shl 19))   // Swing/Right
+            list.add(ButtonOption("IR重定位", 1 shl 20)) // IR/Recenter（139）
         }
         list.toList()
     }
@@ -10849,30 +11344,65 @@ private fun SettingsPanel(
                     padLayout.dcEnableDsp
                 ) { onLayoutChange(padLayout.copy {dcEnableDsp = it}) }
             }
-            // 3DS / NGC-WII：外部独立核心（Azahar / Ishiruka），游戏内设置菜单
-            // 由核心自带菜单提供 —— NesStation 侧仅保留上方通用项
-            // （透明度/布局/滤镜等），核心专属设置见 CoreSettingsPanel 对应面板。
+            // 3DS / NGC-WII：进程内核心（Azahar / Ishiruka）—— 游戏内菜单提供
+            // 高频设置（画面/布局/控制器切换），完整设置见 主界面 → 设置 → 核心。
             GamePlatform.TG3DS, GamePlatform.NGCWII -> {
                 Text(
-                    if (platform == GamePlatform.TG3DS) "3DS 专属设置在核心内" else "NGC/WII 专属设置在核心内",
+                    if (platform == GamePlatform.TG3DS) "3DS (进程内 Azahar 核心)" else "NGC/WII (进程内 Ishiruka 核心)",
                     color = Color(0xFFFFD66B), fontSize = 13.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                 )
                 Spacer(Modifier.size(6.dp))
-                Text(
-                    if (platform == GamePlatform.TG3DS)
-                        "3DS 由独立核心 Azahar 运行：模拟画面、按键布局（触摸层）、\n" +
-                        "画面/音频/插件等专属设置请在 Azahar 游戏内菜单或其设置页调整。\n" +
-                        "NesStation 侧提供：加密检测与解密密钥导入（设置 → 3DS → 解密密钥）、\n" +
-                        "CIA 安装与启动桥接。"
-                    else
-                        "NGC/WII 由独立核心 Ishiruka 运行：模拟画面、全量虚拟按键\n" +
-                        "（GC 手柄 / Wii 遥控器 / 双节棍 / 经典手柄 / 体感）、专属设置请在\n" +
-                        "Ishiruka 游戏内菜单或其设置页调整。NesStation 侧提供：控制器切换、\n" +
-                        "体感开关与启动桥接（下次启动游戏时生效）。"
-                    ,
-                    color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp
-                )
+                if (platform == GamePlatform.TG3DS) {
+                    DropdownSetting("内部分辨率",
+                        listOf("0" to "自动", "1" to "1x (原生)", "2" to "2x", "3" to "3x", "4" to "4x"),
+                        padLayout.tg3dsResolution
+                    ) { onLayoutChange(padLayout.copy {tg3dsResolution = it}) }
+                    DropdownSetting("横屏布局",
+                        listOf("2" to "大屏 + 小屏", "0" to "默认 (上下)", "1" to "单屏", "3" to "侧并", "4" to "混合"),
+                        padLayout.tg3dsLayout
+                    ) { onLayoutChange(padLayout.copy {tg3dsLayout = it}) }
+                    DropdownSetting("交换上下屏", listOf("0" to "正常", "1" to "交换"), padLayout.tg3dsSwapScreen)
+                    { onLayoutChange(padLayout.copy {tg3dsSwapScreen = it}) }
+                    DropdownSetting("立体 3D",
+                        listOf("0" to "关闭", "1" to "并排 (半宽)", "2" to "并排 (全宽)", "3" to "红蓝分色"),
+                        padLayout.tg3dsRender3d
+                    ) { onLayoutChange(padLayout.copy {tg3dsRender3d = it}) }
+                    DropdownSetting("音频模拟",
+                        listOf("1" to "开启 (默认)", "0" to "关闭 (最快)"),
+                        padLayout.tg3dsAudioEmulation
+                    ) { onLayoutChange(padLayout.copy {tg3dsAudioEmulation = it}) }
+                    Text("下屏触摸 = 游戏画面直接触摸；HOME/换屏 = 组合键。完整设置见 主界面 → 设置 → 3DS。",
+                        color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp)
+                } else {
+                    DropdownSetting("控制器方案",
+                        listOf(
+                            "gc" to "GameCube 手柄",
+                            "wii" to "Wii 遥控器 + 双节棍",
+                            "wiimote" to "Wii 遥控器横握",
+                            "classic" to "经典手柄"
+                        ),
+                        padLayout.ngcwiiController
+                    ) { onLayoutChange(padLayout.copy {ngcwiiController = it}) }
+                    DropdownSetting("体感操作",
+                        listOf("enabled" to "开启 (倾斜 + 摇晃 + IR 指针)", "disabled" to "关闭"),
+                        padLayout.ngcwiiMotion
+                    ) { onLayoutChange(padLayout.copy {ngcwiiMotion = it}) }
+                    DropdownSetting("内部分辨率",
+                        listOf("1" to "1x", "2" to "1.5x", "3" to "2x", "4" to "2.5x", "5" to "3x", "6" to "4x"),
+                        padLayout.ngcwiiInternalRes
+                    ) { onLayoutChange(padLayout.copy {ngcwiiInternalRes = it}) }
+                    DropdownSetting("画面比例",
+                        listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口"),
+                        padLayout.ngcwiiAspect
+                    ) { onLayoutChange(padLayout.copy {ngcwiiAspect = it}) }
+                    DropdownSetting("等待着色器",
+                        listOf("False" to "关闭 (流畅)", "True" to "开启 (防闪烁)"),
+                        padLayout.ngcwiiWaitShaders
+                    ) { onLayoutChange(padLayout.copy {ngcwiiWaitShaders = it}) }
+                    Text("IR 指针 = 游戏画面触摸拖动；倾斜 = 手机陀螺仪；摇晃 = 虚拟 L3/R3；挥动/IR 重定位 = 组合键。完整设置见 主界面 → 设置 → NGC/WII。",
+                        color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp)
+                }
             }
         }
 
