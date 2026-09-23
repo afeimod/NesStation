@@ -155,6 +155,9 @@ class AzaharEngine private constructor() : EmulatorEngine {
                 android.util.Log.e("AzaharEngine", "reset run", t)
             }
         }
+        // synchronized 块以最后表达式为返回值；thread(...) 返回 Thread，
+        // 而接口 reset():Unit —— 显式丢弃返回值以匹配接口签名
+        Unit
     }
 
     override fun unload() = synchronized(lifecycleLock) { cleanup() }

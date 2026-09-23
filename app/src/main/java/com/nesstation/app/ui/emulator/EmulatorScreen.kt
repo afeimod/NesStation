@@ -1022,6 +1022,40 @@ fun EmulatorScreen(
         }
     }
 
+    // === J2ME 每游戏单独设置 ===
+    // Java 游戏分辨率五花八门，缩放/分辨率/帧率/触摸等设置全局共用会互相
+    // 踩踏 —— 现在按游戏单独保存（JavaGameSettingsStore，key=游戏目录名）：
+    //   · 启动时读取该游戏的专属配置覆盖进会话状态（无则用全局默认）；
+    //   · 游戏里改 J2ME 设置 → 持久化到专属配置，同时全局 prefs 里的 java*
+    //     值保持进入会话前的全局快照（互不污染）；
+    //   · 「恢复全局默认」删除专属配置并还原全局值。
+    val javaGameKey = remember(game.id) {
+        if (platform == GamePlatform.JAVA) JavaGameSettingsStore.gameKey(game.romPath) else null
+    }
+    val javaInit = remember {
+        val loaded = PadLayoutStore.load(context, platform)
+        if (platform == GamePlatform.JAVA && javaGameKey != null) {
+            val perGame = JavaGameSettingsStore.load(context, javaGameKey)
+            Triple(loaded, JavaGameSettings.of(loaded), perGame)
+        } else {
+            Triple(loaded, JavaGameSettings.of(loaded), null)
+        }
+    }
+    var globalJavaSnapshot by remember { mutableStateOf(javaInit.second) }
+    var javaHasOverride by remember { mutableStateOf(javaInit.third != null) }
+    var padLayout by remember {
+        mutableStateOf(
+            if (javaInit.third != null) javaInit.first.withJavaSettings(javaInit.third!!)
+            else javaInit.first
+        )
+    }
+    // 恢复全局默认：删除专属配置 + 把会话状态还原成全局快照
+    val resetJavaToGlobal: () -> Unit = {
+        JavaGameSettingsStore.remove(context, javaGameKey)
+        javaHasOverride = false
+        padLayout = padLayout.withJavaSettings(globalJavaSnapshot)
+    }
+
     // === 3DS / NGC-WII 进程内核心会话挂接（native 回调路由 + 体感传感器） ===
     //  - 退出/弹窗/状态回调：native 的 exitEmulationActivity / panic alert /
     //    onCoreError 等经 CitraHost / DolphinHost 路由到本界面
@@ -1054,7 +1088,6 @@ fun EmulatorScreen(
                         // panic alert：非阻塞提示（native 默认继续）
                         Toast.makeText(context, "$title: $msg", Toast.LENGTH_LONG).show()
                         holder[0] = true
-                        synchronized(holder) { holder.notifyAll() }
                     }
                     true
                 }
@@ -1111,40 +1144,6 @@ fun EmulatorScreen(
                 sensorManager?.unregisterListener(registeredListener)
             } catch (_: Throwable) {}
         }
-    }
-
-    // === J2ME 每游戏单独设置 ===
-    // Java 游戏分辨率五花八门，缩放/分辨率/帧率/触摸等设置全局共用会互相
-    // 踩踏 —— 现在按游戏单独保存（JavaGameSettingsStore，key=游戏目录名）：
-    //   · 启动时读取该游戏的专属配置覆盖进会话状态（无则用全局默认）；
-    //   · 游戏里改 J2ME 设置 → 持久化到专属配置，同时全局 prefs 里的 java*
-    //     值保持进入会话前的全局快照（互不污染）；
-    //   · 「恢复全局默认」删除专属配置并还原全局值。
-    val javaGameKey = remember(game.id) {
-        if (platform == GamePlatform.JAVA) JavaGameSettingsStore.gameKey(game.romPath) else null
-    }
-    val javaInit = remember {
-        val loaded = PadLayoutStore.load(context, platform)
-        if (platform == GamePlatform.JAVA && javaGameKey != null) {
-            val perGame = JavaGameSettingsStore.load(context, javaGameKey)
-            Triple(loaded, JavaGameSettings.of(loaded), perGame)
-        } else {
-            Triple(loaded, JavaGameSettings.of(loaded), null)
-        }
-    }
-    var globalJavaSnapshot by remember { mutableStateOf(javaInit.second) }
-    var javaHasOverride by remember { mutableStateOf(javaInit.third != null) }
-    var padLayout by remember {
-        mutableStateOf(
-            if (javaInit.third != null) javaInit.first.withJavaSettings(javaInit.third!!)
-            else javaInit.first
-        )
-    }
-    // 恢复全局默认：删除专属配置 + 把会话状态还原成全局快照
-    val resetJavaToGlobal: () -> Unit = {
-        JavaGameSettingsStore.remove(context, javaGameKey)
-        javaHasOverride = false
-        padLayout = padLayout.withJavaSettings(globalJavaSnapshot)
     }
 
     // J2ME 游戏视图在窗口中的位置（触屏转发坐标换算用，见 J2meGameView 分支）
@@ -4238,7 +4237,7 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("System.region_value", layout.tg3dsRegion)
             engine.setCoreOption("System.init_clock", layout.tg3dsInitClock)
             engine.setCoreOption("System.lle_applets", layout.tg3dsLleApplets)
-            if (isLoaded) {
+            if (engine.isLoaded) {
                 try { com.nesstation.app.core.jni.AzaharNative.reloadSettings() } catch (_: Throwable) {}
             }
         }
@@ -4261,7 +4260,7 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("GFX.ini/Settings/ShowFPS", layout.ngcwiiShowFps)
             // 控制器扩展（仅 Wii 游戏有意义；GC 由 GCPadNew.ini 直读）
             val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
-            if (ishiruka != null && ishiruka.isWiiGame && isLoaded) {
+            if (ishiruka != null && ishiruka.isWiiGame && engine.isLoaded) {
                 val extension = when (layout.ngcwiiController.ifBlank { "wii" }) {
                     "classic" -> "Classic"
                     "wiimote" -> "None"

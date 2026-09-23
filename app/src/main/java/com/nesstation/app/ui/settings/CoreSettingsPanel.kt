@@ -18,6 +18,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.PadLayout
+import com.nesstation.app.core.storage.AzaharDirs
+import com.nesstation.app.core.storage.CiaInstaller
 import com.nesstation.app.core.storage.JAVA_MAPPABLE_BUTTONS
 import com.nesstation.app.core.storage.JAVA_PHONE_KEY_OPTIONS
 import com.nesstation.app.core.storage.javaButtonKeyMapGet

@@ -1,6 +1,7 @@
 package com.nesstation.app.core.storage
 
 import android.content.Context
+import com.nesstation.app.core.jni.AzaharNative
 import java.io.File
 
 /**

@@ -11,6 +11,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import org.citra.citra_emu.CitraHost;
+import org.citra.citra_emu.NativeLibrary;
 
 /**
  * 3DS 软键盘 applet —— 与上游 org.citra.citra_emu.applets.SoftwareKeyboard

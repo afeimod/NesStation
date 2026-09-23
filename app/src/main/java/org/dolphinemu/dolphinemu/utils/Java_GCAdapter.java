@@ -9,6 +9,8 @@ import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
 import android.widget.Toast;
 
+import org.dolphinemu.dolphinemu.DolphinHost;
+
 /**
  * GameCube USB 适配器桥 —— 与上游 Java_GCAdapter 保持一致的 JVM 形状
  * （native ciface GCAdapter 经 FindClass + GetStaticMethodID 调用这些方法，
