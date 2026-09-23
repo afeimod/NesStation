@@ -284,7 +284,9 @@ object AzaharNative {
         if (activity != null) CitraHost.setActivity(activity)
         CitraHost.setExitHook { code -> onExit(code) }
         CitraHost.setStatusHook { msg -> onStatus(msg) }
-        CitraHost.setCoreErrorHook { title, msg -> onCoreError(title, msg) }
+        // DecisionHook.onDecision(title, message, yesNo) 为 3 参接口；
+        // coreError 场景 yesNo 恒为 false（无选择语义），忽略后交由上层决定。
+        CitraHost.setCoreErrorHook { title, msg, _ -> onCoreError(title, msg) }
         CitraHost.setAlertHook { title, msg, yesNo -> onCoreError(title, msg) }
     }
 

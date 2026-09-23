@@ -1,6 +1,7 @@
 package com.nesstation.app.core.jni
 
 import android.content.Context
+import android.view.Surface
 import org.dolphinemu.dolphinemu.DolphinHost
 import org.dolphinemu.dolphinemu.NativeLibrary
 import org.dolphinemu.dolphinemu.model.GameFile
