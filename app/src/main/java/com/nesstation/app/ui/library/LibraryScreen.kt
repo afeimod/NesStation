@@ -142,6 +142,13 @@ val ROM_EXTENSIONS = listOf(
     // .lst = Naomi 合并 ROM 清单；.chd/.cue/.iso 共用上面的 CD 镜像段，
     // 由平台页 hint 消歧；.zip/.7z 在 DC 页导入时归 NAOMI 街机（见 detectFromExtensions）。
     "gdi", "cdi", "lst",
+    // Nintendo 3DS（外部核心 Azahar / 爱吾 AzaharPlus）
+    // .3ds/.cci = 卡带 dump，.cxi/.app/.3dsx = 可执行内容，.cia = 可安装标题
+    "3ds", "cci", "cxi", "cia", "3dsx",
+    // GameCube / Wii（外部核心 Ishiruka — Dolphin fork）
+    // .gcm/.iso = 光盘镜像，.rvz/.gcz/.ciso/.nkit = 压缩镜像，.wbfs = Wii 备份盘
+    // .wad = 系统频道/VC，.tgc/.dol = Wii 内嵌/自制
+    "gcm", "rvz", "gcz", "wbfs", "wad", "ciso", "nkit", "tgc", "dol",
     // Arcade (FBNeo) — archives only; the filename IS the driver name
     "zip", "7z", "gz"
 )
@@ -502,6 +509,8 @@ fun LibraryScreen(
     /**
      * 导入 SAF 多选的 ROM 文件（后台协程执行）。
      * 多文件同选一张 CD 的场景做去重（.cue 存在时跳过 .img/.bin/.ccd/.sub）。
+     * ★ DC .gdi 多文件游戏同样去重（.gdi 存在时跳过 .bin/.raw/.iso/.wav 轨道）
+     *   —— 修复 DC 单游戏多文件被拆成多条目。
      */
     suspend fun importPickedFiles(
         context: android.content.Context,
@@ -525,12 +534,20 @@ fun LibraryScreen(
         val pickedExts = picked.map { it.ext }.toSet()
         val hasCue = "cue" in pickedExts
         val hasCcd = "ccd" in pickedExts
+        // ★ DC .gdi 多文件：.gdi 是启动文件，同选的轨道文件（track01.bin /
+        // track02.raw / track03.wav）全部跳过。所有 .gdi 都保留（一文件夹
+        // 多 .gdi = 多游戏）。
+        val hasGdi = "gdi" in pickedExts
         // .bin is only skipped if we have a .cue (it's a CD data track).
         // Without .cue, a .bin is likely a SEGA MD cart dump — keep it.
+        // ★ 有 .gdi 时 .bin 一定是 GD-ROM 轨道（GDI 文本清单引用同目录轨道）。
         val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
         val skipIfCcd = setOf("img", "sub")
+        val skipIfGdi = setOf("bin", "raw", "iso", "wav")
         val filtered = picked.filter { c ->
             if (c.ext == "sub") return@filter false  // .sub is always a companion
+            if (c.ext == "wav") return@filter false  // .wav 是 CUE/GDI 音轨附属
+            if (hasGdi && c.ext in skipIfGdi) return@filter false
             if (hasCue && c.ext in skipIfCue) return@filter false
             if (!hasCue && hasCcd && c.ext in skipIfCcd) return@filter false
             true
@@ -635,7 +652,7 @@ fun LibraryScreen(
         // Recursively scan the selected folder for ROM files
         val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5)
         if (romFiles.isEmpty()) {
-            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd）"
+            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd .gdi .cdi .3ds .cci .cxi .cia .gcm .iso .rvz .wbfs .wad .gcz .ciso）"
             return
         }
         // Save the folder URI so the Refresh button can re-scan it
@@ -994,7 +1011,9 @@ fun LibraryScreen(
                     GamePlatform.PSX,
                     GamePlatform.PS2,
                     GamePlatform.JAVA,
-                    GamePlatform.DC
+                    GamePlatform.DC,
+                    GamePlatform.TG3DS,
+                    GamePlatform.NGCWII
                 )) { platform ->
                     FilterChip(
                         text = platform.displayName,
@@ -1484,7 +1503,8 @@ private fun scanUriForRomsRecursive(
     context: android.content.Context,
     treeUri: Uri,
     folderUri: Uri,
-    maxDepth: Int
+    maxDepth: Int,
+    reservedTrackFolders: Set<String> = emptySet()
 ): List<Pair<String, Uri>> {
     val results = mutableListOf<Pair<String, Uri>>()
     if (maxDepth <= 0) return results
@@ -1520,6 +1540,9 @@ private fun scanUriForRomsRecursive(
     // This ensures each game appears as ONE entry in the library.
     data class FileEntry(val name: String, val uri: Uri, val ext: String)
     val candidates = mutableListOf<FileEntry>()
+    // 子目录先收集、后递归 —— 这样能先把本层 .gdi 基名算出来传给子层
+    // （"GameName.gdi + GameName/track01.bin" 的轨道子目录跳过依赖它）。
+    val dirEntries = mutableListOf<Pair<String, String>>()  // docId to name
 
     // NOTE: the .query() call itself can throw SecurityException on revoked
     // permissions — that's exactly what we WANT to propagate up so the
@@ -1532,9 +1555,7 @@ private fun scanUriForRomsRecursive(
                 val mimeType = cursor.getString(cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE))
 
                 if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    // Recurse into subdirectory
-                    val subUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-                    results.addAll(scanUriForRomsRecursive(context, treeUri, subUri, maxDepth - 1))
+                    dirEntries.add(docId to (name ?: ""))
                 } else {
                     val ext = name.substringAfterLast('.', "").lowercase()
                     if (ext in ROM_EXTENSIONS) {
@@ -1548,22 +1569,43 @@ private fun scanUriForRomsRecursive(
         }
     }
 
+    // ★ DC .gdi 另一种摆放：game.gdi 在上层、轨道文件放在同名子文件夹。
+    // 本层 .gdi 基名 ∪ 上层传入的 reservedTrackFolders —— 递归子层时整目录
+    // 跳过同名轨道文件夹（轨道属于启动文件，不应单独入库）。
+    val ownGdiNames = candidates.filter { it.ext == "gdi" }
+        .map { it.name.substringBeforeLast('.').lowercase() }
+        .toSet()
+    val reservedForChildren = reservedTrackFolders + ownGdiNames
+    for ((docId, dirName) in dirEntries) {
+        if (dirName.lowercase() in reservedForChildren) continue
+        val subUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+        results.addAll(scanUriForRomsRecursive(context, treeUri, subUri, maxDepth - 1, reservedForChildren))
+    }
+
     // Pass 2: decide which candidates to keep based on folder contents.
     // CD companion files that should be skipped if a primary exists.
     val folderExts = candidates.map { it.ext }.toSet()
     val hasCue = "cue" in folderExts
     val hasCcd = "ccd" in folderExts
+    // ★ DC .gdi 多文件游戏：.gdi = 启动文件（GD-ROM 文本清单，引用同目录
+    // 的 track01.bin / track02.raw / track03.wav 轨道文件）。有 .gdi 时
+    // 轨道文件全部跳过 —— 修复 DC 单游戏多文件被拆成多条目（"DC游戏扫描
+    // 遇到单游戏多文件的情况只扫描一个启动文件"）。
+    val hasGdi = "gdi" in folderExts
     // .bin is tricky — it could be a Mega-CD data track OR a SEGA MD
     // cartridge dump. Only skip .bin if we have a .cue (which references
     // it as a CD data track); otherwise keep it (it's likely a cart).
+    // ★ 有 .gdi 时 .bin 必是 GD-ROM 轨道 —— 直接跳过。
     val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
     val skipIfCcd = setOf("img", "sub")
+    val skipIfGdi = setOf("bin", "raw", "iso", "wav")
 
     for (c in candidates) {
+        if (c.ext == "sub") continue
+        if (c.ext == "wav") continue        // .wav 是 CUE/GDI 音轨附属
+        if (hasGdi && c.ext in skipIfGdi) continue
         if (hasCue && c.ext in skipIfCue) continue
         if (hasCue.not() && hasCcd && c.ext in skipIfCcd) continue
-        // .sub is always a companion file — never import standalone.
-        if (c.ext == "sub") continue
         results.add(c.name to c.uri)
     }
     return results
@@ -1576,7 +1618,7 @@ private fun scanUriForRomsRecursive(
  * Used by the built-in FileBrowserDialog when the system SAF picker is
  * unavailable (TV devices without DocumentsUI).
  */
-private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
+private fun scanLocalFolderForRoms(folder: File, maxDepth: Int, reservedTrackFolders: Set<String> = emptySet()): List<File> {
     val results = mutableListOf<File>()
     if (maxDepth <= 0) return results
     val children = try {
@@ -1589,25 +1631,37 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
     // If folder contains .cue → skip .img/.bin/.ccd/.sub/.iso (CD companions)
     // If folder contains .ccd (no .cue) → skip .img/.sub
     // .sub is always skipped (always a companion file).
+    // ★ DC .gdi 多文件游戏：有 .gdi 时轨道文件（track01.bin / .raw / .wav /
+    // .iso）全部跳过，只导入 .gdi 启动文件 —— 与 SAF 扫描同一套去重逻辑。
     val fileChildren = children.filter { it.isFile && !it.name.startsWith(".") }
     val dirChildren = children.filter { it.isDirectory && !it.name.startsWith(".") }
 
     val folderExts = fileChildren.map { it.extension.lowercase() }.toSet()
     val hasCue = "cue" in folderExts
     val hasCcd = "ccd" in folderExts
+    val hasGdi = "gdi" in folderExts
     val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
     val skipIfCcd = setOf("img", "sub")
+    val skipIfGdi = setOf("bin", "raw", "iso", "wav")
+    // ★ "GameName.gdi + GameName/轨道子文件夹" 摆放：子文件夹名与某个 .gdi
+    // 基名一致时整个不递归（内容属于启动文件）。
+    val gdiBaseNames = fileChildren.filter { it.extension.lowercase() == "gdi" }
+        .map { it.nameWithoutExtension.lowercase() }
+        .toSet()
 
     for (f in fileChildren) {
         val ext = f.extension.lowercase()
         if (ext !in ROM_EXTENSIONS) continue
+        if (ext == "sub") continue
+        if (ext == "wav") continue
+        if (hasGdi && ext in skipIfGdi) continue
         if (hasCue && ext in skipIfCue) continue
         if (hasCue.not() && hasCcd && ext in skipIfCcd) continue
-        if (ext == "sub") continue
         results.add(f)
     }
     for (d in dirChildren) {
-        results.addAll(scanLocalFolderForRoms(d, maxDepth - 1))
+        if (d.name.lowercase() in (reservedTrackFolders + gdiBaseNames)) continue
+        results.addAll(scanLocalFolderForRoms(d, maxDepth - 1, reservedTrackFolders + gdiBaseNames))
     }
     return results
 }
@@ -1911,6 +1965,8 @@ private fun FsdPlatformBadge(platform: GamePlatform, modifier: Modifier = Modifi
         GamePlatform.PS2    -> "PS2"
         GamePlatform.JAVA   -> "Java"
         GamePlatform.DC    -> "DC"
+        GamePlatform.TG3DS  -> "3DS"
+        GamePlatform.NGCWII -> "NGC/WII"
     }
     Box(
         modifier = modifier

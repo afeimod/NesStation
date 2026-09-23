@@ -235,6 +235,9 @@ interface EmulatorEngine {
          *           AtomisWave)。与 PSX 等核心同一 dlopen 模式：libdccore.so
          *           运行时加载预编译 libflycast_libretro_android.so，Kotlin
          *           拥有模拟线程（见 core/jni/dc_loader.cpp 的 HW 渲染说明）。
+         * TG3DS / NGCWII -> 外部独立核心（Azahar / Ishiruka），不走进程内引擎：
+         *           EmulatorScreen 在入口处提前路由到 ExternalCoreScreen，
+         *           本工厂若被误调用会抛出明确异常暴露调用点。
          */
         fun forPlatform(platform: GamePlatform): EmulatorEngine = when (platform) {
             GamePlatform.NES    -> NesEngine.get()
@@ -250,6 +253,13 @@ interface EmulatorEngine {
             GamePlatform.PS2    -> Psx2Engine.get()
             GamePlatform.JAVA   -> J2meEngine.get()
             GamePlatform.DC     -> DcEngine.get()
+            // 外部独立核心无进程内引擎 —— 不应到达此分支（EmulatorScreen
+            // 已提前路由 ExternalCoreScreen）。抛出而非静默错核心，便于发现
+            // 潜在的调用点遗漏（如未来的联机入口）。
+            GamePlatform.TG3DS,
+            GamePlatform.NGCWII -> throw IllegalStateException(
+                "$platform 是外部独立核心（无进程内引擎），必须经 ExternalCoreScreen 启动"
+            )
         }
     }
 }

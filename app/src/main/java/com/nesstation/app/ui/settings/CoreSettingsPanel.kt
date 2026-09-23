@@ -7,6 +7,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -1582,10 +1586,257 @@ fun CoreSettingsPanel(
                         color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
             }
+            GamePlatform.TG3DS -> item {
+                // 外部独立核心 Azahar / 爱吾 AzaharPlus —— NesStation 负责
+                // 状态检测 / 解密密钥 / CIA 导入 / 启动桥接；模拟专属设置在核心内。
+                ExternalCoreStatusSection(coreName = "3DS 核心 (AzaharPlus / 爱吾3DS)")
+                SettingsSection("3DS · 游戏解密") {
+                    DropdownRow("启动前加密校验",
+                        listOf("enabled" to "开启 (推荐·加密游戏给出提示)", "disabled" to "关闭 (直接交给核心)"),
+                        padLayout.tg3dsDecryptCheck
+                    ) { updateLayout(padLayout.copy {tg3dsDecryptCheck = it}) }
+                    Text(
+                        "加密检测原理：NCCH 容器头 0x188 的 crypto 标志位。" +
+                        "已解密游戏直接启动；加密游戏需要 Azahar 用户目录下的 " +
+                        "keys/aes_keys.txt（下方导入一次即全局生效）。",
+                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                    AzaharKeysImportSection()
+                }
+                SettingsSection("3DS · CIA 安装") {
+                    DropdownRow("CIA 导入策略",
+                        listOf("launch" to "启动即安装 (引导 CIA 自动装入 NAND)",
+                               "copy" to "复制到 import/ 目录 (在核心内批量安装)"),
+                        padLayout.tg3dsCiaMode
+                    ) { updateLayout(padLayout.copy {tg3dsCiaMode = it}) }
+                    Text(
+                        ".cia 导入游戏列表后即可启动：Azahar 引导 CIA 时自动安装。\n" +
+                        "支持扩展名：.3ds / .cci / .cxi / .app / .cia / .3dsx。" +
+                        "如需批量安装，可在下方选定 Azahar 数据目录后使用「复制到 import/」。",
+                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                }
+            }
+            GamePlatform.NGCWII -> item {
+                // 外部独立核心 Ishiruka (Dolphin fork) —— 控制器切换 / 体感 /
+                // 全量虚拟按键(核心 overlay) / 启动桥接；模拟专属设置在核心内，
+                // 下方开关直读直写核心 Config/*.ini（同 DC 设置页 emu.cfg 模式）。
+                val context = androidx.compose.ui.platform.LocalContext.current
+                ExternalCoreStatusSection(coreName = "NGC/WII 核心 (Ishiruka)")
+                SettingsSection("NGC/WII · 控制器切换 / 体感") {
+                    DropdownRow("默认控制器",
+                        listOf(
+                            "gc" to "GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机)",
+                            "wiimote" to "Wii 遥控器 (1/2/A/B/±/HOME + 十字键)",
+                            "nunchuk" to "双节棍 (Wii 遥控器 + C/Z + 副摇杆)",
+                            "classic" to "经典手柄 (双摇杆 + 全键)"
+                        ),
+                        padLayout.ngcwiiController
+                    ) {
+                        updateLayout(padLayout.copy {ngcwiiController = it})
+                        val err = com.nesstation.app.core.external.ExternalCores.applyNgcwiiControllerMode(
+                            context, it, padLayout.ngcwiiMotion)
+                        if (err != null) android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    DropdownRow("体感操作",
+                        listOf("enabled" to "开启 (摇动/倾斜/IR 指针)",
+                               "disabled" to "关闭 (避免误触发摇一摇)"),
+                        padLayout.ngcwiiMotion
+                    ) {
+                        updateLayout(padLayout.copy {ngcwiiMotion = it})
+                        val err = com.nesstation.app.core.external.ExternalCores.applyNgcwiiControllerMode(
+                            context, padLayout.ngcwiiController, it)
+                        if (err != null) android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    Text(
+                        "全量虚拟按键（GC 手柄 / Wii 遥控器 / 双节棍 / 经典手柄 / 体感）由\n" +
+                        "Ishiruka 触摸层呈现，游戏内布局编辑器可逐键显隐与拖动。控制器切换\n" +
+                        "写入核心 Config/WiimoteNew.ini 的 Extension 字段，下次启动生效。",
+                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                }
+                IshirukaIniQuickSettings()
+            }
         }
 
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在
         // PadLayout.overlayThemeJson，见 OverlayTheme.kt） ===
         item { OverlayThemeSection(platform, padLayout, updateLayout) }
+    }
+}
+
+// ===========================================================================
+// 外部独立核心（3DS / NGC-WII）设置辅助 Composable
+// ===========================================================================
+
+/** 外部核心安装状态卡（Azahar / Ishiruka 共用）。 */
+@Composable
+internal fun ExternalCoreStatusSection(coreName: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val (installed, version) = remember {
+        when (coreName) {
+            "NGC/WII 核心 (Ishiruka)" ->
+                com.nesstation.app.core.external.ExternalCores.isIshirukaInstalled(context) to
+                com.nesstation.app.core.external.ExternalCores.coreVersion(
+                    context, com.nesstation.app.core.external.ExternalCores.ISHIRUKA_PACKAGE)
+            else ->
+                com.nesstation.app.core.external.ExternalCores.isAzaharInstalled(context) to
+                com.nesstation.app.core.external.ExternalCores.coreVersion(
+                    context, com.nesstation.app.core.external.ExternalCores.AZAHAR_PACKAGE)
+        }
+    }
+    SettingsSection("$coreName · 核心状态") {
+        SettingsRow(
+            title = if (installed) "已安装" + (if (version.isNotBlank()) " · v$version" else "") else "未安装",
+            subtitle = if (installed) "游戏点击即可桥接启动" else "请先安装核心 APK（独立模拟器形态集成）"
+        )
+        Text(
+            "该平台以独立模拟器形态集成：模拟画面与虚拟按键由核心 APK 呈现，" +
+            "NesStation 负责游戏库 / 扫描 / 启动桥接 / 控制器配置。核心的模拟专属设置" +
+            "（画面 / 音频 / 插件等）请在其自身设置界面调整。",
+            color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+    }
+}
+
+/**
+ * 3DS 解密密钥导入（aes_keys.txt → Azahar 用户目录 keys/ 子目录）。
+ * 两步：① 选择 Azahar 数据目录（与 Azahar 首启「选择数据目录」为同一目录）；
+ *       ② 选择标准工具导出的 aes_keys.txt 文件，自动写入 <目录>/keys/。
+ */
+@Composable
+internal fun AzaharKeysImportSection() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var dirUri by remember {
+        mutableStateOf(com.nesstation.app.core.external.ExternalCores.getAzaharUserDirUri(context))
+    }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    val dirPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            } catch (_: Exception) { }
+            dirUri = uri.toString()
+            com.nesstation.app.core.external.ExternalCores.setAzaharUserDirUri(context, uri.toString())
+            message = "已记录 Azahar 数据目录"
+        }
+    }
+    val keysPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null && dirUri != null) {
+            try {
+                val text = context.contentResolver.openInputStream(uri)?.use {
+                    it.readBytes().toString(Charsets.UTF_8)
+                } ?: ""
+                val err = com.nesstation.app.core.external.ExternalCores.writeAesKeys(
+                    context, dirUri!!, text)
+                message = err ?: "aes_keys.txt 已写入 <数据目录>/keys/ —— 加密游戏下次启动即可解密"
+            } catch (t: Throwable) {
+                message = "导入失败：${t.message}"
+            }
+        } else if (dirUri == null) {
+            message = "请先选择 Azahar 数据目录"
+        }
+    }
+
+    SettingsRow(
+        title = if (dirUri != null) "Azahar 数据目录：已选定" else "① 选择 Azahar 数据目录",
+        subtitle = if (dirUri != null) "点击可重新选择" else "与 Azahar 首次启动时选择的目录一致"
+    ) { dirPicker.launch(null) }
+    SettingsRow(
+        title = "② 导入 aes_keys.txt（解密密钥）",
+        subtitle = "加密 3DS 游戏解密所需，导入一次全局生效"
+    ) { keysPicker.launch(arrayOf("*/*")) }
+
+    // === CIA 批量导入（copy 模式）：把 .cia 复制到 <数据目录>/import/ ===
+    val ciaPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty() && dirUri != null) {
+            try {
+                var ok = 0
+                var lastErr: String? = null
+                for (u in uris) {
+                    val name = queryLastSegment(u) ?: "title_${ok + 1}.cia"
+                    val input = context.contentResolver.openInputStream(u)
+                        ?: continue
+                    val err = com.nesstation.app.core.external.ExternalCores.importCia(
+                        context, dirUri!!, input, name)
+                    if (err == null) ok++ else { lastErr = err; input.close() }
+                }
+                message = "已导入 $ok 个 CIA 到 <数据目录>/import/" +
+                    (lastErr?.let { "（$it）" } ?: "")
+            } catch (t: Throwable) {
+                message = "CIA 导入失败：${t.message}"
+            }
+        } else if (dirUri == null) {
+            message = "请先选择 Azahar 数据目录"
+        }
+    }
+    SettingsRow(
+        title = "③ 批量导入 CIA 到 import/ 目录",
+        subtitle = "可多选；导入后在 Azahar 内安装（配合下方 CIA 导入策略）"
+    ) { ciaPicker.launch(arrayOf("*/*")) }
+    message?.let {
+        Text(it, color = Color(0xFF2E7D32), fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+    }
+}
+
+/** SAF Uri 末段文件名（可能被 URL 编码）。 */
+private fun queryLastSegment(uri: android.net.Uri): String? {
+    return try {
+        val seg = uri.lastPathSegment ?: return null
+        java.net.URLDecoder.decode(seg.substringAfterLast('/'), "UTF-8")
+            .substringBefore('?')
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * NGC/WII（Ishiruka）数据目录状态 + 快捷入口。
+ * 自动探测 <外部存储>/Android/data/org.dolphin.ishiiruka/files/dolphin-emu
+ * （需「所有文件访问」权限）；控制器/体感开关的 INI 写入依赖该目录。
+ */
+@Composable
+internal fun IshirukaIniQuickSettings() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val userDir = remember {
+        com.nesstation.app.core.external.ExternalCores.locateIshirukaUserDir(context)
+    }
+    SettingsSection("NGC/WII · 核心配置直读直写") {
+        SettingsRow(
+            title = if (userDir != null) "数据目录：已找到" else "数据目录：未找到",
+            subtitle = userDir?.absolutePath
+                ?: "先启动一次 Ishiruka 让其初始化目录（需「所有文件访问」权限），再回到本页"
+        )
+        SettingsRow(
+            title = "打开核心设置界面",
+            subtitle = "Ishiruka 完整设置（画面 / 音频 / 手柄 / 路径）"
+        ) {
+            com.nesstation.app.core.external.ExternalCores.launchCoreMainActivity(
+                context,
+                com.nesstation.app.core.external.ExternalCores.ISHIRUKA_PACKAGE,
+                "org.dolphinemu.dolphinemu.features.settings.ui.SettingsActivity")
+        }
+        SettingsRow(
+            title = "打开核心主界面",
+            subtitle = "游戏库 / 系统更新 / 每游戏设置"
+        ) {
+            com.nesstation.app.core.external.ExternalCores.launchCoreMainActivity(
+                context,
+                com.nesstation.app.core.external.ExternalCores.ISHIRUKA_PACKAGE,
+                com.nesstation.app.core.external.ExternalCores.ISHIRUKA_MAIN_ACTIVITY)
+        }
+        Text(
+            "控制器切换 / 体感开关写入 Config/WiimoteNew.ini 与 Config/Dolphin.ini；" +
+            "其余模拟专属设置（内部分辨率 / 抗锯齿 / 音频后端等）在核心设置界面调整，" +
+            "NesStation 启动桥接后即刻生效。",
+            color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
     }
 }

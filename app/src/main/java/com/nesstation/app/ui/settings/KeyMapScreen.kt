@@ -267,6 +267,11 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         // EmulatorScreen 的 KeyActionInternal DC 表（dc_*），输出经
         // dcToLibretroLayout 转换为 flycast 官方 JOYPAD 映射。
         GamePlatform.DC     -> DC_ACTIONS.map { it.copy(id = it.id + suffix) }
+        // 3DS / NGC-WII 为外部独立核心（Azahar / Ishiruka）：物理手柄/键盘
+        // 由核心自身映射体系处理（Dolphin 的 onGamePadEvent / Citra 的
+        // 输入配置），NesStation 按键映射页不适用 —— 显示空表。
+        GamePlatform.TG3DS  -> emptyList()
+        GamePlatform.NGCWII -> emptyList()
     }
 }
 

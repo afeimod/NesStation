@@ -802,6 +802,32 @@ class PadLayout {
     var hiddenButtonsNds: String = ""     // NDS hidden button keys
     var hiddenButtonsPsx: String = ""     // PSX hidden button keys
     var hiddenButtonsPs2: String = ""     // PS2 hidden button keys (含 l3/r3；双摇杆常驻不隐藏)
+    // ★ DC 专属显隐列表 —— 旧版漏掉了 DC，导致显隐对话框对 DC 无效
+    // （isButtonHidden 落到 else 分支永远返回 false，切换不生效）。
+    var hiddenButtonsDc: String = ""      // DC hidden button keys
+    var hiddenButtonsNgcwii: String = ""  // NGC/WII hidden button keys (外部核心 Ishiruka 配置态)
+
+    // === NGC/WII 控制器切换（外部核心 Ishiruka 启动时的默认控制器形态）===
+    // "gc"      = GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机)
+    // "wiimote" = Wii Remote 横握 (1/2/A/B/±/HOME + 十字键)
+    // "nunchuk" = Wii Remote + Nunchuk (CC/Z + 双摇杆)
+    // "classic" = 经典手柄 Classic Controller (双摇杆 + 全键)
+    // 该设置同时写入 Ishiruka 的 WiimoteNew.ini Extension 字段（见
+    // ExternalCores.applyNgcwiiControllerMode），并在启动页提供快捷切换。
+    var ngcwiiController: String = "gc"
+    // NGC/WII 体感开关：开启时启动 Ishiruka 前保留体感（摇动/倾斜/IR 指针）
+    // 绑定并提示开启设备传感器；关闭时写禁用（避免误触发摇一摇）。
+    // 经 ExternalCores.applyNgcwiiControllerMode 写入核心配置。
+    var ngcwiiMotion: String = "enabled"
+
+    // === 3DS（外部核心 Azahar/爱吾）配置 ===
+    // 启动前是否校验游戏加密状态（NCCH 标志位）：
+    // "enabled"  = 校验 + 加密游戏提示导入 aes_keys.txt（推荐）
+    // "disabled" = 直接交给核心处理（爱吾商店版多自带解密）
+    var tg3dsDecryptCheck: String = "enabled"
+    // CIA 导入策略："launch" = 启动即安装（Azahar 引导 CIA 时自动装 NAND）；
+    // "copy"  = 先复制到核心数据目录 import/ 再启动。
+    var tg3dsCiaMode: String = "launch"
 
     // === Input mode (joystick vs D-pad) ===
     // "dpad" = cross-shaped digital D-pad (default); "analog" = circular
@@ -1224,6 +1250,12 @@ class PadLayout {
         ps2BtnL3P = another.ps2BtnL3P
         ps2BtnR3P = another.ps2BtnR3P
         hiddenButtonsPs2 = another.hiddenButtonsPs2
+        hiddenButtonsDc = another.hiddenButtonsDc
+        hiddenButtonsNgcwii = another.hiddenButtonsNgcwii
+        ngcwiiController = another.ngcwiiController
+        ngcwiiMotion = another.ngcwiiMotion
+        tg3dsDecryptCheck = another.tg3dsDecryptCheck
+        tg3dsCiaMode = another.tg3dsCiaMode
         btnL2 = another.btnL2
         btnR2 = another.btnR2
         btnL2P = another.btnL2P
@@ -2090,6 +2122,15 @@ object PadLayoutStore {
             ps2BtnL3P = loadBtn(p, "ps2_p_btn_l3", ButtonLayout(x = 0.29f, y = 0.93f, sizeDp = 32))
             ps2BtnR3P = loadBtn(p, "ps2_p_btn_r3", ButtonLayout(x = 0.71f, y = 0.93f, sizeDp = 32))
             hiddenButtonsPs2 = p.getString("hidden_buttons_ps2", "") ?: ""
+            // ★ DC + NGC/WII 显隐列表（此前 DC 漏掉导致显隐开关不生效）
+            hiddenButtonsDc = p.getString("hidden_buttons_dc", "") ?: ""
+            hiddenButtonsNgcwii = p.getString("hidden_buttons_ngcwii", "") ?: ""
+            // NGC/WII 控制器切换 / 体感
+            ngcwiiController = p.getString("ngcwii_controller", "gc") ?: "gc"
+            ngcwiiMotion = p.getString("ngcwii_motion", "enabled") ?: "enabled"
+            // 3DS 解密校验 / CIA 策略
+            tg3dsDecryptCheck = p.getString("tg3ds_decrypt_check", "enabled") ?: "enabled"
+            tg3dsCiaMode = p.getString("tg3ds_cia_mode", "launch") ?: "launch"
             // === Arcade extras ===
             btnL2 = loadBtn(p, "btn_l2", ButtonLayout(x = 0.08f, y = 0.32f, sizeDp = 48))
             btnR2 = loadBtn(p, "btn_r2", ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48))
@@ -2611,6 +2652,13 @@ object PadLayoutStore {
             saveBtn("ps2_p_btn_l3", layout.ps2BtnL3P)
             saveBtn("ps2_p_btn_r3", layout.ps2BtnR3P)
             putString("hidden_buttons_ps2", layout.hiddenButtonsPs2)
+            // ★ DC + NGC/WII 显隐 / 控制器切换 / 体感 / 3DS 解密·CIA
+            putString("hidden_buttons_dc", layout.hiddenButtonsDc)
+            putString("hidden_buttons_ngcwii", layout.hiddenButtonsNgcwii)
+            putString("ngcwii_controller", layout.ngcwiiController)
+            putString("ngcwii_motion", layout.ngcwiiMotion)
+            putString("tg3ds_decrypt_check", layout.tg3dsDecryptCheck)
+            putString("tg3ds_cia_mode", layout.tg3dsCiaMode)
             // === Arcade extras ===
             saveBtn("btn_l2", layout.btnL2)
             saveBtn("btn_r2", layout.btnR2)
@@ -2689,6 +2737,9 @@ object PadLayoutStore {
             GamePlatform.NDS -> isHiddenInList(layout.hiddenButtonsNds, key)
             GamePlatform.PSX -> isHiddenInList(layout.hiddenButtonsPsx, key)
             GamePlatform.PS2 -> isHiddenInList(layout.hiddenButtonsPs2, key)
+            // ★ DC 显隐修复：旧版落到 else 恒 false，显隐对话框对 DC 完全无效。
+            GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
+            GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcwii, key)
             else -> false
         }
     }
@@ -2725,6 +2776,9 @@ object PadLayoutStore {
             GamePlatform.NDS -> layout.copy {hiddenButtonsNds = updateHiddenList(layout.hiddenButtonsNds, key, hidden)}
             GamePlatform.PSX -> layout.copy {hiddenButtonsPsx = updateHiddenList(layout.hiddenButtonsPsx, key, hidden)}
             GamePlatform.PS2 -> layout.copy {hiddenButtonsPs2 = updateHiddenList(layout.hiddenButtonsPs2, key, hidden)}
+            // ★ DC 显隐修复：与 NES/PSX 同模式持久化到专属列表。
+            GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
+            GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcwii = updateHiddenList(layout.hiddenButtonsNgcwii, key, hidden)}
             else -> layout
         }
     }
@@ -2845,6 +2899,36 @@ object PadLayoutStore {
                 "ta" to "连射A", "tb" to "连射B",
                 "l" to "L键", "r" to "R键",
                 "start" to "START", "select" to "SELECT"
+            )
+            GamePlatform.TG3DS -> listOf(
+                // 3DS（外部核心 Azahar/爱吾）：NesStation 侧的虚拟按键配置态。
+                // 实机触摸层由 Azahar 自带 overlay 呈现；这里的显隐/布局配置
+                // 与按键映射页共用一份键位语义（A/B/X/Y/L/R + START/SELECT）。
+                "dpad" to "十字键", "a" to "A键", "b" to "B键",
+                "x" to "X键", "y" to "Y键",
+                "ta" to "连射A", "tb" to "连射B",
+                "l" to "L键", "r" to "R键",
+                "start" to "START", "select" to "SELECT"
+            )
+            GamePlatform.NGCWII -> listOf(
+                // NGC/WII（外部核心 Ishiruka）：全量虚拟按键配置态 ——
+                // GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机) 与
+                // Wii Remote (1/2/A/B/±/HOME + 十字键 + C/Z + 体感)
+                // 全键位均可在显隐对话框单独开关（控制器切换见
+                // ngcwiiController，在启动页与核心设置页可改）。
+                "dpad" to "十字键 (GC/Wii)",
+                "a" to "A键 (GC A / Wii 2H A)",
+                "b" to "B键 (GC B / Wii B)",
+                "x" to "X键 (GC X)", "y" to "Y键 (GC Y)",
+                "l" to "Z/扳机L (GC Z / L)",
+                "r" to "R扳机 (GC R)",
+                "l2" to "1键 (Wii 1)", "r2" to "2键 (Wii 2)",
+                "ta" to "±/−键 (Wii Plus/Minus)",
+                "tb" to "HOME键",
+                "l3" to "C键 (Nunchuk)", "r3" to "Z键 (Nunchuk)",
+                "start" to "START", "select" to "SELECT"
+                // 体感开关 / 摇杆切换 / 即时存读档为通用尾项（qs/ql 全局追加，
+                // 体感见 ngcwiiMotion，摇杆切换见 inputMode）
             )
             else -> emptyList()
         } + listOf("qs" to "即时存档", "ql" to "即时读档")

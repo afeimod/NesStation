@@ -25,6 +25,15 @@ import androidx.compose.ui.graphics.Color
  *          与其他核心同一 dlopen 模式：libdccore.so 桥接运行时加载
  *          libflycast_libretro_android.so，进程内引擎 DcEngine，见
  *          core/jni/dc_loader.cpp)
+ * TG3DS  = Nintendo 3DS（外部独立核心桥 —— Azahar/爱吾 AzaharPlus，
+ *          启动经 ExternalCores 桥接 com.aiwu.citra_emu 的
+ *          EmulationActivity，游戏路径经 Game Parcelable extra 传递，
+ *          见 core/external/ExternalCores.kt）
+ * NGCWII = Nintendo GameCube / Wii（外部独立核心桥 —— Ishiruka
+ *          (Dolphin fork)，启动经 ExternalCores 桥接
+ *          org.dolphin.ishiiruka 的 EmulationActivity，extras:
+ *          SelectedGames/Platform；控制器切换(手柄/双节棍/经典)/
+ *          体感/全部虚拟按键配置见 PadLayout.ngcwii* 字段）
  */
 enum class GamePlatform(val displayName: String) {
     NES("NES"),
@@ -39,7 +48,9 @@ enum class GamePlatform(val displayName: String) {
     PSX("PSX"),
     PS2("PS2"),
     JAVA("Java"),
-    DC("DC");
+    DC("DC"),
+    TG3DS("3DS"),
+    NGCWII("NGC/WII");
 
     companion object {
         /**
@@ -98,6 +109,12 @@ enum class GamePlatform(val displayName: String) {
                 "ps2", "playstation2", "play", "psx2", "pcsx2" -> PS2
                 // SEGA Dreamcast / NAOMI / AtomisWave (libretro Flycast)
                 "dc", "dreamcast", "naomi", "atomiswave", "flycast" -> DC
+                // Nintendo 3DS (外部核心 Azahar / 爱吾 AzaharPlus)
+                "3ds", "tg3ds", "nintendo3ds", "citru", "citra", "azahar",
+                "citracore", "azaharcore", "aiwu3ds" -> TG3DS
+                // GameCube / Wii (外部核心 Ishiruka — Dolphin fork)
+                "ngcwii", "ngc", "wii", "gamecube", "gamecubewii",
+                "dolphin", "ishiiruka", "ishiruka" -> NGCWII
                 // J2ME
                 "java", "j2me", "midlet" -> JAVA
                 // 兜底：未识别的字符串保持 NES 行为不变（旧 API 兼容）
@@ -182,6 +199,18 @@ enum class GamePlatform(val displayName: String) {
                 // .cue/.chd/.iso 与 MD/PCE/DOS/PSX/PS2 共用，由
                 // detectPlatformFromUri 的平台页 hint 消歧。
                 "gdi", "cdi", "lst" -> DC
+                // Nintendo 3DS (外部核心 Azahar / 爱吾 AzaharPlus)。
+                // .3ds/.cci = 卡带 dump（NCCH 容器），.cxi = 可执行内容，
+                // .cia = 可安装标题（启动即安装），.3dsx = 自制程序。
+                // 注意：.app 在上方 NDS 分支先命中（NDS 3DS 双用途，历史归属
+                // NDS）；.elf 在 PS2 分支 —— 两者导入 3DS 页时由 hint 消歧。
+                "3ds", "cci", "cxi", "cia", "3dsx" -> TG3DS
+                // GameCube / Wii (外部核心 Ishiruka — Dolphin fork)。
+                // .gcm/.iso = 光盘镜像（.iso 共用，靠平台页 hint 消歧），
+                // .rvz/.gcz/.ciso/.nkit = 压缩镜像，.wbfs = Wii 备份盘，
+                // .wad = Wii 系统频道/VC 安装包，.tgc = Wii 光盘内嵌标题，
+                // .dol = Wii/GC 可执行（自制程序，.dol 无冲突可直接判）。
+                "gcm", "rvz", "gcz", "wbfs", "wad", "ciso", "nkit", "tgc", "dol" -> NGCWII
                 "jar", "jad" -> JAVA
                 // .zip is intentionally NOT mapped — see detectPlatformFromUri
                 // for the disambiguation logic.

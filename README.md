@@ -5,7 +5,7 @@
 
 一个为 Android 手机与 Android TV 打造的高质感多平台复古游戏模拟器。
 
-支持 **11 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)**，通过
+支持 **13 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)** / **3DS (Azahar 独立核心)** / **NGC-WII (Ishiruka 独立核心)**，通过
 统一的 Compose UI 与一致的游戏内菜单体验，让你在 TV 大屏和手机小屏上都能
 畅玩从 8-bit 到街机再到 128-bit 的所有经典游戏。
 
@@ -22,6 +22,8 @@
 | **NDS**        | **melonDS / DraStic（激烈）双核心，启动时二选一** | `.nds` | 否（melonDS 内置 FreeBIOS；DraStic 自带） |
 | **Java ME**    | J2ME-Loader       | `.jar` `.jad`                 | 否 |
 | **DC / Dreamcast** | **Flycast 独立核心**（NAOMI / AtomisWave） | `.gdi` `.cdi` `.chd` `.cue` `.lst` `.zip` | 光盘游戏需要 `dc_boot.bin` + `dc_flash.bin`（NAOMI zip 自带 BIOS 无需） |
+| **3DS**        | **Azahar / 爱吾 AzaharPlus 独立核心桥** | `.3ds` `.cci` `.cxi` `.cia` `.3dsx` | 加密游戏需要 `aes_keys.txt`（设置 → 3DS → 解密密钥导入） |
+| **NGC / WII**  | **Ishiruka (Dolphin fork) 独立核心桥** | `.gcm` `.iso` `.rvz` `.gcz` `.wbfs` `.wad` `.ciso` `.nkit` `.tgc` `.dol` | 否 |
 
 > 主界面参考 Pico-8 / Analogue Pocket 的视觉语言：像素云朵天空 + 玻璃拟态卡片 + 圆角高亮。
 
@@ -148,6 +150,52 @@ libfile_redirect_hook/libgsl_alloc_hook.so`）位于 `app/src/main/jniLibs/arm64
    R 类改指向宿主 `com.nesstation.app.R`。
 
 release 构建的 keep 规则见 `app/proguard-rules.pro`（JNI 按名绑定，不可混淆）。
+
+### 3DS 集成架构说明（Azahar / 爱吾 AzaharPlus）
+
+3DS 以**独立模拟器形态**集成（外部核心桥）：模拟画面与触摸层由核心 APK
+的 `EmulationActivity` 呈现，NesStation 负责平台页 / 扫描 / 解密检测 /
+密钥管理 / CIA 安装 / 启动桥接。实现见 `core/external/ExternalCores.kt`
+＋ `ui/emulator/ExternalCoreScreen.kt`：
+
+- 启动协议（反编译确认）：核心 onCreate 仅从 extras 读一个键
+  `"game"`（`BundleCompat.getParcelable`），类型为
+  `org.citra.citra_emu.model.Game`（Parcelable，位于核心 dex）。
+  NesStation 经 `DexClassLoader` 动态装载核心 APK，反射构造 Game
+  Parcelable 后打包进 Intent —— 跨进程反序列化天然命中核心内同名类；
+- **CIA 安装**：`.cia` 直接引导即安装（Azahar 引导 CIA 自动装入 NAND）；
+  另提供「复制到 import/ 目录」的批量导入模式；
+- **游戏解密**：启动前检测 NCCH 容器 crypto 标志位（头 0x188 flags[3]，
+  0=已解密）；加密游戏提示导入 `aes_keys.txt`，自动写入
+  `<Azahar数据目录>/keys/aes_keys.txt`（设置 → 3DS → 解密密钥导入）；
+- ⚠️ 需要同时安装核心 APK（`com.aiwu.citra_emu`，即 AzaharPlus /
+  爱吾3DS模拟器），未安装时给出明确指引。
+
+### NGC/WII 集成架构说明（Ishiruka — Dolphin fork）
+
+NGC/WII 同样以**独立模拟器形态**集成（外部核心桥）：
+
+- 启动协议（反编译确认）：核心 `EmulationActivity`（exported）读取
+  extras `SelectedGames`（String[] 游戏路径）与 `Platform`
+  （0=GC / 1=Wii，按扩展名推断）——见 `ExternalCores.launchNgcwiiGame`；
+- **全量虚拟按键 / 控制器切换 / 体感**：由核心触摸层呈现 GC 手柄
+  （A/B/X/Y/Z + 双摇杆 + L/R 扳机）、Wii 遥控器（1/2/A/B/±/HOME）、
+  双节棍（C/Z + 副摇杆）、经典手柄（双摇杆 + 全键）、摇动/倾斜/IR 指针。
+  NesStation 的启动页与设置页提供**控制器切换**（gc / wiimote / nunchuk /
+  classic），写入核心 `Config/WiimoteNew.ini` 的 `Extension` 字段与
+  `Config/Dolphin.ini`，并可在游戏内布局编辑器逐键显隐 / 拖动；
+- **数据目录直读直写**：自动探测
+  `<外部存储>/Android/data/org.dolphin.ishiiruka/files/dolphin-emu`（需
+  「所有文件访问」权限），核心设置界面可一键直达；
+- ⚠️ 需要同时安装核心 APK（`org.dolphin.ishiiruka`，即 Ishiruka）。
+
+#### DC 多文件游戏扫描修复
+
+`.gdi`（GD-ROM 文本清单）/ `.cue` 多文件游戏在目录扫描 / SAF 扫描 /
+SAF 多选导入 / 自动扫描四条路径上均做「单游戏只取一个启动文件」去重：
+存在 `.gdi` 时跳过同目录 `track01.bin / track02.raw / track03.wav` 等轨道
+附属文件（含「.gdi 在上层、轨道在同名子文件夹」的摆放），存在 `.cue` 时
+跳过 `.img/.bin/.ccd/.sub/.iso` —— 每个游戏在库中只占一个条目。
 
 ---
 

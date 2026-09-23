@@ -103,7 +103,19 @@ object PlatformDetector {
         // Nintendo DS（排除 app —— 撞 APK / macOS 应用 / 应用数据）
         "nds" to GamePlatform.NDS, "srl" to GamePlatform.NDS,
         // SEGA Dreamcast / NAOMI（.gdi/.cdi 为 DC 专属格式，日常文件不撞名）
-        "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC
+        "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC,
+        // Nintendo 3DS（.3ds/.cci/.cxi/.cia/.3dsx 为 3DS 专属容器，不撞名；
+        // .app 与 NDS 撞名、.elf 与 PS2 撞名 —— 两者仍只走手动导入 + hint 消歧）
+        "3ds" to GamePlatform.TG3DS, "cci" to GamePlatform.TG3DS,
+        "cxi" to GamePlatform.TG3DS, "cia" to GamePlatform.TG3DS,
+        "3dsx" to GamePlatform.TG3DS,
+        // GameCube / Wii（.gcm/.rvz/.gcz/.wbfs/.wad/.ciso/.nkit/.tgc/.dol
+        // 为 Dolphin 生态专属；.iso 与 DOS/MD/PSX/PS2 共用，仍靠 hint 消歧）
+        "gcm" to GamePlatform.NGCWII, "rvz" to GamePlatform.NGCWII,
+        "gcz" to GamePlatform.NGCWII, "wbfs" to GamePlatform.NGCWII,
+        "wad" to GamePlatform.NGCWII, "ciso" to GamePlatform.NGCWII,
+        "nkit" to GamePlatform.NGCWII, "tgc" to GamePlatform.NGCWII,
+        "dol" to GamePlatform.NGCWII
     )
 
     /**
@@ -200,6 +212,8 @@ object PlatformDetector {
             return when (hintPlatform) {
                 GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
                 GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC -> hintPlatform
+                // 外部核心：仅在 3DS / NGC-WII 平台页重扫时跟随提示
+                GamePlatform.TG3DS, GamePlatform.NGCWII -> hintPlatform
                 else -> GamePlatform.MD
             }
         }
@@ -210,7 +224,9 @@ object PlatformDetector {
     /** 刷新重扫时允许跟随 hint 消歧的平台集合（CD 镜像类）。 */
     private val REFRESH_HINT_ALLOWED = setOf(
         GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
-        GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC
+        GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC,
+        // 外部核心：.iso/.cue/.chd 在 3DS / NGC-WII 页导入时归对应平台
+        GamePlatform.TG3DS, GamePlatform.NGCWII
     )
 
     /**
@@ -288,6 +304,9 @@ object PlatformDetector {
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
                 GamePlatform.DC -> GamePlatform.DC
+                // 外部核心：.iso/.cue/.chd 在 3DS / NGC-WII 页导入 → 对应平台
+                GamePlatform.TG3DS -> GamePlatform.TG3DS
+                GamePlatform.NGCWII -> GamePlatform.NGCWII
                 else -> GamePlatform.MD
             }
         }
@@ -350,9 +369,14 @@ object PlatformDetector {
                 if (psxHints.any { lowerPath.contains(it) }) return GamePlatform.PSX
                 val ps2Hints = listOf("ps2", "playstation2", "psx2")
                 if (ps2Hints.any { lowerPath.contains(it) }) return GamePlatform.PS2
-                // DC 专属关键字放最后（"dc" 过短，避免误伤其它路径）
+                // DC 专属关键字放后面（"dc" 过短，避免误伤其它路径）
                 val dcHints = listOf("dreamcast", "naomi", "atomiswave", "flycast", "/dc/")
                 if (dcHints.any { lowerPath.contains(it) }) return GamePlatform.DC
+                // 外部核心：3DS / NGC-WII 目录关键字
+                val tg3dsHints = listOf("3ds", "citra", "azahar", "nintendo3ds")
+                if (tg3dsHints.any { lowerPath.contains(it) }) return GamePlatform.TG3DS
+                val ngcwiiHints = listOf("ngc", "wii", "gamecube", "dolphin", "ishiiruka")
+                if (ngcwiiHints.any { lowerPath.contains(it) }) return GamePlatform.NGCWII
             }
             return when (hintPlatform) {
                 GamePlatform.DOS -> GamePlatform.DOS
@@ -360,6 +384,9 @@ object PlatformDetector {
                 GamePlatform.PSX -> GamePlatform.PSX
                 GamePlatform.PS2 -> GamePlatform.PS2
                 GamePlatform.DC -> GamePlatform.DC
+                // 外部核心：.iso/.cue/.chd 在 3DS / NGC-WII 页导入 → 对应平台
+                GamePlatform.TG3DS -> GamePlatform.TG3DS
+                GamePlatform.NGCWII -> GamePlatform.NGCWII
                 else -> GamePlatform.MD
             }
         }
@@ -444,6 +471,9 @@ object PlatformDetector {
                 GamePlatform.NES -> GamePlatform.NES
                 GamePlatform.ARCADE -> GamePlatform.ARCADE
                 GamePlatform.DC -> GamePlatform.DC
+                // 外部核心：zip 内含 .iso/.cue 的 3DS/NGC-WII 合集包
+                GamePlatform.TG3DS -> GamePlatform.TG3DS
+                GamePlatform.NGCWII -> GamePlatform.NGCWII
                 else -> GamePlatform.MD
             }
         }

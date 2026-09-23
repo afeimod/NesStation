@@ -390,9 +390,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ps2_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START)
         )
-        // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
-        // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
-        GamePlatform.DC -> emptyList()
+        // 3DS / NGC-WII 为外部独立核心（Azahar / Ishiruka）：游戏画面与触摸层
+        // 由核心 APK 呈现，NesStation 在 EmulatorScreen 入口提前路由到
+        // ExternalCoreScreen，不会走到这里的按键表（保留分支保证 when 穷举）。
+        GamePlatform.TG3DS, GamePlatform.NGCWII -> emptyList()
     }
     return base
 }
@@ -890,6 +891,15 @@ fun EmulatorScreen(
     // dlopen 模式，进程内引擎 DcEngine，经标准 EmulatorScreen 全链路运行）。
     // 历史注：此前的 Flycast 独立核心在此处提前 return 到
     // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
+
+    // 3DS (Azahar/爱吾) 与 NGC/WII (Ishiruka) —— 外部独立核心桥：
+    // 游戏画面与触摸层（NGC/WII 全量虚拟按键/控制器切换/体感）由核心 APK
+    // 自带 EmulationActivity 呈现，NesStation 侧负责状态检测/解密提示/
+    // 控制器切换写入/启动桥接（见 ExternalCoreScreen + ExternalCores）。
+    if (platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII) {
+        ExternalCoreScreen(game = game, onExit = onExit)
+        return
+    }
 
     val engine = remember(ndsCoreChoice) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
@@ -3792,6 +3802,12 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("reicast_broadcast", layout.dcBroadcast)
             engine.setCoreOption("reicast_cable_type", layout.dcCableType)
         }
+        // 3DS / NGC-WII 为外部独立核心（Azahar / Ishiruka）：设置由核心
+        // APK 自行管理，NesStation 侧的专属设置见 CoreSettingsPanel 的
+        // TG3DS / NGCWII 面板与 ExternalCoreScreen 启动页。
+        GamePlatform.TG3DS, GamePlatform.NGCWII -> {
+            // 无进程内引擎可下发核心选项 —— 空实现保当穷举
+        }
     }
 }
 
@@ -4823,6 +4839,9 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准虚拟手柄体系，
         // 组合键与 NES 共用同一 PadLayout.comboButtons 表。
         GamePlatform.DC     -> padLayout.comboButtons
+        // 3DS / NGC-WII：外部独立核心，组合键由核心自身 overlay 提供
+        GamePlatform.TG3DS  -> ""
+        GamePlatform.NGCWII -> ""
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -8174,6 +8193,9 @@ private fun PadLayoutEditor(
                             GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                             GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                             GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
+                            GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
+                            GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
+                                padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
                             else -> padLayout
                         }
                         onLayoutChange(newLayout)
@@ -8442,6 +8464,9 @@ private fun PadLayoutEditor(
                                 GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                                 GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                                 GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
+                                GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
+                                GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
+                                    padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
                                 else -> padLayout
                             }
                             onLayoutChange(newLayout)
@@ -8483,6 +8508,9 @@ private fun PadLayoutEditor(
                         GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                         GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                         GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
+                        GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
+                        GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
+                            padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
                         else -> padLayout
                     }
                     onLayoutChange(newLayout)
@@ -8641,27 +8669,38 @@ private fun ComboButtonPickerDialog(
             ButtonOption("Start", BTN_START),
             ButtonOption("Select", BTN_SELECT)
         )
-        // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX
+        // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX/PS2/DC
         // 街机（FBNeo）屏幕标签为 A/B/C/D：bit8 显示为 C、bit9 显示为 D
+        // ★ DC 补进 X/Y 列表 —— 旧版 DC 组合键只能选 A/B/Start/Select
+        //   （"组合键缺少很多按键"修复）
         if (platform == GamePlatform.SFC || platform == GamePlatform.MD ||
-            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX) {
+            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX ||
+            platform == GamePlatform.PS2 || platform == GamePlatform.DC) {
             list.add(ButtonOption("X", BTN_X))
             list.add(ButtonOption("Y", BTN_Y))
         } else if (platform == GamePlatform.ARCADE) {
             list.add(ButtonOption("C", BTN_X))
             list.add(ButtonOption("D", BTN_Y))
         }
-        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX
+        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX/PS2/DC
+        // ★ DC/PS2 补进 L/R（Dreamcast 有双扳机、PS2 有 L1/R1）
         if (platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
             platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
-            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX) {
+            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX ||
+            platform == GamePlatform.PS2 || platform == GamePlatform.DC) {
             list.add(ButtonOption("L", lBit))
             list.add(ButtonOption("R", rBit))
         }
-        // L2/R2 on Arcade (6-button fight layout) and PCE (turbo toggle)
-        if (platform == GamePlatform.ARCADE || platform == GamePlatform.PCE) {
+        // L2/R2 on Arcade (6-button fight layout) and PCE (turbo toggle);
+        // ★ PSX/PS2 补进 L2/R2（DualShock 肩键）；PS2 另有 L3/R3 摇杆键
+        if (platform == GamePlatform.ARCADE || platform == GamePlatform.PCE ||
+            platform == GamePlatform.PSX || platform == GamePlatform.PS2) {
             list.add(ButtonOption("L2", BTN_L2))
             list.add(ButtonOption("R2", BTN_R2))
+        }
+        if (platform == GamePlatform.PS2) {
+            list.add(ButtonOption("L3", BTN_L3))
+            list.add(ButtonOption("R3", BTN_R3))
         }
         list.toList()
     }
@@ -10809,6 +10848,31 @@ private fun SettingsPanel(
                     listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别游戏音效需要, 较慢)"),
                     padLayout.dcEnableDsp
                 ) { onLayoutChange(padLayout.copy {dcEnableDsp = it}) }
+            }
+            // 3DS / NGC-WII：外部独立核心（Azahar / Ishiruka），游戏内设置菜单
+            // 由核心自带菜单提供 —— NesStation 侧仅保留上方通用项
+            // （透明度/布局/滤镜等），核心专属设置见 CoreSettingsPanel 对应面板。
+            GamePlatform.TG3DS, GamePlatform.NGCWII -> {
+                Text(
+                    if (platform == GamePlatform.TG3DS) "3DS 专属设置在核心内" else "NGC/WII 专属设置在核心内",
+                    color = Color(0xFFFFD66B), fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                )
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    if (platform == GamePlatform.TG3DS)
+                        "3DS 由独立核心 Azahar 运行：模拟画面、按键布局（触摸层）、\n" +
+                        "画面/音频/插件等专属设置请在 Azahar 游戏内菜单或其设置页调整。\n" +
+                        "NesStation 侧提供：加密检测与解密密钥导入（设置 → 3DS → 解密密钥）、\n" +
+                        "CIA 安装与启动桥接。"
+                    else
+                        "NGC/WII 由独立核心 Ishiruka 运行：模拟画面、全量虚拟按键\n" +
+                        "（GC 手柄 / Wii 遥控器 / 双节棍 / 经典手柄 / 体感）、专属设置请在\n" +
+                        "Ishiruka 游戏内菜单或其设置页调整。NesStation 侧提供：控制器切换、\n" +
+                        "体感开关与启动桥接（下次启动游戏时生效）。"
+                    ,
+                    color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp
+                )
             }
         }
 
