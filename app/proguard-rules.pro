@@ -153,3 +153,21 @@
 # com.google.androidgamesdk.**（Flycast 独立核心的 swappy 胶水）与
 # -dontwarn org.ietf.jgss.**（httpclient5 的 Kerberos 依赖），均已随独立
 # 集成移除。
+
+# ─── Azahar（3DS）核心 JNI 契约 ───────────────────────────────────────────
+# libazahar.so（= 上游 libcitra-android.so，AzaharPlus APK 提取）通过 JNI 符号名
+# （Java_org_citra_citra_emu_NativeLibrary_*）与 JNI_OnLoad 时的
+# FindClass/GetStaticMethodID/GetFieldID 字符串查找 org.citra.citra_emu.** 下的
+# 类与回调方法（onCoreError/exitEmulationActivity/createFile/...、Cheat.mPointer、
+# GameInfo.pointer、DiskShaderCacheProgress.loadProgress、SoftwareKeyboard.execute、
+# MiiSelector.execute、StillImageCameraHelper.openFilePicker 等）—— R8 看不到
+# 这些原生引用，不 keep 会在 release 构建被裁剪/混淆，库加载即失败。
+# 整个包 keep。
+-keep class org.citra.citra_emu.** { *; }
+
+# ─── Ishiiruka（NGC/WII）核心 JNI 契约 ────────────────────────────────────
+# libishiiruka.so（= 上游 libmain.so，Ishiruka APK 提取）通过 JNI 符号名
+# （Java_org_dolphinemu_ishiiruka_*）与 CacheClassesAndMethods 缓存的
+# displayAlertMsg 方法、DirectoryInitializationService 的 SetSysDirectory /
+# CreateUserDirectories native 方法绑定 —— 同样必须按名保留。
+-keep class org.dolphinemu.ishiiruka.** { *; }

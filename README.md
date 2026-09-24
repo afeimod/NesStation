@@ -5,7 +5,7 @@
 
 一个为 Android 手机与 Android TV 打造的高质感多平台复古游戏模拟器。
 
-支持 **15 大平台**：NES / SFC / GB / GBA / **NDS** / PSX / **PS2** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)** / **3DS (Azahar 进程内核心)** / **NGC-WII (Ishiruka 进程内核心)**，通过
+支持 **13 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)** / **3DS** / **NGC & Wii**，通过
 统一的 Compose UI 与一致的游戏内菜单体验，让你在 TV 大屏和手机小屏上都能
 畅玩从 8-bit 到街机再到 128-bit 的所有经典游戏。
 
@@ -20,10 +20,10 @@
 | **Arcade**     | **FBNeo**         | `.zip` `.7z`                  | NeoGeo / PGM / Mega-CD 游戏需要 |
 | **MD / SEGA**  | **Genesis-Plus-GX** | `.md` `.smd` `.sms` `.gg` `.sg` `.cue` `.chd` | Mega-CD 游戏需要 |
 | **NDS**        | **melonDS / DraStic（激烈）双核心，启动时二选一** | `.nds` | 否（melonDS 内置 FreeBIOS；DraStic 自带） |
+| **3DS**        | **Azahar / AzaharPlus 核心**（独立模拟器形态，集成方式与激烈一致） | `.3ds` `.cci` `.cxi` `.cia` | 加密游戏需 `aes_keys.txt`（放 `filesDir/azahar/`）；部分游戏需系统档案 |
+| **NGC / Wii**  | **Ishiiruka 核心**（Dolphin 优化分支，独立模拟器形态，集成方式与激烈一致） | `.gcm` `.rvz` `.wbfs` `.gcz` `.ciso` `.nkit` `.wad` `.dol` `.elf` | GC/Wii 大部分游戏免 BIOS（DSP LLE 需 DSP ROM）；字体/Sys 数据可选放入 `filesDir/ishiiruka/sys/` |
 | **Java ME**    | J2ME-Loader       | `.jar` `.jad`                 | 否 |
 | **DC / Dreamcast** | **Flycast 独立核心**（NAOMI / AtomisWave） | `.gdi` `.cdi` `.chd` `.cue` `.lst` `.zip` | 光盘游戏需要 `dc_boot.bin` + `dc_flash.bin`（NAOMI zip 自带 BIOS 无需） |
-| **3DS**        | **Azahar 进程内核心**（libcitra-android.so 内嵌） | `.3ds` `.cci` `.cxi` `.cia` `.3dsx` | 加密游戏需要 `aes_keys.txt`（设置 → 3DS → 解密密钥导入） |
-| **NGC / WII**  | **Ishiruka (Dolphin fork) 进程内核心**（libmain.so 内嵌） | `.gcm` `.iso` `.rvz` `.gcz` `.wbfs` `.wad` `.ciso` `.nkit` `.tgc` `.dol` | 否（GC 需要 `IPL.bin`；Wii 需要 Sys 数据，已内置） |
 
 > 主界面参考 Pico-8 / Analogue Pocket 的视觉语言：像素云朵天空 + 玻璃拟态卡片 + 圆角高亮。
 
@@ -151,65 +151,53 @@ libfile_redirect_hook/libgsl_alloc_hook.so`）位于 `app/src/main/jniLibs/arm64
 
 release 构建的 keep 规则见 `app/proguard-rules.pro`（JNI 按名绑定，不可混淆）。
 
-### 3DS 集成架构说明（Azahar — 进程内核心）
+### **3DS（Azahar / AzaharPlus 核心）**
+- Azahar 是 Citra / Lime3DS 的社区延续（3DS 高精度模拟器），以 **独立模拟器形态**
+  集成，方式与 DraStic（激烈）一致：vendored 原包名 JNI 契约
+  （`org.citra.citra_emu.NativeLibrary`）＋ 预编译核心库（AzaharPlus APK 内
+  `libcitra-android.so` → 重命名 `libazahar.so` 放 jniLibs）
+- **完整 3DS 虚拟手柄**：十字键 + A/B/X/Y + L/R + **ZL/ZR**（New3DS）+
+  START/SELECT + **CirclePad 模拟摇杆** + **C-Stick 摇杆**（布局编辑器可拖动 /
+  显隐），**下屏触摸直通核心**（触点坐标由原生按屏幕布局映射，任何布局都正确）
+- **设置（主界面 + 游戏内菜单均可调）**：图形后端（OpenGL/Vulkan/软件）、内部分辨率
+  1x-5x、硬件着色器、着色器 JIT、垂直同步、磁盘着色器缓存、异步呈现 / 异步着色器
+  编译、精确乘法、跳过重复帧、纹理过滤（Anime4K/xBRZ/ScaleForce 等）、纹理采样、
+  整数缩放、帧率上限、立体 3D（并排/红蓝/交错/Cardboard VR）、立体深度、屏幕布局
+  （默认/单屏/大屏/左右/混合/自定义）、屏幕间距、大屏占比、上下屏交换、CPU 时钟、
+  CPU JIT、快速解释器、New 3DS 模式、主机区域、音频模拟（HLE/LLE）、音量、音频
+  拉伸、实时音频、自定义纹理 / 预加载
+- 支持即时存档 / 读档（核心槽位）、快进、真实 FPS 显示（PerfStats）
+- 加密游戏需 `aes_keys.txt` 放 `filesDir/azahar/`；`.3ds/.cci/.cxi/.cia` 全支持
+- 仅提供 **arm64-v8a**；库缺失时进入游戏会明确提示，不会崩溃
+- 集成实现：`core/engine/AzaharEngine.kt`（引擎）＋ `core/jni/AzaharNative.kt`
+  （加载器）＋ `org/citra/citra_emu/`（vendored JNI 契约）
 
-3DS 与 DC / PS2 同为**进程内嵌入核心**：`libcitra-android.so`
-（Azahar/AzaharPlus 2125 核心，39MB）随 APK 发布于 `jniLibs/arm64-v8a/`，
-JNI 契约类 `org.citra.citra_emu.*`（NativeLibrary / applets / utils /
-SettingKeys 等 15 个类）随 NesStation 源码打包，与核心的静态 JNI 导出
-`Java_org_citra_citra_1emu_*` 一一对应 —— **无需安装任何外部 APK**。
-
-- 模拟循环 / 双屏布局 / 音频（OpenSLES）/ **体感**（NDK SensorManager
-  直读陀螺仪与加速度计）全部在核心内部；Kotlin 侧只负责 Surface 生命周期、
-  输入注入、设置落盘与 CIA 安装/解密流程（`core/jni/AzaharNative.kt` +
-  `core/engine/AzaharEngine.kt`）；
-- **全量虚拟按键**：A/B/X/Y/L/R/ZL/ZR/START/SELECT + 十字键 +
-  Circle Pad（左摇杆）+ C 摇杆（右摇杆）；HOME / 上下屏交换经组合键；
-  **下屏触摸** = 游戏画面直接触摸（核心按当前布局自动映射）；
-- **CIA 安装**：核心原生安装器（`CiaInstallWorker.installCIA`），
-  设置 → 3DS → CIA 安装，支持批量多选，加密 CIA 自动用已导入密钥解密；
-- **游戏解密**：① 启动前加密检测（`GameInfo.isEncrypted`）+ 密钥校验
-  （`areKeysAvailable`）；② `aes_keys.txt` 一键导入（写入 `keys/` 与
-  `sysdata/` 双位置）；③ **独立解密工具**（纯 Kotlin AES-CTR 实现
-  NCCH/CIA 解密器，见 `core/storage/CiaInstaller.kt`）—— 把加密
-  `.3ds/.cci/.cxi/.cia` 解密导出到 `Download/NesStation/decrypted/`；
-- 完整设置（30+ 项：图形 API / 内部分辨率 / 双屏布局 / 立体 3D / 音频 /
-  New 3DS / 区域 / CPU 时钟 …）写入 `<userDir>/config/config.ini`，
-  `reloadSettings()` 热生效。
-
-### NGC/WII 集成架构说明（Ishiruka — Dolphin fork，进程内核心）
-
-NGC/WII 同为**进程内嵌入核心**：`libmain.so`（Ishiruka — Dolphin
-5.0-15560 fork，8.4MB）随 APK 发布，JNI 契约类
-`org.dolphinemu.dolphinemu.*`（NativeLibrary / model / utils 共 7 个类）
-随源码打包，对应核心静态导出 `Java_org_dolphinemu_dolphinemu_*`。
-Dolphin 的 `Sys` 系统数据（DSP ROM / 字体 / Wii 系统文件）与默认
-`GCPadNew.ini` / `WiimoteNew.ini` 控制器映射已内置在 `assets/dolphin/`，
-首次启动自动解包到 `<userDir>/` —— **无需安装任何外部 APK**。
-
-- **全量虚拟按键**（与核心 INI 的 Touchscreen 输入 id 一一对应）：
-  - GameCube：A/B/X/Y/Z/Start + 十字键 + 主摇杆 + C 摇杆 + L/R 扳机；
-  - Wii 遥控器：A/B/1/2/−/+/HOME + 十字键 + **IR 指针**（游戏画面
-    触摸拖动，官方 IR overlay 同款公式）+ **摇晃**（虚拟键 132-134）；
-  - 双节棍：C/Z + 副摇杆 + 摇晃（220-222）；经典手柄：全键 + 双摇杆；
-  - **体感倾斜**：设备陀螺仪（TYPE_GAME_ROTATION_VECTOR → 倾斜轴
-    127-130，官方 Tilt overlay 同公式）；**挥动**经组合键（轴 120-125）；
-  - 横握/竖握（Sideways/Upright 135-138）、IR 隐藏/重定位（118/139）；
-- **控制器切换**：GC 手柄 / Wii 遥控器+双节棍 / 横握 / 经典手柄 四方案，
-  游戏内菜单热切换 —— Wii 方案经 `WiimoteNew.ini` Extension +
-  `ReloadWiimoteConfig()` 即时生效；
-- 游戏元信息（GC/Wii 判定、标题、平台号）经核心 `GameFileCache` /
-  `GameFile` 原生查询；完整设置（内部分辨率 / 画面比例 / MSAA /
-  各向异性过滤 / CPU 模式 / DSP / 音频后端 / Wii 语言 / 宽屏 …）经
-  `SetUserSetting` 直写 `Dolphin.ini` / `GFX.ini` 热生效。
-
-#### DC 多文件游戏扫描修复
-
-`.gdi`（GD-ROM 文本清单）/ `.cue` 多文件游戏在目录扫描 / SAF 扫描 /
-SAF 多选导入 / 自动扫描四条路径上均做「单游戏只取一个启动文件」去重：
-存在 `.gdi` 时跳过同目录 `track01.bin / track02.raw / track03.wav` 等轨道
-附属文件（含「.gdi 在上层、轨道在同名子文件夹」的摆放），存在 `.cue` 时
-跳过 `.img/.bin/.ccd/.sub/.iso` —— 每个游戏在库中只占一个条目。
+### **NGC / Wii（Ishiiruka 核心 — Dolphin 优化分支）**
+- Ishiiruka 是 Dolphin 的性能优化分支（Tinob），以 **独立模拟器形态** 集成，
+  方式与 DraStic（激烈）一致：vendored 原包名 JNI 契约
+  （`org.dolphinemu.ishiiruka.NativeLibrary`）＋ 预编译核心库（Ishiruka APK 内
+  `libmain.so` → 重命名 `libishiiruka.so` 放 jniLibs）
+- **GC / Wii 双控制布局**（自动按游戏判定，也可手动切换）：
+  - **GameCube**：A/B/X/Y/Z + L/R 扳机 + Start + 十字键 + **主摇杆 / C 摇杆**
+  - **Wii Remote**：A/B/1/2 + −/HOME + 十字键 + **触摸 IR 指针**（触摸游戏画面
+    即光标，绝对指向；IR−/IR+ 调进深）+ **双节棍**（摇杆 + C/Z）或 **经典手柄**
+  - 摇晃 = L/R 键（wii 模式）、IR 隐藏 = Z 键；两套按键均可在布局编辑器拖动 /
+    显隐，摇杆常驻
+- **手柄绑定编程式生成**：启动前以 SetConfig 写 GCPadNew.ini / WiimoteNew.ini
+  把 Touchscreen 设备全部按键 / 方向轴绑进核心输入系统（无需 assets）
+- **设置（主界面 + 游戏内菜单均可调）**：控制模式、Wii 扩展手柄、CPU 核心
+  （JIT ARM64 / JIT64 / 解释器）、双核模拟、CPU 超频、渲染后端（OGL/Vulkan/SW）、
+  EFB 内部分辨率 1x-4x、MSAA、各向异性过滤、显示 FPS、启动时编译着色器、
+  画面比例、EFB 纹理复制 / 缩放复制 / 访问、音频拉伸、DSP HLE、Wii 扬声器、
+  Wiimote 扫描 —— 全部经 SetConfig 热写 Dolphin.ini / GFX.ini 即时生效
+- 支持即时存档 / 读档（核心槽位）、快进（EmulationSpeed）、截图（SaveScreenShot）
+- ROM：`.gcm/.rvz/.wbfs/.gcz/.ciso/.nkit/.wad/.dol/.elf`；Sys 数据（GC 字体 /
+  DSP ROM，可选）放 `filesDir/ishiiruka/sys/`
+- 仅提供 **arm64-v8a**；库缺失时进入游戏会明确提示，不会崩溃
+- 集成实现：`core/engine/IshirukaEngine.kt`（引擎）＋ `core/jni/IshirukaNative.kt`
+  （加载器）＋ `org/dolphinemu/ishiiruka/`（vendored JNI 契约）
+- **核心库提取**：`./scripts/fetch_azahar_ishiruka_libs.sh --apk3ds <AzaharPlus.apk>`
+  `./scripts/fetch_azahar_ishiruka_libs.sh --apkngcwii <Ishiruka.apk>`
 
 ---
 
@@ -348,6 +336,8 @@ cp /path/to/bios_CD_U.zip app/src/main/assets/genesis/
 | FBNeo（Arcade 核心） | 非商业 — 见 `assets/legal/LICENSE-FBNeo.txt` |
 | Genesis-Plus-GX（MD 核心） | GPLv2 — 见 `assets/legal/LICENSE-Genesis-Plus-GX.txt` |
 | J2ME-Loader | Apache License 2.0 |
+| Azahar / AzaharPlus（3DS 核心） | GPLv2+ — 见 `assets/legal/LICENSE-Azahar.txt` |
+| Ishiiruka / Dolphin（NGC/WII 核心） | GPLv2+ — 见 `assets/legal/LICENSE-Ishiiruka.txt` |
 | M3G 3D 引擎 | Apache License 2.0 |
 | HQ2X / HQ4X 算法 | Maxim Stepin（免费使用） |
 | XBR 算法 | Hyllian / Zenju（免费使用） |
@@ -376,5 +366,7 @@ cp /path/to/bios_CD_U.zip app/src/main/assets/genesis/
 - **J2ME-Loader 项目**（[nikita-shakarun](https://github.com/nikita-shakarun/j2me-loader)） — J2ME/Java ME 模拟引擎
 - **libretro 项目** — 提供 .so 预编译核心的 buildbot
 - **Analogue / Pico-8** — 视觉风格灵感
+- **Azahar / AzaharPlus 团队**（Citra / Lime3DS 的延续）— 3DS 模拟核心
+- **Ishiiruka（Tinob）与 Dolphin 团队** — NGC/WII 模拟核心
 - **XBR 算法** by Hyllian / Zenju
 - **HQ4x 算法** by Maxim Stepin

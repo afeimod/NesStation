@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Album
-import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.LocalPlay
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Gamepad
@@ -27,7 +26,6 @@ import androidx.compose.material.icons.rounded.MobileFriendly
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Radio
-import androidx.compose.material.icons.rounded.Sensors
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.SportsEsports
@@ -83,8 +81,6 @@ private fun platformIcon(p: GamePlatform) = when (p) {
     GamePlatform.DOS    -> Icons.Rounded.Terminal        // DOS 命令行
     GamePlatform.JAVA   -> Icons.Rounded.LocalCafe       // Java 咖啡
     GamePlatform.DC     -> Icons.Rounded.SportsEsports   // Dreamcast/NAOMI (Flycast)
-    GamePlatform.TG3DS  -> Icons.Rounded.Casino          // 3DS 双屏掌机（Azahar 核心）
-    GamePlatform.NGCWII -> Icons.Rounded.Sensors         // GameCube/Wii（Ishiruka 核心，体感）
 }
 
 /** 解析磁贴自定义图标 JSON（{ tileKey → iconPath }），损坏时返回空 map。 */
@@ -174,7 +170,7 @@ fun FsdHomeScreen(
     val platformOrder = listOf(
         GamePlatform.NES, GamePlatform.SFC, GamePlatform.GB, GamePlatform.GBA,
         GamePlatform.MD, GamePlatform.PCE, GamePlatform.PSX, GamePlatform.PS2,
-        GamePlatform.NDS, GamePlatform.DC, GamePlatform.TG3DS, GamePlatform.NGCWII,
+        GamePlatform.NDS, GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.DC,
         GamePlatform.ARCADE, GamePlatform.DOS, GamePlatform.JAVA
     )
     val countByPlatform = remember(games) {

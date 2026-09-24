@@ -1,0 +1,16 @@
+Azahar / AzaharPlus — Nintendo 3DS emulator core
+=================================================
+
+Azahar is a free and open-source Nintendo 3DS emulator, continuing the
+legacy of Citra and Lime3DS.
+
+Licensed under GPLv2 (or any later version).
+https://github.com/azahar-emu/azahar
+https://github.com/AzaharPlus/AzaharPlus (extra-features fork)
+
+The NesStation integration vendors the upstream Android JNI host contract
+(org.citra.citra_emu.NativeLibrary and supporting stub classes) and loads
+the prebuilt libcitra-android.so (renamed libazahar.so) extracted from the
+AzaharPlus APK via scripts/fetch_azahar_ishiruka_libs.sh. The prebuilt core
+remains under its upstream license. You must comply with GPLv2 when
+distributing derivatives.

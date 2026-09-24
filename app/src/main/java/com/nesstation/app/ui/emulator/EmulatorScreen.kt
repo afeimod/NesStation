@@ -176,6 +176,9 @@ private fun gamepadKeyToBits(keyCode: Int, platform: GamePlatform): Int {
         KeyEvent.KEYCODE_BUTTON_START,
         KeyEvent.KEYCODE_MENU          -> BTN_START
         KeyEvent.KEYCODE_BUTTON_SELECT -> BTN_SELECT
+        // 3DS：物理 L2/R2 → ZL/ZR（New3DS 肩键）
+        KeyEvent.KEYCODE_BUTTON_L2 -> if (platform == GamePlatform.N3DS) BTN_ZL else BTN_L2
+        KeyEvent.KEYCODE_BUTTON_R2 -> if (platform == GamePlatform.N3DS) BTN_ZR else BTN_R2
         else -> 0
     }
 }
@@ -390,56 +393,87 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ps2_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START)
         )
-        // 3DS：全量键位 —— A/B/X/Y/L/R/ZL/ZR/START/SELECT + 十字键 +
-        // 双摇杆（Circle Pad / C 摇杆）；HOME/换屏经组合键伪位（bit16/17）。
-        GamePlatform.TG3DS -> listOf(
-            KeyActionInternal("3ds_a", KeyEvent.KEYCODE_BUTTON_A),
-            KeyActionInternal("3ds_b", KeyEvent.KEYCODE_BUTTON_B),
-            KeyActionInternal("3ds_x", KeyEvent.KEYCODE_BUTTON_X),
-            KeyActionInternal("3ds_y", KeyEvent.KEYCODE_BUTTON_Y),
-            KeyActionInternal("3ds_l", KeyEvent.KEYCODE_BUTTON_L1),      // L 扳机
-            KeyActionInternal("3ds_r", KeyEvent.KEYCODE_BUTTON_R1),      // R 扳机
-            KeyActionInternal("3ds_zl", KeyEvent.KEYCODE_BUTTON_L2),     // ZL (New 3DS)
-            KeyActionInternal("3ds_zr", KeyEvent.KEYCODE_BUTTON_R2),     // ZR (New 3DS)
-            KeyActionInternal("3ds_start", KeyEvent.KEYCODE_BUTTON_START),
-            KeyActionInternal("3ds_select", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("3ds_home", KeyEvent.KEYCODE_BUTTON_THUMBL),    // HOME（伪位）
-            KeyActionInternal("3ds_swap", KeyEvent.KEYCODE_BUTTON_THUMBR)     // 上下屏交换（伪位）
+        // 3DS（Azahar）— New3DS 手柄：十字键 + ABXY + L/R + ZL/ZR + Start/Select
+        GamePlatform.N3DS -> listOf(
+            KeyActionInternal("n3ds_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("n3ds_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("n3ds_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("n3ds_right", KeyEvent.KEYCODE_DPAD_RIGHT),
+            KeyActionInternal("n3ds_a", KeyEvent.KEYCODE_BUTTON_A),
+            KeyActionInternal("n3ds_b", KeyEvent.KEYCODE_BUTTON_B),
+            KeyActionInternal("n3ds_x", KeyEvent.KEYCODE_BUTTON_X),
+            KeyActionInternal("n3ds_y", KeyEvent.KEYCODE_BUTTON_Y),
+            KeyActionInternal("n3ds_l", KeyEvent.KEYCODE_BUTTON_L1),
+            KeyActionInternal("n3ds_r", KeyEvent.KEYCODE_BUTTON_R1),
+            KeyActionInternal("n3ds_zl", KeyEvent.KEYCODE_BUTTON_L2),
+            KeyActionInternal("n3ds_zr", KeyEvent.KEYCODE_BUTTON_R2),
+            KeyActionInternal("n3ds_select", KeyEvent.KEYCODE_BUTTON_SELECT),
+            KeyActionInternal("n3ds_start", KeyEvent.KEYCODE_BUTTON_START)
         )
-        // NGC-WII：双方案全量键位（启动页/设置页可切换 GC 手柄与
-        // Wii 遥控器+双节棍/经典手柄；体感：摇晃 L3/R3、倾斜=设备传感器、
-        // IR 指针=游戏区触摸；挥动经组合键伪位 bit16-19）。
+        // NGC/WII（Ishiiruka）— GC 手柄 + Wii Remote 双布局（实体手柄按键双份映射：
+        // NGC 模式下 BUTTON_A→GC A；Wii 模式下同一物理键→Wii A，引擎按模式路由）
         GamePlatform.NGCWII -> listOf(
-            KeyActionInternal("ngc_a", KeyEvent.KEYCODE_BUTTON_A),      // GC A / Wii A
-            KeyActionInternal("ngc_b", KeyEvent.KEYCODE_BUTTON_B),      // GC B / Wii B
-            KeyActionInternal("ngc_x", KeyEvent.KEYCODE_BUTTON_X),      // GC X / Wii 1
-            KeyActionInternal("ngc_y", KeyEvent.KEYCODE_BUTTON_Y),      // GC Y / Wii 2
-            KeyActionInternal("ngc_l", KeyEvent.KEYCODE_BUTTON_L1),     // GC Z / 双节棍 Z
-            KeyActionInternal("ngc_r", KeyEvent.KEYCODE_BUTTON_R1),     // 双节棍 C / 经典 ZL
-            KeyActionInternal("ngc_l2", KeyEvent.KEYCODE_BUTTON_L2),    // GC L 扳机 / Wii −/Home
-            KeyActionInternal("ngc_r2", KeyEvent.KEYCODE_BUTTON_R2),    // GC R 扳机 / Wii +/IR Hide
-            KeyActionInternal("ngc_l3", KeyEvent.KEYCODE_BUTTON_THUMBL),// 摇晃 Wii / 经典 Home
-            KeyActionInternal("ngc_r3", KeyEvent.KEYCODE_BUTTON_THUMBR),// 摇晃双节棍
+            KeyActionInternal("ngc_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("ngc_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("ngc_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("ngc_right", KeyEvent.KEYCODE_DPAD_RIGHT),
+            KeyActionInternal("ngc_a", KeyEvent.KEYCODE_BUTTON_A),
+            KeyActionInternal("ngc_b", KeyEvent.KEYCODE_BUTTON_B),
+            KeyActionInternal("ngc_x", KeyEvent.KEYCODE_BUTTON_X),
+            KeyActionInternal("ngc_y", KeyEvent.KEYCODE_BUTTON_Y),
+            KeyActionInternal("ngc_z", KeyEvent.KEYCODE_BUTTON_Z),
+            KeyActionInternal("ngc_l", KeyEvent.KEYCODE_BUTTON_L1),
+            KeyActionInternal("ngc_r", KeyEvent.KEYCODE_BUTTON_R1),
             KeyActionInternal("ngc_start", KeyEvent.KEYCODE_BUTTON_START),
-            KeyActionInternal("ngc_select", KeyEvent.KEYCODE_BUTTON_SELECT)
+            KeyActionInternal("ngc_wii_1", KeyEvent.KEYCODE_BUTTON_1),
+            KeyActionInternal("ngc_wii_2", KeyEvent.KEYCODE_BUTTON_2),
+            KeyActionInternal("ngc_wii_plus", KeyEvent.KEYCODE_BUTTON_START),
+            KeyActionInternal("ngc_wii_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
+            KeyActionInternal("ngc_wii_home", KeyEvent.KEYCODE_BUTTON_HOMEPAGE),
+            KeyActionInternal("ngc_wii_c", KeyEvent.KEYCODE_BUTTON_L2),
+            KeyActionInternal("ngc_wii_z", KeyEvent.KEYCODE_BUTTON_R2)
         )
+        // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
+        // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
+        GamePlatform.DC -> emptyList()
     }
     return base
 }
 
 // Convert an internal action to its bit mask, matching gamepadKeyToBits logic.
 private fun actionToBits(action: KeyActionInternal, platform: GamePlatform): Int {
-    // 3DS / NGC-WII 专属键位（含组合键伪位 —— bit16-20）优先按 id 判定，
-    // 避免与标准 keycode 位映射冲突。
-    when (action.id) {
-        "3ds_home"  -> return 1 shl 16   // HOME（Azahar BUTTON_HOME=706）
-        "3ds_swap"  -> return 1 shl 17   // 上下屏交换（BUTTON_SWAP=800）
-        "ngc_home"  -> return 1 shl 20   // IR/Recenter（Ishiruka 139）
-        "ngc_l3"    -> return BTN_L3     // 摇晃 Wii（132）
-        "ngc_r3"    -> return BTN_R3     // 摇晃双节棍（220）
-    }
     val lBit = if (platform == GamePlatform.GBA) BTN_L_GBA else BTN_L_SNES
     val rBit = if (platform == GamePlatform.GBA) BTN_R_GBA else BTN_R_SNES
+    // 3DS（Azahar）：物理 L2/R2 → ZL/ZR 扩展位（引擎直收项目位布局）
+    if (platform == GamePlatform.N3DS) {
+        return when (action.defaultKeyCode) {
+            KeyEvent.KEYCODE_BUTTON_L2     -> BTN_ZL
+            KeyEvent.KEYCODE_BUTTON_R2     -> BTN_ZR
+            KeyEvent.KEYCODE_BUTTON_SELECT -> BTN_SELECT
+            else -> 0
+        }.takeIf { it != 0 }
+            ?: defaultActionToBits(action, lBit, rBit)
+    }
+    // NGC/WII（Ishiiruka）：实体手柄按键按动作 id 双份映射
+    // （ngc_wii_* id 优先命中，避免与 ngc_* 同键码冲突）
+    if (platform == GamePlatform.NGCWII) {
+        return when (action.id.substringBeforeLast("_p")) {
+            "ngc_z"         -> BTN_Z
+            "ngc_wii_1"     -> BTN_WII_1
+            "ngc_wii_2"     -> BTN_WII_2
+            "ngc_wii_plus"  -> BTN_WII_PLUS
+            "ngc_wii_minus" -> BTN_WII_MINUS
+            "ngc_wii_home"  -> BTN_HOME
+            "ngc_wii_c"     -> BTN_WII_C
+            "ngc_wii_z"     -> BTN_WII_Z
+            else -> 0
+        }.takeIf { it != 0 }
+            ?: defaultActionToBits(action, lBit, rBit)
+    }
+    return defaultActionToBits(action, lBit, rBit)
+}
+
+private fun defaultActionToBits(action: KeyActionInternal, lBit: Int, rBit: Int): Int {
     return when (action.defaultKeyCode) {
         KeyEvent.KEYCODE_DPAD_UP       -> BTN_UP
         KeyEvent.KEYCODE_DPAD_DOWN     -> BTN_DOWN
@@ -471,7 +505,7 @@ private fun actionToBits(action: KeyActionInternal, platform: GamePlatform): Int
 // this pad overlay's fillMaxSize pointerInput Box sits ABOVE the game view
 // (AndroidView sibling), so without forwarding the game view would NEVER
 // receive any touch event while the pad is visible.
-private enum class BtnType { DPAD, A, B, TURBO_A, TURBO_B, START, SELECT, L, R, X, Y, L2, R2, L3, R3, LSTICK, RSTICK, COMBO, QUICK_SAVE, QUICK_LOAD, GAME_AREA }
+private enum class BtnType { DPAD, A, B, TURBO_A, TURBO_B, START, SELECT, L, R, X, Y, L2, R2, L3, R3, LSTICK, RSTICK, ZL, ZR, Z, HOME, WII_1, WII_2, WII_PLUS, WII_MINUS, WII_C, WII_Z, IR_NEAR, IR_FAR, COMBO, QUICK_SAVE, QUICK_LOAD, GAME_AREA }
 
 // Bit masks for NES/SNES/GBA controller
 // NES/GB/GBC: A B SEL STA U D L R (8 buttons)
@@ -496,6 +530,19 @@ internal const val BTN_L2 = 0x1000     // bit12 — L2 (Arcade / extra)
 internal const val BTN_R2 = 0x2000     // bit13 — R2 (Arcade / extra)
 internal const val BTN_L3 = 0x4000     // bit14 — L3 (left stick click)
 internal const val BTN_R3 = 0x8000     // bit15 — R3 (right stick click)
+// 3DS（Azahar）/ NGC-WII（Ishiiruka）扩展位（项目位布局，引擎 setPad1 直收）
+internal const val BTN_ZL = 0x10000    // bit16 — 3DS ZL
+internal const val BTN_ZR = 0x20000    // bit17 — 3DS ZR
+internal const val BTN_Z = 0x40000     // bit18 — GC Z / Wii IR 隐藏
+internal const val BTN_HOME = 0x80000  // bit19 — Wii HOME
+internal const val BTN_WII_1 = 0x100000        // bit20 — Wii 1
+internal const val BTN_WII_2 = 0x200000        // bit21 — Wii 2
+internal const val BTN_WII_PLUS = 0x400000     // bit22 — Wii +
+internal const val BTN_WII_MINUS = 0x800000    // bit23 — Wii −
+internal const val BTN_WII_C = 0x1000000       // bit24 — 双节棍 C
+internal const val BTN_WII_Z = 0x2000000       // bit25 — 双节棍 Z
+internal const val BTN_IR_NEAR = 0x4000000     // bit26 — Wii IR−（拉近）
+internal const val BTN_IR_FAR = 0x8000000      // bit27 — Wii IR+（推远）
 
 // 将项目 SNES 风格布局转换为 libretro 标准 JOYPAD 布局。
 // 项目布局：A=bit0, B=bit1, Select=bit2, Start=bit3, Up=bit4, Down=bit5, Left=bit6, Right=bit7,
@@ -930,12 +977,6 @@ fun EmulatorScreen(
     // 历史注：此前的 Flycast 独立核心在此处提前 return 到
     // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
 
-    // 3DS (Azahar) 与 NGC/WII (Ishiruka) —— 进程内嵌入核心（与 DC/PS2 同一
-    // 形态）：核心 .so 随 APK 发布，JNI 契约类随源码打包，游戏画面/音频/
-    // 双屏布局/体感全部在核内完成；虚拟按键/触摸/IR/控制器切换由 NesStation
-    // 的 EmulatorScreen 全链路负责（与 DC/PS2 同一交互体系），不再依赖
-    // 任何外部 APK。
-
     val engine = remember(ndsCoreChoice) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
             com.nesstation.app.core.engine.DraSticEngine.get()
@@ -991,7 +1032,10 @@ fun EmulatorScreen(
     // ARCADE=4, NES/SFC/MD/PCE=2, GB/GBA/DOS/JAVA=1
     val maxPlayers = when (platform) {
         GamePlatform.ARCADE -> 4
-        GamePlatform.DOS, GamePlatform.JAVA, GamePlatform.GB, GamePlatform.GBA -> 1
+        // DOS/JAVA/GB/GBA 单人；3DS（Azahar）与 NGC/WII（Ishiiruka）的
+        // Touchscreen 通道为 P1 专属（原生单通道），同样固定单人
+        GamePlatform.DOS, GamePlatform.JAVA, GamePlatform.GB, GamePlatform.GBA,
+        GamePlatform.N3DS, GamePlatform.NGCWII -> 1
         else -> 2
     }
 
@@ -1054,96 +1098,6 @@ fun EmulatorScreen(
         JavaGameSettingsStore.remove(context, javaGameKey)
         javaHasOverride = false
         padLayout = padLayout.withJavaSettings(globalJavaSnapshot)
-    }
-
-    // === 3DS / NGC-WII 进程内核心会话挂接（native 回调路由 + 体感传感器） ===
-    //  - 退出/弹窗/状态回调：native 的 exitEmulationActivity / panic alert /
-    //    onCoreError 等经 CitraHost / DolphinHost 路由到本界面
-    //  - 体感（NGC-WII）：TYPE_GAME_ROTATION_VECTOR → getOrientation →
-    //    IshirukaEngine.feedOrientation（倾斜轴 127-130，官方 overlay 同公式）
-    DisposableEffect(platform, padLayout.ngcwiiMotion) {
-        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        val activity = context as? android.app.Activity
-        if (platform == GamePlatform.TG3DS) {
-            com.nesstation.app.core.jni.AzaharNative.attachSessionHooks(
-                activity,
-                onExit = { code -> mainHandler.post { onExit() } },
-                onStatus = { msg -> mainHandler.post {
-                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                } },
-                onCoreError = { title, msg ->
-                    mainHandler.post {
-                        Toast.makeText(context, "$title: $msg", Toast.LENGTH_LONG).show()
-                    }
-                    true // native 侧默认继续
-                }
-            )
-        } else if (platform == GamePlatform.NGCWII) {
-            com.nesstation.app.core.jni.IshirukaNative.attachSessionHooks(
-                activity,
-                onExit = { mainHandler.post { onExit() } },
-                onAlert = { title, msg, yesNo ->
-                    val holder = booleanArrayOf(true)
-                    mainHandler.post {
-                        // panic alert：非阻塞提示（native 默认继续）
-                        Toast.makeText(context, "$title: $msg", Toast.LENGTH_LONG).show()
-                        holder[0] = true
-                    }
-                    true
-                }
-            )
-        }
-        // 体感传感器（仅 NGC-WII 且体感开启）
-        var sensorManager: android.hardware.SensorManager? = null
-        var registeredListener: android.hardware.SensorEventListener? = null
-        if (platform == GamePlatform.NGCWII && padLayout.ngcwiiMotion != "disabled") {
-            val sm = context.getSystemService(android.content.Context.SENSOR_SERVICE)
-                as? android.hardware.SensorManager
-            if (sm != null) {
-                val sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_GAME_ROTATION_VECTOR)
-                    ?: sm.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)
-                if (sensor != null) {
-                    val rotMatrix = FloatArray(9)
-                    val orient = FloatArray(3)
-                    val listener = object : android.hardware.SensorEventListener {
-                        override fun onSensorChanged(event: android.hardware.SensorEvent) {
-                            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
-                                ?: return
-                            android.hardware.SensorManager.getRotationMatrixFromVector(
-                                rotMatrix, event.values
-                            )
-                            android.hardware.SensorManager.remapCoordinateSystem(
-                                rotMatrix,
-                                android.hardware.SensorManager.AXIS_X,
-                                android.hardware.SensorManager.AXIS_Z,
-                                rotMatrix
-                            )
-                            android.hardware.SensorManager.getOrientation(rotMatrix, orient)
-                            ishiruka.feedOrientation(orient)
-                        }
-
-                        override fun onAccuracyChanged(
-                            sensor: android.hardware.Sensor?, accuracy: Int
-                        ) {}
-                    }
-                    sensorManager = sm
-                    registeredListener = listener
-                    sm.registerListener(listener, sensor,
-                        android.hardware.SensorManager.SENSOR_DELAY_GAME)
-                }
-            }
-        }
-        onDispose {
-            if (platform == GamePlatform.TG3DS) {
-                com.nesstation.app.core.jni.AzaharNative.detachSessionHooks()
-            } else if (platform == GamePlatform.NGCWII) {
-                com.nesstation.app.core.jni.IshirukaNative.detachSessionHooks()
-                nativePrevBits[GamePlatform.NGCWII.name] = 0
-            }
-            try {
-                sensorManager?.unregisterListener(registeredListener)
-            } catch (_: Throwable) {}
-        }
     }
 
     // J2ME 游戏视图在窗口中的位置（触屏转发坐标换算用，见 J2meGameView 分支）
@@ -1296,11 +1250,6 @@ fun EmulatorScreen(
         engine.setHighQualityScaling(padLayout.highQualityScaling)
     }
 
-    // NGC-WII 控制器方案 → 物理手柄派发（routePadBits 读取）
-    LaunchedEffect(padLayout.ngcwiiController) {
-        currentNgcwiiController = padLayout.ngcwiiController.ifBlank { "wii" }
-    }
-
     // Apply core options on load and when they change
     // 注意：videoScale（全局画面缩放）也在触发列表里 —— PS2 的画面比例
     // 在 "auto" 时跟随全局设置推导（见 applyCoreOptions PS2 分支），
@@ -1408,7 +1357,35 @@ fun EmulatorScreen(
                    padLayout.javaImmediateMode, padLayout.javaResolution,
                    padLayout.javaScaleRatio, padLayout.javaFpsLimit,
                    padLayout.javaTouchInput, padLayout.javaNumDualDispatch,
-                   padLayout.javaButtonKeyMap
+                   padLayout.javaButtonKeyMap,
+                   // 3DS / Azahar options — 改动即时写 config.ini + reloadSettings
+                   padLayout.azGraphicsApi, padLayout.azResolution,
+                   padLayout.azUseHwShader, padLayout.azUseShaderJit,
+                   padLayout.azUseVsync, padLayout.azUseDiskShaderCache,
+                   padLayout.azAsyncPresentation, padLayout.azAsyncShaderCompilation,
+                   padLayout.azAccurateMultiplication, padLayout.azSkipDuplicateFrames,
+                   padLayout.azTextureFilter, padLayout.azTextureSampling,
+                   padLayout.azIntegerScaling, padLayout.azFrameLimit,
+                   padLayout.azRender3d, padLayout.azFactor3d,
+                   padLayout.azLayoutOption, padLayout.azScreenGap,
+                   padLayout.azLargeScreenProportion, padLayout.azSwapScreens,
+                   padLayout.azCpuClock, padLayout.azUseCpuJit,
+                   padLayout.azUseFastInterp, padLayout.azIsNew3ds,
+                   padLayout.azRegion, padLayout.azAudioEmulation,
+                   padLayout.azVolume, padLayout.azAudioStretching,
+                   padLayout.azRealtimeAudio, padLayout.azCustomTextures,
+                   padLayout.azPreloadTextures,
+                   // NGC/WII / Ishiiruka options — 改动即时 SetConfig
+                   padLayout.irControlMode, padLayout.irWiiExtension,
+                   padLayout.irCpuCore, padLayout.irDualCore,
+                   padLayout.irOverclockEnable, padLayout.irOverclock,
+                   padLayout.irBackend, padLayout.irResolution,
+                   padLayout.irMsaa, padLayout.irAnisotropy,
+                   padLayout.irShowFps, padLayout.irWaitForShaders,
+                   padLayout.irAspect, padLayout.irEfbToTexture,
+                   padLayout.irEfbScaledCopy, padLayout.irEfbAccess,
+                   padLayout.irAudioStretch, padLayout.irDspHle,
+                   padLayout.irWiimoteSpeaker, padLayout.irWiimoteScan
                    ) {
         applyCoreOptions(engine, padLayout, platform)
         // Apply video filter (frontend post-processing, not a core option)
@@ -1573,35 +1550,6 @@ fun EmulatorScreen(
             return@LaunchedEffect
         }
 
-        // === 3DS 加密校验（tg3dsDecryptCheck 开启时） ===
-        // 进程内 Azahar 加载加密游戏（未导入 aes_keys.txt）会黑屏退出，
-        // 启动前用 GameInfo.isEncrypted 预检并给出明确的导入指引。
-        if (platform == GamePlatform.TG3DS && padLayout.tg3dsDecryptCheck == "enabled" &&
-            !romPath.startsWith("content://") &&
-            romPath.substringAfterLast('.', "").lowercase() in
-            setOf("3ds", "cci", "cxi", "cia", "app")
-        ) {
-            val encrypted = withContext(Dispatchers.IO) {
-                try {
-                    com.nesstation.app.core.jni.AzaharNative.ensureLoaded() &&
-                        com.nesstation.app.core.storage.CiaInstaller.isEncrypted(romPath)
-                } catch (_: Throwable) { false }
-            }
-            if (encrypted) {
-                val keysOk = withContext(Dispatchers.IO) {
-                    com.nesstation.app.core.jni.AzaharNative.ensureUserDirectory()
-                    com.nesstation.app.core.jni.AzaharNative.areKeysAvailable()
-                }
-                if (!keysOk) {
-                    errorMsg = "该游戏已加密，需要 3DS 解密密钥才能运行。\n\n" +
-                        "请先到 设置 → 核心 → 3DS →「① 导入 aes_keys.txt」导入解密密钥，\n" +
-                        "或使用「② 解密工具」导出解密版后再导入游戏。"
-                    return@LaunchedEffect
-                }
-            }
-        }
-        // CIA：进程内 Azahar 支持 launch 策略 —— 启动即安装（tg3dsCiaMode）。
-
         // === 直接读取优化：content:// → 外部存储真实路径 ===
         // libretro/ARMSX2 等 native 核心只能通过文件系统路径读 ROM；SAF
         // 选择的 content:// URI 传统上需要先复制进内部目录才能交给核心。
@@ -1659,6 +1607,12 @@ fun EmulatorScreen(
             GamePlatform.DC     -> context.filesDir.apply {
                 java.io.File(this, "dc").mkdirs()
             }.absolutePath
+            // Azahar（3DS）：systemDir 即 Azahar 用户目录
+            // （config/config.ini / sdmc / nand / states / aes_keys.txt 均在其中）。
+            GamePlatform.N3DS   -> java.io.File(context.filesDir, "azahar").apply { mkdirs() }.absolutePath
+            // Ishiiruka（NGC/WII）：systemDir 为核心根 —— user/（User 目录）与
+            // sys/（GC 字体、DSP ROM、Wii shared 数据，可选）在其中。
+            GamePlatform.NGCWII -> java.io.File(context.filesDir, "ishiiruka").apply { mkdirs() }.absolutePath
             else                -> context.filesDir.absolutePath
         }
         val filesDir = systemDir  // pass the platform-specific system dir to the core
@@ -2110,6 +2064,10 @@ fun EmulatorScreen(
                         // PS2 disc images (.iso/.cso/.chd/.cue/.isz): same
                         // per-game temp file strategy as PSX.
                         platform == GamePlatform.PS2 -> "ps2_${saveName}"
+                        // 3DS / NGC-WII 光盘级镜像（.3ds/.rvz/.wbfs 等）体量大，
+                        // 同样按游戏 ID 建独立临时文件，避免共享 temp_rom 互相覆盖
+                        platform == GamePlatform.N3DS -> "n3ds_${saveName}"
+                        platform == GamePlatform.NGCWII -> "ngcwii_${saveName}"
                         else -> "temp_rom"
                     }
                     val ext = when {
@@ -2155,6 +2113,20 @@ fun EmulatorScreen(
                         // Arcade: FBNeo loads .zip / .7z archives
                         origName.endsWith(".zip", ignoreCase = true) -> ".zip"
                         origName.endsWith(".7z", ignoreCase = true) -> ".7z"
+                        // Nintendo 3DS (Azahar) extensions
+                        origName.endsWith(".3ds", ignoreCase = true) -> ".3ds"
+                        origName.endsWith(".cci", ignoreCase = true) -> ".cci"
+                        origName.endsWith(".cxi", ignoreCase = true) -> ".cxi"
+                        origName.endsWith(".cia", ignoreCase = true) -> ".cia"
+                        // GameCube / Wii (Ishiiruka) extensions
+                        origName.endsWith(".gcm", ignoreCase = true) -> ".gcm"
+                        origName.endsWith(".rvz", ignoreCase = true) -> ".rvz"
+                        origName.endsWith(".gcz", ignoreCase = true) -> ".gcz"
+                        origName.endsWith(".ciso", ignoreCase = true) -> ".ciso"
+                        origName.endsWith(".nkit", ignoreCase = true) -> ".nkit"
+                        origName.endsWith(".wbfs", ignoreCase = true) -> ".wbfs"
+                        origName.endsWith(".wad", ignoreCase = true) -> ".wad"
+                        origName.endsWith(".dol", ignoreCase = true) -> ".dol"
                         romPath.contains(".fds", ignoreCase = true) -> ".fds"
                         romPath.contains(".unf", ignoreCase = true) -> ".unf"
                         romPath.contains(".sfc", ignoreCase = true) -> ".sfc"
@@ -2166,6 +2138,8 @@ fun EmulatorScreen(
                         platform == GamePlatform.ARCADE -> ".zip"
                         platform == GamePlatform.MD -> ".md"
                         platform == GamePlatform.PCE -> ".pce"
+                        platform == GamePlatform.N3DS -> ".3ds"
+                        platform == GamePlatform.NGCWII -> ".gcm"
                         else -> ".nes"
                     }
                     // For arcade, tempFileName already includes the extension
@@ -2228,10 +2202,7 @@ fun EmulatorScreen(
         // 等设置（组合时先于 loadRom 运行的那次 applyCoreOptions 会被整个
         // 覆盖掉）。加载成功后重新应用 GameBox 的 J2ME 设置，保证
         // “游戏内设置 / 全局 Java 设置”真正生效且优先级高于旧配置文件。
-        // 加载成功后重新应用设置：J2ME（每游戏配置覆盖）与 3DS/NGC-WII
-        // （首次 apply 时引擎尚未 load 完成，扩展切换等热项需要再下发一次）
-        if (loaded && (platform == GamePlatform.JAVA ||
-                       platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII)) {
+        if (loaded && platform == GamePlatform.JAVA) {
             applyCoreOptions(engine, padLayout, platform)
         }
     }
@@ -2601,11 +2572,64 @@ fun EmulatorScreen(
                     surfaceSize = surfaceSize,
                     platform = platform,
                     isPortrait = isPortrait,
+                    // NGC/WII：传入引擎解析后的生效控制模式（auto → ngc/wii）
+                    ngcWiiEffectiveMode = if (platform == GamePlatform.NGCWII)
+                        (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)?.effectiveMode() ?: "wii"
+                    else "wii",
                     // NDS 触摸屏转发：手柄覆盖层可见时，Compose 命中测试不会
                     // 继续到下层的 AndroidView（游戏视图），所以未命中任何
                     // 按键的触摸从这里转发给 NDS 下屏。rootPos 为根坐标，
                     // 换算成游戏视图局部坐标后走与 onTouch 相同的映射。
-                    onUnhandledTouch = if (platform == GamePlatform.NDS) {
+                    onUnhandledTouch = when {
+                        // 3DS（Azahar）：触点坐标直通核心 —— Azahar 原生侧按
+                        // framebuffer 布局把视图坐标映射到下屏触摸区（与上游
+                        // EmulationActivity 行为一致），无需前端算布局矩形。
+                        platform == GamePlatform.N3DS -> {
+                            { rootPos, action ->
+                                val azEngine = engine as? com.nesstation.app.core.engine.AzaharCoreEngine
+                                if (azEngine != null) {
+                                    val vw = gameViewSize.width.coerceAtLeast(1)
+                                    val vh = gameViewSize.height.coerceAtLeast(1)
+                                    val lx = rootPos.x - gameViewPosInRoot.x
+                                    val ly = rootPos.y - gameViewPosInRoot.y
+                                    val inside = lx >= 0 && ly >= 0 && lx < vw && ly < vh
+                                    when (action) {
+                                        android.view.MotionEvent.ACTION_UP,
+                                        android.view.MotionEvent.ACTION_CANCEL ->
+                                            azEngine.setTouchInput(0f, 0f, false)
+                                        android.view.MotionEvent.ACTION_DOWN ->
+                                            if (inside) azEngine.setTouchInput(lx, ly, true)
+                                        android.view.MotionEvent.ACTION_MOVE ->
+                                            if (inside) azEngine.setTouchMoved(lx, ly)
+                                    }
+                                }
+                            }
+                        }
+                        // NGC/WII（Ishiiruka）：wii 模式下触点 → Wii IR 指针
+                        // （视图归一化坐标，引擎换算为 IR 六轴绝对输入）；
+                        // ngc 模式无触摸语义，返回 null（由 GC 十字键承担）。
+                        platform == GamePlatform.NGCWII -> {
+                            { rootPos, action ->
+                                val ngcEngine = engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine
+                                if (ngcEngine != null && ngcEngine.effectiveMode() != "ngc") {
+                                    val vw = gameViewSize.width.coerceAtLeast(1)
+                                    val vh = gameViewSize.height.coerceAtLeast(1)
+                                    val lx = rootPos.x - gameViewPosInRoot.x
+                                    val ly = rootPos.y - gameViewPosInRoot.y
+                                    val inside = lx >= 0 && ly >= 0 && lx < vw && ly < vh
+                                    when (action) {
+                                        android.view.MotionEvent.ACTION_UP,
+                                        android.view.MotionEvent.ACTION_CANCEL ->
+                                            ngcEngine.setPointer(0.5f, 0.5f, false)
+                                        android.view.MotionEvent.ACTION_DOWN ->
+                                            if (inside) ngcEngine.setPointer(lx / vw, ly / vh, true)
+                                        android.view.MotionEvent.ACTION_MOVE ->
+                                            if (inside) ngcEngine.setPointer(lx / vw, ly / vh, true)
+                                    }
+                                }
+                            }
+                        }
+                        platform == GamePlatform.NDS -> {
                         { rootPos, action ->
                             val ndsEngine = engine as? com.nesstation.app.core.engine.NdsCoreEngine
                             if (ndsEngine != null) {
@@ -2682,109 +2706,48 @@ fun EmulatorScreen(
                                 }
                             }
                         }
-                    } else if (platform == GamePlatform.TG3DS) {
-                        // 3DS 下屏触摸：未命中按键的游戏区触摸以视图局部像素坐标
-                        // 喂给核心（Azahar 按当前布局自动映射到 3DS 下屏）。
-                        { rootPos, action ->
-                            val azahar = engine as? com.nesstation.app.core.engine.AzaharEngine
-                            if (azahar != null) {
-                                val lx = rootPos.x - gameViewPosInRoot.x
-                                val ly = rootPos.y - gameViewPosInRoot.y
-                                when (action) {
-                                    android.view.MotionEvent.ACTION_DOWN,
-                                    android.view.MotionEvent.ACTION_POINTER_DOWN ->
-                                        azahar.touch(lx, ly, true)
-                                    android.view.MotionEvent.ACTION_MOVE ->
-                                        azahar.touchMoved(lx, ly)
-                                    else -> azahar.touch(0f, 0f, false)
-                                }
-                            }
                         }
-                    } else if (platform == GamePlatform.NGCWII) {
-                        // NGC-WII IR 指针（体感）：游戏区拖动 → 绝对 IR 坐标
-                        // （仅 Wii 游戏；GC 游戏无用）。官方 IR overlay 同款公式。
-                        { rootPos, action ->
-                            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
-                            if (ishiruka != null && ishiruka.isWiiGame) {
-                                when (action) {
-                                    android.view.MotionEvent.ACTION_DOWN,
-                                    android.view.MotionEvent.ACTION_POINTER_DOWN,
-                                    android.view.MotionEvent.ACTION_MOVE -> {
-                                        val lx = (rootPos.x - gameViewPosInRoot.x)
-                                            .coerceIn(0f, gameViewSize.width.toFloat())
-                                        val ly = (rootPos.y - gameViewPosInRoot.y)
-                                            .coerceIn(0f, gameViewSize.height.toFloat())
-                                        ishiruka.irPointer(
-                                            lx, ly,
-                                            gameViewSize.width, gameViewSize.height
-                                        )
-                                    }
-                                    else -> ishiruka.irReset()
-                                }
-                            }
-                        }
-                    } else null,
+                        else -> null
+                    },
                     onPadBits = { bits ->
                         // 联机对战：把本地输入送给 NetplayController，由它打包
                         // 发给对方；引擎线程在 beforeFrame 里会把 (local, remote)
                         // 推回 setPad1/setPad2。本地路径：直接 routePadBits。
                         if (netplayController != null) {
                             netplayController.setLocalPad(bits)
-                        } else if (platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII) {
-                            // 3DS / NGC-WII 进程内核心：事件式输入，
-                            // 位掩码 → 核心按键 id 沿派发（见 dispatchNativePadBits）
-                            dispatchNativePadBits(
-                                engine, platform, bits,
-                                if (platform == GamePlatform.NGCWII)
-                                    (padLayout.ngcwiiController.ifBlank { "wii" }) else ""
-                            )
                         } else {
                             routePadBits(engine, currentPlayer, bits, platform = platform)
                         }
                     },
                     // PS2 双摇杆：把归一化拇指位置转成 int16 libretro 轴值
                     // 直接推给 PCEE2 核心（数字位走上面的 onPadBits 链路）
-                    onAnalogAxes = if (platform == GamePlatform.PS2) {
-                        { lx, ly, rx, ry ->
-                            (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxes(
-                                (lx * 32767).toInt(),
-                                (ly * 32767).toInt(),
-                                (rx * 32767).toInt(),
-                                (ry * 32767).toInt()
-                            )
-                        }
-                    } else if (platform == GamePlatform.TG3DS) {
-                        // 3DS：左摇杆 = Circle Pad（713），右摇杆 = C 摇杆（718）。
-                        // 注意 Azahar 轴约定：x 右正，y 上正 —— 覆盖层给的 y 是
-                        // 屏幕坐标向下正，需取负。
-                        { lx, ly, rx, ry ->
-                            val azahar = engine as? com.nesstation.app.core.engine.AzaharEngine
-                            azahar?.circlePad(lx, -ly)
-                            azahar?.cStick(rx, -ry)
-                        }
-                    } else if (platform == GamePlatform.NGCWII) {
-                        // NGC-WII：按控制器方案映射双摇杆（±配对轴在引擎内处理）
-                        { lx, ly, rx, ry ->
-                            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
-                            if (ishiruka != null) {
-                                when (padLayout.ngcwiiController.ifBlank { "wii" }) {
-                                    "gc" -> {
-                                        ishiruka.gcStick(lx, -ly)
-                                        ishiruka.gcCStick(rx, -ry)
-                                    }
-                                    "classic" -> {
-                                        ishiruka.classicLeftStick(lx, -ly)
-                                        ishiruka.classicRightStick(rx, -ry)
-                                    }
-                                    else -> {
-                                        // wii / wiimote_only：左摇杆 = 双节棍摇杆；
-                                        // 右摇杆作 IR 平移（相对模式备用）
-                                        ishiruka.nunchukStick(lx, -ly)
-                                    }
-                                }
+                    onAnalogAxes = when {
+                        platform == GamePlatform.PS2 -> {
+                            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                                (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxes(
+                                    (lx * 32767).toInt(),
+                                    (ly * 32767).toInt(),
+                                    (rx * 32767).toInt(),
+                                    (ry * 32767).toInt()
+                                )
                             }
                         }
-                    } else null,
+                        // 3DS（Azahar）：CirclePad → (lx, ly)，C-Stick → (rx, ry)
+                        platform == GamePlatform.N3DS -> {
+                            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                                (engine as? com.nesstation.app.core.engine.AzaharCoreEngine)
+                                    ?.setAnalogAxes(lx, ly, rx, ry)
+                            }
+                        }
+                        // NGC/WII（Ishiiruka）：NGC 主摇杆/C 摇杆 或 Wii 双节棍摇杆
+                        platform == GamePlatform.NGCWII -> {
+                            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                                (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                                    ?.setAnalogAxes(lx, ly, rx, ry)
+                            }
+                        }
+                        else -> null
+                    },
                     // 即时存档 / 即时读档：直接操作当前槽位 saveLoadSlot，
                     // 复用与 SlotPickerDialog 相同的引擎链路与 Toast 反馈。
                     onQuickSave = {
@@ -3588,6 +3551,8 @@ private fun routePadBits(
     // DC（flycast）按 label 语义（屏幕 A/B/X/Y = 手柄 A/B/X/Y）用
     // dcToLibretroLayout 转换 —— flycast 的 JOYPAD 映射是 B→A、A→B、
     // Y→X、X→Y，透传会导致屏幕 B 输出 DC X、屏幕 X 输出 DC B。
+    // N3DS（Azahar）/ NGCWII（Ishiiruka）：引擎原生理解项目位布局
+    // （含 ZL/ZR/Z/HOME 等 16+ 扩展位），直接透传，不做 libretro 转换。
     val ndsBits = if (platform == GamePlatform.NDS) projectToLibretroLayout(bits)
                   else if (platform == GamePlatform.PSX) psxToLibretroLayout(bits)
                   else if (platform == GamePlatform.PS2) ps2ToLibretroLayout(bits)
@@ -3597,12 +3562,6 @@ private fun routePadBits(
     if (netplayController != null) {
         // 联机对战：只接受本地 1P 输入；2P 由远端玩家控制
         if (player == 0) netplayController.setLocalPad(ndsBits)
-        return
-    }
-    // 3DS / NGC-WII：事件式核心 —— 物理 gamepad / 键盘位掩码同样走
-    // 沿派发（虚拟手柄的 onPadBits 已在调用方单独分流）。
-    if (platform == GamePlatform.TG3DS || platform == GamePlatform.NGCWII) {
-        dispatchNativePadBits(engine, platform, bits, currentNgcwiiController)
         return
     }
     when (player) {
@@ -3617,162 +3576,6 @@ private fun routePadBits(
              ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad4(ndsBits)
              ?: Unit
     }
-}
-
-// ---------------------------------------------------------------------------
-// 3DS / NGC-WII 进程内核心输入派发
-//
-// Azahar / Ishiruka 是事件式输入（每键独立 id + 按下/抬起沿），与位掩码
-// 式引擎（setPad1(bits)）不同。虚拟手柄层仍统一输出位掩码（visualState），
-// 这里负责位掩码 → 核心按键 id 的映射与沿检测（prevBits vs bits 的变化位
-// 才发事件），避免重复注入。
-//
-// 位布局沿用标准位（bit0=A ... bit15=R3），另用 bit16-19 作组合键专用
-// 伪按键（NGC-WII 挥动四向；3DS HOME/换屏）—— 见 ComboButtonPickerDialog。
-// ---------------------------------------------------------------------------
-
-/** 每平台记录上一次位掩码（沿检测用；0 = 全部抬起）。 */
-private val nativePrevBits = java.util.concurrent.ConcurrentHashMap<String, Int>()
-
-/**
- * 当前 NGC-WII 控制器方案（"gc"/"wii"/"wiimote"/"classic"）。
- * EmulatorScreen 组合 padLayout 时刷新；routePadBits 的物理 gamepad
- * 路径（拿不到 padLayout）经它读取。
- */
-@Volatile
-private var currentNgcwiiController: String = "wii"
-
-/** 3DS 位 → Azahar ButtonType id。 */
-private fun tg3dsBitToButton(bit: Int): Int? = when (bit) {
-    BTN_A      -> 700  // BUTTON_A
-    BTN_B      -> 701  // BUTTON_B
-    BTN_X      -> 702  // BUTTON_X
-    BTN_Y      -> 703  // BUTTON_Y
-    BTN_L2     -> 707  // ZL (New 3DS)
-    BTN_R2     -> 708  // ZR (New 3DS)
-    BTN_START  -> 704  // BUTTON_START
-    BTN_SELECT -> 705  // BUTTON_SELECT
-    BTN_UP     -> 709
-    BTN_DOWN   -> 710
-    BTN_LEFT   -> 711
-    BTN_RIGHT  -> 712
-    BTN_L_SNES -> 773  // TRIGGER_L (bit10)
-    BTN_R_SNES -> 774  // TRIGGER_R (bit11)
-    1 shl 16   -> 706  // HOME（组合键伪位）
-    1 shl 17   -> 800  // BUTTON_SWAP 上下屏交换（组合键伪位）
-    else -> null
-}
-
-/**
- * NGC-WII 位 → 核心按键 id。返回 null 表示该位在本方案不可用。
- * @param controller "gc" | "wii"（Wiimote+双节棍） | "classic" | "wiimote_only"
- */
-private fun ngcwiiBitToButton(bit: Int, controller: String): Int? = when (controller) {
-    "gc" -> when (bit) {
-        BTN_A      -> 0   // GCPAD_BUTTON_A
-        BTN_B      -> 1   // GCPAD_BUTTON_B
-        BTN_START  -> 2   // GCPAD_BUTTON_START
-        BTN_X      -> 3   // GCPAD_BUTTON_X
-        BTN_Y      -> 4   // GCPAD_BUTTON_Y
-        BTN_L_SNES -> 5   // GCPAD_BUTTON_Z (bit10)
-        BTN_UP     -> 6
-        BTN_DOWN   -> 7
-        BTN_LEFT   -> 8
-        BTN_RIGHT  -> 9
-        // L2/R2 → 扳机（轴），在 dispatchNgcwiiBits 特殊处理
-        else -> null
-    }
-    "classic" -> when (bit) {
-        BTN_A      -> 300
-        BTN_B      -> 301
-        BTN_X      -> 302
-        BTN_Y      -> 303
-        BTN_SELECT -> 304  // −
-        BTN_START  -> 305  // +
-        BTN_L_SNES -> 307  // ZL (bit10)
-        BTN_R_SNES -> 308  // ZR (bit11)
-        BTN_UP     -> 309
-        BTN_DOWN   -> 310
-        BTN_LEFT   -> 311
-        BTN_RIGHT  -> 312
-        BTN_L3     -> 306  // HOME（L3 位复用）
-        else -> null
-    }
-    else -> when (bit) { // "wii" / "wiimote_only"：Wiimote(+双节棍)
-        BTN_A      -> 100  // WIIMOTE_BUTTON_A
-        BTN_B      -> 101  // WIIMOTE_BUTTON_B
-        BTN_SELECT -> 102  // −
-        BTN_START  -> 103  // +
-        BTN_X      -> 105  // 1
-        BTN_Y      -> 106  // 2
-        BTN_UP     -> 107
-        BTN_DOWN   -> 108
-        BTN_LEFT   -> 109
-        BTN_RIGHT  -> 110
-        BTN_L_SNES -> 201  // Nunchuk Z (bit10)
-        BTN_R_SNES -> 200  // Nunchuk C (bit11)
-        BTN_L3     -> 132  // 摇晃 Wiimote（体感）
-        BTN_R3     -> 220  // 摇晃双节棍（体感）
-        BTN_L2     -> 104  // HOME
-        BTN_R2     -> 118  // IR/Hide（指针隐藏切换）
-        1 shl 20   -> 139  // IR/Recenter（组合键伪位）
-        else -> null
-    }
-}
-
-/** NGC-WII 组合键挥动伪位 → 摇动轴 id（1.0 脉冲）。 */
-private fun ngcwiiSwingAxis(bit: Int): Int? = when (bit) {
-    1 shl 16 -> 120  // Swing/Up
-    1 shl 17 -> 121  // Swing/Down
-    1 shl 18 -> 122  // Swing/Left
-    1 shl 19 -> 123  // Swing/Right
-    else -> null
-}
-
-/**
- * 3DS / NGC-WII 位掩码沿派发：对比 prevBits，变化位逐键发按下/抬起事件。
- * GC 扳机（L2/R2）以轴值注入（满行程 1.0 / 释放 0）。
- */
-private fun dispatchNativePadBits(
-    engine: EmulatorEngine,
-    platform: GamePlatform,
-    bits: Int,
-    ngcwiiController: String
-) {
-    val key = platform.name
-    val prev = nativePrevBits[key] ?: 0
-    if (prev == bits) return
-    val changed = prev xor bits
-    val azahar = engine as? com.nesstation.app.core.engine.AzaharEngine
-    val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
-    // 遍历 0-20 位（bit16-19 挥动伪位，bit20 IR/Recenter 伪位）
-    var mask = changed
-    var b = 0
-    while (mask != 0 && b < 21) {
-        val bit = 1 shl b
-        if (mask and bit != 0) {
-            mask = mask and bit.inv()
-            val down = bits and bit != 0
-            if (azahar != null) {
-                tg3dsBitToButton(bit)?.let { azahar.buttonEvent(it, down) }
-            } else if (ishiruka != null) {
-                if (platform == GamePlatform.NGCWII && ngcwiiController == "gc" && bit == BTN_L2) {
-                    ishiruka.gcTrigger(left = true, pressed = down)
-                } else if (platform == GamePlatform.NGCWII && ngcwiiController == "gc" && bit == BTN_R2) {
-                    ishiruka.gcTrigger(left = false, pressed = down)
-                } else {
-                    ngcwiiSwingAxis(bit)?.let { axis ->
-                        // 挥动是轴：按下 1.0 / 抬起 0
-                        com.nesstation.app.core.jni.IshirukaNative.axisEvent(axis, if (down) 1f else 0f)
-                    } ?: ngcwiiBitToButton(bit, ngcwiiController)?.let { id ->
-                        ishiruka.buttonEvent(id, down)
-                    }
-                }
-            }
-        }
-        b++
-    }
-    nativePrevBits[key] = bits
 }
 
 // ---------------------------------------------------------------------------
@@ -4206,68 +4009,74 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("reicast_broadcast", layout.dcBroadcast)
             engine.setCoreOption("reicast_cable_type", layout.dcCableType)
         }
-        // 3DS：进程内 Azahar —— NesStation 侧设置写 <userDir>/config/config.ini，
-        // engine.setCoreOption(key="Section.key", value) 由 AzaharEngine 落盘，
-        // 随后 reloadSettings 热生效。
-        GamePlatform.TG3DS -> {
-            engine.setCoreOption("Core.use_cpu_jit", layout.tg3dsCpuJit)
-            engine.setCoreOption("Core.cpu_clock_percentage", layout.tg3dsCpuClock)
-            engine.setCoreOption("Core.use_frame_limit", layout.tg3dsFrameLimit)
-            engine.setCoreOption("Core.frame_limit", layout.tg3dsFrameSpeed)
-            engine.setCoreOption("Renderer.resolution_factor", layout.tg3dsResolution)
-            engine.setCoreOption("Renderer.use_vsync", layout.tg3dsVsync)
-            engine.setCoreOption("Renderer.use_hw_shader", layout.tg3dsHwShader)
-            engine.setCoreOption("Renderer.shaders_accurate_mul", layout.tg3dsAccurateMul)
-            engine.setCoreOption("Renderer.use_disk_shader_cache", layout.tg3dsDiskShader)
-            engine.setCoreOption("Renderer.async_shader_compilation", layout.tg3dsAsyncShader)
-            engine.setCoreOption("Renderer.graphics_api", layout.tg3dsGraphicsApi)
-            engine.setCoreOption("Renderer.render_3d", layout.tg3dsRender3d)
-            engine.setCoreOption("Renderer.factor_3d", layout.tg3dsFactor3d)
-            engine.setCoreOption("Renderer.layout_option", layout.tg3dsLayout)
-            engine.setCoreOption("Renderer.portrait_layout_option", layout.tg3dsPortraitLayout)
-            engine.setCoreOption("Renderer.swap_screen", layout.tg3dsSwapScreen)
-            engine.setCoreOption("Renderer.upright_screen", layout.tg3dsUpright)
-            engine.setCoreOption("Renderer.filter_mode", layout.tg3dsFilterMode)
-            engine.setCoreOption("Renderer.texture_filter", layout.tg3dsTextureFilter)
-            engine.setCoreOption("Audio.output_type", layout.tg3dsAudioOutput)
-            engine.setCoreOption("Audio.audio_emulation", layout.tg3dsAudioEmulation)
-            engine.setCoreOption("Audio.enable_audio_stretching", layout.tg3dsAudioStretch)
-            engine.setCoreOption("Audio.volume", layout.tg3dsVolume)
-            engine.setCoreOption("System.is_new_3ds", layout.tg3dsNew3ds)
-            engine.setCoreOption("System.region_value", layout.tg3dsRegion)
-            engine.setCoreOption("System.init_clock", layout.tg3dsInitClock)
-            engine.setCoreOption("System.lle_applets", layout.tg3dsLleApplets)
-            if (engine.isLoaded) {
-                try { com.nesstation.app.core.jni.AzaharNative.reloadSettings() } catch (_: Throwable) {}
+        // 3DS（Azahar）—— "段/键" 复合键直写用户目录 config/config.ini，
+        // enabled/disabled 转为核心布尔 true/false，数字枚举原样透传。
+        GamePlatform.N3DS -> {
+            val b = { v: String -> if (v == "enabled") "true" else "false" }
+            val api = when (layout.azGraphicsApi) {
+                "software" -> "0"; "vulkan" -> "2"; else -> "1"
             }
+            engine.setCoreOption("Renderer/graphics_api", api)
+            engine.setCoreOption("Renderer/use_gles", "true")
+            engine.setCoreOption("Renderer/resolution_factor", layout.azResolution)
+            engine.setCoreOption("Renderer/use_hw_shader", b(layout.azUseHwShader))
+            engine.setCoreOption("Renderer/use_shader_jit", b(layout.azUseShaderJit))
+            engine.setCoreOption("Renderer/use_vsync", b(layout.azUseVsync))
+            engine.setCoreOption("Renderer/use_disk_shader_cache", b(layout.azUseDiskShaderCache))
+            engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
+            engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
+            engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
+            engine.setCoreOption("Renderer/use_skip_duplicate_frames", b(layout.azSkipDuplicateFrames))
+            engine.setCoreOption("Renderer/texture_filter", layout.azTextureFilter)
+            engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
+            engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
+            engine.setCoreOption("Renderer/use_frame_limit", "true")
+            engine.setCoreOption("Renderer/frame_limit", layout.azFrameLimit)
+            engine.setCoreOption("Renderer/render_3d", layout.azRender3d)
+            engine.setCoreOption("Renderer/factor_3d", layout.azFactor3d)
+            engine.setCoreOption("Renderer/custom_textures", b(layout.azCustomTextures))
+            engine.setCoreOption("Renderer/preload_textures", b(layout.azPreloadTextures))
+            engine.setCoreOption("Layout/layout_option", layout.azLayoutOption)
+            engine.setCoreOption("Layout/screen_gap", layout.azScreenGap)
+            engine.setCoreOption("Layout/large_screen_proportion", layout.azLargeScreenProportion)
+            // 上/下屏交换：与上游 swapScreens() 相同语义（配置 + 热更）
+            engine.setCoreOption("Layout/swap_screen", b(layout.azSwapScreens))
+            engine.setCoreOption("Core/cpu_clock_percentage", layout.azCpuClock)
+            engine.setCoreOption("Core/use_cpu_jit", b(layout.azUseCpuJit))
+            engine.setCoreOption("Core/use_fastinterp", b(layout.azUseFastInterp))
+            engine.setCoreOption("System/is_new_3ds", b(layout.azIsNew3ds))
+            engine.setCoreOption("System/region_value", layout.azRegion)
+            engine.setCoreOption("Audio/audio_emulation", layout.azAudioEmulation)
+            // 原生侧 volume 为 0..1 浮点（GetReal）
+            val vol = (layout.azVolume.toIntOrNull() ?: 100).coerceIn(0, 100)
+            engine.setCoreOption("Audio/volume", (vol / 100.0).toString())
+            engine.setCoreOption("Audio/enable_audio_stretching", b(layout.azAudioStretching))
+            engine.setCoreOption("Audio/enable_realtime_audio", b(layout.azRealtimeAudio))
         }
-        // NGC-WII：进程内 Ishiruka —— Dolphin.ini/GFX.ini 经 native
-        // SetUserSetting 直写（引擎内热生效）；控制器扩展切换热重载。
+        // NGC/WII（Ishiiruka）—— SetConfig(file, section, key, value)
+        // 直写 Dolphin.ini / GFX.ini（引擎按 "文件/段/键" 复合键路由）。
         GamePlatform.NGCWII -> {
-            engine.setCoreOption("Dolphin.ini/Core/CPUCore", layout.ngcwiiCpuCore)
-            engine.setCoreOption("Dolphin.ini/Core/DSPHLE", layout.ngcwiiDspHle)
-            engine.setCoreOption("Dolphin.ini/Core/SoundBackend", layout.ngcwiiAudioBackend)
-            engine.setCoreOption("Dolphin.ini/Core/EmulationSpeed", layout.ngcwiiEmulationSpeed)
-            engine.setCoreOption("Dolphin.ini/Core/CheatsEnabled", layout.ngcwiiCheats)
-            engine.setCoreOption("Dolphin.ini/Core/ContinuousScanning", layout.ngcwiiScan)
-            engine.setCoreOption("Dolphin.ini/Core/WiiLanguage", layout.ngcwiiWiiLanguage)
-            engine.setCoreOption("Dolphin.ini/Core/AspectRatio", layout.ngcwiiWiiAspect)
-            engine.setCoreOption("GFX.ini/Settings/InternalResolution", layout.ngcwiiInternalRes)
-            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.ngcwiiAspect)
-            engine.setCoreOption("GFX.ini/Settings/MSAA", layout.ngcwiiMsaa)
-            engine.setCoreOption("GFX.ini/Settings/AnisotropicFiltering", layout.ngcwiiAniso)
-            engine.setCoreOption("GFX.ini/Settings/WaitForShaders", layout.ngcwiiWaitShaders)
-            engine.setCoreOption("GFX.ini/Settings/ShowFPS", layout.ngcwiiShowFps)
-            // 控制器扩展（仅 Wii 游戏有意义；GC 由 GCPadNew.ini 直读）
-            val ishiruka = engine as? com.nesstation.app.core.engine.IshirukaEngine
-            if (ishiruka != null && ishiruka.isWiiGame && engine.isLoaded) {
-                val extension = when (layout.ngcwiiController.ifBlank { "wii" }) {
-                    "classic" -> "Classic"
-                    "wiimote" -> "None"
-                    else -> "Nunchuk"   // "wii" / "nunchuk"
-                }
-                ishiruka.setExtension(extension)
-            }
+            val b = { v: String -> if (v == "enabled") "True" else "False" }
+            engine.setCoreOption("IshirukaEngine/controlMode", layout.irControlMode)
+            engine.setCoreOption("IshirukaEngine/wiiExtension", layout.irWiiExtension)
+            engine.setCoreOption("Dolphin.ini/Core/CPUCore", layout.irCpuCore)
+            engine.setCoreOption("Dolphin.ini/Core/CPUThread", b(layout.irDualCore))
+            engine.setCoreOption("Dolphin.ini/Core/OverclockEnable", b(layout.irOverclockEnable))
+            engine.setCoreOption("Dolphin.ini/Core/Overclock", layout.irOverclock)
+            engine.setCoreOption("Dolphin.ini/Core/GFXBackend", layout.irBackend)
+            engine.setCoreOption("Dolphin.ini/Core/WiimoteEnableSpeaker", b(layout.irWiimoteSpeaker))
+            engine.setCoreOption("Dolphin.ini/Core/WiimoteContinuousScanning", b(layout.irWiimoteScan))
+            engine.setCoreOption("Dolphin.ini/Core/AudioStretch", b(layout.irAudioStretch))
+            engine.setCoreOption("Dolphin.ini/Core/DSPHLE", b(layout.irDspHle))
+            engine.setCoreOption("GFX.ini/Settings/EFBScale", layout.irResolution)
+            engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
+            engine.setCoreOption("GFX.ini/Settings/ShowFPS", b(layout.irShowFps))
+            engine.setCoreOption("GFX.ini/Settings/CompileShaderOnStartup", b(layout.irWaitForShaders))
+            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.irAspect)
+            engine.setCoreOption("GFX.ini/Enhancements/MaxAnisotropy", layout.irAnisotropy)
+            engine.setCoreOption("GFX.ini/Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
+            engine.setCoreOption("GFX.ini/Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
+            engine.setCoreOption("GFX.ini/Hacks/EFBAccessEnable", b(layout.irEfbAccess))
         }
     }
 }
@@ -4867,6 +4676,44 @@ private fun GameSurfaceView(
                             handleNdsTouch(ndsEngine, event, ndsScreenLayout, ndsScreenGapPx, ndsOpenGl, v.width, v.height)
                         }
                     }
+                    // 3DS（Azahar）触摸屏：下屏触摸直通核心（视图像素坐标，
+                    // 原生按布局映射），返回核心消费结果（触点不在下屏时
+                    // 核心返回 false，交还宿主）。
+                    if (platform == GamePlatform.N3DS) {
+                        setOnTouchListener { v, event ->
+                            val azEngine = (engine as? com.nesstation.app.core.engine.AzaharCoreEngine)
+                                ?: return@setOnTouchListener false
+                            when (event.actionMasked) {
+                                android.view.MotionEvent.ACTION_DOWN ->
+                                    azEngine.setTouchInput(event.x, event.y, true)
+                                android.view.MotionEvent.ACTION_MOVE ->
+                                    azEngine.setTouchMoved(event.x, event.y)
+                                android.view.MotionEvent.ACTION_UP,
+                                android.view.MotionEvent.ACTION_CANCEL ->
+                                    azEngine.setTouchInput(0f, 0f, false)
+                            }
+                            true
+                        }
+                    }
+                    // NGC/WII（Ishiiruka）触摸 IR 指针：wii 模式下触点即光标
+                    // （归一化坐标 → IR 六轴绝对输入）。
+                    if (platform == GamePlatform.NGCWII) {
+                        setOnTouchListener { v, event ->
+                            val ngcEngine = (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                                ?: return@setOnTouchListener false
+                            if (ngcEngine.effectiveMode() == "ngc") return@setOnTouchListener false
+                            when (event.actionMasked) {
+                                android.view.MotionEvent.ACTION_DOWN ->
+                                    ngcEngine.setPointer(event.x / v.width, event.y / v.height, true)
+                                android.view.MotionEvent.ACTION_MOVE ->
+                                    ngcEngine.setPointer(event.x / v.width, event.y / v.height, true)
+                                android.view.MotionEvent.ACTION_UP,
+                                android.view.MotionEvent.ACTION_CANCEL ->
+                                    ngcEngine.setPointer(0.5f, 0.5f, false)
+                            }
+                            true
+                        }
+                    }
                     // Make the SurfaceView focusable so it receives physical
                     // gamepad / D-pad key events on TV and when a Bluetooth
                     // controller is connected.
@@ -4911,6 +4758,39 @@ private fun GameSurfaceView(
                     sv.setOnTouchListener { v, event ->
                         val ndsEngine = (engine as? com.nesstation.app.core.engine.NdsCoreEngine) ?: return@setOnTouchListener false
                         handleNdsTouch(ndsEngine, event, ndsScreenLayout, ndsScreenGapPx, ndsOpenGl, v.width, v.height)
+                    }
+                }
+                if (platform == GamePlatform.N3DS) {
+                    sv.setOnTouchListener { v, event ->
+                        val azEngine = (engine as? com.nesstation.app.core.engine.AzaharCoreEngine)
+                            ?: return@setOnTouchListener false
+                        when (event.actionMasked) {
+                            android.view.MotionEvent.ACTION_DOWN ->
+                                azEngine.setTouchInput(event.x, event.y, true)
+                            android.view.MotionEvent.ACTION_MOVE ->
+                                azEngine.setTouchMoved(event.x, event.y)
+                            android.view.MotionEvent.ACTION_UP,
+                            android.view.MotionEvent.ACTION_CANCEL ->
+                                azEngine.setTouchInput(0f, 0f, false)
+                        }
+                        true
+                    }
+                }
+                if (platform == GamePlatform.NGCWII) {
+                    sv.setOnTouchListener { v, event ->
+                        val ngcEngine = (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                            ?: return@setOnTouchListener false
+                        if (ngcEngine.effectiveMode() == "ngc") return@setOnTouchListener false
+                        when (event.actionMasked) {
+                            android.view.MotionEvent.ACTION_DOWN ->
+                                ngcEngine.setPointer(event.x / v.width, event.y / v.height, true)
+                            android.view.MotionEvent.ACTION_MOVE ->
+                                ngcEngine.setPointer(event.x / v.width, event.y / v.height, true)
+                            android.view.MotionEvent.ACTION_UP,
+                            android.view.MotionEvent.ACTION_CANCEL ->
+                                ngcEngine.setPointer(0.5f, 0.5f, false)
+                        }
+                        true
                     }
                 }
             },
@@ -5300,10 +5180,6 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准虚拟手柄体系，
         // 组合键与 NES 共用同一 PadLayout.comboButtons 表。
         GamePlatform.DC     -> padLayout.comboButtons
-        // 3DS / NGC-WII：进程内核心 —— 组合键经 dispatchNativePadBits
-        // 派发（伪位 bit16-20：HOME/换屏/挥动/IR 重定位）。
-        GamePlatform.TG3DS  -> padLayout.comboButtons3ds
-        GamePlatform.NGCWII -> padLayout.comboButtonsNgcwii
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -5476,11 +5352,21 @@ fun OnScreenController(
      * 画面遮罩 / 按钮主题（每核心独立，来自 PadLayout.overlayThemeJson）。
      * 为 null 的字段表示使用核心默认配色。
      */
-    overlayTheme: com.nesstation.app.core.storage.OverlayTheme = com.nesstation.app.core.storage.OverlayTheme()
+    overlayTheme: com.nesstation.app.core.storage.OverlayTheme = com.nesstation.app.core.storage.OverlayTheme(),
+    /**
+     * NGC/WII 专属：引擎解析后的生效控制模式（"ngc" / "wii"）。OnScreenController
+     * 不持有引擎引用，由调用方（EmulatorScreen）在每次重组时传入。
+     */
+    ngcWiiEffectiveMode: String = "wii"
 ) {
     val density = LocalDensity.current
     val opacity = padLayout.opacity
     val isPs2 = platform == GamePlatform.PS2
+    val is3ds = platform == GamePlatform.N3DS
+    val isNgcWii = platform == GamePlatform.NGCWII
+    // NGC/WII：当前生效控制模式（"ngc" / "wii"）—— 决定哪套摇杆参与命中
+    // （两套按键都渲染且都发同语义位，引擎按模式路由）。
+    val ngcWiiMode = ngcWiiEffectiveMode
 
     // Which extra buttons to show based on platform.
     // SNES / ARCADE / MD / PCE: 6-button layout — show all of A/B/X/Y/L/R.
@@ -5500,16 +5386,20 @@ fun OnScreenController(
     // ★ DC（Dreamcast 实体手柄）同样拥有 X/Y 四键 + L/R 肩键（与 SNES
     // 同一 12 键布局，经 dcToLibretroLayout 语义直转）。此前 showLR/showXY
     // 都漏掉了 DC，导致 DC 只显示 A/B 两个虚拟键（"DC 虚拟按键缺少太多"）。
+    // N3DS/NGCWII 的按键渲染走专属分支（下方 is3ds/isNgcWii 段），这里把
+    // showLR/showXY 保持 false，避免通用 12 键布局与专属布局同时渲染。
     val showLR = platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
-                 platform == GamePlatform.DC
+                 platform == GamePlatform.DC ||
+                 platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     val showXY = platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
-                 platform == GamePlatform.DC
+                 platform == GamePlatform.DC ||
+                 platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE ||
                    platform == GamePlatform.PSX || platform == GamePlatform.PS2
@@ -5585,11 +5475,20 @@ fun OnScreenController(
     // 横屏用 dpad / btnA / btnB / ...，竖屏用 dpadP / btnAP / btnBP / ...
     // 两套布局各自独立保存，互不干扰。
     // PS2 使用专属全套布局字段（双摇杆 + 错层位置，避免与通用布局冲突）。
+    // 3DS 专属布局（is3ds）与 NGC/WII 专属布局（isNgcWii）的通用槽位映射：
+    // N3DS → n3ds* 字段；NGCWII 通用槽位走 ngc* 字段（GC 手柄），Wii 键在下方
+    // 独立矩形变量里处理。
     val dpad = if (isPs2) (if (isPortrait) padLayout.ps2DpadP else padLayout.ps2Dpad)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsDpadP else padLayout.n3dsDpad)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcDpadP else padLayout.ngcDpad)
                else if (isPortrait) padLayout.dpadP else padLayout.dpad
     val btnA = if (isPs2) (if (isPortrait) padLayout.ps2BtnAP else padLayout.ps2BtnA)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnAP else padLayout.n3dsBtnA)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnAP else padLayout.ngcBtnA)
                else if (isPortrait) padLayout.btnAP else padLayout.btnA
     val btnB = if (isPs2) (if (isPortrait) padLayout.ps2BtnBP else padLayout.ps2BtnB)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnBP else padLayout.n3dsBtnB)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnBP else padLayout.ngcBtnB)
                else if (isPortrait) padLayout.btnBP else padLayout.btnB
     // 连发 A/B（小 AB）：所有平台可见（可在"显示/隐藏按键"里按需隐藏）。
     // 6 键平台（有 X/Y）且用户从未拖动过时，用避让后的默认位置，
@@ -5601,16 +5500,27 @@ fun OnScreenController(
         if (isPortrait) padLayout.btnTurboBP else padLayout.btnTurboB,
         showXY, isPortrait, isA = false)
     val btnStart = if (isPs2) (if (isPortrait) padLayout.ps2BtnStartP else padLayout.ps2BtnStart)
+                   else if (is3ds) (if (isPortrait) padLayout.n3dsBtnStartP else padLayout.n3dsBtnStart)
+                   else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnStartP else padLayout.ngcBtnStart)
                    else if (isPortrait) padLayout.btnStartP else padLayout.btnStart
     val btnSelect = if (isPs2) (if (isPortrait) padLayout.ps2BtnSelectP else padLayout.ps2BtnSelect)
+                    else if (is3ds) (if (isPortrait) padLayout.n3dsBtnSelectP else padLayout.n3dsBtnSelect)
                     else if (isPortrait) padLayout.btnSelectP else padLayout.btnSelect
     val btnL = if (isPs2) (if (isPortrait) padLayout.ps2BtnL1P else padLayout.ps2BtnL1)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnLP else padLayout.n3dsBtnL)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnLP else padLayout.ngcBtnL)
                else if (isPortrait) padLayout.btnLP else padLayout.btnL
     val btnR = if (isPs2) (if (isPortrait) padLayout.ps2BtnR1P else padLayout.ps2BtnR1)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnRP else padLayout.n3dsBtnR)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnRP else padLayout.ngcBtnR)
                else if (isPortrait) padLayout.btnRP else padLayout.btnR
     val btnX = if (isPs2) (if (isPortrait) padLayout.ps2BtnXP else padLayout.ps2BtnX)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnXP else padLayout.n3dsBtnX)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnXP else padLayout.ngcBtnX)
                else if (isPortrait) padLayout.btnXP else padLayout.btnX
     val btnY = if (isPs2) (if (isPortrait) padLayout.ps2BtnYP else padLayout.ps2BtnY)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnYP else padLayout.n3dsBtnY)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnYP else padLayout.ngcBtnY)
                else if (isPortrait) padLayout.btnYP else padLayout.btnY
     val btnL2 = if (isPs2) (if (isPortrait) padLayout.ps2BtnL2P else padLayout.ps2BtnL2)
                 else if (isPortrait) padLayout.btnL2P else padLayout.btnL2
@@ -5621,6 +5531,54 @@ fun OnScreenController(
     val ps2RStick = if (isPortrait) padLayout.ps2RStickP else padLayout.ps2RStick
     val ps2BtnL3 = if (isPortrait) padLayout.ps2BtnL3P else padLayout.ps2BtnL3
     val ps2BtnR3 = if (isPortrait) padLayout.ps2BtnR3P else padLayout.ps2BtnR3
+    // 3DS / NGC-WII 专属摇杆（CirclePad / C-Stick；GC 主摇杆 / C 摇杆；
+    // Wii 双节棍摇杆）—— 常驻模拟控件，不参与显隐
+    val n3dsLStick = if (isPortrait) padLayout.n3dsLStickP else padLayout.n3dsLStick
+    val n3dsRStick = if (isPortrait) padLayout.n3dsRStickP else padLayout.n3dsRStick
+    val ngcLStick = if (isPortrait) padLayout.ngcLStickP else padLayout.ngcLStick
+    val ngcRStick = if (isPortrait) padLayout.ngcRStickP else padLayout.ngcRStick
+    val wiiLStick = if (isPortrait) padLayout.wiiLStickP else padLayout.wiiLStick
+    // 3DS ZL/ZR；NGC/WII Z；Wii 专属按键（A/B/1/2/+/−/HOME/C/Z/IR−/IR+）
+    val n3dsBtnZL = if (isPortrait) padLayout.n3dsBtnZLP else padLayout.n3dsBtnZL
+    val n3dsBtnZR = if (isPortrait) padLayout.n3dsBtnZRP else padLayout.n3dsBtnZR
+    val ngcBtnZ = if (isPortrait) padLayout.ngcBtnZP else padLayout.ngcBtnZ
+    val wiiBtnA = if (isPortrait) padLayout.wiiBtnAP else padLayout.wiiBtnA
+    val wiiBtnB = if (isPortrait) padLayout.wiiBtnBP else padLayout.wiiBtnB
+    val wiiBtn1 = if (isPortrait) padLayout.wiiBtn1P else padLayout.wiiBtn1
+    val wiiBtn2 = if (isPortrait) padLayout.wiiBtn2P else padLayout.wiiBtn2
+    val wiiBtnPlus = if (isPortrait) padLayout.wiiBtnPlusP else padLayout.wiiBtnPlus
+    val wiiBtnMinus = if (isPortrait) padLayout.wiiBtnMinusP else padLayout.wiiBtnMinus
+    val wiiBtnHome = if (isPortrait) padLayout.wiiBtnHomeP else padLayout.wiiBtnHome
+    val wiiDpad = if (isPortrait) padLayout.wiiDpadP else padLayout.wiiDpad
+    val wiiBtnC = if (isPortrait) padLayout.wiiBtnCP else padLayout.wiiBtnC
+    val wiiBtnZ = if (isPortrait) padLayout.wiiBtnZP else padLayout.wiiBtnZ
+    val wiiBtnIrNear = if (isPortrait) padLayout.wiiBtnIrNearP else padLayout.wiiBtnIrNear
+    val wiiBtnIrFar = if (isPortrait) padLayout.wiiBtnIrFarP else padLayout.wiiBtnIrFar
+    // NGC/WII 专属显隐旗标（GC 键用 ngc_* 键，Wii 键用 wii_* 键）
+    val showNgcA = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_a")
+    val showNgcB = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_b")
+    val showNgcX = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_x")
+    val showNgcY = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_y")
+    val showNgcZ = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_z")
+    val showNgcL = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_l")
+    val showNgcR = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_r")
+    val showNgcStart = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_start")
+    val showNgcDpad = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_dpad")
+    val showWiiA = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_a")
+    val showWiiB = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_b")
+    val showWii1 = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_1")
+    val showWii2 = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_2")
+    val showWiiPlus = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_plus")
+    val showWiiMinus = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_minus")
+    val showWiiHome = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
+    val showWiiDpad = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_dpad")
+    val showWiiC = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_c")
+    val showWiiZ = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_z")
+    val showWiiIrNear = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_near")
+    val showWiiIrFar = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_far")
+    // 3DS ZL/ZR 显隐
+    val showZlBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
+    val showZrBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zr")
     // 即时存档 / 即时读档按钮（所有核心通用，位置可编辑器拖动）
     val btnQuickSave = if (isPortrait) padLayout.btnQuickSaveP else padLayout.btnQuickSave
     val btnQuickLoad = if (isPortrait) padLayout.btnQuickLoadP else padLayout.btnQuickLoad
@@ -5715,7 +5673,7 @@ fun OnScreenController(
                 // the stick center so the user can drag outside the visual base.
                 // Hidden buttons (PCE per-button visibility) get a null rect so
                 // touches on them are ignored.
-                val dpadRect = if (showDpadBtn) {
+                val dpadRect = if (showDpadBtn && (!isNgcWii || showNgcDpad)) {
                     if (useAnalogStick) {
                         // Analog stick hit area: 1.5x the visual size, so the user
                         // can drag their thumb beyond the stick base for large movements.
@@ -5724,18 +5682,18 @@ fun OnScreenController(
                         btnRect(dpad)
                     }
                 } else null
-                val aRect = if (showABtn) btnRect(btnA) else null
-                val bRect = if (showBBtn) btnRect(btnB) else null
+                val aRect = if (showABtn && (!isNgcWii || showNgcA)) btnRect(btnA) else null
+                val bRect = if (showBBtn && (!isNgcWii || showNgcB)) btnRect(btnB) else null
                 // Turbo A/B hit areas — 所有平台都生效（显隐由
                 // KeyVisibilityDialog 的 ta/tb 开关控制）
                 val taRect = if (showTurboABtn) btnRect(btnTurboA) else null
                 val tbRect = if (showTurboBBtn) btnRect(btnTurboB) else null
                 val startRect = if (showStartBtn) btnRect(btnStart, 2.2f, 0.7f) else null
                 val selectRect = if (showSelectBtn) btnRect(btnSelect, 2.2f, 0.7f) else null
-                val lRect = if (showLR && showLBtn) btnRect(btnL, 1.6f, 0.7f) else null
-                val rRect = if (showLR && showRBtn) btnRect(btnR, 1.6f, 0.7f) else null
-                val xRect = if (showXY && showXBtn) btnRect(btnX) else null
-                val yRect = if (showXY && showYBtn) btnRect(btnY) else null
+                val lRect = if (showLR && showLBtn && (!isNgcWii || showNgcL)) btnRect(btnL, 1.6f, 0.7f) else null
+                val rRect = if (showLR && showRBtn && (!isNgcWii || showNgcR)) btnRect(btnR, 1.6f, 0.7f) else null
+                val xRect = if (showXY && showXBtn && (!isNgcWii || showNgcX)) btnRect(btnX) else null
+                val yRect = if (showXY && showYBtn && (!isNgcWii || showNgcY)) btnRect(btnY) else null
                 val l2Rect = if (showL2R2 && showL2Btn) btnRect(btnL2) else null
                 val r2Rect = if (showL2R2 && showR2Btn) btnRect(btnR2) else null
                 // 即时存档 / 即时读档按钮命中区（Pill 形，跟 START/SELECT 一样放宽）
@@ -5744,8 +5702,39 @@ fun OnScreenController(
                 // PS2 专属：L3/R3 小按钮 + 双摇杆（摇杆命中区 1.3x，方便拖动）
                 val l3Rect = if (showL3Btn) btnRect(ps2BtnL3, 1.4f, 1.4f) else null
                 val r3Rect = if (showR3Btn) btnRect(ps2BtnR3, 1.4f, 1.4f) else null
-                val lStickRect = if (isPs2) btnRect(ps2LStick, 1.3f, 1.3f) else null
-                val rStickRect = if (isPs2) btnRect(ps2RStick, 1.3f, 1.3f) else null
+                // NGC/WII 摇杆命中区按控制模式选择：ngc → 主摇杆/C 摇杆；
+                // wii → 双节棍摇杆（无右摇杆）。两套摇杆都渲染，但只有当前
+                // 模式的摇杆可拖动。
+                val lStickRect = if (isPs2) btnRect(ps2LStick, 1.3f, 1.3f)
+                                 else if (is3ds) btnRect(n3dsLStick, 1.3f, 1.3f)
+                                 else if (isNgcWii && ngcWiiMode == "ngc") btnRect(ngcLStick, 1.3f, 1.3f)
+                                 else if (isNgcWii) btnRect(wiiLStick, 1.3f, 1.3f)
+                                 else null
+                val rStickRect = if (isPs2) btnRect(ps2RStick, 1.3f, 1.3f)
+                                 else if (is3ds) btnRect(n3dsRStick, 1.3f, 1.3f)
+                                 else if (isNgcWii && ngcWiiMode == "ngc") btnRect(ngcRStick, 1.3f, 1.3f)
+                                 else null
+                // 3DS ZL/ZR 命中区（肩键形放宽）
+                val zlRect = if (showZlBtn) btnRect(n3dsBtnZL, 1.6f, 0.9f) else null
+                val zrRect = if (showZrBtn) btnRect(n3dsBtnZR, 1.6f, 0.9f) else null
+                // NGC/WII：GC Z + Wii 专属按键命中区
+                val zRect = if (showNgcZ) btnRect(ngcBtnZ) else null
+                val wiiARect = if (showWiiA) btnRect(wiiBtnA) else null
+                val wiiBRect = if (showWiiB) btnRect(wiiBtnB) else null
+                val wii1Rect = if (showWii1) btnRect(wiiBtn1) else null
+                val wii2Rect = if (showWii2) btnRect(wiiBtn2) else null
+                val wiiPlusRect = if (showWiiPlus) btnRect(wiiBtnPlus, 1.6f, 0.8f) else null
+                val wiiMinusRect = if (showWiiMinus) btnRect(wiiBtnMinus, 1.6f, 0.8f) else null
+                val wiiHomeRect = if (showWiiHome) btnRect(wiiBtnHome, 1.6f, 0.8f) else null
+                val wiiDpadRect = if (showWiiDpad) btnRect(wiiDpad) else null
+                val wiiCRect = if (showWiiC) btnRect(wiiBtnC) else null
+                val wiiZRect = if (showWiiZ) btnRect(wiiBtnZ) else null
+                val wiiIrNearRect = if (showWiiIrNear) btnRect(wiiBtnIrNear) else null
+                val wiiIrFarRect = if (showWiiIrFar) btnRect(wiiBtnIrFar) else null
+                // NGC/WII 的 START/SELECT：ngc 模式 GC·START 通用；wii 模式
+                // 复用 +/− 键（上方独立命中区），通用 startRect/selectRect 在
+                // isNgcWii 时置 null 避免与 GC Start 重叠命中。
+                val startRectNgc = if (isNgcWii && showNgcStart) btnRect(btnStart, 2.2f, 0.7f) else null
                 // Combo button hit areas
                 val comboRects = comboList.map { c ->
                     c.id to btnRect(ButtonLayout(c.x, c.y, c.sizeDp))
@@ -5845,6 +5834,23 @@ fun OnScreenController(
                         r3Rect?.contains(pos) == true -> BtnType.R3
                         lStickRect?.contains(pos) == true -> BtnType.LSTICK
                         rStickRect?.contains(pos) == true -> BtnType.RSTICK
+                        // 3DS ZL/ZR
+                        zlRect?.contains(pos) == true -> BtnType.ZL
+                        zrRect?.contains(pos) == true -> BtnType.ZR
+                        // NGC/WII：GC Z + Wii 专属按键
+                        zRect?.contains(pos) == true -> BtnType.Z
+                        wiiARect?.contains(pos) == true -> BtnType.A
+                        wiiBRect?.contains(pos) == true -> BtnType.B
+                        wii1Rect?.contains(pos) == true -> BtnType.WII_1
+                        wii2Rect?.contains(pos) == true -> BtnType.WII_2
+                        wiiPlusRect?.contains(pos) == true -> BtnType.WII_PLUS
+                        wiiMinusRect?.contains(pos) == true -> BtnType.WII_MINUS
+                        wiiHomeRect?.contains(pos) == true -> BtnType.HOME
+                        wiiDpadRect?.contains(pos) == true -> BtnType.DPAD
+                        wiiCRect?.contains(pos) == true -> BtnType.WII_C
+                        wiiZRect?.contains(pos) == true -> BtnType.WII_Z
+                        wiiIrNearRect?.contains(pos) == true -> BtnType.IR_NEAR
+                        wiiIrFarRect?.contains(pos) == true -> BtnType.IR_FAR
                         else -> null
                     }
                     if (btnType == null) {
@@ -5868,7 +5874,14 @@ fun OnScreenController(
                         var stickOnly = false
                         when (btnType) {
                             BtnType.DPAD -> {
-                                val (b, tx, ty) = computeDirection(pos)
+                                // NGC/WII 双十字键：GC dpadRect 与 wiiDpadRect
+                                // 各自独立，按触点落在哪个矩形选中心点
+                                val dirBits = if (isNgcWii && wiiDpadRect?.contains(pos) == true) {
+                                    Triple(computeDpadDirection(pos, wiiDpadRect!!), 0f, 0f)
+                                } else {
+                                    computeDirection(pos)
+                                }
+                                val (b, tx, ty) = dirBits
                                 bits = b
                                 if (useAnalogStick) {
                                     // 模拟模式：控件渲染为摇杆样式，拇指位置仅作视觉反馈；
@@ -5909,6 +5922,19 @@ fun OnScreenController(
                             BtnType.R2 -> bits = BTN_R2
                             BtnType.L3 -> bits = BTN_L3
                             BtnType.R3 -> bits = BTN_R3
+                            // 3DS / NGC-WII 扩展位
+                            BtnType.ZL -> bits = BTN_ZL
+                            BtnType.ZR -> bits = BTN_ZR
+                            BtnType.Z -> bits = BTN_Z
+                            BtnType.HOME -> bits = BTN_HOME
+                            BtnType.WII_1 -> bits = BTN_WII_1
+                            BtnType.WII_2 -> bits = BTN_WII_2
+                            BtnType.WII_PLUS -> bits = BTN_WII_PLUS
+                            BtnType.WII_MINUS -> bits = BTN_WII_MINUS
+                            BtnType.WII_C -> bits = BTN_WII_C
+                            BtnType.WII_Z -> bits = BTN_WII_Z
+                            BtnType.IR_NEAR -> bits = BTN_IR_NEAR
+                            BtnType.IR_FAR -> bits = BTN_IR_FAR
                             BtnType.COMBO -> bits = comboMatch?.bits ?: 0
                             // 即时存档 / 即时读档：按下瞬间触发一次回调，
                             // 不写任何输入位（不影响游戏内的按键状态）。
@@ -6009,7 +6035,13 @@ fun OnScreenController(
                                     if (entry != null && entry.first == BtnType.DPAD) {
                                         val oldBits = entry.second
                                         visualState = visualState and oldBits.inv()
-                                        val (newBits, tx, ty) = computeDirection(change.position)
+                                        // NGC/WII 双十字键：拖动中按所在矩形重算方向
+                                        val (newBits, tx, ty) =
+                                            if (isNgcWii && wiiDpadRect?.contains(change.position) == true) {
+                                                Triple(computeDpadDirection(change.position, wiiDpadRect!!), 0f, 0f)
+                                            } else {
+                                                computeDirection(change.position)
+                                            }
                                         visualState = visualState or newBits
                                         activePointers[pid] = BtnType.DPAD to newBits
                                         if (useAnalogStick) {
@@ -6050,7 +6082,7 @@ fun OnScreenController(
             }
     ) {
         // Draw D-pad OR Analog Stick depending on arcadeInputMode.
-        if (showDpadBtn) {
+        if (showDpadBtn && (!isNgcWii || showNgcDpad)) {
             if (useAnalogStick) {
                 val (analogImg, analogImgPressed) = rememberThemeButtonImages(overlayTheme, "dpad")
                 AnalogStickCanvas(
@@ -6139,7 +6171,7 @@ fun OnScreenController(
             GamePlatform.PSX, GamePlatform.PS2 -> "R2"
             else -> "R2"
         }
-        if (showABtn) {
+        if (showABtn && (!isNgcWii || showNgcA)) {
             val aColor = when (platform) {
                 GamePlatform.PSX, GamePlatform.PS2 -> Color(0xFF2ECC71)  // Green (Cross)
                 else -> Color(0xFFE74C3C)
@@ -6153,7 +6185,7 @@ fun OnScreenController(
             )
         }
         // Draw B
-        if (showBBtn) {
+        if (showBBtn && (!isNgcWii || showNgcB)) {
             val bColor = when (platform) {
                 GamePlatform.PSX, GamePlatform.PS2 -> Color(0xFFE74C3C)  // Red (Circle)
                 else -> Color(0xFFE67E22)
@@ -6187,8 +6219,8 @@ fun OnScreenController(
                 pressedImage = tbImgPressed
             )
         }
-        // Start
-        if (showStartBtn) {
+        // Start（NGC/WII 额外受 ngc_start 显隐键控制）
+        if (showStartBtn && (!isNgcWii || showNgcStart)) {
             val (startImg, startImgPressed) = rememberThemeButtonImages(overlayTheme, "start")
             PillButtonCanvas(
                 if (platform == GamePlatform.PCE) "RUN" else "START", btnStart, surfaceSize, opacity, visualState and BTN_START != 0,
@@ -6198,8 +6230,8 @@ fun OnScreenController(
                 pressedImage = startImgPressed
             )
         }
-        // Select
-        if (showSelectBtn) {
+        // Select（NGC/WII 无 SELECT —— GC Start / Wii +− 已覆盖）
+        if (showSelectBtn && !isNgcWii) {
             val (selectImg, selectImgPressed) = rememberThemeButtonImages(overlayTheme, "select")
             PillButtonCanvas(
                 "SELECT", btnSelect, surfaceSize, opacity, visualState and BTN_SELECT != 0,
@@ -6232,7 +6264,7 @@ fun OnScreenController(
             )
         }
         // L/R shoulder buttons (GBA/SNES/ARCADE/MD/PCE)
-        if (showLR && showLBtn) {
+        if (showLR && showLBtn && (!isNgcWii || showNgcL)) {
             val (lImg, lImgPressed) = rememberThemeButtonImages(overlayTheme, "l")
             ShoulderButtonCanvas(
                 labelL, btnL, surfaceSize, opacity, visualState and lBit != 0,
@@ -6242,7 +6274,7 @@ fun OnScreenController(
                 pressedImage = lImgPressed
             )
         }
-        if (showLR && showRBtn) {
+        if (showLR && showRBtn && (!isNgcWii || showNgcR)) {
             val (rImg, rImgPressed) = rememberThemeButtonImages(overlayTheme, "r")
             ShoulderButtonCanvas(
                 labelR, btnR, surfaceSize, opacity, visualState and rBit != 0,
@@ -6253,7 +6285,7 @@ fun OnScreenController(
             )
         }
         // X/Y face buttons (SNES/Arcade/MD/PCE/NDS/PSX/PS2)
-        if (showXY && showXBtn) {
+        if (showXY && showXBtn && (!isNgcWii || showNgcX)) {
             val xColor = when (platform) {
                 GamePlatform.PSX -> Color(0xFFE91E9B)  // Pink (Triangle)
                 GamePlatform.PS2 -> Color(0xFF3498DB)  // Blue (Square — PS2 X 位置在左)
@@ -6267,7 +6299,7 @@ fun OnScreenController(
                 pressedImage = xImgPressed
             )
         }
-        if (showXY && showYBtn) {
+        if (showXY && showYBtn && (!isNgcWii || showNgcY)) {
             val yColor = when (platform) {
                 GamePlatform.PSX -> Color(0xFF3498DB)  // Blue (Square)
                 GamePlatform.PS2 -> Color(0xFFE91E9B)  // Pink (Triangle — PS2 Y 位置在上)
@@ -6354,6 +6386,198 @@ fun OnScreenController(
                     pressedColor = themePressedButtonColor(overlayTheme, "r3"),
                     image = r3Img,
                     pressedImage = r3ImgPressed
+                )
+            }
+        }
+        // 3DS 专属：ZL/ZR 肩键 + CirclePad / C-Stick 双摇杆（常驻）
+        if (is3ds) {
+            if (showZlBtn) {
+                val (zlImg, zlImgPressed) = rememberThemeButtonImages(overlayTheme, "zl")
+                ShoulderButtonCanvas(
+                    "ZL", n3dsBtnZL, surfaceSize, opacity, visualState and BTN_ZL != 0,
+                    normalColor = themeButtonColor(overlayTheme, "zl", Color(0xFF1F6F8B)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "zl"),
+                    image = zlImg,
+                    pressedImage = zlImgPressed
+                )
+            }
+            if (showZrBtn) {
+                val (zrImg, zrImgPressed) = rememberThemeButtonImages(overlayTheme, "zr")
+                ShoulderButtonCanvas(
+                    "ZR", n3dsBtnZR, surfaceSize, opacity, visualState and BTN_ZR != 0,
+                    normalColor = themeButtonColor(overlayTheme, "zr", Color(0xFF1F6F8B)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "zr"),
+                    image = zrImg,
+                    pressedImage = zrImgPressed
+                )
+            }
+            val (cpImg, cpImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+            AnalogStickCanvas(
+                layout = n3dsLStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = lStickDirs, thumbX = lStickTX, thumbY = lStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
+                image = cpImg, pressedImage = cpImgPressed
+            )
+            AnalogStickCanvas(
+                layout = n3dsRStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = rStickDirs, thumbX = rStickTX, thumbY = rStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "r3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "r3") ?: Color(0xFFFFE57F),
+                image = cpImg, pressedImage = cpImgPressed
+            )
+        }
+        // NGC/WII 专属：GC Z + 主/C 摇杆 + Wii Remote 全套按键 + 双节棍摇杆
+        if (isNgcWii) {
+            if (showNgcZ) {
+                val (zImg, zImgPressed) = rememberThemeButtonImages(overlayTheme, "ngc_z")
+                ActionButtonCanvas(
+                    "Z", Color(0xFF8E44AD), ngcBtnZ, surfaceSize, opacity, visualState and BTN_Z != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "ngc_z"),
+                    image = zImg,
+                    pressedImage = zImgPressed
+                )
+            }
+            // GC 主摇杆 / C 摇杆（常驻）
+            val (gsImg, gsImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+            AnalogStickCanvas(
+                layout = ngcLStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = lStickDirs, thumbX = lStickTX, thumbY = lStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
+                image = gsImg, pressedImage = gsImgPressed
+            )
+            AnalogStickCanvas(
+                layout = ngcRStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = rStickDirs, thumbX = rStickTX, thumbY = rStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "r3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "r3") ?: Color(0xFFFFE57F),
+                image = gsImg, pressedImage = gsImgPressed
+            )
+            // Wii 十字键
+            if (showWiiDpad) {
+                val (wdImg, wdImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_dpad")
+                DpadCanvas(
+                    layout = wiiDpad, surfaceSize = surfaceSize, opacity = opacity,
+                    pressedDirs = visualState and 0xF0,
+                    armColor = themeButtonColor(overlayTheme, "wii_dpad", Color(0xFF2C2C38)),
+                    pressedTipColor = themePressedButtonColor(overlayTheme, "wii_dpad") ?: Color(0xFFFFD66B),
+                    image = wdImg,
+                    pressedImage = wdImgPressed
+                )
+            }
+            // Wii A/B/1/2
+            if (showWiiA) {
+                val (waImg, waImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_a")
+                ActionButtonCanvas(
+                    "A", Color(0xFFE74C3C), wiiBtnA, surfaceSize, opacity, visualState and BTN_A != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_a"),
+                    image = waImg,
+                    pressedImage = waImgPressed
+                )
+            }
+            if (showWiiB) {
+                val (wbImg, wbImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_b")
+                ActionButtonCanvas(
+                    "B", Color(0xFFE67E22), wiiBtnB, surfaceSize, opacity, visualState and BTN_B != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_b"),
+                    image = wbImg,
+                    pressedImage = wbImgPressed
+                )
+            }
+            if (showWii1) {
+                val (w1Img, w1ImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_1")
+                ActionButtonCanvas(
+                    "1", Color(0xFF2ECC71), wiiBtn1, surfaceSize, opacity, visualState and BTN_WII_1 != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_1"),
+                    image = w1Img,
+                    pressedImage = w1ImgPressed
+                )
+            }
+            if (showWii2) {
+                val (w2Img, w2ImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_2")
+                ActionButtonCanvas(
+                    "2", Color(0xFF3498DB), wiiBtn2, surfaceSize, opacity, visualState and BTN_WII_2 != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_2"),
+                    image = w2Img,
+                    pressedImage = w2ImgPressed
+                )
+            }
+            // Wii + / − / HOME（胶囊键）
+            if (showWiiPlus) {
+                val (wpImg, wpImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_plus")
+                PillButtonCanvas(
+                    "+", wiiBtnPlus, surfaceSize, opacity, visualState and BTN_WII_PLUS != 0,
+                    normalColor = themeButtonColor(overlayTheme, "wii_plus", Color(0xFF2A3040)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_plus"),
+                    image = wpImg,
+                    pressedImage = wpImgPressed
+                )
+            }
+            if (showWiiMinus) {
+                val (wmImg, wmImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_minus")
+                PillButtonCanvas(
+                    "−", wiiBtnMinus, surfaceSize, opacity, visualState and BTN_WII_MINUS != 0,
+                    normalColor = themeButtonColor(overlayTheme, "wii_minus", Color(0xFF2A3040)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_minus"),
+                    image = wmImg,
+                    pressedImage = wmImgPressed
+                )
+            }
+            if (showWiiHome) {
+                val (whImg, whImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_home")
+                PillButtonCanvas(
+                    "HOME", wiiBtnHome, surfaceSize, opacity, visualState and BTN_HOME != 0,
+                    normalColor = themeButtonColor(overlayTheme, "wii_home", Color(0xFF2A3040)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_home"),
+                    image = whImg,
+                    pressedImage = whImgPressed
+                )
+            }
+            // 双节棍 C / Z
+            if (showWiiC) {
+                val (wcImg, wcImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_c")
+                ActionButtonCanvas(
+                    "C", Color(0xFF16A085), wiiBtnC, surfaceSize, opacity, visualState and BTN_WII_C != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_c"),
+                    image = wcImg,
+                    pressedImage = wcImgPressed
+                )
+            }
+            if (showWiiZ) {
+                val (wzImg, wzImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_z")
+                ActionButtonCanvas(
+                    "Z", Color(0xFF27AE60), wiiBtnZ, surfaceSize, opacity, visualState and BTN_WII_Z != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_z"),
+                    image = wzImg,
+                    pressedImage = wzImgPressed
+                )
+            }
+            // 双节棍摇杆（常驻，wii 模式）
+            AnalogStickCanvas(
+                layout = wiiLStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = 0, thumbX = lStickTX, thumbY = lStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
+                image = gsImg, pressedImage = gsImgPressed
+            )
+            // IR 进深按钮（IR− / IR+）
+            if (showWiiIrNear) {
+                val (inImg, inImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_ir_near")
+                ActionButtonCanvas(
+                    "IR−", Color(0xFF5D6D7E), wiiBtnIrNear, surfaceSize, opacity, visualState and BTN_IR_NEAR != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_ir_near"),
+                    image = inImg,
+                    pressedImage = inImgPressed
+                )
+            }
+            if (showWiiIrFar) {
+                val (ifImg, ifImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_ir_far")
+                ActionButtonCanvas(
+                    "IR+", Color(0xFF5D6D7E), wiiBtnIrFar, surfaceSize, opacity, visualState and BTN_IR_FAR != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "wii_ir_far"),
+                    image = ifImg,
+                    pressedImage = ifImgPressed
                 )
             }
         }
@@ -8277,22 +8501,43 @@ private fun PadLayoutEditor(
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
-                 platform == GamePlatform.DC
+                 platform == GamePlatform.DC ||
+                 platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     // JAVA（J2ME）手柄模式的虚拟按键同样带 X/Y 两个键（X=右软键，Y=*键），
     // 布局编辑器必须允许拖动它们 —— 旧版没包含 JAVA，编辑器里缺少 X/Y。
     val showXY = platform == GamePlatform.SFC || platform == GamePlatform.JAVA ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
-                 platform == GamePlatform.DC
+                 platform == GamePlatform.DC ||
+                 platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     // L2/R2 editable in edit mode for Arcade (when enabled) and PCE (turbo toggle)
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE || platform == GamePlatform.PSX ||
                    platform == GamePlatform.PS2
     val isPs2 = platform == GamePlatform.PS2
+    val is3ds = platform == GamePlatform.N3DS
+    val isNgcWii = platform == GamePlatform.NGCWII
     // PS2 专属键的可编辑开关（双摇杆常驻始终可编辑；L3/R3 可隐）
     val showL3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
     val showR3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
+    // 3DS / NGC-WII 专属键的可编辑开关（与 OnScreenController 一致）
+    val showZlBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
+    val showZrBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zr")
+    val showNgcZ = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_z")
+    val showNgcStart = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_start")
+    val showWiiA = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_a")
+    val showWiiB = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_b")
+    val showWii1 = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_1")
+    val showWii2 = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_2")
+    val showWiiPlus = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_plus")
+    val showWiiMinus = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_minus")
+    val showWiiHome = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
+    val showWiiDpad = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_dpad")
+    val showWiiC = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_c")
+    val showWiiZ = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_z")
+    val showWiiIrNear = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_near")
+    val showWiiIrFar = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_far")
 
     // === Per-button visibility for ALL platforms ===
     // Each platform can independently hide/show individual buttons via the
@@ -8327,11 +8572,20 @@ private fun PadLayoutEditor(
     // 横屏编辑修改 dpad / btnA / ...，竖屏编辑修改 dpadP / btnAP / ...
     // 全局设置（透明度、核心选项等）在两个方向共享，编辑器不动这些。
     // PS2 平台读写专属全套字段（与 OnScreenController 一致）。
+    // 3DS 专属布局（is3ds）与 NGC/WII 专属布局（isNgcWii）的通用槽位映射：
+    // N3DS → n3ds* 字段；NGCWII 通用槽位走 ngc* 字段（GC 手柄），Wii 键在下方
+    // 独立矩形变量里处理。
     val dpad = if (isPs2) (if (isPortrait) padLayout.ps2DpadP else padLayout.ps2Dpad)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsDpadP else padLayout.n3dsDpad)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcDpadP else padLayout.ngcDpad)
                else if (isPortrait) padLayout.dpadP else padLayout.dpad
     val btnA = if (isPs2) (if (isPortrait) padLayout.ps2BtnAP else padLayout.ps2BtnA)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnAP else padLayout.n3dsBtnA)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnAP else padLayout.ngcBtnA)
                else if (isPortrait) padLayout.btnAP else padLayout.btnA
     val btnB = if (isPs2) (if (isPortrait) padLayout.ps2BtnBP else padLayout.ps2BtnB)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnBP else padLayout.n3dsBtnB)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnBP else padLayout.ngcBtnB)
                else if (isPortrait) padLayout.btnBP else padLayout.btnB
     // 连发 A/B 编辑器位置：6 键平台且未拖动过时用避让后的默认位置，
     // 保证编辑器里看到的与游戏中渲染的一致。
@@ -8342,16 +8596,27 @@ private fun PadLayoutEditor(
         if (isPortrait) padLayout.btnTurboBP else padLayout.btnTurboB,
         showXY, isPortrait, isA = false)
     val btnStart = if (isPs2) (if (isPortrait) padLayout.ps2BtnStartP else padLayout.ps2BtnStart)
+                   else if (is3ds) (if (isPortrait) padLayout.n3dsBtnStartP else padLayout.n3dsBtnStart)
+                   else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnStartP else padLayout.ngcBtnStart)
                    else if (isPortrait) padLayout.btnStartP else padLayout.btnStart
     val btnSelect = if (isPs2) (if (isPortrait) padLayout.ps2BtnSelectP else padLayout.ps2BtnSelect)
+                    else if (is3ds) (if (isPortrait) padLayout.n3dsBtnSelectP else padLayout.n3dsBtnSelect)
                     else if (isPortrait) padLayout.btnSelectP else padLayout.btnSelect
     val btnL = if (isPs2) (if (isPortrait) padLayout.ps2BtnL1P else padLayout.ps2BtnL1)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnLP else padLayout.n3dsBtnL)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnLP else padLayout.ngcBtnL)
                else if (isPortrait) padLayout.btnLP else padLayout.btnL
     val btnR = if (isPs2) (if (isPortrait) padLayout.ps2BtnR1P else padLayout.ps2BtnR1)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnRP else padLayout.n3dsBtnR)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnRP else padLayout.ngcBtnR)
                else if (isPortrait) padLayout.btnRP else padLayout.btnR
     val btnX = if (isPs2) (if (isPortrait) padLayout.ps2BtnXP else padLayout.ps2BtnX)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnXP else padLayout.n3dsBtnX)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnXP else padLayout.ngcBtnX)
                else if (isPortrait) padLayout.btnXP else padLayout.btnX
     val btnY = if (isPs2) (if (isPortrait) padLayout.ps2BtnYP else padLayout.ps2BtnY)
+               else if (is3ds) (if (isPortrait) padLayout.n3dsBtnYP else padLayout.n3dsBtnY)
+               else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnYP else padLayout.ngcBtnY)
                else if (isPortrait) padLayout.btnYP else padLayout.btnY
     val btnL2 = if (isPs2) (if (isPortrait) padLayout.ps2BtnL2P else padLayout.ps2BtnL2)
                 else if (isPortrait) padLayout.btnL2P else padLayout.btnL2
@@ -8361,6 +8626,27 @@ private fun PadLayoutEditor(
     val ps2RStick = if (isPortrait) padLayout.ps2RStickP else padLayout.ps2RStick
     val ps2BtnL3 = if (isPortrait) padLayout.ps2BtnL3P else padLayout.ps2BtnL3
     val ps2BtnR3 = if (isPortrait) padLayout.ps2BtnR3P else padLayout.ps2BtnR3
+    // 3DS / NGC-WII 专属摇杆与按键（与 OnScreenController 一致）
+    val n3dsLStick = if (isPortrait) padLayout.n3dsLStickP else padLayout.n3dsLStick
+    val n3dsRStick = if (isPortrait) padLayout.n3dsRStickP else padLayout.n3dsRStick
+    val n3dsBtnZL = if (isPortrait) padLayout.n3dsBtnZLP else padLayout.n3dsBtnZL
+    val n3dsBtnZR = if (isPortrait) padLayout.n3dsBtnZRP else padLayout.n3dsBtnZR
+    val ngcLStick = if (isPortrait) padLayout.ngcLStickP else padLayout.ngcLStick
+    val ngcRStick = if (isPortrait) padLayout.ngcRStickP else padLayout.ngcRStick
+    val ngcBtnZ = if (isPortrait) padLayout.ngcBtnZP else padLayout.ngcBtnZ
+    val wiiLStick = if (isPortrait) padLayout.wiiLStickP else padLayout.wiiLStick
+    val wiiBtnA = if (isPortrait) padLayout.wiiBtnAP else padLayout.wiiBtnA
+    val wiiBtnB = if (isPortrait) padLayout.wiiBtnBP else padLayout.wiiBtnB
+    val wiiBtn1 = if (isPortrait) padLayout.wiiBtn1P else padLayout.wiiBtn1
+    val wiiBtn2 = if (isPortrait) padLayout.wiiBtn2P else padLayout.wiiBtn2
+    val wiiBtnPlus = if (isPortrait) padLayout.wiiBtnPlusP else padLayout.wiiBtnPlus
+    val wiiBtnMinus = if (isPortrait) padLayout.wiiBtnMinusP else padLayout.wiiBtnMinus
+    val wiiBtnHome = if (isPortrait) padLayout.wiiBtnHomeP else padLayout.wiiBtnHome
+    val wiiDpad = if (isPortrait) padLayout.wiiDpadP else padLayout.wiiDpad
+    val wiiBtnC = if (isPortrait) padLayout.wiiBtnCP else padLayout.wiiBtnC
+    val wiiBtnZ = if (isPortrait) padLayout.wiiBtnZP else padLayout.wiiBtnZ
+    val wiiBtnIrNear = if (isPortrait) padLayout.wiiBtnIrNearP else padLayout.wiiBtnIrNear
+    val wiiBtnIrFar = if (isPortrait) padLayout.wiiBtnIrFarP else padLayout.wiiBtnIrFar
     // 即时存档 / 即时读档按钮（所有核心通用，编辑器内可拖动 + 调尺寸）
     val btnQuickSave = if (isPortrait) padLayout.btnQuickSaveP else padLayout.btnQuickSave
     val btnQuickLoad = if (isPortrait) padLayout.btnQuickLoadP else padLayout.btnQuickLoad
@@ -8397,8 +8683,32 @@ private fun PadLayoutEditor(
                           else if (isPortrait) padLayout.copy {this.btnR2P = newLayout} else padLayout.copy {this.btnR2 = newLayout}
             BtnType.L3 -> if (isPortrait) padLayout.copy {this.ps2BtnL3P = newLayout} else padLayout.copy {this.ps2BtnL3 = newLayout}
             BtnType.R3 -> if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout}
-            BtnType.LSTICK -> if (isPortrait) padLayout.copy {this.ps2LStickP = newLayout} else padLayout.copy {this.ps2LStick = newLayout}
-            BtnType.RSTICK -> if (isPortrait) padLayout.copy {this.ps2RStickP = newLayout} else padLayout.copy {this.ps2RStick = newLayout}
+            BtnType.LSTICK -> when {
+                isPs2 -> if (isPortrait) padLayout.copy {this.ps2LStickP = newLayout} else padLayout.copy {this.ps2LStick = newLayout}
+                is3ds -> if (isPortrait) padLayout.copy {this.n3dsLStickP = newLayout} else padLayout.copy {this.n3dsLStick = newLayout}
+                isNgcWii -> if (isPortrait) padLayout.copy {this.ngcLStickP = newLayout} else padLayout.copy {this.ngcLStick = newLayout}
+                else -> padLayout
+            }
+            BtnType.RSTICK -> when {
+                isPs2 -> if (isPortrait) padLayout.copy {this.ps2RStickP = newLayout} else padLayout.copy {this.ps2RStick = newLayout}
+                is3ds -> if (isPortrait) padLayout.copy {this.n3dsRStickP = newLayout} else padLayout.copy {this.n3dsRStick = newLayout}
+                isNgcWii -> if (isPortrait) padLayout.copy {this.ngcRStickP = newLayout} else padLayout.copy {this.ngcRStick = newLayout}
+                else -> padLayout
+            }
+            // 3DS ZL/ZR
+            BtnType.ZL -> if (isPortrait) padLayout.copy {this.n3dsBtnZLP = newLayout} else padLayout.copy {this.n3dsBtnZL = newLayout}
+            BtnType.ZR -> if (isPortrait) padLayout.copy {this.n3dsBtnZRP = newLayout} else padLayout.copy {this.n3dsBtnZR = newLayout}
+            // NGC/WII：GC Z + Wii 全套
+            BtnType.Z -> if (isPortrait) padLayout.copy {this.ngcBtnZP = newLayout} else padLayout.copy {this.ngcBtnZ = newLayout}
+            BtnType.HOME -> if (isPortrait) padLayout.copy {this.wiiBtnHomeP = newLayout} else padLayout.copy {this.wiiBtnHome = newLayout}
+            BtnType.WII_1 -> if (isPortrait) padLayout.copy {this.wiiBtn1P = newLayout} else padLayout.copy {this.wiiBtn1 = newLayout}
+            BtnType.WII_2 -> if (isPortrait) padLayout.copy {this.wiiBtn2P = newLayout} else padLayout.copy {this.wiiBtn2 = newLayout}
+            BtnType.WII_PLUS -> if (isPortrait) padLayout.copy {this.wiiBtnPlusP = newLayout} else padLayout.copy {this.wiiBtnPlus = newLayout}
+            BtnType.WII_MINUS -> if (isPortrait) padLayout.copy {this.wiiBtnMinusP = newLayout} else padLayout.copy {this.wiiBtnMinus = newLayout}
+            BtnType.WII_C -> if (isPortrait) padLayout.copy {this.wiiBtnCP = newLayout} else padLayout.copy {this.wiiBtnC = newLayout}
+            BtnType.WII_Z -> if (isPortrait) padLayout.copy {this.wiiBtnZP = newLayout} else padLayout.copy {this.wiiBtnZ = newLayout}
+            BtnType.IR_NEAR -> if (isPortrait) padLayout.copy {this.wiiBtnIrNearP = newLayout} else padLayout.copy {this.wiiBtnIrNear = newLayout}
+            BtnType.IR_FAR -> if (isPortrait) padLayout.copy {this.wiiBtnIrFarP = newLayout} else padLayout.copy {this.wiiBtnIrFar = newLayout}
             BtnType.QUICK_SAVE -> if (isPortrait) padLayout.copy {this.btnQuickSaveP = newLayout} else padLayout.copy {this.btnQuickSave = newLayout}
             BtnType.QUICK_LOAD -> if (isPortrait) padLayout.copy {this.btnQuickLoadP = newLayout} else padLayout.copy {this.btnQuickLoad = newLayout}
             BtnType.COMBO -> padLayout  // combo buttons handled via dedicated UI
@@ -8475,7 +8785,7 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.START }
                 )
             }
-            if (showSelectBtn) {
+            if (showSelectBtn && !isNgcWii) {
                 EditablePillBtn("SELECT", btnSelect, surfaceSize, selectedBtn == BtnType.SELECT,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
@@ -8595,6 +8905,195 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.QUICK_LOAD }
                 )
             }
+            // 3DS 专属可编辑控件：ZL/ZR + CirclePad / C-Stick（常驻）
+            if (is3ds) {
+                if (showZlBtn) {
+                    EditablePillBtn("ZL", n3dsBtnZL, surfaceSize, selectedBtn == BtnType.ZL,
+                        onMove = { targetX, targetY ->
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
+                            updateBtn(BtnType.ZL, n3dsBtnZL.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.ZL }
+                    )
+                }
+                if (showZrBtn) {
+                    EditablePillBtn("ZR", n3dsBtnZR, surfaceSize, selectedBtn == BtnType.ZR,
+                        onMove = { targetX, targetY ->
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
+                            updateBtn(BtnType.ZR, n3dsBtnZR.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.ZR }
+                    )
+                }
+                EditableRoundBtn("十字Pad", Color(0xFFFFD66B), n3dsLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.LSTICK, n3dsLStick.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.LSTICK }
+                )
+                EditableRoundBtn("C-Stick", Color(0xFFFFD66B), n3dsRStick, surfaceSize, selectedBtn == BtnType.RSTICK,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.RSTICK, n3dsRStick.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.RSTICK }
+                )
+            }
+            // NGC/WII 专属可编辑控件：GC Z + 主/C 摇杆 + Wii 全套按键 + 双节棍摇杆
+            if (isNgcWii) {
+                if (showNgcZ) {
+                    EditableRoundBtn("GC·Z", Color(0xFF8E44AD), ngcBtnZ, surfaceSize, selectedBtn == BtnType.Z,
+                        onMove = { targetX, targetY ->
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
+                            updateBtn(BtnType.Z, ngcBtnZ.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.Z }
+                    )
+                }
+                EditableRoundBtn("主摇杆", Color(0xFFFFD66B), ngcLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.LSTICK, ngcLStick.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.LSTICK }
+                )
+                EditableRoundBtn("C摇杆", Color(0xFFFFD66B), ngcRStick, surfaceSize, selectedBtn == BtnType.RSTICK,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.RSTICK, ngcRStick.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.RSTICK }
+                )
+                if (showWiiDpad) {
+                    EditableDpad(
+                        wiiDpad, surfaceSize, selectedBtn == BtnType.DPAD,
+                        onMove = { targetX, targetY ->
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
+                            // Wii 十字键拖动写 wiiDpad 字段（独立于 GC 十字键）
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiDpadP = wiiDpad.copy(x = nx, y = ny)}
+                                else padLayout.copy {this.wiiDpad = wiiDpad.copy(x = nx, y = ny)}
+                            )
+                        },
+                        onSelect = { selectedBtn = BtnType.DPAD }
+                    )
+                }
+                if (showWiiA) {
+                    EditableRoundBtn("Wii·A", Color(0xFFE74C3C), wiiBtnA, surfaceSize, false,
+                        onMove = { tx, ty ->
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiBtnAP = wiiBtnA.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                                else padLayout.copy {this.wiiBtnA = wiiBtnA.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            )
+                        }, onSelect = {})
+                }
+                if (showWiiB) {
+                    EditableRoundBtn("Wii·B", Color(0xFFE67E22), wiiBtnB, surfaceSize, false,
+                        onMove = { tx, ty ->
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiBtnBP = wiiBtnB.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                                else padLayout.copy {this.wiiBtnB = wiiBtnB.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            )
+                        }, onSelect = {})
+                }
+                if (showWii1) {
+                    EditableRoundBtn("Wii·1", Color(0xFF2ECC71), wiiBtn1, surfaceSize, false,
+                        onMove = { tx, ty ->
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiBtn1P = wiiBtn1.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                                else padLayout.copy {this.wiiBtn1 = wiiBtn1.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            )
+                        }, onSelect = {})
+                }
+                if (showWii2) {
+                    EditableRoundBtn("Wii·2", Color(0xFF3498DB), wiiBtn2, surfaceSize, false,
+                        onMove = { tx, ty ->
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiBtn2P = wiiBtn2.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                                else padLayout.copy {this.wiiBtn2 = wiiBtn2.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            )
+                        }, onSelect = {})
+                }
+                if (showWiiPlus) {
+                    EditablePillBtn("Wii·+", wiiBtnPlus, surfaceSize, false,
+                        onMove = { tx, ty ->
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiBtnPlusP = wiiBtnPlus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                                else padLayout.copy {this.wiiBtnPlus = wiiBtnPlus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            )
+                        }, onSelect = {})
+                }
+                if (showWiiMinus) {
+                    EditablePillBtn("Wii·−", wiiBtnMinus, surfaceSize, false,
+                        onMove = { tx, ty ->
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiBtnMinusP = wiiBtnMinus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                                else padLayout.copy {this.wiiBtnMinus = wiiBtnMinus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            )
+                        }, onSelect = {})
+                }
+                if (showWiiHome) {
+                    EditablePillBtn("HOME", wiiBtnHome, surfaceSize, selectedBtn == BtnType.HOME,
+                        onMove = { tx, ty ->
+                            val nx = tx.coerceIn(0f, 1f); val ny = ty.coerceIn(0f, 1f)
+                            updateBtn(BtnType.HOME, wiiBtnHome.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.HOME }
+                    )
+                }
+                if (showWiiC) {
+                    EditableRoundBtn("双节棍·C", Color(0xFF16A085), wiiBtnC, surfaceSize, selectedBtn == BtnType.WII_C,
+                        onMove = { tx, ty ->
+                            val nx = tx.coerceIn(0f, 1f); val ny = ty.coerceIn(0f, 1f)
+                            updateBtn(BtnType.WII_C, wiiBtnC.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.WII_C }
+                    )
+                }
+                if (showWiiZ) {
+                    EditableRoundBtn("双节棍·Z", Color(0xFF27AE60), wiiBtnZ, surfaceSize, selectedBtn == BtnType.WII_Z,
+                        onMove = { tx, ty ->
+                            val nx = tx.coerceIn(0f, 1f); val ny = ty.coerceIn(0f, 1f)
+                            updateBtn(BtnType.WII_Z, wiiBtnZ.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.WII_Z }
+                    )
+                }
+                if (showWiiIrNear) {
+                    EditableRoundBtn("IR−", Color(0xFF5D6D7E), wiiBtnIrNear, surfaceSize, selectedBtn == BtnType.IR_NEAR,
+                        onMove = { tx, ty ->
+                            val nx = tx.coerceIn(0f, 1f); val ny = ty.coerceIn(0f, 1f)
+                            updateBtn(BtnType.IR_NEAR, wiiBtnIrNear.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.IR_NEAR }
+                    )
+                }
+                if (showWiiIrFar) {
+                    EditableRoundBtn("IR+", Color(0xFF5D6D7E), wiiBtnIrFar, surfaceSize, selectedBtn == BtnType.IR_FAR,
+                        onMove = { tx, ty ->
+                            val nx = tx.coerceIn(0f, 1f); val ny = ty.coerceIn(0f, 1f)
+                            updateBtn(BtnType.IR_FAR, wiiBtnIrFar.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.IR_FAR }
+                    )
+                }
+                EditableRoundBtn("双节棍摇杆", Color(0xFFFFD66B), wiiLStick, surfaceSize, false,
+                    onMove = { tx, ty ->
+                        onLayoutChange(
+                            if (isPortrait) padLayout.copy {this.wiiLStickP = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            else padLayout.copy {this.wiiLStick = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                        )
+                    }, onSelect = {})
+            }
             // PS2 专属可编辑控件：双摇杆（常驻）+ L3/R3
             if (isPs2) {
                 EditableRoundBtn("左摇杆", Color(0xFFFFD66B), ps2LStick, surfaceSize, selectedBtn == BtnType.LSTICK,
@@ -8655,11 +9154,6 @@ private fun PadLayoutEditor(
                             GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                             GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                             GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
-                            GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
-                            GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
-                                padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
-                            GamePlatform.TG3DS -> padLayout.copy {comboButtons3ds = json}
-                            GamePlatform.NGCWII -> padLayout.copy {comboButtonsNgcwii = json}
                             else -> padLayout
                         }
                         onLayoutChange(newLayout)
@@ -8832,10 +9326,40 @@ private fun PadLayoutEditor(
                     BtnType.Y -> { currentSize = btnY.sizeDp; minSize = 40; maxSize = 120; label = "Y键大小" }
                     BtnType.L2 -> { currentSize = btnL2.sizeDp; minSize = 36; maxSize = 90; label = "L2键大小" }
                     BtnType.R2 -> { currentSize = btnR2.sizeDp; minSize = 36; maxSize = 90; label = "R2键大小" }
-                    BtnType.LSTICK -> { currentSize = ps2LStick.sizeDp; minSize = 80; maxSize = 220; label = "左摇杆大小" }
-                    BtnType.RSTICK -> { currentSize = ps2RStick.sizeDp; minSize = 80; maxSize = 220; label = "右摇杆大小" }
+                    BtnType.LSTICK -> {
+                        // 摇杆尺寸按平台取专属字段
+                        val stick = when {
+                            isPs2 -> ps2LStick
+                            is3ds -> n3dsLStick
+                            isNgcWii -> ngcLStick
+                            else -> ps2LStick
+                        }
+                        currentSize = stick.sizeDp; minSize = 80; maxSize = 220; label = "左摇杆大小"
+                    }
+                    BtnType.RSTICK -> {
+                        val stick = when {
+                            isPs2 -> ps2RStick
+                            is3ds -> n3dsRStick
+                            isNgcWii -> ngcRStick
+                            else -> ps2RStick
+                        }
+                        currentSize = stick.sizeDp; minSize = 80; maxSize = 220; label = "右摇杆大小"
+                    }
                     BtnType.L3 -> { currentSize = ps2BtnL3.sizeDp; minSize = 24; maxSize = 80; label = "L3大小" }
                     BtnType.R3 -> { currentSize = ps2BtnR3.sizeDp; minSize = 24; maxSize = 80; label = "R3大小" }
+                    // 3DS / NGC-WII 专属键尺寸
+                    BtnType.ZL -> { currentSize = n3dsBtnZL.sizeDp; minSize = 30; maxSize = 100; label = "ZL大小" }
+                    BtnType.ZR -> { currentSize = n3dsBtnZR.sizeDp; minSize = 30; maxSize = 100; label = "ZR大小" }
+                    BtnType.Z -> { currentSize = ngcBtnZ.sizeDp; minSize = 30; maxSize = 90; label = "Z键大小" }
+                    BtnType.HOME -> { currentSize = wiiBtnHome.sizeDp; minSize = 24; maxSize = 100; label = "HOME大小" }
+                    BtnType.WII_1 -> { currentSize = wiiBtn1.sizeDp; minSize = 30; maxSize = 100; label = "Wii 1大小" }
+                    BtnType.WII_2 -> { currentSize = wiiBtn2.sizeDp; minSize = 30; maxSize = 100; label = "Wii 2大小" }
+                    BtnType.WII_PLUS -> { currentSize = wiiBtnPlus.sizeDp; minSize = 24; maxSize = 100; label = "Wii +大小" }
+                    BtnType.WII_MINUS -> { currentSize = wiiBtnMinus.sizeDp; minSize = 24; maxSize = 100; label = "Wii −大小" }
+                    BtnType.WII_C -> { currentSize = wiiBtnC.sizeDp; minSize = 30; maxSize = 100; label = "双节棍C大小" }
+                    BtnType.WII_Z -> { currentSize = wiiBtnZ.sizeDp; minSize = 30; maxSize = 100; label = "双节棍Z大小" }
+                    BtnType.IR_NEAR -> { currentSize = wiiBtnIrNear.sizeDp; minSize = 24; maxSize = 100; label = "IR−大小" }
+                    BtnType.IR_FAR -> { currentSize = wiiBtnIrFar.sizeDp; minSize = 24; maxSize = 100; label = "IR+大小" }
                     BtnType.QUICK_SAVE -> { currentSize = btnQuickSave.sizeDp; minSize = 24; maxSize = 80; label = "即时存档大小" }
                     BtnType.QUICK_LOAD -> { currentSize = btnQuickLoad.sizeDp; minSize = 24; maxSize = 80; label = "即时读档大小" }
                     BtnType.COMBO -> { currentSize = 56; minSize = 36; maxSize = 100; label = "组合键大小" }
@@ -8868,10 +9392,32 @@ private fun PadLayoutEditor(
                             BtnType.Y -> btnY
                             BtnType.L2 -> btnL2
                             BtnType.R2 -> btnR2
-                            BtnType.LSTICK -> ps2LStick
-                            BtnType.RSTICK -> ps2RStick
+                            BtnType.LSTICK -> when {
+                                isPs2 -> ps2LStick
+                                is3ds -> n3dsLStick
+                                isNgcWii -> ngcLStick
+                                else -> ps2LStick
+                            }
+                            BtnType.RSTICK -> when {
+                                isPs2 -> ps2RStick
+                                is3ds -> n3dsRStick
+                                isNgcWii -> ngcRStick
+                                else -> ps2RStick
+                            }
                             BtnType.L3 -> ps2BtnL3
                             BtnType.R3 -> ps2BtnR3
+                            BtnType.ZL -> n3dsBtnZL
+                            BtnType.ZR -> n3dsBtnZR
+                            BtnType.Z -> ngcBtnZ
+                            BtnType.HOME -> wiiBtnHome
+                            BtnType.WII_1 -> wiiBtn1
+                            BtnType.WII_2 -> wiiBtn2
+                            BtnType.WII_PLUS -> wiiBtnPlus
+                            BtnType.WII_MINUS -> wiiBtnMinus
+                            BtnType.WII_C -> wiiBtnC
+                            BtnType.WII_Z -> wiiBtnZ
+                            BtnType.IR_NEAR -> wiiBtnIrNear
+                            BtnType.IR_FAR -> wiiBtnIrFar
                             BtnType.QUICK_SAVE -> btnQuickSave
                             BtnType.QUICK_LOAD -> btnQuickLoad
                             BtnType.COMBO -> ButtonLayout(0.5f, 0.85f, 56)  // combo size handled separately
@@ -8928,11 +9474,6 @@ private fun PadLayoutEditor(
                                 GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                                 GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                                 GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
-                                GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
-                                GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
-                                    padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
-                                GamePlatform.TG3DS -> padLayout.copy {comboButtons3ds = json}
-                                GamePlatform.NGCWII -> padLayout.copy {comboButtonsNgcwii = json}
                                 else -> padLayout
                             }
                             onLayoutChange(newLayout)
@@ -8974,11 +9515,6 @@ private fun PadLayoutEditor(
                         GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                         GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                         GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
-                        GamePlatform.DC -> padLayout.copy {comboButtons = json}      // ★ DC 组合键落盘修复（旧版 else 吞掉，拖动/增删无效）
-                        GamePlatform.NDS, GamePlatform.PSX, GamePlatform.PS2 ->
-                            padLayout.copy {comboButtonsSfc = json}  // ★ NDS/PSX/PS2 共用 SNES 组合键表
-                        GamePlatform.TG3DS -> padLayout.copy {comboButtons3ds = json}
-                        GamePlatform.NGCWII -> padLayout.copy {comboButtonsNgcwii = json}
                         else -> padLayout
                     }
                     onLayoutChange(newLayout)
@@ -9137,64 +9673,27 @@ private fun ComboButtonPickerDialog(
             ButtonOption("Start", BTN_START),
             ButtonOption("Select", BTN_SELECT)
         )
-        // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX/PS2/DC
+        // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX
         // 街机（FBNeo）屏幕标签为 A/B/C/D：bit8 显示为 C、bit9 显示为 D
-        // ★ DC 补进 X/Y 列表 —— 旧版 DC 组合键只能选 A/B/Start/Select
-        //   （"组合键缺少很多按键"修复）
         if (platform == GamePlatform.SFC || platform == GamePlatform.MD ||
-            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX ||
-            platform == GamePlatform.PS2 || platform == GamePlatform.DC) {
+            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX) {
             list.add(ButtonOption("X", BTN_X))
             list.add(ButtonOption("Y", BTN_Y))
         } else if (platform == GamePlatform.ARCADE) {
             list.add(ButtonOption("C", BTN_X))
             list.add(ButtonOption("D", BTN_Y))
         }
-        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX/PS2/DC
-        // ★ DC/PS2 补进 L/R（Dreamcast 有双扳机、PS2 有 L1/R1）
+        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX
         if (platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
             platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
-            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX ||
-            platform == GamePlatform.PS2 || platform == GamePlatform.DC) {
+            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX) {
             list.add(ButtonOption("L", lBit))
             list.add(ButtonOption("R", rBit))
         }
-        // L2/R2 on Arcade (6-button fight layout) and PCE (turbo toggle);
-        // ★ PSX/PS2 补进 L2/R2（DualShock 肩键）；PS2 另有 L3/R3 摇杆键
-        if (platform == GamePlatform.ARCADE || platform == GamePlatform.PCE ||
-            platform == GamePlatform.PSX || platform == GamePlatform.PS2) {
+        // L2/R2 on Arcade (6-button fight layout) and PCE (turbo toggle)
+        if (platform == GamePlatform.ARCADE || platform == GamePlatform.PCE) {
             list.add(ButtonOption("L2", BTN_L2))
             list.add(ButtonOption("R2", BTN_R2))
-        }
-        if (platform == GamePlatform.PS2) {
-            list.add(ButtonOption("L3", BTN_L3))
-            list.add(ButtonOption("R3", BTN_R3))
-        }
-        // ★ 3DS / NGC-WII 进程内核心：全量组合键（含 HOME/换屏/挥动/IR 伪位）
-        if (platform == GamePlatform.TG3DS) {
-            list.add(ButtonOption("X", BTN_X))
-            list.add(ButtonOption("Y", BTN_Y))
-            list.add(ButtonOption("L", BTN_L2))     // ZL
-            list.add(ButtonOption("R", BTN_R2))     // ZR
-            list.add(ButtonOption("L2", BTN_L_SNES)) // L 扳机
-            list.add(ButtonOption("R2", BTN_R_SNES)) // R 扳机
-            list.add(ButtonOption("HOME", 1 shl 16))
-            list.add(ButtonOption("换屏", 1 shl 17))
-        }
-        if (platform == GamePlatform.NGCWII) {
-            list.add(ButtonOption("X", BTN_X))
-            list.add(ButtonOption("Y", BTN_Y))
-            list.add(ButtonOption("L", BTN_L2))
-            list.add(ButtonOption("R", BTN_R2))
-            list.add(ButtonOption("L2", BTN_L_SNES))
-            list.add(ButtonOption("R2", BTN_R_SNES))
-            list.add(ButtonOption("L3", BTN_L3))
-            list.add(ButtonOption("R3", BTN_R3))
-            list.add(ButtonOption("挥上", 1 shl 16))   // Swing/Up（轴 120）
-            list.add(ButtonOption("挥下", 1 shl 17))   // Swing/Down
-            list.add(ButtonOption("挥左", 1 shl 18))   // Swing/Left
-            list.add(ButtonOption("挥右", 1 shl 19))   // Swing/Right
-            list.add(ButtonOption("IR重定位", 1 shl 20)) // IR/Recenter（139）
         }
         list.toList()
     }
@@ -11343,65 +11842,179 @@ private fun SettingsPanel(
                     padLayout.dcEnableDsp
                 ) { onLayoutChange(padLayout.copy {dcEnableDsp = it}) }
             }
-            // 3DS / NGC-WII：进程内核心（Azahar / Ishiruka）—— 游戏内菜单提供
-            // 高频设置（画面/布局/控制器切换），完整设置见 主界面 → 设置 → 核心。
-            GamePlatform.TG3DS, GamePlatform.NGCWII -> {
-                Text(
-                    if (platform == GamePlatform.TG3DS) "3DS (进程内 Azahar 核心)" else "NGC/WII (进程内 Ishiruka 核心)",
-                    color = Color(0xFFFFD66B), fontSize = 13.sp,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                )
+            // 3DS（Azahar）专属设置 —— 与主界面 CoreSettingsPanel 同步
+            GamePlatform.N3DS -> {
+                Text("3DS (Azahar) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 Spacer(Modifier.size(6.dp))
-                if (platform == GamePlatform.TG3DS) {
-                    DropdownSetting("内部分辨率",
-                        listOf("0" to "自动", "1" to "1x (原生)", "2" to "2x", "3" to "3x", "4" to "4x"),
-                        padLayout.tg3dsResolution
-                    ) { onLayoutChange(padLayout.copy {tg3dsResolution = it}) }
-                    DropdownSetting("横屏布局",
-                        listOf("2" to "大屏 + 小屏", "0" to "默认 (上下)", "1" to "单屏", "3" to "侧并", "4" to "混合"),
-                        padLayout.tg3dsLayout
-                    ) { onLayoutChange(padLayout.copy {tg3dsLayout = it}) }
-                    DropdownSetting("交换上下屏", listOf("0" to "正常", "1" to "交换"), padLayout.tg3dsSwapScreen)
-                    { onLayoutChange(padLayout.copy {tg3dsSwapScreen = it}) }
-                    DropdownSetting("立体 3D",
-                        listOf("0" to "关闭", "1" to "并排 (半宽)", "2" to "并排 (全宽)", "3" to "红蓝分色"),
-                        padLayout.tg3dsRender3d
-                    ) { onLayoutChange(padLayout.copy {tg3dsRender3d = it}) }
-                    DropdownSetting("音频模拟",
-                        listOf("1" to "开启 (默认)", "0" to "关闭 (最快)"),
-                        padLayout.tg3dsAudioEmulation
-                    ) { onLayoutChange(padLayout.copy {tg3dsAudioEmulation = it}) }
-                    Text("下屏触摸 = 游戏画面直接触摸；HOME/换屏 = 组合键。完整设置见 主界面 → 设置 → 3DS。",
-                        color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp)
-                } else {
-                    DropdownSetting("控制器方案",
-                        listOf(
-                            "gc" to "GameCube 手柄",
-                            "wii" to "Wii 遥控器 + 双节棍",
-                            "wiimote" to "Wii 遥控器横握",
-                            "classic" to "经典手柄"
-                        ),
-                        padLayout.ngcwiiController
-                    ) { onLayoutChange(padLayout.copy {ngcwiiController = it}) }
-                    DropdownSetting("体感操作",
-                        listOf("enabled" to "开启 (倾斜 + 摇晃 + IR 指针)", "disabled" to "关闭"),
-                        padLayout.ngcwiiMotion
-                    ) { onLayoutChange(padLayout.copy {ngcwiiMotion = it}) }
-                    DropdownSetting("内部分辨率",
-                        listOf("1" to "1x", "2" to "1.5x", "3" to "2x", "4" to "2.5x", "5" to "3x", "6" to "4x"),
-                        padLayout.ngcwiiInternalRes
-                    ) { onLayoutChange(padLayout.copy {ngcwiiInternalRes = it}) }
-                    DropdownSetting("画面比例",
-                        listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口"),
-                        padLayout.ngcwiiAspect
-                    ) { onLayoutChange(padLayout.copy {ngcwiiAspect = it}) }
-                    DropdownSetting("等待着色器",
-                        listOf("False" to "关闭 (流畅)", "True" to "开启 (防闪烁)"),
-                        padLayout.ngcwiiWaitShaders
-                    ) { onLayoutChange(padLayout.copy {ngcwiiWaitShaders = it}) }
-                    Text("IR 指针 = 游戏画面触摸拖动；倾斜 = 手机陀螺仪；摇晃 = 虚拟 L3/R3；挥动/IR 重定位 = 组合键。完整设置见 主界面 → 设置 → NGC/WII。",
-                        color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp)
-                }
+
+                Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("图形后端",
+                    listOf("opengl" to "OpenGL (兼容)", "vulkan" to "Vulkan (性能, 推荐)", "software" to "软件渲染 (慢)"),
+                    padLayout.azGraphicsApi
+                ) { onLayoutChange(padLayout.copy {azGraphicsApi = it}) }
+                DropdownSetting("内部分辨率",
+                    listOf("0" to "1x (400x240 原生)", "1" to "2x", "2" to "3x", "3" to "4x", "4" to "5x"),
+                    padLayout.azResolution
+                ) { onLayoutChange(padLayout.copy {azResolution = it}) }
+                SwitchSetting("硬件着色器 (use_hw_shader)",
+                    "PICA 着色器经 GPU 生成，性能关键", padLayout.azUseHwShader == "enabled"
+                ) { onLayoutChange(padLayout.copy {azUseHwShader = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("着色器 JIT", "着色器编译加速", padLayout.azUseShaderJit == "enabled"
+                ) { onLayoutChange(padLayout.copy {azUseShaderJit = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("垂直同步", padLayout.azUseVsync == "enabled"
+                ) { onLayoutChange(padLayout.copy {azUseVsync = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("磁盘着色器缓存", "减少重复编译卡顿", padLayout.azUseDiskShaderCache == "enabled"
+                ) { onLayoutChange(padLayout.copy {azUseDiskShaderCache = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("异步呈现", "多线程帧呈现，降延迟", padLayout.azAsyncPresentation == "enabled"
+                ) { onLayoutChange(padLayout.copy {azAsyncPresentation = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("异步着色器编译", "后台编译着色器防卡顿", padLayout.azAsyncShaderCompilation == "enabled"
+                ) { onLayoutChange(padLayout.copy {azAsyncShaderCompilation = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("精确乘法", "着色器精度修正 (个别游戏需要)", padLayout.azAccurateMultiplication == "enabled"
+                ) { onLayoutChange(padLayout.copy {azAccurateMultiplication = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("跳过重复帧", padLayout.azSkipDuplicateFrames == "enabled"
+                ) { onLayoutChange(padLayout.copy {azSkipDuplicateFrames = if (it) "enabled" else "disabled"}) }
+                DropdownSetting("纹理过滤",
+                    listOf("0" to "无", "1" to "Anime4K", "2" to "双三次", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
+                    padLayout.azTextureFilter
+                ) { onLayoutChange(padLayout.copy {azTextureFilter = it}) }
+                DropdownSetting("纹理采样",
+                    listOf("0" to "游戏自带", "1" to "最近邻", "2" to "线性"),
+                    padLayout.azTextureSampling
+                ) { onLayoutChange(padLayout.copy {azTextureSampling = it}) }
+                SwitchSetting("整数缩放", "像素风游戏无畸变", padLayout.azIntegerScaling == "enabled"
+                ) { onLayoutChange(padLayout.copy {azIntegerScaling = if (it) "enabled" else "disabled"}) }
+                DropdownSetting("帧率上限",
+                    listOf("50" to "50%", "100" to "100% (默认)", "200" to "200%", "300" to "300%", "400" to "400%"),
+                    padLayout.azFrameLimit
+                ) { onLayoutChange(padLayout.copy {azFrameLimit = it}) }
+
+                Text("3D / 布局", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("立体 3D",
+                    listOf("0" to "关", "1" to "并排", "2" to "并排 (全宽)", "3" to "红蓝", "4" to "交错", "5" to "反交错", "6" to "Cardboard VR"),
+                    padLayout.azRender3d
+                ) { onLayoutChange(padLayout.copy {azRender3d = it}) }
+                DropdownSetting("立体深度", (0..100 step 10).map { it.toString() to "$it%" },
+                    padLayout.azFactor3d
+                ) { onLayoutChange(padLayout.copy {azFactor3d = it}) }
+                DropdownSetting("屏幕布局",
+                    listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏 (大在上)", "3" to "左右", "4" to "混合", "5" to "自定义"),
+                    padLayout.azLayoutOption
+                ) { onLayoutChange(padLayout.copy {azLayoutOption = it}) }
+                DropdownSetting("屏幕间距", (0..500 step 100).map { it.toString() to "${it}px" },
+                    padLayout.azScreenGap
+                ) { onLayoutChange(padLayout.copy {azScreenGap = it}) }
+                DropdownSetting("大屏占比",
+                    listOf("1.25" to "1.25 : 1", "1.5" to "1.5 : 1", "1.75" to "1.75 : 1", "2.0" to "2 : 1", "2.25" to "2.25 : 1 (默认)", "2.5" to "2.5 : 1", "3.0" to "3 : 1", "4.0" to "4 : 1"),
+                    padLayout.azLargeScreenProportion
+                ) { onLayoutChange(padLayout.copy {azLargeScreenProportion = it}) }
+                SwitchSetting("上下屏交换", padLayout.azSwapScreens == "enabled"
+                ) { onLayoutChange(padLayout.copy {azSwapScreens = if (it) "enabled" else "disabled"}) }
+
+                Text("系统", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("CPU 时钟",
+                    listOf("50" to "50%", "100" to "100% (默认)", "200" to "200%", "300" to "300%", "400" to "400% (超频)"),
+                    padLayout.azCpuClock
+                ) { onLayoutChange(padLayout.copy {azCpuClock = it}) }
+                SwitchSetting("CPU JIT", "动态重编译，性能关键", padLayout.azUseCpuJit == "enabled"
+                ) { onLayoutChange(padLayout.copy {azUseCpuJit = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("快速解释器", "JIT 不可用时提速", padLayout.azUseFastInterp == "enabled"
+                ) { onLayoutChange(padLayout.copy {azUseFastInterp = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("New 3DS 模式", "更快的 CPU 与专属游戏", padLayout.azIsNew3ds == "enabled"
+                ) { onLayoutChange(padLayout.copy {azIsNew3ds = if (it) "enabled" else "disabled"}) }
+                DropdownSetting("主机区域",
+                    listOf("-1" to "自动", "0" to "日本", "1" to "美国", "2" to "欧洲", "3" to "澳大利亚", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                    padLayout.azRegion
+                ) { onLayoutChange(padLayout.copy {azRegion = it}) }
+
+                Text("音频 / 纹理", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("音频模拟",
+                    listOf("0" to "HLE (快, 推荐)", "1" to "LLE", "2" to "LLE 多线程"),
+                    padLayout.azAudioEmulation
+                ) { onLayoutChange(padLayout.copy {azAudioEmulation = it}) }
+                DropdownSetting("音量", (0..100 step 10).map { it.toString() to "$it%" },
+                    padLayout.azVolume
+                ) { onLayoutChange(padLayout.copy {azVolume = it}) }
+                SwitchSetting("音频拉伸", "防音频爆音", padLayout.azAudioStretching == "enabled"
+                ) { onLayoutChange(padLayout.copy {azAudioStretching = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("实时音频", "低延迟 (可能卡顿)", padLayout.azRealtimeAudio == "enabled"
+                ) { onLayoutChange(padLayout.copy {azRealtimeAudio = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("自定义纹理", "加载 HD 纹理包", padLayout.azCustomTextures == "enabled"
+                ) { onLayoutChange(padLayout.copy {azCustomTextures = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("预加载纹理", padLayout.azPreloadTextures == "enabled"
+                ) { onLayoutChange(padLayout.copy {azPreloadTextures = if (it) "enabled" else "disabled"}) }
+            }
+            // NGC/WII（Ishiiruka）专属设置 —— 与主界面 CoreSettingsPanel 同步
+            GamePlatform.NGCWII -> {
+                Text("NGC/WII (Ishiiruka) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Spacer(Modifier.size(6.dp))
+
+                Text("控制", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("控制模式",
+                    listOf("auto" to "自动 (按游戏判定)", "ngc" to "GameCube 手柄", "wii" to "Wii Remote"),
+                    padLayout.irControlMode
+                ) { onLayoutChange(padLayout.copy {irControlMode = it}) }
+                DropdownSetting("Wii 扩展手柄",
+                    listOf("nunchuk" to "双节棍 (推荐)", "classic" to "经典手柄", "none" to "无"),
+                    padLayout.irWiiExtension
+                ) { onLayoutChange(padLayout.copy {irWiiExtension = it}) }
+
+                Text("性能 (Core)", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("CPU 核心",
+                    listOf("4" to "JIT ARM64 (推荐)", "1" to "JIT64", "0" to "解释器 (慢)"),
+                    padLayout.irCpuCore
+                ) { onLayoutChange(padLayout.copy {irCpuCore = it}) }
+                SwitchSetting("双核模拟 (CPUThread)", "CPU/GPU 线程分离", padLayout.irDualCore == "enabled"
+                ) { onLayoutChange(padLayout.copy {irDualCore = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("CPU 超频开关", padLayout.irOverclockEnable == "enabled"
+                ) { onLayoutChange(padLayout.copy {irOverclockEnable = if (it) "enabled" else "disabled"}) }
+                DropdownSetting("CPU 超频",
+                    listOf("100" to "100% (默认)", "150" to "150%", "200" to "200%", "300" to "300%", "400" to "400%"),
+                    padLayout.irOverclock
+                ) { onLayoutChange(padLayout.copy {irOverclock = it}) }
+
+                Text("图形 (GFX)", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("渲染后端",
+                    listOf("OGL" to "OpenGL (兼容)", "Vulkan" to "Vulkan (性能)", "SW" to "软件渲染"),
+                    padLayout.irBackend
+                ) { onLayoutChange(padLayout.copy {irBackend = it}) }
+                DropdownSetting("内部分辨率 (EFB)",
+                    listOf("2" to "1x 原生 (640x528)", "4" to "2x", "6" to "3x", "7" to "4x"),
+                    padLayout.irResolution
+                ) { onLayoutChange(padLayout.copy {irResolution = it}) }
+                DropdownSetting("多重采样 (MSAA)",
+                    listOf("1" to "关闭", "2" to "2x", "4" to "4x", "8" to "8x"),
+                    padLayout.irMsaa
+                ) { onLayoutChange(padLayout.copy {irMsaa = it}) }
+                DropdownSetting("各向异性过滤",
+                    listOf("0" to "1x (关)", "1" to "2x", "2" to "4x", "3" to "8x", "4" to "16x"),
+                    padLayout.irAnisotropy
+                ) { onLayoutChange(padLayout.copy {irAnisotropy = it}) }
+                SwitchSetting("显示 FPS", padLayout.irShowFps == "enabled"
+                ) { onLayoutChange(padLayout.copy {irShowFps = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("启动时编译着色器", "减少游戏中卡顿 (启动变慢)", padLayout.irWaitForShaders == "enabled"
+                ) { onLayoutChange(padLayout.copy {irWaitForShaders = if (it) "enabled" else "disabled"}) }
+                DropdownSetting("画面比例",
+                    listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口"),
+                    padLayout.irAspect
+                ) { onLayoutChange(padLayout.copy {irAspect = it}) }
+                SwitchSetting("EFB 纹理复制 (EFB2RAM→纹理)", "性能关键，关闭会变慢", padLayout.irEfbToTexture == "enabled"
+                ) { onLayoutChange(padLayout.copy {irEfbToTexture = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("EFB 缩放复制", "高清分辨率下保持清晰", padLayout.irEfbScaledCopy == "enabled"
+                ) { onLayoutChange(padLayout.copy {irEfbScaledCopy = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("EFB 访问", "个别游戏需要", padLayout.irEfbAccess == "enabled"
+                ) { onLayoutChange(padLayout.copy {irEfbAccess = if (it) "enabled" else "disabled"}) }
+
+                Text("音频 / Wii", color = Color(0xFF8899AA), fontSize = 11.sp)
+                SwitchSetting("音频拉伸", "防音频爆音", padLayout.irAudioStretch == "enabled"
+                ) { onLayoutChange(padLayout.copy {irAudioStretch = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("DSP HLE", "高速音频模拟 (推荐)", padLayout.irDspHle == "enabled"
+                ) { onLayoutChange(padLayout.copy {irDspHle = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("Wii 扬声器模拟", padLayout.irWiimoteSpeaker == "enabled"
+                ) { onLayoutChange(padLayout.copy {irWiimoteSpeaker = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("Wiimote 持续扫描", "实体 Wiimote 连接", padLayout.irWiimoteScan == "enabled"
+                ) { onLayoutChange(padLayout.copy {irWiimoteScan = if (it) "enabled" else "disabled"}) }
             }
         }
 

@@ -25,14 +25,13 @@ import androidx.compose.ui.graphics.Color
  *          与其他核心同一 dlopen 模式：libdccore.so 桥接运行时加载
  *          libflycast_libretro_android.so，进程内引擎 DcEngine，见
  *          core/jni/dc_loader.cpp)
- * TG3DS  = Nintendo 3DS（进程内 Azahar 核心 —— libcitra-android.so 随 APK
- *          发布，JNI 契约类 org.citra.citra_emu.* 随源码打包；与 DC/PS2
- *          同为进程内推模型引擎 AzaharEngine。CIA 安装/3DS 解密见
- *          core/storage/CiaInstaller.kt）
- * NGCWII = Nintendo GameCube / Wii（进程内 Ishiruka 核心 — Dolphin fork,
- *          libmain.so 随 APK 发布，JNI 契约类 org.dolphinemu.dolphinemu.*
- *          随源码打包；GC/Wii 全量虚拟按键 + 控制器切换(手柄/双节棍/经典)/
- *          体感(倾斜/摇晃/IR) 见 IshirukaEngine 与 PadLayout.ngcwii* 字段）
+ * N3DS   = Nintendo 3DS（Azahar 核心 —— AzaharPlus 预编译库 + 原包名 JNI 契约
+ *          org.citra.citra_emu.NativeLibrary，推模型引擎 AzaharEngine，
+ *          集成方式与 DraStic（激烈）一致）
+ * NGCWII = Nintendo GameCube / Wii（Ishiiruka 核心 —— Dolphin 优化分支，
+ *          预编译 libishiiruka.so + 原包名 JNI 契约
+ *          org.dolphinemu.ishiiruka.NativeLibrary，推模型引擎 IshirukaEngine，
+ *          集成方式与 DraStic（激烈）一致）
  */
 enum class GamePlatform(val displayName: String) {
     NES("NES"),
@@ -48,8 +47,8 @@ enum class GamePlatform(val displayName: String) {
     PS2("PS2"),
     JAVA("Java"),
     DC("DC"),
-    TG3DS("3DS"),
-    NGCWII("NGC/WII");
+    N3DS("3DS"),
+    NGCWII("NGC/Wii");
 
     companion object {
         /**
@@ -108,12 +107,11 @@ enum class GamePlatform(val displayName: String) {
                 "ps2", "playstation2", "play", "psx2", "pcsx2" -> PS2
                 // SEGA Dreamcast / NAOMI / AtomisWave (libretro Flycast)
                 "dc", "dreamcast", "naomi", "atomiswave", "flycast" -> DC
-                // Nintendo 3DS (外部核心 Azahar / 爱吾 AzaharPlus)
-                "3ds", "tg3ds", "nintendo3ds", "citru", "citra", "azahar",
-                "citracore", "azaharcore", "aiwu3ds" -> TG3DS
-                // GameCube / Wii (外部核心 Ishiruka — Dolphin fork)
-                "ngcwii", "ngc", "wii", "gamecube", "gamecubewii",
-                "dolphin", "ishiiruka", "ishiruka" -> NGCWII
+                // Nintendo 3DS (Azahar / AzaharPlus)
+                "3ds", "n3ds", "citra", "azahar", "azaharplus" -> N3DS
+                // Nintendo GameCube / Wii (Ishiiruka / Dolphin)
+                "ngcwii", "ngc", "wii", "gamecube", "gc", "dolphin",
+                "ishiruka", "ishiiruka" -> NGCWII
                 // J2ME
                 "java", "j2me", "midlet" -> JAVA
                 // 兜底：未识别的字符串保持 NES 行为不变（旧 API 兼容）
@@ -198,18 +196,13 @@ enum class GamePlatform(val displayName: String) {
                 // .cue/.chd/.iso 与 MD/PCE/DOS/PSX/PS2 共用，由
                 // detectPlatformFromUri 的平台页 hint 消歧。
                 "gdi", "cdi", "lst" -> DC
-                // Nintendo 3DS (外部核心 Azahar / 爱吾 AzaharPlus)。
-                // .3ds/.cci = 卡带 dump（NCCH 容器），.cxi = 可执行内容，
-                // .cia = 可安装标题（启动即安装），.3dsx = 自制程序。
-                // 注意：.app 在上方 NDS 分支先命中（NDS 3DS 双用途，历史归属
-                // NDS）；.elf 在 PS2 分支 —— 两者导入 3DS 页时由 hint 消歧。
-                "3ds", "cci", "cxi", "cia", "3dsx" -> TG3DS
-                // GameCube / Wii (外部核心 Ishiruka — Dolphin fork)。
-                // .gcm/.iso = 光盘镜像（.iso 共用，靠平台页 hint 消歧），
-                // .rvz/.gcz/.ciso/.nkit = 压缩镜像，.wbfs = Wii 备份盘，
-                // .wad = Wii 系统频道/VC 安装包，.tgc = Wii 光盘内嵌标题，
-                // .dol = Wii/GC 可执行（自制程序，.dol 无冲突可直接判）。
-                "gcm", "rvz", "gcz", "wbfs", "wad", "ciso", "nkit", "tgc", "dol" -> NGCWII
+                // Nintendo 3DS（Azahar）—— .3ds/.cci 卡带镜像，.cxi/.cia 系统应用
+                // 与数字版安装包。（.app 保持 NDS DSiWare 归属不变。）
+                "3ds", "cci", "cxi", "cia" -> N3DS
+                // Nintendo GameCube / Wii（Ishiiruka）—— .gcm 原生镜像，
+                // .rvz/.gcz/.ciso/.nkit 压缩镜像，.wbfs Wii 光盘格式，.wad 虚拟
+                // 主机/频道，.dol/.elf 可执行文件（.elf 与 PS2 共用，hint 消歧）。
+                "gcm", "rvz", "gcz", "ciso", "nkit", "wbfs", "wad", "dol" -> NGCWII
                 "jar", "jad" -> JAVA
                 // .zip is intentionally NOT mapped — see detectPlatformFromUri
                 // for the disambiguation logic.

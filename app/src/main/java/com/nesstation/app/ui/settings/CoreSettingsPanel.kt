@@ -7,10 +7,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -18,14 +14,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.PadLayout
-import com.nesstation.app.core.storage.AzaharDirs
-import com.nesstation.app.core.storage.CiaInstaller
 import com.nesstation.app.core.storage.JAVA_MAPPABLE_BUTTONS
 import com.nesstation.app.core.storage.JAVA_PHONE_KEY_OPTIONS
 import com.nesstation.app.core.storage.javaButtonKeyMapGet
 import com.nesstation.app.core.storage.javaButtonKeyMapSet
 import com.nesstation.app.ui.emulator.Psx2BiosImportSection
-import kotlinx.coroutines.launch
 
 /**
  * 核心设置子页：进入后展示该核心专属的模拟器选项。
@@ -1589,391 +1582,236 @@ fun CoreSettingsPanel(
                         color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
             }
-            GamePlatform.TG3DS -> item {
-                // 3DS 进程内 Azahar 核心 —— 设置写 <userDir>/config/config.ini，
-                // 与 DC 设置页（emu.cfg 直写）同一模式；解密/CIA 走核心原生安装器。
-                InProcessCoreStatusSection(coreName = "3DS 核心 (Azahar)")
-                SettingsSection("3DS · 游戏解密") {
-                    DropdownRow("启动前加密校验",
-                        listOf("enabled" to "开启 (推荐·加密游戏给出提示)", "disabled" to "关闭 (直接交给核心)"),
-                        padLayout.tg3dsDecryptCheck
-                    ) { updateLayout(padLayout.copy {tg3dsDecryptCheck = it}) }
-                    AzaharKeysAndDecryptSection()
-                }
-                SettingsSection("3DS · CIA 安装") {
-                    CiaInstallSection()
-                    DropdownRow("CIA 启动策略",
-                        listOf("launch" to "启动即安装 (CIA 引导时自动装入 NAND)",
-                               "copy" to "仅复制文件 (不自动安装)"),
-                        padLayout.tg3dsCiaMode
-                    ) { updateLayout(padLayout.copy {tg3dsCiaMode = it}) }
-                }
-                SettingsSection("3DS · 画面") {
+            GamePlatform.N3DS -> item {
+                // Azahar 核心选项 —— 引擎以 "段/键" 复合键直写用户目录
+                // config/config.ini 后 reloadSettings()。键名/取值对照
+                // azahar-emu/azahar src/android jni/config.cpp（2125.x）。
+                SettingsSection("3DS (Azahar) · 画面 / 性能") {
+                    DropdownRow("图形后端",
+                        listOf("opengl" to "OpenGL (兼容)", "vulkan" to "Vulkan (性能, 推荐)", "software" to "软件渲染 (慢)"),
+                        padLayout.azGraphicsApi
+                    ) { updateLayout(padLayout.copy {azGraphicsApi = it}) }
                     DropdownRow("内部分辨率",
-                        listOf("0" to "自动", "1" to "1x (原生)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x", "6" to "6x", "7" to "7x", "8" to "8x"),
-                        padLayout.tg3dsResolution
-                    ) { updateLayout(padLayout.copy {tg3dsResolution = it}) }
-                    DropdownRow("图形 API",
-                        listOf("1" to "OpenGL ES (默认·兼容)", "2" to "Vulkan (高性能)", "0" to "OpenGL"),
-                        padLayout.tg3dsGraphicsApi
-                    ) { updateLayout(padLayout.copy {tg3dsGraphicsApi = it}) }
-                    DropdownRow("垂直同步", listOf("1" to "开启", "0" to "关闭"), padLayout.tg3dsVsync)
-                    { updateLayout(padLayout.copy {tg3dsVsync = it}) }
-                    DropdownRow("硬件着色器", listOf("1" to "开启 (推荐)", "0" to "关闭 (更慢)"), padLayout.tg3dsHwShader)
-                    { updateLayout(padLayout.copy {tg3dsHwShader = it}) }
-                    DropdownRow("着色器精确乘法", listOf("1" to "开启", "0" to "关闭"), padLayout.tg3dsAccurateMul)
-                    { updateLayout(padLayout.copy {tg3dsAccurateMul = it}) }
-                    DropdownRow("磁盘着色器缓存", listOf("1" to "开启 (推荐)", "0" to "关闭"), padLayout.tg3dsDiskShader)
-                    { updateLayout(padLayout.copy {tg3dsDiskShader = it}) }
-                    DropdownRow("异步着色器编译", listOf("1" to "开启 (减少卡顿)", "0" to "关闭"), padLayout.tg3dsAsyncShader)
-                    { updateLayout(padLayout.copy {tg3dsAsyncShader = it}) }
-                    DropdownRow("显示过滤",
-                        listOf("1" to "线性 (默认)", "0" to "最近邻 (像素风)"),
-                        padLayout.tg3dsFilterMode
-                    ) { updateLayout(padLayout.copy {tg3dsFilterMode = it}) }
+                        listOf("0" to "1x (400x240 原生)", "1" to "2x", "2" to "3x", "3" to "4x", "4" to "5x"),
+                        padLayout.azResolution
+                    ) { updateLayout(padLayout.copy {azResolution = it}) }
+                    DropdownRow("硬件着色器",
+                        listOf("enabled" to "开启 (性能关键, 默认)", "disabled" to "关闭"),
+                        padLayout.azUseHwShader
+                    ) { updateLayout(padLayout.copy {azUseHwShader = it}) }
+                    DropdownRow("着色器 JIT",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭"),
+                        padLayout.azUseShaderJit
+                    ) { updateLayout(padLayout.copy {azUseShaderJit = it}) }
+                    DropdownRow("垂直同步",
+                        listOf("enabled" to "开启", "disabled" to "关闭"),
+                        padLayout.azUseVsync
+                    ) { updateLayout(padLayout.copy {azUseVsync = it}) }
+                    DropdownRow("磁盘着色器缓存",
+                        listOf("enabled" to "开启 (推荐, 防卡顿)", "disabled" to "关闭"),
+                        padLayout.azUseDiskShaderCache
+                    ) { updateLayout(padLayout.copy {azUseDiskShaderCache = it}) }
+                    DropdownRow("异步呈现",
+                        listOf("enabled" to "开启 (降延迟, 默认)", "disabled" to "关闭"),
+                        padLayout.azAsyncPresentation
+                    ) { updateLayout(padLayout.copy {azAsyncPresentation = it}) }
+                    DropdownRow("异步着色器编译",
+                        listOf("enabled" to "开启 (后台编译, 默认)", "disabled" to "关闭"),
+                        padLayout.azAsyncShaderCompilation
+                    ) { updateLayout(padLayout.copy {azAsyncShaderCompilation = it}) }
+                    DropdownRow("精确乘法",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别游戏需要)"),
+                        padLayout.azAccurateMultiplication
+                    ) { updateLayout(padLayout.copy {azAccurateMultiplication = it}) }
+                    DropdownRow("跳过重复帧",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.azSkipDuplicateFrames
+                    ) { updateLayout(padLayout.copy {azSkipDuplicateFrames = it}) }
                     DropdownRow("纹理过滤",
-                        listOf("0" to "无 (默认)", "1" to "Anime4K", "2" to "Bicubic", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
-                        padLayout.tg3dsTextureFilter
-                    ) { updateLayout(padLayout.copy {tg3dsTextureFilter = it}) }
+                        listOf("0" to "无", "1" to "Anime4K", "2" to "双三次", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
+                        padLayout.azTextureFilter
+                    ) { updateLayout(padLayout.copy {azTextureFilter = it}) }
+                    DropdownRow("纹理采样",
+                        listOf("0" to "游戏自带", "1" to "最近邻", "2" to "线性"),
+                        padLayout.azTextureSampling
+                    ) { updateLayout(padLayout.copy {azTextureSampling = it}) }
+                    DropdownRow("整数缩放",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (像素风无畸变)"),
+                        padLayout.azIntegerScaling
+                    ) { updateLayout(padLayout.copy {azIntegerScaling = it}) }
+                    DropdownRow("帧率上限",
+                        listOf("50" to "50%", "100" to "100% (默认)", "200" to "200%", "300" to "300%", "400" to "400%"),
+                        padLayout.azFrameLimit
+                    ) { updateLayout(padLayout.copy {azFrameLimit = it}) }
                 }
-                SettingsSection("3DS · 双屏布局") {
-                    DropdownRow("横屏布局",
-                        listOf("2" to "大屏 + 小屏 (推荐)", "0" to "默认 (上下)", "1" to "单屏", "3" to "侧并", "4" to "混合", "5" to "自定义"),
-                        padLayout.tg3dsLayout
-                    ) { updateLayout(padLayout.copy {tg3dsLayout = it}) }
-                    DropdownRow("竖屏布局",
-                        listOf("2" to "大屏 + 小屏 (推荐)", "0" to "默认 (上下)", "1" to "单屏", "3" to "侧并", "4" to "混合", "5" to "自定义"),
-                        padLayout.tg3dsPortraitLayout
-                    ) { updateLayout(padLayout.copy {tg3dsPortraitLayout = it}) }
-                    DropdownRow("交换上下屏", listOf("0" to "正常", "1" to "交换"), padLayout.tg3dsSwapScreen)
-                    { updateLayout(padLayout.copy {tg3dsSwapScreen = it}) }
-                    DropdownRow("竖持模式 (纵长游戏)", listOf("0" to "关闭", "1" to "开启"), padLayout.tg3dsUpright)
-                    { updateLayout(padLayout.copy {tg3dsUpright = it}) }
-                    DropdownRow("立体 3D 渲染",
-                        listOf("0" to "关闭", "1" to "并排 (半宽)", "2" to "并排 (全宽)", "3" to "红蓝分色", "4" to "隔行", "5" to "反隔行", "6" to "Cardboard VR"),
-                        padLayout.tg3dsRender3d
-                    ) { updateLayout(padLayout.copy {tg3dsRender3d = it}) }
-                    DropdownRow("3D 深度",
-                        listOf("0" to "0%", "64" to "25%", "128" to "50%", "191" to "75%", "255" to "100%"),
-                        padLayout.tg3dsFactor3d
-                    ) { updateLayout(padLayout.copy {tg3dsFactor3d = it}) }
+                SettingsSection("3DS (Azahar) · 3D / 布局") {
+                    DropdownRow("立体 3D",
+                        listOf("0" to "关", "1" to "并排", "2" to "并排 (全宽)", "3" to "红蓝", "4" to "交错", "5" to "反交错", "6" to "Cardboard VR"),
+                        padLayout.azRender3d
+                    ) { updateLayout(padLayout.copy {azRender3d = it}) }
+                    DropdownRow("立体深度", (0..100 step 10).map { it.toString() to "$it%" },
+                        padLayout.azFactor3d
+                    ) { updateLayout(padLayout.copy {azFactor3d = it}) }
+                    DropdownRow("屏幕布局",
+                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右", "4" to "混合", "5" to "自定义"),
+                        padLayout.azLayoutOption
+                    ) { updateLayout(padLayout.copy {azLayoutOption = it}) }
+                    DropdownRow("屏幕间距", (0..500 step 100).map { it.toString() to "${it}px" },
+                        padLayout.azScreenGap
+                    ) { updateLayout(padLayout.copy {azScreenGap = it}) }
+                    DropdownRow("大屏占比",
+                        listOf("1.25" to "1.25 : 1", "1.5" to "1.5 : 1", "1.75" to "1.75 : 1", "2.0" to "2 : 1", "2.25" to "2.25 : 1 (默认)", "2.5" to "2.5 : 1", "3.0" to "3 : 1", "4.0" to "4 : 1"),
+                        padLayout.azLargeScreenProportion
+                    ) { updateLayout(padLayout.copy {azLargeScreenProportion = it}) }
+                    DropdownRow("上下屏交换",
+                        listOf("disabled" to "不交换 (默认)", "enabled" to "交换"),
+                        padLayout.azSwapScreens
+                    ) { updateLayout(padLayout.copy {azSwapScreens = it}) }
+                    DropdownRow("自定义纹理 (HD 包)",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.azCustomTextures
+                    ) { updateLayout(padLayout.copy {azCustomTextures = it}) }
+                    DropdownRow("预加载纹理",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.azPreloadTextures
+                    ) { updateLayout(padLayout.copy {azPreloadTextures = it}) }
                 }
-                SettingsSection("3DS · 音频") {
-                    DropdownRow("音频输出",
-                        listOf("0" to "自动选择", "1" to "无音频", "2" to "Cubeb", "3" to "OpenAL", "4" to "SDL2"),
-                        padLayout.tg3dsAudioOutput
-                    ) { updateLayout(padLayout.copy {tg3dsAudioOutput = it}) }
-                    DropdownRow("音频模拟",
-                        listOf("1" to "开启 (默认)", "0" to "关闭 (最快)"),
-                        padLayout.tg3dsAudioEmulation
-                    ) { updateLayout(padLayout.copy {tg3dsAudioEmulation = it}) }
-                    DropdownRow("音频拉伸", listOf("1" to "开启 (消除爆音)", "0" to "关闭 (低延迟)"), padLayout.tg3dsAudioStretch)
-                    { updateLayout(padLayout.copy {tg3dsAudioStretch = it}) }
-                    DropdownRow("音量",
-                        listOf("0" to "静音", "50" to "50%", "80" to "80%", "100" to "100%"),
-                        padLayout.tg3dsVolume
-                    ) { updateLayout(padLayout.copy {tg3dsVolume = it}) }
-                }
-                SettingsSection("3DS · 系统 / 性能") {
-                    DropdownRow("机型 (New 3DS 模式)",
-                        listOf("0" to "老 3DS (默认·兼容)", "1" to "New 3DS (专属游戏需要)"),
-                        padLayout.tg3dsNew3ds
-                    ) { updateLayout(padLayout.copy {tg3dsNew3ds = it}) }
-                    DropdownRow("区域",
-                        listOf("-1" to "自动", "0" to "日本", "1" to "美国", "2" to "欧洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
-                        padLayout.tg3dsRegion
-                    ) { updateLayout(padLayout.copy {tg3dsRegion = it}) }
-                    DropdownRow("CPU JIT",
-                        listOf("1" to "开启 (推荐)", "0" to "解释器 (兼容性调试)"),
-                        padLayout.tg3dsCpuJit
-                    ) { updateLayout(padLayout.copy {tg3dsCpuJit = it}) }
+                SettingsSection("3DS (Azahar) · 系统 / 音频") {
                     DropdownRow("CPU 时钟",
-                        listOf("50" to "50%", "75" to "75%", "100" to "100% (原生)", "150" to "150%", "200" to "200%", "300" to "300%"),
-                        padLayout.tg3dsCpuClock
-                    ) { updateLayout(padLayout.copy {tg3dsCpuClock = it}) }
-                    DropdownRow("限帧",
-                        listOf("1" to "开启 (原速)", "0" to "不限帧 (快进)"),
-                        padLayout.tg3dsFrameLimit
-                    ) { updateLayout(padLayout.copy {tg3dsFrameLimit = it}) }
-                    DropdownRow("系统应用 LLE",
-                        listOf("1" to "开启 (默认)", "0" to "关闭 (HLE 模拟)"),
-                        padLayout.tg3dsLleApplets
-                    ) { updateLayout(padLayout.copy {tg3dsLleApplets = it}) }
+                        listOf("50" to "50%", "100" to "100% (默认)", "200" to "200%", "300" to "300%", "400" to "400% (超频)"),
+                        padLayout.azCpuClock
+                    ) { updateLayout(padLayout.copy {azCpuClock = it}) }
+                    DropdownRow("CPU JIT",
+                        listOf("enabled" to "开启 (性能关键, 默认)", "disabled" to "关闭"),
+                        padLayout.azUseCpuJit
+                    ) { updateLayout(padLayout.copy {azUseCpuJit = it}) }
+                    DropdownRow("快速解释器",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.azUseFastInterp
+                    ) { updateLayout(padLayout.copy {azUseFastInterp = it}) }
+                    DropdownRow("New 3DS 模式",
+                        listOf("enabled" to "开启 (更快 CPU, 默认)", "disabled" to "关闭 (老游戏兼容)"),
+                        padLayout.azIsNew3ds
+                    ) { updateLayout(padLayout.copy {azIsNew3ds = it}) }
+                    DropdownRow("主机区域",
+                        listOf("-1" to "自动", "0" to "日本", "1" to "美国", "2" to "欧洲", "3" to "澳大利亚", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                        padLayout.azRegion
+                    ) { updateLayout(padLayout.copy {azRegion = it}) }
+                    DropdownRow("音频模拟",
+                        listOf("0" to "HLE (快, 推荐)", "1" to "LLE", "2" to "LLE 多线程"),
+                        padLayout.azAudioEmulation
+                    ) { updateLayout(padLayout.copy {azAudioEmulation = it}) }
+                    DropdownRow("音量", (0..100 step 10).map { it.toString() to "$it%" },
+                        padLayout.azVolume
+                    ) { updateLayout(padLayout.copy {azVolume = it}) }
+                    DropdownRow("音频拉伸",
+                        listOf("enabled" to "开启 (防爆音, 默认)", "disabled" to "关闭"),
+                        padLayout.azAudioStretching
+                    ) { updateLayout(padLayout.copy {azAudioStretching = it}) }
+                    DropdownRow("实时音频",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (低延迟, 可能卡顿)"),
+                        padLayout.azRealtimeAudio
+                    ) { updateLayout(padLayout.copy {azRealtimeAudio = it}) }
                 }
             }
             GamePlatform.NGCWII -> item {
-                // NGC/WII 进程内 Ishiruka (Dolphin fork) —— Dolphin.ini/GFX.ini
-                // 经 native SetUserSetting 直写热生效；控制器扩展热切换。
-                InProcessCoreStatusSection(coreName = "NGC/WII 核心 (Ishiruka)")
-                SettingsSection("NGC/WII · 控制器切换 / 体感") {
-                    DropdownRow("控制器方案",
-                        listOf(
-                            "gc" to "GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机)",
-                            "wii" to "Wii 遥控器 + 双节棍 (C/Z + 副摇杆 + 体感)",
-                            "wiimote" to "Wii 遥控器横握 (1/2/A/B/±/HOME)",
-                            "classic" to "经典手柄 (双摇杆 + 全键)"
-                        ),
-                        padLayout.ngcwiiController
-                    ) { updateLayout(padLayout.copy {ngcwiiController = it}) }
-                    DropdownRow("体感操作",
-                        listOf("enabled" to "开启 (倾斜传感器 + 摇晃 + IR 指针)",
-                               "disabled" to "关闭 (避免误触发摇一摇)"),
-                        padLayout.ngcwiiMotion
-                    ) { updateLayout(padLayout.copy {ngcwiiMotion = it}) }
+                // Ishiiruka 核心选项 —— 引擎经 SetConfig(file, section, key, value)
+                // 热写 Dolphin.ini / GFX.ini。键名/取值对照上游 SettingsFile.java。
+                SettingsSection("NGC/WII (Ishiiruka) · 控制") {
+                    DropdownRow("控制模式",
+                        listOf("auto" to "自动 (按游戏判定)", "ngc" to "GameCube 手柄", "wii" to "Wii Remote"),
+                        padLayout.irControlMode
+                    ) { updateLayout(padLayout.copy {irControlMode = it}) }
+                    DropdownRow("Wii 扩展手柄",
+                        listOf("nunchuk" to "双节棍 (推荐)", "classic" to "经典手柄", "none" to "无"),
+                        padLayout.irWiiExtension
+                    ) { updateLayout(padLayout.copy {irWiiExtension = it}) }
+                }
+                SettingsSection("NGC/WII (Ishiiruka) · 性能 / 图形") {
+                    DropdownRow("CPU 核心",
+                        listOf("4" to "JIT ARM64 (推荐)", "1" to "JIT64", "0" to "解释器 (慢)"),
+                        padLayout.irCpuCore
+                    ) { updateLayout(padLayout.copy {irCpuCore = it}) }
+                    DropdownRow("双核模拟",
+                        listOf("enabled" to "开启 (CPU/GPU 分线程, 默认)", "disabled" to "关闭"),
+                        padLayout.irDualCore
+                    ) { updateLayout(padLayout.copy {irDualCore = it}) }
+                    DropdownRow("CPU 超频开关",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.irOverclockEnable
+                    ) { updateLayout(padLayout.copy {irOverclockEnable = it}) }
+                    DropdownRow("CPU 超频",
+                        listOf("100" to "100% (默认)", "150" to "150%", "200" to "200%", "300" to "300%", "400" to "400%"),
+                        padLayout.irOverclock
+                    ) { updateLayout(padLayout.copy {irOverclock = it}) }
+                    DropdownRow("渲染后端",
+                        listOf("OGL" to "OpenGL (兼容)", "Vulkan" to "Vulkan (性能)", "SW" to "软件渲染"),
+                        padLayout.irBackend
+                    ) { updateLayout(padLayout.copy {irBackend = it}) }
+                    DropdownRow("内部分辨率 (EFB)",
+                        listOf("2" to "1x 原生", "4" to "2x", "6" to "3x", "7" to "4x"),
+                        padLayout.irResolution
+                    ) { updateLayout(padLayout.copy {irResolution = it}) }
+                    DropdownRow("多重采样 (MSAA)",
+                        listOf("1" to "关闭", "2" to "2x", "4" to "4x", "8" to "8x"),
+                        padLayout.irMsaa
+                    ) { updateLayout(padLayout.copy {irMsaa = it}) }
+                    DropdownRow("各向异性过滤",
+                        listOf("0" to "1x (关)", "1" to "2x", "2" to "4x", "3" to "8x", "4" to "16x"),
+                        padLayout.irAnisotropy
+                    ) { updateLayout(padLayout.copy {irAnisotropy = it}) }
+                    DropdownRow("显示 FPS",
+                        listOf("disabled" to "关闭", "enabled" to "开启"),
+                        padLayout.irShowFps
+                    ) { updateLayout(padLayout.copy {irShowFps = it}) }
+                    DropdownRow("启动时编译着色器",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (游戏中防卡顿)"),
+                        padLayout.irWaitForShaders
+                    ) { updateLayout(padLayout.copy {irWaitForShaders = it}) }
+                    DropdownRow("画面比例",
+                        listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口"),
+                        padLayout.irAspect
+                    ) { updateLayout(padLayout.copy {irAspect = it}) }
+                    DropdownRow("EFB 纹理复制",
+                        listOf("enabled" to "开启 (性能关键, 默认)", "disabled" to "关闭"),
+                        padLayout.irEfbToTexture
+                    ) { updateLayout(padLayout.copy {irEfbToTexture = it}) }
+                    DropdownRow("EFB 缩放复制",
+                        listOf("enabled" to "开启 (高清更清晰, 默认)", "disabled" to "关闭"),
+                        padLayout.irEfbScaledCopy
+                    ) { updateLayout(padLayout.copy {irEfbScaledCopy = it}) }
+                    DropdownRow("EFB 访问",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭"),
+                        padLayout.irEfbAccess
+                    ) { updateLayout(padLayout.copy {irEfbAccess = it}) }
+                }
+                SettingsSection("NGC/WII (Ishiiruka) · 音频 / Wii") {
+                    DropdownRow("音频拉伸",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (防爆音)"),
+                        padLayout.irAudioStretch
+                    ) { updateLayout(padLayout.copy {irAudioStretch = it}) }
+                    DropdownRow("DSP HLE",
+                        listOf("enabled" to "开启 (高速, 默认)", "disabled" to "关闭 (LLE 精确但慢)"),
+                        padLayout.irDspHle
+                    ) { updateLayout(padLayout.copy {irDspHle = it}) }
+                    DropdownRow("Wii 扬声器模拟",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.irWiimoteSpeaker
+                    ) { updateLayout(padLayout.copy {irWiimoteSpeaker = it}) }
+                    DropdownRow("Wiimote 持续扫描",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (实体 Wiimote)"),
+                        padLayout.irWiimoteScan
+                    ) { updateLayout(padLayout.copy {irWiimoteScan = it}) }
                     Text(
-                        "全量虚拟按键（GC 手柄 / Wii 遥控器 / 双节棍 / 经典手柄）随控制器方案自动切换；" +
-                        "IR 指针 = 游戏画面触摸拖动；倾斜 = 手机陀螺仪（首次开机自动校准水平）；" +
-                        "摇晃 = 虚拟 L3/R3 键；挥动/IR 重定位 = 组合键。全部热生效。",
+                        "提示：Wii 游戏 IR 指针 = 触摸游戏画面（绝对指向）；IR−/IR+ 调进深；" +
+                        "摇晃 = L/R 键（wii 模式）。GameCube 游戏自动使用 GC 手柄布局。",
                         color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
-                SettingsSection("NGC/WII · 画面") {
-                    DropdownRow("内部分辨率",
-                        listOf("1" to "1x (720p)", "2" to "1.5x", "3" to "2x (1080p)", "4" to "2.5x", "5" to "3x", "6" to "4x", "7" to "5x", "8" to "6x"),
-                        padLayout.ngcwiiInternalRes
-                    ) { updateLayout(padLayout.copy {ngcwiiInternalRes = it}) }
-                    DropdownRow("画面比例",
-                        listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口", "4" to "强制原始"),
-                        padLayout.ngcwiiAspect
-                    ) { updateLayout(padLayout.copy {ngcwiiAspect = it}) }
-                    DropdownRow("Wii 宽屏模式",
-                        listOf("0" to "4:3", "1" to "16:9 (宽屏游戏)"),
-                        padLayout.ngcwiiWiiAspect
-                    ) { updateLayout(padLayout.copy {ngcwiiWiiAspect = it}) }
-                    DropdownRow("抗锯齿 MSAA",
-                        listOf("1" to "关闭", "2" to "2x", "4" to "4x", "8" to "8x"),
-                        padLayout.ngcwiiMsaa
-                    ) { updateLayout(padLayout.copy {ngcwiiMsaa = it}) }
-                    DropdownRow("各向异性过滤",
-                        listOf("1" to "关闭", "2" to "2x", "4" to "4x", "8" to "8x", "16" to "16x"),
-                        padLayout.ngcwiiAniso
-                    ) { updateLayout(padLayout.copy {ngcwiiAniso = it}) }
-                    DropdownRow("等待着色器编译",
-                        listOf("True" to "开启 (防闪烁, 略卡)", "False" to "关闭 (闪烁但流畅)"),
-                        padLayout.ngcwiiWaitShaders
-                    ) { updateLayout(padLayout.copy {ngcwiiWaitShaders = it}) }
-                    DropdownRow("显示 FPS",
-                        listOf("False" to "关闭", "True" to "开启"),
-                        padLayout.ngcwiiShowFps
-                    ) { updateLayout(padLayout.copy {ngcwiiShowFps = it}) }
-                }
-                SettingsSection("NGC/WII · 核心 / 系统") {
-                    DropdownRow("CPU 模式",
-                        listOf("1" to "JIT (推荐)", "0" to "解释器 (慢)", "2" to "JITIL (实验)"),
-                        padLayout.ngcwiiCpuCore
-                    ) { updateLayout(padLayout.copy {ngcwiiCpuCore = it}) }
-                    DropdownRow("DSP 音频",
-                        listOf("True" to "HLE (推荐)", "False" to "LLE (需要 DSP ROM)"),
-                        padLayout.ngcwiiDspHle
-                    ) { updateLayout(padLayout.copy {ngcwiiDspHle = it}) }
-                    DropdownRow("音频后端",
-                        listOf("OpenSL ES" to "OpenSL ES (推荐)", "AAudio" to "AAudio", "No audio output" to "无音频"),
-                        padLayout.ngcwiiAudioBackend
-                    ) { updateLayout(padLayout.copy {ngcwiiAudioBackend = it}) }
-                    DropdownRow("模拟速度",
-                        listOf("1.0" to "100% (原速)", "2.0" to "200%", "0" to "不限帧 (快进)"),
-                        padLayout.ngcwiiEmulationSpeed
-                    ) { updateLayout(padLayout.copy {ngcwiiEmulationSpeed = it}) }
-                    DropdownRow("Wii 系统语言",
-                        listOf("0" to "日语", "1" to "英语", "2" to "德语", "3" to "法语", "4" to "西班牙语", "5" to "意大利语", "6" to "荷兰语", "7" to "简体中文", "8" to "繁体中文", "9" to "韩语"),
-                        padLayout.ngcwiiWiiLanguage
-                    ) { updateLayout(padLayout.copy {ngcwiiWiiLanguage = it}) }
-                    DropdownRow("金手指",
-                        listOf("False" to "关闭", "True" to "开启 (配合游戏 INI)"),
-                        padLayout.ngcwiiCheats
-                    ) { updateLayout(padLayout.copy {ngcwiiCheats = it}) }
-                    DropdownRow("蓝牙连续扫描",
-                        listOf("False" to "关闭", "True" to "开启 (真实 Wiimote 连接)"),
-                        padLayout.ngcwiiScan
-                    ) { updateLayout(padLayout.copy {ngcwiiScan = it}) }
-                }
             }
-        } // when (platform)
+        }
 
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在
         // PadLayout.overlayThemeJson，见 OverlayTheme.kt） ===
         item { OverlayThemeSection(platform, padLayout, updateLayout) }
-    }
-}
-
-// ===========================================================================
-// 3DS / NGC-WII 进程内核心 设置辅助 Composable
-// ===========================================================================
-
-/** 进程内核心状态卡（Azahar / Ishiruka 共用：库加载 + 版本号）。 */
-@Composable
-internal fun InProcessCoreStatusSection(coreName: String) {
-    val (loaded, version) = remember {
-        if (coreName.contains("3DS")) {
-            val ok = try {
-                com.nesstation.app.core.jni.AzaharNative.isLoaded
-            } catch (_: Throwable) { false }
-            ok to ""
-        } else {
-            val ok = try {
-                com.nesstation.app.core.jni.IshirukaNative.isLoaded
-            } catch (_: Throwable) { false }
-            ok to ""
-        }
-    }
-    SettingsSection("$coreName · 核心状态") {
-        SettingsRow(
-            title = if (loaded) "已就绪（进程内嵌入）" else "待启动（首次进入游戏时加载）",
-            subtitle = if (coreName.contains("3DS"))
-                "libcitra-android.so 随 NesStation 发布，无需安装任何外部 APK"
-            else
-                "libmain.so 随 NesStation 发布，无需安装任何外部 APK"
-        )
-        Text(
-            "该平台与 DC/PS2 同为进程内核心：模拟画面、虚拟按键、设置全部在 " +
-            "NesStation 内完成。3DS 需要 arm64 设备；NGC/WII 需要 arm64 设备。",
-            color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
-    }
-}
-
-/**
- * 3DS 解密密钥导入 + 独立解密工具。
- *  ① 导入 aes_keys.txt（SAF 选择 → 写入 <userDir>/keys/ 与 sysdata/ 双位置）
- *  ② 密钥状态展示（areKeysAvailable）
- *  ③ 「解密工具」：选择加密的 .3ds/.cci/.cxi/.cia → 解密导出到
- *     Download/NesStation/decrypted/
- */
-@Composable
-internal fun AzaharKeysAndDecryptSection() {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var message by remember { mutableStateOf<String?>(null) }
-    var keysOk by remember { mutableStateOf(false) }
-
-    // 进入时检查密钥可用性（核心未加载时静默失败，UI 显示未知态）
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            if (com.nesstation.app.core.jni.AzaharNative.ensureLoaded()) {
-                com.nesstation.app.core.jni.AzaharNative.ensureUserDirectory()
-                keysOk = com.nesstation.app.core.jni.AzaharNative.areKeysAvailable()
-            }
-        }
-    }
-
-    val keysPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            try {
-                val text = context.contentResolver.openInputStream(uri)?.use {
-                    it.readBytes().toString(Charsets.UTF_8)
-                } ?: ""
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                    val ok = AzaharDirs.importKeys(context, text)
-                    if (ok && com.nesstation.app.core.jni.AzaharNative.ensureLoaded()) {
-                        keysOk = com.nesstation.app.core.jni.AzaharNative.areKeysAvailable()
-                    }
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        message = if (ok) "aes_keys.txt 已导入 —— " +
-                            (if (keysOk) "密钥校验通过 ✓" else "已写入（核心启动后校验）")
-                        else "导入失败：无法写入用户目录"
-                    }
-                }
-            } catch (t: Throwable) {
-                message = "导入失败：${t.message}"
-            }
-        }
-    }
-    SettingsRow(
-        title = "① 导入 aes_keys.txt（3DS 解密密钥）",
-        subtitle = if (keysOk) "密钥已就绪 ✓（加密游戏可直接运行/安装）"
-                   else "加密游戏解密所需；Azahar 标准格式，导入一次全局生效"
-    ) { keysPicker.launch(arrayOf("*/*")) }
-
-    // === 独立解密工具 ===
-    val decryptPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            message = "解密中…（大文件需要数分钟）"
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                // content uri → 缓存文件 → 解密
-                val cache = java.io.File(context.cacheDir, "decrypt_input.bin")
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        cache.outputStream().use { input.copyTo(it) }
-                    }
-                    val result = CiaInstaller.decrypt(context, cache.absolutePath)
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        message = if (result.ok) result.message else "解密失败：${result.message}"
-                    }
-                } catch (t: Throwable) {
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        message = "解密失败：${t.message}"
-                    }
-                } finally {
-                    cache.delete()
-                }
-            }
-        }
-    }
-    SettingsRow(
-        title = "② 解密工具（.3ds/.cci/.cxi/.cia → 解密文件）",
-        subtitle = "导出到 Download/NesStation/decrypted/，可直接导入游戏库"
-    ) { decryptPicker.launch(arrayOf("*/*")) }
-
-    message?.let {
-        Text(it, color = Color(0xFF2E7D32), fontSize = 11.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
-    }
-}
-
-/**
- * CIA 批量安装：选择一个或多个 .cia → 核心原生安装器逐个装入 NAND
- * （加密 CIA 自动用已导入密钥解密）。安装完成的标题出现在已安装列表，
- * 可直接从游戏库启动。
- */
-@Composable
-internal fun CiaInstallSection() {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var message by remember { mutableStateOf<String?>(null) }
-    var installing by remember { mutableStateOf(false) }
-
-    val ciaPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            installing = true
-            message = "安装中…（0/${uris.size}）"
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                var ok = 0
-                val errors = mutableListOf<String>()
-                uris.forEachIndexed { idx, u ->
-                    val cache = java.io.File(context.cacheDir, "cia_install_${idx}.cia")
-                    try {
-                        context.contentResolver.openInputStream(u)?.use { input ->
-                            cache.outputStream().use { input.copyTo(it) }
-                        }
-                        val result = CiaInstaller.installCia(context, cache.absolutePath)
-                        if (result.ok) ok++ else errors.add(result.message)
-                    } catch (t: Throwable) {
-                        errors.add(t.message ?: "未知错误")
-                    } finally {
-                        cache.delete()
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            message = "安装中…（${idx + 1}/${uris.size}）"
-                        }
-                    }
-                }
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    installing = false
-                    message = "安装完成：$ok/${uris.size} 成功" +
-                        (errors.take(2).joinToString("；").let { if (it.isNotBlank()) " — $it" else "" })
-                }
-            }
-        }
-    }
-    SettingsRow(
-        title = "选择 .cia 文件安装（可多选）",
-        subtitle = if (installing) "正在安装…" else "加密 CIA 自动用已导入密钥解密后装入 NAND"
-    ) { if (!installing) ciaPicker.launch(arrayOf("*/*")) }
-
-    message?.let {
-        Text(it, color = Color(0xFF2E7D32), fontSize = 11.sp,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
     }
 }

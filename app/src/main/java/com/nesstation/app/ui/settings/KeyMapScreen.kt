@@ -247,6 +247,45 @@ private val DC_ACTIONS = listOf(
     KeyAction("dc_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
 )
 
+private val N3DS_ACTIONS = listOf(
+    KeyAction("n3ds_up",     "上",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("n3ds_down",   "下",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("n3ds_left",   "左",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("n3ds_right",  "右",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("n3ds_a",      "A",      Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_A,   "A"),
+    KeyAction("n3ds_b",      "B",      Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_B,   "B"),
+    KeyAction("n3ds_x",      "X",      Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_X,   "X"),
+    KeyAction("n3ds_y",      "Y",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_Y,   "Y"),
+    KeyAction("n3ds_l",      "L",      Color(0xFF9C27B0), KeyEvent.KEYCODE_BUTTON_L1,  "L"),
+    KeyAction("n3ds_r",      "R",      Color(0xFF00BCD4), KeyEvent.KEYCODE_BUTTON_R1,  "R"),
+    KeyAction("n3ds_zl",     "ZL",     Color(0xFF1F6F8B), KeyEvent.KEYCODE_BUTTON_L2,  "ZL (New3DS)"),
+    KeyAction("n3ds_zr",     "ZR",     Color(0xFF1F8B6F), KeyEvent.KEYCODE_BUTTON_R2,  "ZR (New3DS)"),
+    KeyAction("n3ds_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select"),
+    KeyAction("n3ds_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
+)
+
+private val NGCWII_ACTIONS = listOf(
+    KeyAction("ngc_up",         "上",       Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,      "GC/Wii 方向上"),
+    KeyAction("ngc_down",       "下",       Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_DOWN,    "GC/Wii 方向下"),
+    KeyAction("ngc_left",       "左",       Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_LEFT,    "GC/Wii 方向左"),
+    KeyAction("ngc_right",      "右",       Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_RIGHT,   "GC/Wii 方向右"),
+    KeyAction("ngc_a",          "A",        Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_A,     "GC A / Wii A"),
+    KeyAction("ngc_b",          "B",        Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_B,     "GC B / Wii B"),
+    KeyAction("ngc_x",          "X",        Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_X,     "GC X"),
+    KeyAction("ngc_y",          "Y",        Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_Y,     "GC Y"),
+    KeyAction("ngc_z",          "Z",        Color(0xFF8E44AD), KeyEvent.KEYCODE_BUTTON_Z,     "GC Z / Wii IR 隐藏"),
+    KeyAction("ngc_l",          "L",        Color(0xFF9C27B0), KeyEvent.KEYCODE_BUTTON_L1,    "GC L 扳机 / 摇晃X"),
+    KeyAction("ngc_r",          "R",        Color(0xFF00BCD4), KeyEvent.KEYCODE_BUTTON_R1,    "GC R 扳机 / 摇晃Z"),
+    KeyAction("ngc_start",      "Start",    Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START, "GC Start"),
+    KeyAction("ngc_wii_1",      "Wii 1",    Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_1,     "Wii 1"),
+    KeyAction("ngc_wii_2",      "Wii 2",    Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_2,     "Wii 2"),
+    KeyAction("ngc_wii_plus",   "Wii +",    Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START, "Wii +"),
+    KeyAction("ngc_wii_minus",  "Wii −",    Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT,"Wii −"),
+    KeyAction("ngc_wii_home",   "Wii HOME", Color(0xFF607D8B), KeyEvent.KEYCODE_BUTTON_HOMEPAGE,"Wii HOME"),
+    KeyAction("ngc_wii_c",      "双节棍 C", Color(0xFF16A085), KeyEvent.KEYCODE_BUTTON_L2,    "双节棍 C"),
+    KeyAction("ngc_wii_z",      "双节棍 Z", Color(0xFF27AE60), KeyEvent.KEYCODE_BUTTON_R2,    "双节棍 Z")
+)
+
 private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction> {
     val suffix = "_p${player + 1}"
     return when (platform) {
@@ -267,11 +306,10 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         // EmulatorScreen 的 KeyActionInternal DC 表（dc_*），输出经
         // dcToLibretroLayout 转换为 flycast 官方 JOYPAD 映射。
         GamePlatform.DC     -> DC_ACTIONS.map { it.copy(id = it.id + suffix) }
-        // 3DS / NGC-WII 为外部独立核心（Azahar / Ishiruka）：物理手柄/键盘
-        // 由核心自身映射体系处理（Dolphin 的 onGamePadEvent / Citra 的
-        // 输入配置），NesStation 按键映射页不适用 —— 显示空表。
-        GamePlatform.TG3DS  -> emptyList()
-        GamePlatform.NGCWII -> emptyList()
+        // 3DS（Azahar）/ NGC-WII（Ishiiruka）：id 对应 EmulatorScreen 的
+        // KeyActionInternal n3ds_* / ngc_* 表，引擎按项目位布局直收。
+        GamePlatform.N3DS   -> N3DS_ACTIONS.map { it.copy(id = it.id + suffix) }
+        GamePlatform.NGCWII -> NGCWII_ACTIONS.map { it.copy(id = it.id + suffix) }
     }
 }
 
@@ -342,9 +380,13 @@ fun KeyMapScreen(onBack: () -> Unit) {
                         GamePlatform.PCE to "PCE",
                         GamePlatform.NDS to "NDS",
                         GamePlatform.PSX to "PSX",
+                        GamePlatform.PS2 to "PS2",
                         GamePlatform.ARCADE to "街机",
                         GamePlatform.DOS to "DOS",
-                        GamePlatform.JAVA to "Java"
+                        GamePlatform.JAVA to "Java",
+                        GamePlatform.DC to "DC",
+                        GamePlatform.N3DS to "3DS",
+                        GamePlatform.NGCWII to "NGC/WII"
                     )
                 ) { (platform, label) ->
                     PlatformTab(

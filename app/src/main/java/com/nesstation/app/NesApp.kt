@@ -109,19 +109,6 @@ class NesApp : Application() {
             com.nesstation.app.core.jni.NdsNative.appContext = this
             NdsEngine.ensureLoaded()
         }
-        tryInit("AzaharEngine")        {
-            // 3DS 核心（Azahar/AzaharPlus 2125）—— 进程内嵌入
-            // libcitra-android.so：JNI 契约类 org.citra.citra_emu.* 随本应用
-            // 打包（静态 JNI 导出绑定），NesApp 只注入宿主上下文。
-            // 注意：核心仅 arm64-v8a，32 位进程 loadLibrary 失败由
-            // tryInit 兜底（进入游戏时再报错），不影响其它平台。
-            com.nesstation.app.core.jni.AzaharNative.appContext = this
-        }
-        tryInit("IshirukaEngine")      {
-            // NGC/WII 核心（Ishiruka — Dolphin fork）—— 进程内嵌入
-            // libmain.so：JNI 契约类 org.dolphinemu.dolphinemu.* 随本应用打包。
-            com.nesstation.app.core.jni.IshirukaNative.appContext = this
-        }
         tryInit("DraSticEngine")       {
             // DraStic（激烈）NDS core —— 与 melonDS 并列的第二个 NDS 核心，
             // 启动游戏时由玩家在核心选择对话框里二选一。
@@ -131,6 +118,24 @@ class NesApp : Application() {
             // （不崩溃）。提前在启动时探测并缓存结果，对话框弹出时无需
             // 再等库加载。
             com.nesstation.app.core.engine.DraSticEngine.get().also { engine ->
+                engine.appContext = this
+                engine.probeAvailability()
+            }
+        }
+        tryInit("AzaharEngine")        {
+            // Azahar 3DS core —— 原包名 JNI 契约 + 预编译 libazahar.so
+            // （来自 AzaharPlus APK，经 scripts/fetch_azahar_ishiruka_libs.sh 提取）。
+            // 启动时探测可用性，库缺失时 UI 报告原因（不崩溃）。
+            com.nesstation.app.core.engine.AzaharEngine.get().also { engine ->
+                engine.appContext = this
+                engine.probeAvailability()
+            }
+        }
+        tryInit("IshirukaEngine")      {
+            // Ishiiruka NGC/WII core —— Dolphin 优化分支，原包名 JNI 契约 +
+            // 预编译 libishiiruka.so（来自 Ishiruka APK，经
+            // scripts/fetch_azahar_ishiruka_libs.sh 提取）。启动时探测可用性。
+            com.nesstation.app.core.engine.IshirukaEngine.get().also { engine ->
                 engine.appContext = this
                 engine.probeAvailability()
             }

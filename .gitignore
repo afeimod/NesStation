@@ -42,9 +42,3 @@ obj/
 
 # Temp downloads (shaderc dep tarballs etc.) — never commit
 .tmp_dl/
-
-# Go server build artifacts & runtime data — never commit
-server/gamebox-server
-server/gamebox-server.exe
-server/build/
-server/data/

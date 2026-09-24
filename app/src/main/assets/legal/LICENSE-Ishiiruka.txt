@@ -1,0 +1,15 @@
+Ishiiruka (Dolphin fork) — GameCube / Wii emulator core
+=======================================================
+
+Ishiiruka-Dolphin is a performance-oriented fork of the Dolphin emulator
+(by Tinob), itself licensed under GPLv2+.
+
+Licensed under GPLv2 (or any later version).
+https://github.com/Tinob/Ishiiruka
+
+The NesStation integration vendors the upstream Android JNI host contract
+(org.dolphinemu.ishiiruka.NativeLibrary and supporting classes) and loads
+the prebuilt libmain.so (renamed libishiiruka.so) extracted from the
+Ishiruka Android APK via scripts/fetch_azahar_ishiruka_libs.sh. The
+prebuilt core remains under its upstream license. You must comply with
+GPLv2 when distributing derivatives.

@@ -267,9 +267,9 @@ private fun PlatformBadge(platform: GamePlatform, modifier: Modifier = Modifier)
         GamePlatform.PSX    -> "PSX"  to Color(0xFF5D4037)   // brown — PlayStation 1
         GamePlatform.PS2    -> "PS2"  to Color(0xFF37474F)   // blue-grey — PlayStation 2 (PCEE2/PCSX2)
         GamePlatform.JAVA   -> "Java" to Color(0xFF4E342E)   // brown — J2ME
-        GamePlatform.DC     -> "DC"   to Color(0xFF1B6FE0)   // blue — Dreamcast/NAOMI (Flycast)
-        GamePlatform.TG3DS  -> "3DS"  to Color(0xFFE9573F)   // red-orange — Nintendo 3DS (Azahar)
-        GamePlatform.NGCWII -> "NGC/WII" to Color(0xFF9C6ADE)  // purple — GameCube/Wii (Ishiruka)
+        GamePlatform.DC     -> "DC"   to Color(0xFF1B6FE0)
+        GamePlatform.N3DS   -> "3DS"  to Color(0xFFD32F6F)   // red-pink — 3DS
+        GamePlatform.NGCWII -> "NWC" to Color(0xFF6A1B9A)   // purple — NGC/WII   // blue — Dreamcast/NAOMI (Flycast)
     }
     Box(
         modifier = modifier

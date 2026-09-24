@@ -157,3 +157,17 @@ licenses — see `app/src/main/assets/legal/LICENSE-*.txt`:
 
 The bridge `.so` files (compiled from `core/jni/*_bridge.cpp`) are
 licensed under the NesStation app's MIT license.
+
+## Azahar (3DS) 与 Ishiiruka (NGC/WII) 核心库（3.7 新增）
+
+两个"独立模拟器形态"核心参照 DraStic 模式集成：预编译 `.so` 放本目录，
+由 vendored 原包名 JNI 契约类（`org.citra.citra_emu.NativeLibrary` /
+`org.dolphinemu.ishiiruka.NativeLibrary`）按符号绑定：
+
+| 核心库 | 来源 APK 内的库 | 平台 | 引擎 | 提取方式 |
+| --- | --- | --- | --- | --- |
+| `libazahar.so` | `libcitra-android.so`（AzaharPlus / 官方 Azahar 2125+ APK） | 3DS | `AzaharEngine` | `scripts/fetch_azahar_ishiruka_libs.sh --apk3ds <AzaharPlus.apk>` |
+| `libishiiruka.so` | `libmain.so`（Ishiruka APK） | NGC/WII | `IshirukaEngine` | `scripts/fetch_azahar_ishiruka_libs.sh --apkngcwii <Ishiruka.apk>` |
+
+仅提供 arm64-v8a（上游 Android 移植均为 64 位 only）。库缺失时应用正常启动，
+进入对应平台游戏会明确提示"核心不可用"及提取方法，不会崩溃。

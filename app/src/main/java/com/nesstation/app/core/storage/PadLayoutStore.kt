@@ -686,6 +686,65 @@ class PadLayout {
     var ps2HalfPixelOffset: String = "0"             // pcsx2_half_pixel_offset: 0..5 (GSHalfPixelOffset, 0=关闭)
     var ps2TexturePreloading: String = "1"           // pcsx2_texture_preloading: 0=Off|1=Partial|2=Full (Full 最吃显存)
 
+    // === 3DS (Azahar / AzaharPlus) core options ===
+    // 键名/取值对照 azahar-emu/azahar src/android jni/config.cpp（2125.x）：
+    // 引擎以 "段/键" 复合键直写用户目录 config/config.ini 后 reloadSettings()。
+    var azGraphicsApi: String = "opengl"            // software | opengl | vulkan (graphics_api 0/1/2)
+    var azResolution: String = "0"                  // "0".."4" (resolution_factor, 0=1x 原生)
+    var azUseHwShader: String = "enabled"           // enabled | disabled (use_hw_shader)
+    var azUseShaderJit: String = "enabled"          // enabled | disabled (use_shader_jit)
+    var azUseVsync: String = "enabled"              // enabled | disabled (use_vsync)
+    var azUseDiskShaderCache: String = "enabled"    // enabled | disabled (use_disk_shader_cache)
+    var azAsyncPresentation: String = "enabled"     // enabled | disabled (async_presentation)
+    var azAsyncShaderCompilation: String = "enabled" // enabled | disabled (async_shader_compilation)
+    var azAccurateMultiplication: String = "disabled" // enabled | disabled (shaders_accurate_mul)
+    var azSkipDuplicateFrames: String = "disabled"  // enabled | disabled (use_skip_duplicate_frames)
+    var azTextureFilter: String = "0"               // "0".."5" (texture_filter: 无/Anime4K/双三次/ScaleForce/xBRZ/MMPX)
+    var azTextureSampling: String = "0"             // "0".."2" (texture_sampling: 游戏/最近邻/线性)
+    var azIntegerScaling: String = "disabled"       // enabled | disabled (use_integer_scaling)
+    var azFrameLimit: String = "100"                // "25".."400" (frame_limit %, 100=全速)
+    var azRender3d: String = "0"                    // "0".."6" (render_3d: 关/并排/并排全/红蓝/交错/反交错/CardboardVR)
+    var azFactor3d: String = "0"                    // "0".."100" (factor_3d 立体深度)
+    var azLayoutOption: String = "0"                // "0".."5" (layout_option: 默认/单屏/大屏/左右/混合/自定义)
+    var azScreenGap: String = "0"                   // "0".."500" (screen_gap px)
+    var azLargeScreenProportion: String = "2.25"    // "1.25".."4.0" (large_screen_proportion)
+    var azSwapScreens: String = "disabled"          // enabled | disabled (swap_screen 上下屏交换)
+    var azCpuClock: String = "100"                  // "25".."400" (cpu_clock_percentage %)
+    var azUseCpuJit: String = "enabled"             // enabled | disabled (use_cpu_jit)
+    var azUseFastInterp: String = "disabled"        // enabled | disabled (use_fastinterp 快速解释器)
+    var azIsNew3ds: String = "enabled"              // enabled | disabled (is_new_3ds New3DS 模式)
+    var azRegion: String = "-1"                     // "-1".."6" (region_value: 自动/日/美/欧/澳/中/韩/台)
+    var azAudioEmulation: String = "0"              // "0"|"1"|"2" (audio_emulation: HLE/LLE/LLE多线程)
+    var azVolume: String = "100"                    // "0".."100" (volume)
+    var azAudioStretching: String = "enabled"       // enabled | disabled (enable_audio_stretching)
+    var azRealtimeAudio: String = "disabled"        // enabled | disabled (enable_realtime_audio)
+    var azCustomTextures: String = "disabled"       // enabled | disabled (custom_textures 纹理替换)
+    var azPreloadTextures: String = "disabled"      // enabled | disabled (preload_textures)
+
+    // === NGC/WII (Ishiiruka — Dolphin 优化分支) core options ===
+    // 键名/取值对照 Tinob/Ishiiruka Source/Android SettingsFile.java：
+    // 引擎以 SetConfig(file, section, key, value) 热写 Dolphin.ini / GFX.ini。
+    var irControlMode: String = "auto"              // auto | ngc | wii (控制模式, auto 按游戏判定)
+    var irWiiExtension: String = "nunchuk"          // nunchuk | classic | none (Wii 扩展手柄)
+    var irCpuCore: String = "4"                     // "0" 解释器 | "4" JIT ARM64 (CPUCore)
+    var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
+    var irOverclockEnable: String = "disabled"      // enabled | disabled (OverclockEnable)
+    var irOverclock: String = "100"                 // "100".."400" % (Overclock)
+    var irBackend: String = "OGL"                   // OGL | Vulkan | SW (GFXBackend)
+    var irResolution: String = "2"                  // "2" 原生 | "4" 2x | "6" 3x | "7" 4x (EFBScale)
+    var irMsaa: String = "1"                        // "1" 关 | "2" | "4" | "8" (MSAA)
+    var irAnisotropy: String = "0"                  // "0".."4" (MaxAnisotropy 1x..16x)
+    var irShowFps: String = "disabled"              // enabled | disabled (ShowFPS)
+    var irWaitForShaders: String = "disabled"       // enabled | disabled (CompileShaderOnStartup)
+    var irAspect: String = "0"                      // "0" 自动 | "1" 16:9 | "2" 4:3 | "3" 拉伸 (AspectRatio)
+    var irEfbToTexture: String = "enabled"          // enabled | disabled (EFBToTextureEnable, 性能关键)
+    var irEfbScaledCopy: String = "enabled"         // enabled | disabled (EFBScaledCopy)
+    var irEfbAccess: String = "enabled"             // enabled | disabled (EFBAccessEnable)
+    var irAudioStretch: String = "disabled"         // enabled | disabled (AudioStretch)
+    var irDspHle: String = "enabled"                // enabled | disabled (DSPHLE)
+    var irWiimoteSpeaker: String = "disabled"       // enabled | disabled (WiimoteEnableSpeaker)
+    var irWiimoteScan: String = "disabled"          // enabled | disabled (WiimoteContinuousScanning)
+
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
         fun normalizePs2ResMulti(raw: String?): String = when (raw?.trim()) {
@@ -737,6 +796,97 @@ class PadLayout {
     var ps2BtnL3P: ButtonLayout = ButtonLayout(x = 0.29f, y = 0.93f, sizeDp = 32)
     var ps2BtnR3P: ButtonLayout = ButtonLayout(x = 0.71f, y = 0.93f, sizeDp = 32)
 
+    // === 3DS on-screen pad（专属全套布局：双摇杆 + ZL/ZR + ABXY 菱形）===
+    // 3DS = New3DS 手柄：十字键（左下）、CirclePad（左上，模拟）、C-Stick（右上，模拟）、
+    // ABXY 菱形（右下）、L/R 顶部外侧、ZL/ZR 顶部内侧、Start/Select 底部中间。
+    // 下屏触摸不设按键 —— 游戏区域内触摸直通核心（原生按布局映射）。
+    var n3dsDpad: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.72f, sizeDp = 104)
+    var n3dsDpadP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.72f, sizeDp = 96)
+    var n3dsLStick: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.50f, sizeDp = 104)   // CirclePad
+    var n3dsLStickP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.52f, sizeDp = 92)
+    var n3dsRStick: ButtonLayout = ButtonLayout(x = 0.87f, y = 0.30f, sizeDp = 72)    // C-Stick
+    var n3dsRStickP: ButtonLayout = ButtonLayout(x = 0.82f, y = 0.36f, sizeDp = 64)
+    // ABXY 菱形（右下）：A 右、B 下、X 上、Y 左（Nintendo 布局）
+    var n3dsBtnA: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.68f, sizeDp = 54)
+    var n3dsBtnB: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.76f, sizeDp = 54)
+    var n3dsBtnX: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.60f, sizeDp = 54)
+    var n3dsBtnY: ButtonLayout = ButtonLayout(x = 0.78f, y = 0.68f, sizeDp = 54)
+    var n3dsBtnAP: ButtonLayout = ButtonLayout(x = 0.86f, y = 0.72f, sizeDp = 48)
+    var n3dsBtnBP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.80f, sizeDp = 48)
+    var n3dsBtnXP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.64f, sizeDp = 48)
+    var n3dsBtnYP: ButtonLayout = ButtonLayout(x = 0.74f, y = 0.72f, sizeDp = 48)
+    // 肩键：L/R 外侧、ZL/ZR 内侧（New3DS）
+    var n3dsBtnL: ButtonLayout = ButtonLayout(x = 0.09f, y = 0.12f, sizeDp = 54)
+    var n3dsBtnR: ButtonLayout = ButtonLayout(x = 0.91f, y = 0.12f, sizeDp = 54)
+    var n3dsBtnZL: ButtonLayout = ButtonLayout(x = 0.20f, y = 0.07f, sizeDp = 46)
+    var n3dsBtnZR: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.07f, sizeDp = 46)
+    var n3dsBtnLP: ButtonLayout = ButtonLayout(x = 0.09f, y = 0.10f, sizeDp = 48)
+    var n3dsBtnRP: ButtonLayout = ButtonLayout(x = 0.91f, y = 0.10f, sizeDp = 48)
+    var n3dsBtnZLP: ButtonLayout = ButtonLayout(x = 0.21f, y = 0.06f, sizeDp = 40)
+    var n3dsBtnZRP: ButtonLayout = ButtonLayout(x = 0.79f, y = 0.06f, sizeDp = 40)
+    var n3dsBtnStart: ButtonLayout = ButtonLayout(x = 0.60f, y = 0.94f, sizeDp = 46)
+    var n3dsBtnSelect: ButtonLayout = ButtonLayout(x = 0.40f, y = 0.94f, sizeDp = 46)
+    var n3dsBtnStartP: ButtonLayout = ButtonLayout(x = 0.58f, y = 0.92f, sizeDp = 40)
+    var n3dsBtnSelectP: ButtonLayout = ButtonLayout(x = 0.42f, y = 0.92f, sizeDp = 40)
+
+    // === NGC/WII on-screen pad（专属全套布局：GC 手柄 + Wii Remote + 双节棍）===
+    // GC：主摇杆（左上）/ C 摇杆（右中）/ ABXY 菱形 + Z / L R 扳机 / Start / 十字键（左下）。
+    // Wii：A/B/1/2 + − HOME / 十字键 / 双节棍摇杆 + C/Z / IR 指针（游戏区触摸）/
+    // IR− IR+（进深）。两套按键常驻布局，由控制模式决定哪些实际生效（另一套隐显可选）。
+    var ngcLStick: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108)    // 主摇杆
+    var ngcLStickP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94)
+    var ngcRStick: ButtonLayout = ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68)     // C 摇杆
+    var ngcRStickP: ButtonLayout = ButtonLayout(x = 0.82f, y = 0.40f, sizeDp = 60)
+    // GC ABXY 菱形：A 右、B 下、X 上、Y 左 + Z 右上角
+    var ngcBtnA: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.62f, sizeDp = 54)
+    var ngcBtnB: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.70f, sizeDp = 54)
+    var ngcBtnX: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.54f, sizeDp = 54)
+    var ngcBtnY: ButtonLayout = ButtonLayout(x = 0.78f, y = 0.62f, sizeDp = 54)
+    var ngcBtnAP: ButtonLayout = ButtonLayout(x = 0.86f, y = 0.66f, sizeDp = 48)
+    var ngcBtnBP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.74f, sizeDp = 48)
+    var ngcBtnXP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.58f, sizeDp = 48)
+    var ngcBtnYP: ButtonLayout = ButtonLayout(x = 0.74f, y = 0.66f, sizeDp = 48)
+    var ngcBtnZ: ButtonLayout = ButtonLayout(x = 0.92f, y = 0.44f, sizeDp = 42)
+    var ngcBtnZP: ButtonLayout = ButtonLayout(x = 0.88f, y = 0.48f, sizeDp = 38)
+    var ngcBtnL: ButtonLayout = ButtonLayout(x = 0.10f, y = 0.13f, sizeDp = 62)
+    var ngcBtnR: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.13f, sizeDp = 62)
+    var ngcBtnLP: ButtonLayout = ButtonLayout(x = 0.10f, y = 0.11f, sizeDp = 52)
+    var ngcBtnRP: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.11f, sizeDp = 52)
+    var ngcBtnStart: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.94f, sizeDp = 46)
+    var ngcBtnStartP: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.92f, sizeDp = 40)
+    var ngcDpad: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.74f, sizeDp = 100)
+    var ngcDpadP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.74f, sizeDp = 92)
+
+    // Wii Remote 键（wii 模式生效；与 GC 键共用屏幕，位置错开）
+    var wiiBtnA: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.62f, sizeDp = 56)
+    var wiiBtnB: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.52f, sizeDp = 52)
+    var wiiBtn1: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.74f, sizeDp = 48)
+    var wiiBtn2: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.84f, sizeDp = 48)
+    var wiiBtnAP: ButtonLayout = ButtonLayout(x = 0.86f, y = 0.66f, sizeDp = 50)
+    var wiiBtnBP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.56f, sizeDp = 46)
+    var wiiBtn1P: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.76f, sizeDp = 42)
+    var wiiBtn2P: ButtonLayout = ButtonLayout(x = 0.86f, y = 0.86f, sizeDp = 42)
+    var wiiBtnPlus: ButtonLayout = ButtonLayout(x = 0.62f, y = 0.94f, sizeDp = 44)
+    var wiiBtnMinus: ButtonLayout = ButtonLayout(x = 0.38f, y = 0.94f, sizeDp = 44)
+    var wiiBtnHome: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.94f, sizeDp = 44)
+    var wiiBtnPlusP: ButtonLayout = ButtonLayout(x = 0.60f, y = 0.92f, sizeDp = 38)
+    var wiiBtnMinusP: ButtonLayout = ButtonLayout(x = 0.40f, y = 0.92f, sizeDp = 38)
+    var wiiBtnHomeP: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.92f, sizeDp = 38)
+    var wiiDpad: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.74f, sizeDp = 100)
+    var wiiDpadP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.74f, sizeDp = 92)
+    // 双节棍：摇杆 + C/Z（C/Z 复用 GC 的 L/R 位，位置独立）
+    var wiiLStick: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.46f, sizeDp = 104)
+    var wiiLStickP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.48f, sizeDp = 92)
+    var wiiBtnC: ButtonLayout = ButtonLayout(x = 0.09f, y = 0.14f, sizeDp = 48)
+    var wiiBtnZ: ButtonLayout = ButtonLayout(x = 0.19f, y = 0.09f, sizeDp = 48)
+    var wiiBtnCP: ButtonLayout = ButtonLayout(x = 0.09f, y = 0.12f, sizeDp = 42)
+    var wiiBtnZP: ButtonLayout = ButtonLayout(x = 0.20f, y = 0.08f, sizeDp = 42)
+    // IR 进深按钮（IR−拉近 / IR+推远），摇杆扳机式按住生效
+    var wiiBtnIrNear: ButtonLayout = ButtonLayout(x = 0.95f, y = 0.26f, sizeDp = 42)
+    var wiiBtnIrFar: ButtonLayout = ButtonLayout(x = 0.95f, y = 0.36f, sizeDp = 42)
+    var wiiBtnIrNearP: ButtonLayout = ButtonLayout(x = 0.93f, y = 0.28f, sizeDp = 38)
+    var wiiBtnIrFarP: ButtonLayout = ButtonLayout(x = 0.93f, y = 0.38f, sizeDp = 38)
+
     // === Arcade (FBNeo) on-screen pad extras ===
     // L2/R2 button positions (bit12/bit13 in the libretro joypad word).
     // Used for 6-button fight-stick layouts and as Coin/Start shortcuts.
@@ -769,12 +919,6 @@ class PadLayout {
     var comboButtonsArcade: String = ""   // Arcade combo list (JSON)
     var comboButtonsMd: String = ""       // MD combo list (JSON)
     var comboButtonsPce: String = ""      // PCE combo list (JSON)
-    // 3DS / NGC-WII 组合键（JSON，与其它平台同一形状）。伪位说明：
-    //  3DS: bit16=HOME(706) bit17=换屏(800)；NGC-WII: bit16-19=挥动四向
-    //  (轴 120-123) bit20=IR/Recenter(139)。
-    var hiddenButtonsTg3ds: String = ""   // 3DS hidden button keys
-    var comboButtons3ds: String = ""      // 3DS combo list (JSON)
-    var comboButtonsNgcwii: String = ""   // NGC/WII combo list (JSON)
 
     // === PCE button visibility toggles (which on-screen buttons are shown) ===
     // PCE uses the shared SNES/Arcade/MD layout slots (D-pad, I/II, RUN,
@@ -808,77 +952,8 @@ class PadLayout {
     var hiddenButtonsNds: String = ""     // NDS hidden button keys
     var hiddenButtonsPsx: String = ""     // PSX hidden button keys
     var hiddenButtonsPs2: String = ""     // PS2 hidden button keys (含 l3/r3；双摇杆常驻不隐藏)
-    // ★ DC 专属显隐列表 —— 旧版漏掉了 DC，导致显隐对话框对 DC 无效
-    // （isButtonHidden 落到 else 分支永远返回 false，切换不生效）。
-    var hiddenButtonsDc: String = ""      // DC hidden button keys
-    var hiddenButtonsNgcwii: String = ""  // NGC/WII hidden button keys (外部核心 Ishiruka 配置态)
-
-    // === NGC/WII 控制器切换（进程内 Ishiruka 核心的控制器方案）===
-    // "gc"      = GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机)
-    // "wii"     = Wii Remote + 双节棍 (C/Z + 副摇杆 + 体感)
-    // "wiimote" = Wii Remote 横握 (1/2/A/B/±/HOME + 十字键)
-    // "classic" = 经典手柄 Classic Controller (双摇杆 + 全键)
-    // Wii 游戏按方案热写 WiimoteNew.ini Extension + ReloadWiimoteConfig
-    // （见 IshirukaEngine.setExtension / applyCoreOptions），游戏内菜单即可切换。
-    var ngcwiiController: String = "gc"
-    // NGC/WII 体感开关：开启时启动 Ishiruka 前保留体感（摇动/倾斜/IR 指针）
-    // 绑定并提示开启设备传感器；关闭时写禁用（避免误触发摇一摇）。
-    // 体感倾斜走设备传感器（EmulatorScreen SensorListener），摇晃/IR 见虚拟按键。
-    var ngcwiiMotion: String = "enabled"
-
-    // === 3DS（进程内 Azahar 核心）配置 ===
-    // 启动前是否校验游戏加密状态（NCCH 标志位）：
-    // "enabled"  = 校验 + 加密游戏提示导入 aes_keys.txt（推荐）
-    // "disabled" = 直接交给核心处理
-    var tg3dsDecryptCheck: String = "enabled"
-    // CIA 导入策略："launch" = 启动即安装（Azahar 引导 CIA 时自动装 NAND）；
-    // "copy"  = 先复制到核心数据目录 import/ 再启动。
-    var tg3dsCiaMode: String = "launch"
-
-    // 3DS 核心设置（config.ini 键值，由 applyCoreOptions 下发 + reloadSettings）
-    var tg3dsCpuJit: String = "1"            // JIT（0=解释器）
-    var tg3dsCpuClock: String = "100"        // CPU 时钟 %（50..400）
-    var tg3dsFrameLimit: String = "1"        // 限帧开关
-    var tg3dsFrameSpeed: String = "100"      // 限帧速度 %（100=原速）
-    var tg3dsResolution: String = "1"        // 内部分辨率倍数 0-8（0=自动）
-    var tg3dsVsync: String = "1"             // 垂直同步
-    var tg3dsHwShader: String = "1"          // 硬件着色器
-    var tg3dsAccurateMul: String = "1"       // 精确乘法
-    var tg3dsDiskShader: String = "1"        // 磁盘着色器缓存
-    var tg3dsAsyncShader: String = "0"       // 异步着色器编译
-    var tg3dsGraphicsApi: String = "1"       // 0=OpenGL 1=GLES(默认) 2=Vulkan
-    var tg3dsRender3d: String = "0"          // 0=关 1=并排半宽 2=并排全宽 3=分色 4=隔行 5=反隔行 6=Cardboard
-    var tg3dsFactor3d: String = "0"          // 3D 深度 0-255
-    var tg3dsLayout: String = "2"            // 横屏布局 0=上下 1=单屏 2=大屏+小屏 3=侧并 4=混合 5=自定义
-    var tg3dsPortraitLayout: String = "2"    // 竖屏布局（同上枚举）
-    var tg3dsSwapScreen: String = "0"        // 交换上下屏
-    var tg3dsUpright: String = "0"           // 竖持模式
-    var tg3dsFilterMode: String = "1"        // 显示过滤 0-2
-    var tg3dsTextureFilter: String = "0"     // 纹理过滤 0-6
-    var tg3dsAudioOutput: String = "0"       // 0=自动 1=单声道
-    var tg3dsAudioEmulation: String = "1"    // 1=开启(默认) 0=关闭
-    var tg3dsAudioStretch: String = "1"      // 音频拉伸
-    var tg3dsVolume: String = "100"          // 音量 %
-    var tg3dsNew3ds: String = "0"            // 0=老3DS(默认) 1=New 3DS
-    var tg3dsRegion: String = "-1"           // 区域 -1=自动
-    var tg3dsInitClock: String = "0"         // 0=真实时钟 1=固定时间
-    var tg3dsLleApplets: String = "0"        // LLE 系统应用
-
-    // NGC/WII 核心设置（Dolphin.ini/GFX.ini，经 native SetUserSetting 直写）
-    var ngcwiiCpuCore: String = "1"          // 0=解释器 1=JIT 2=JITIL 3=JITARM
-    var ngcwiiDspHle: String = "True"        // DSP HLE（False=LLE）
-    var ngcwiiAudioBackend: String = "OpenSL ES" // 音频后端（GetAudioBackendList）
-    var ngcwiiEmulationSpeed: String = "1.0" // 模拟速度（0=不限帧）
-    var ngcwiiCheats: String = "False"       // 金手指
-    var ngcwiiScan: String = "False"         // Wii 连续扫描蓝牙外设
-    var ngcwiiWiiLanguage: String = "0"      // Wii 系统语言 0-9
-    var ngcwiiWiiAspect: String = "0"        // Wii 宽屏 0=4:3 1=16:9
-    var ngcwiiInternalRes: String = "2"      // 内部分辨率 1-6（2=1x）
-    var ngcwiiAspect: String = "1"           // 画面比例 0=自动 1=强制16:9 2=强制4:3 ... 6=拉伸
-    var ngcwiiMsaa: String = "1"             // MSAA 1/2/4/8
-    var ngcwiiAniso: String = "1"            // 各向异性过滤 1/2/4/8/16
-    var ngcwiiWaitShaders: String = "False"  // 着色器编译等待（防闪烁）
-    var ngcwiiShowFps: String = "False"      // 显示 FPS
+    var hiddenButtonsN3ds: String = ""    // 3DS hidden button keys (双摇杆常驻不隐藏)
+    var hiddenButtonsNgcWii: String = ""  // NGC/WII hidden button keys (双摇杆常驻不隐藏)
 
     // === Input mode (joystick vs D-pad) ===
     // "dpad" = cross-shaped digital D-pad (default); "analog" = circular
@@ -1301,53 +1376,134 @@ class PadLayout {
         ps2BtnL3P = another.ps2BtnL3P
         ps2BtnR3P = another.ps2BtnR3P
         hiddenButtonsPs2 = another.hiddenButtonsPs2
-        hiddenButtonsDc = another.hiddenButtonsDc
-        hiddenButtonsNgcwii = another.hiddenButtonsNgcwii
-        ngcwiiController = another.ngcwiiController
-        ngcwiiMotion = another.ngcwiiMotion
-        tg3dsDecryptCheck = another.tg3dsDecryptCheck
-        tg3dsCiaMode = another.tg3dsCiaMode
-        tg3dsCpuJit = another.tg3dsCpuJit
-        tg3dsCpuClock = another.tg3dsCpuClock
-        tg3dsFrameLimit = another.tg3dsFrameLimit
-        tg3dsFrameSpeed = another.tg3dsFrameSpeed
-        tg3dsResolution = another.tg3dsResolution
-        tg3dsVsync = another.tg3dsVsync
-        tg3dsHwShader = another.tg3dsHwShader
-        tg3dsAccurateMul = another.tg3dsAccurateMul
-        tg3dsDiskShader = another.tg3dsDiskShader
-        tg3dsAsyncShader = another.tg3dsAsyncShader
-        tg3dsGraphicsApi = another.tg3dsGraphicsApi
-        tg3dsRender3d = another.tg3dsRender3d
-        tg3dsFactor3d = another.tg3dsFactor3d
-        tg3dsLayout = another.tg3dsLayout
-        tg3dsPortraitLayout = another.tg3dsPortraitLayout
-        tg3dsSwapScreen = another.tg3dsSwapScreen
-        tg3dsUpright = another.tg3dsUpright
-        tg3dsFilterMode = another.tg3dsFilterMode
-        tg3dsTextureFilter = another.tg3dsTextureFilter
-        tg3dsAudioOutput = another.tg3dsAudioOutput
-        tg3dsAudioEmulation = another.tg3dsAudioEmulation
-        tg3dsAudioStretch = another.tg3dsAudioStretch
-        tg3dsVolume = another.tg3dsVolume
-        tg3dsNew3ds = another.tg3dsNew3ds
-        tg3dsRegion = another.tg3dsRegion
-        tg3dsInitClock = another.tg3dsInitClock
-        tg3dsLleApplets = another.tg3dsLleApplets
-        ngcwiiCpuCore = another.ngcwiiCpuCore
-        ngcwiiDspHle = another.ngcwiiDspHle
-        ngcwiiAudioBackend = another.ngcwiiAudioBackend
-        ngcwiiEmulationSpeed = another.ngcwiiEmulationSpeed
-        ngcwiiCheats = another.ngcwiiCheats
-        ngcwiiScan = another.ngcwiiScan
-        ngcwiiWiiLanguage = another.ngcwiiWiiLanguage
-        ngcwiiWiiAspect = another.ngcwiiWiiAspect
-        ngcwiiInternalRes = another.ngcwiiInternalRes
-        ngcwiiAspect = another.ngcwiiAspect
-        ngcwiiMsaa = another.ngcwiiMsaa
-        ngcwiiAniso = another.ngcwiiAniso
-        ngcwiiWaitShaders = another.ngcwiiWaitShaders
-        ngcwiiShowFps = another.ngcwiiShowFps
+        // === Azahar / Ishiruka 选项与专属布局 ===
+        azGraphicsApi = another.azGraphicsApi
+        azResolution = another.azResolution
+        azUseHwShader = another.azUseHwShader
+        azUseShaderJit = another.azUseShaderJit
+        azUseVsync = another.azUseVsync
+        azUseDiskShaderCache = another.azUseDiskShaderCache
+        azAsyncPresentation = another.azAsyncPresentation
+        azAsyncShaderCompilation = another.azAsyncShaderCompilation
+        azAccurateMultiplication = another.azAccurateMultiplication
+        azSkipDuplicateFrames = another.azSkipDuplicateFrames
+        azTextureFilter = another.azTextureFilter
+        azTextureSampling = another.azTextureSampling
+        azIntegerScaling = another.azIntegerScaling
+        azFrameLimit = another.azFrameLimit
+        azRender3d = another.azRender3d
+        azFactor3d = another.azFactor3d
+        azLayoutOption = another.azLayoutOption
+        azScreenGap = another.azScreenGap
+        azLargeScreenProportion = another.azLargeScreenProportion
+        azSwapScreens = another.azSwapScreens
+        azCpuClock = another.azCpuClock
+        azUseCpuJit = another.azUseCpuJit
+        azUseFastInterp = another.azUseFastInterp
+        azIsNew3ds = another.azIsNew3ds
+        azRegion = another.azRegion
+        azAudioEmulation = another.azAudioEmulation
+        azVolume = another.azVolume
+        azAudioStretching = another.azAudioStretching
+        azRealtimeAudio = another.azRealtimeAudio
+        azCustomTextures = another.azCustomTextures
+        azPreloadTextures = another.azPreloadTextures
+        irControlMode = another.irControlMode
+        irWiiExtension = another.irWiiExtension
+        irCpuCore = another.irCpuCore
+        irDualCore = another.irDualCore
+        irOverclockEnable = another.irOverclockEnable
+        irOverclock = another.irOverclock
+        irBackend = another.irBackend
+        irResolution = another.irResolution
+        irMsaa = another.irMsaa
+        irAnisotropy = another.irAnisotropy
+        irShowFps = another.irShowFps
+        irWaitForShaders = another.irWaitForShaders
+        irAspect = another.irAspect
+        irEfbToTexture = another.irEfbToTexture
+        irEfbScaledCopy = another.irEfbScaledCopy
+        irEfbAccess = another.irEfbAccess
+        irAudioStretch = another.irAudioStretch
+        irDspHle = another.irDspHle
+        irWiimoteSpeaker = another.irWiimoteSpeaker
+        irWiimoteScan = another.irWiimoteScan
+        n3dsDpad = another.n3dsDpad
+        n3dsDpadP = another.n3dsDpadP
+        n3dsLStick = another.n3dsLStick
+        n3dsLStickP = another.n3dsLStickP
+        n3dsRStick = another.n3dsRStick
+        n3dsRStickP = another.n3dsRStickP
+        n3dsBtnA = another.n3dsBtnA
+        n3dsBtnB = another.n3dsBtnB
+        n3dsBtnX = another.n3dsBtnX
+        n3dsBtnY = another.n3dsBtnY
+        n3dsBtnAP = another.n3dsBtnAP
+        n3dsBtnBP = another.n3dsBtnBP
+        n3dsBtnXP = another.n3dsBtnXP
+        n3dsBtnYP = another.n3dsBtnYP
+        n3dsBtnL = another.n3dsBtnL
+        n3dsBtnR = another.n3dsBtnR
+        n3dsBtnZL = another.n3dsBtnZL
+        n3dsBtnZR = another.n3dsBtnZR
+        n3dsBtnLP = another.n3dsBtnLP
+        n3dsBtnRP = another.n3dsBtnRP
+        n3dsBtnZLP = another.n3dsBtnZLP
+        n3dsBtnZRP = another.n3dsBtnZRP
+        n3dsBtnStart = another.n3dsBtnStart
+        n3dsBtnSelect = another.n3dsBtnSelect
+        n3dsBtnStartP = another.n3dsBtnStartP
+        n3dsBtnSelectP = another.n3dsBtnSelectP
+        hiddenButtonsN3ds = another.hiddenButtonsN3ds
+        ngcLStick = another.ngcLStick
+        ngcLStickP = another.ngcLStickP
+        ngcRStick = another.ngcRStick
+        ngcRStickP = another.ngcRStickP
+        ngcBtnA = another.ngcBtnA
+        ngcBtnB = another.ngcBtnB
+        ngcBtnX = another.ngcBtnX
+        ngcBtnY = another.ngcBtnY
+        ngcBtnAP = another.ngcBtnAP
+        ngcBtnBP = another.ngcBtnBP
+        ngcBtnXP = another.ngcBtnXP
+        ngcBtnYP = another.ngcBtnYP
+        ngcBtnZ = another.ngcBtnZ
+        ngcBtnZP = another.ngcBtnZP
+        ngcBtnL = another.ngcBtnL
+        ngcBtnR = another.ngcBtnR
+        ngcBtnLP = another.ngcBtnLP
+        ngcBtnRP = another.ngcBtnRP
+        ngcBtnStart = another.ngcBtnStart
+        ngcBtnStartP = another.ngcBtnStartP
+        ngcDpad = another.ngcDpad
+        ngcDpadP = another.ngcDpadP
+        wiiBtnA = another.wiiBtnA
+        wiiBtnB = another.wiiBtnB
+        wiiBtn1 = another.wiiBtn1
+        wiiBtn2 = another.wiiBtn2
+        wiiBtnAP = another.wiiBtnAP
+        wiiBtnBP = another.wiiBtnBP
+        wiiBtn1P = another.wiiBtn1P
+        wiiBtn2P = another.wiiBtn2P
+        wiiBtnPlus = another.wiiBtnPlus
+        wiiBtnMinus = another.wiiBtnMinus
+        wiiBtnHome = another.wiiBtnHome
+        wiiBtnPlusP = another.wiiBtnPlusP
+        wiiBtnMinusP = another.wiiBtnMinusP
+        wiiBtnHomeP = another.wiiBtnHomeP
+        wiiDpad = another.wiiDpad
+        wiiDpadP = another.wiiDpadP
+        wiiLStick = another.wiiLStick
+        wiiLStickP = another.wiiLStickP
+        wiiBtnC = another.wiiBtnC
+        wiiBtnZ = another.wiiBtnZ
+        wiiBtnCP = another.wiiBtnCP
+        wiiBtnZP = another.wiiBtnZP
+        wiiBtnIrNear = another.wiiBtnIrNear
+        wiiBtnIrFar = another.wiiBtnIrFar
+        wiiBtnIrNearP = another.wiiBtnIrNearP
+        wiiBtnIrFarP = another.wiiBtnIrFarP
+        hiddenButtonsNgcWii = another.hiddenButtonsNgcWii
         btnL2 = another.btnL2
         btnR2 = another.btnR2
         btnL2P = another.btnL2P
@@ -1360,9 +1516,6 @@ class PadLayout {
         comboButtonsArcade = another.comboButtonsArcade
         comboButtonsMd = another.comboButtonsMd
         comboButtonsPce = another.comboButtonsPce
-        hiddenButtonsTg3ds = another.hiddenButtonsTg3ds
-        comboButtons3ds = another.comboButtons3ds
-        comboButtonsNgcwii = another.comboButtonsNgcwii
         pceShowDpad = another.pceShowDpad
         pceShowA = another.pceShowA
         pceShowB = another.pceShowB
@@ -2217,56 +2370,137 @@ object PadLayoutStore {
             ps2BtnL3P = loadBtn(p, "ps2_p_btn_l3", ButtonLayout(x = 0.29f, y = 0.93f, sizeDp = 32))
             ps2BtnR3P = loadBtn(p, "ps2_p_btn_r3", ButtonLayout(x = 0.71f, y = 0.93f, sizeDp = 32))
             hiddenButtonsPs2 = p.getString("hidden_buttons_ps2", "") ?: ""
-            // ★ DC + NGC/WII 显隐列表（此前 DC 漏掉导致显隐开关不生效）
-            hiddenButtonsDc = p.getString("hidden_buttons_dc", "") ?: ""
-            hiddenButtonsNgcwii = p.getString("hidden_buttons_ngcwii", "") ?: ""
-            // NGC/WII 控制器切换 / 体感
-            ngcwiiController = p.getString("ngcwii_controller", "gc") ?: "gc"
-            ngcwiiMotion = p.getString("ngcwii_motion", "enabled") ?: "enabled"
-            // 3DS 解密校验 / CIA 策略
-            tg3dsDecryptCheck = p.getString("tg3ds_decrypt_check", "enabled") ?: "enabled"
-            tg3dsCiaMode = p.getString("tg3ds_cia_mode", "launch") ?: "launch"
-            tg3dsCpuJit = p.getString("tg3ds_cpu_jit", "1") ?: "1"
-            tg3dsCpuClock = p.getString("tg3ds_cpu_clock", "100") ?: "100"
-            tg3dsFrameLimit = p.getString("tg3ds_frame_limit", "1") ?: "1"
-            tg3dsFrameSpeed = p.getString("tg3ds_frame_speed", "100") ?: "100"
-            tg3dsResolution = p.getString("tg3ds_resolution", "1") ?: "1"
-            tg3dsVsync = p.getString("tg3ds_vsync", "1") ?: "1"
-            tg3dsHwShader = p.getString("tg3ds_hw_shader", "1") ?: "1"
-            tg3dsAccurateMul = p.getString("tg3ds_accurate_mul", "1") ?: "1"
-            tg3dsDiskShader = p.getString("tg3ds_disk_shader", "1") ?: "1"
-            tg3dsAsyncShader = p.getString("tg3ds_async_shader", "0") ?: "0"
-            tg3dsGraphicsApi = p.getString("tg3ds_graphics_api", "2") ?: "2"
-            tg3dsRender3d = p.getString("tg3ds_render_3d", "0") ?: "0"
-            tg3dsFactor3d = p.getString("tg3ds_factor_3d", "0") ?: "0"
-            tg3dsLayout = p.getString("tg3ds_layout", "0") ?: "0"
-            tg3dsPortraitLayout = p.getString("tg3ds_portrait_layout", "2") ?: "2"
-            tg3dsSwapScreen = p.getString("tg3ds_swap_screen", "0") ?: "0"
-            tg3dsUpright = p.getString("tg3ds_upright", "0") ?: "0"
-            tg3dsFilterMode = p.getString("tg3ds_filter_mode", "1") ?: "1"
-            tg3dsTextureFilter = p.getString("tg3ds_texture_filter", "0") ?: "0"
-            tg3dsAudioOutput = p.getString("tg3ds_audio_output", "0") ?: "0"
-            tg3dsAudioEmulation = p.getString("tg3ds_audio_emulation", "2") ?: "2"
-            tg3dsAudioStretch = p.getString("tg3ds_audio_stretch", "1") ?: "1"
-            tg3dsVolume = p.getString("tg3ds_volume", "100") ?: "100"
-            tg3dsNew3ds = p.getString("tg3ds_new_3ds", "1") ?: "1"
-            tg3dsRegion = p.getString("tg3ds_region", "-1") ?: "-1"
-            tg3dsInitClock = p.getString("tg3ds_init_clock", "0") ?: "0"
-            tg3dsLleApplets = p.getString("tg3ds_lle_applets", "0") ?: "0"
-            ngcwiiCpuCore = p.getString("ngcwii_cpu_core", "1") ?: "1"
-            ngcwiiDspHle = p.getString("ngcwii_dsp_hle", "True") ?: "True"
-            ngcwiiAudioBackend = p.getString("ngcwii_audio_backend", "OpenSL ES") ?: "OpenSL ES"
-            ngcwiiEmulationSpeed = p.getString("ngcwii_emulation_speed", "1.0") ?: "1.0"
-            ngcwiiCheats = p.getString("ngcwii_cheats", "False") ?: "False"
-            ngcwiiScan = p.getString("ngcwii_scan", "False") ?: "False"
-            ngcwiiWiiLanguage = p.getString("ngcwii_wii_language", "0") ?: "0"
-            ngcwiiWiiAspect = p.getString("ngcwii_wii_aspect", "0") ?: "0"
-            ngcwiiInternalRes = p.getString("ngcwii_internal_res", "2") ?: "2"
-            ngcwiiAspect = p.getString("ngcwii_aspect", "1") ?: "1"
-            ngcwiiMsaa = p.getString("ngcwii_msaa", "1") ?: "1"
-            ngcwiiAniso = p.getString("ngcwii_aniso", "1") ?: "1"
-            ngcwiiWaitShaders = p.getString("ngcwii_wait_shaders", "False") ?: "False"
-            ngcwiiShowFps = p.getString("ngcwii_show_fps", "False") ?: "False"
+            // === 3DS (Azahar) options + 专属按键布局 ===
+            azGraphicsApi = p.getString("az_graphics_api", "opengl") ?: "opengl"
+            azResolution = p.getString("az_resolution", "0") ?: "0"
+            azUseHwShader = p.getString("az_use_hw_shader", "enabled") ?: "enabled"
+            azUseShaderJit = p.getString("az_use_shader_jit", "enabled") ?: "enabled"
+            azUseVsync = p.getString("az_use_vsync", "enabled") ?: "enabled"
+            azUseDiskShaderCache = p.getString("az_use_disk_shader_cache", "enabled") ?: "enabled"
+            azAsyncPresentation = p.getString("az_async_presentation", "enabled") ?: "enabled"
+            azAsyncShaderCompilation = p.getString("az_async_shader_compilation", "enabled") ?: "enabled"
+            azAccurateMultiplication = p.getString("az_accurate_multiplication", "disabled") ?: "disabled"
+            azSkipDuplicateFrames = p.getString("az_skip_duplicate_frames", "disabled") ?: "disabled"
+            azTextureFilter = p.getString("az_texture_filter", "0") ?: "0"
+            azTextureSampling = p.getString("az_texture_sampling", "0") ?: "0"
+            azIntegerScaling = p.getString("az_integer_scaling", "disabled") ?: "disabled"
+            azFrameLimit = p.getString("az_frame_limit", "100") ?: "100"
+            azRender3d = p.getString("az_render_3d", "0") ?: "0"
+            azFactor3d = p.getString("az_factor_3d", "0") ?: "0"
+            azLayoutOption = p.getString("az_layout_option", "0") ?: "0"
+            azScreenGap = p.getString("az_screen_gap", "0") ?: "0"
+            azLargeScreenProportion = p.getString("az_large_screen_proportion", "2.25") ?: "2.25"
+            azSwapScreens = p.getString("az_swap_screens", "disabled") ?: "disabled"
+            azCpuClock = p.getString("az_cpu_clock", "100") ?: "100"
+            azUseCpuJit = p.getString("az_use_cpu_jit", "enabled") ?: "enabled"
+            azUseFastInterp = p.getString("az_use_fast_interp", "disabled") ?: "disabled"
+            azIsNew3ds = p.getString("az_is_new_3ds", "enabled") ?: "enabled"
+            azRegion = p.getString("az_region", "-1") ?: "-1"
+            azAudioEmulation = p.getString("az_audio_emulation", "0") ?: "0"
+            azVolume = p.getString("az_volume", "100") ?: "100"
+            azAudioStretching = p.getString("az_audio_stretching", "enabled") ?: "enabled"
+            azRealtimeAudio = p.getString("az_realtime_audio", "disabled") ?: "disabled"
+            azCustomTextures = p.getString("az_custom_textures", "disabled") ?: "disabled"
+            azPreloadTextures = p.getString("az_preload_textures", "disabled") ?: "disabled"
+            n3dsDpad = loadBtn(p, "n3ds_dpad", ButtonLayout(x = 0.13f, y = 0.72f, sizeDp = 104))
+            n3dsDpadP = loadBtn(p, "n3ds_p_dpad", ButtonLayout(x = 0.18f, y = 0.72f, sizeDp = 96))
+            n3dsLStick = loadBtn(p, "n3ds_lstick", ButtonLayout(x = 0.13f, y = 0.50f, sizeDp = 104))
+            n3dsLStickP = loadBtn(p, "n3ds_p_lstick", ButtonLayout(x = 0.18f, y = 0.52f, sizeDp = 92))
+            n3dsRStick = loadBtn(p, "n3ds_rstick", ButtonLayout(x = 0.87f, y = 0.30f, sizeDp = 72))
+            n3dsRStickP = loadBtn(p, "n3ds_p_rstick", ButtonLayout(x = 0.82f, y = 0.36f, sizeDp = 64))
+            n3dsBtnA = loadBtn(p, "n3ds_btn_a", ButtonLayout(x = 0.90f, y = 0.68f, sizeDp = 54))
+            n3dsBtnB = loadBtn(p, "n3ds_btn_b", ButtonLayout(x = 0.84f, y = 0.76f, sizeDp = 54))
+            n3dsBtnX = loadBtn(p, "n3ds_btn_x", ButtonLayout(x = 0.84f, y = 0.60f, sizeDp = 54))
+            n3dsBtnY = loadBtn(p, "n3ds_btn_y", ButtonLayout(x = 0.78f, y = 0.68f, sizeDp = 54))
+            n3dsBtnAP = loadBtn(p, "n3ds_p_btn_a", ButtonLayout(x = 0.86f, y = 0.72f, sizeDp = 48))
+            n3dsBtnBP = loadBtn(p, "n3ds_p_btn_b", ButtonLayout(x = 0.80f, y = 0.80f, sizeDp = 48))
+            n3dsBtnXP = loadBtn(p, "n3ds_p_btn_x", ButtonLayout(x = 0.80f, y = 0.64f, sizeDp = 48))
+            n3dsBtnYP = loadBtn(p, "n3ds_p_btn_y", ButtonLayout(x = 0.74f, y = 0.72f, sizeDp = 48))
+            n3dsBtnL = loadBtn(p, "n3ds_btn_l", ButtonLayout(x = 0.09f, y = 0.12f, sizeDp = 54))
+            n3dsBtnR = loadBtn(p, "n3ds_btn_r", ButtonLayout(x = 0.91f, y = 0.12f, sizeDp = 54))
+            n3dsBtnZL = loadBtn(p, "n3ds_btn_zl", ButtonLayout(x = 0.20f, y = 0.07f, sizeDp = 46))
+            n3dsBtnZR = loadBtn(p, "n3ds_btn_zr", ButtonLayout(x = 0.80f, y = 0.07f, sizeDp = 46))
+            n3dsBtnLP = loadBtn(p, "n3ds_p_btn_l", ButtonLayout(x = 0.09f, y = 0.10f, sizeDp = 48))
+            n3dsBtnRP = loadBtn(p, "n3ds_p_btn_r", ButtonLayout(x = 0.91f, y = 0.10f, sizeDp = 48))
+            n3dsBtnZLP = loadBtn(p, "n3ds_p_btn_zl", ButtonLayout(x = 0.21f, y = 0.06f, sizeDp = 40))
+            n3dsBtnZRP = loadBtn(p, "n3ds_p_btn_zr", ButtonLayout(x = 0.79f, y = 0.06f, sizeDp = 40))
+            n3dsBtnStart = loadBtn(p, "n3ds_btn_start", ButtonLayout(x = 0.60f, y = 0.94f, sizeDp = 46))
+            n3dsBtnSelect = loadBtn(p, "n3ds_btn_select", ButtonLayout(x = 0.40f, y = 0.94f, sizeDp = 46))
+            n3dsBtnStartP = loadBtn(p, "n3ds_p_btn_start", ButtonLayout(x = 0.58f, y = 0.92f, sizeDp = 40))
+            n3dsBtnSelectP = loadBtn(p, "n3ds_p_btn_select", ButtonLayout(x = 0.42f, y = 0.92f, sizeDp = 40))
+            hiddenButtonsN3ds = p.getString("hidden_buttons_n3ds", "") ?: ""
+            // === NGC/WII (Ishiiruka) options + 专属按键布局 ===
+            irControlMode = p.getString("ir_control_mode", "auto")?.takeIf {
+                it in setOf("auto", "ngc", "wii") } ?: "auto"
+            irWiiExtension = p.getString("ir_wii_extension", "nunchuk")?.takeIf {
+                it in setOf("nunchuk", "classic", "none") } ?: "nunchuk"
+            irCpuCore = p.getString("ir_cpu_core", "4") ?: "4"
+            irDualCore = p.getString("ir_dual_core", "enabled") ?: "enabled"
+            irOverclockEnable = p.getString("ir_overclock_enable", "disabled") ?: "disabled"
+            irOverclock = p.getString("ir_overclock", "100") ?: "100"
+            irBackend = p.getString("ir_backend", "OGL") ?: "OGL"
+            irResolution = p.getString("ir_resolution", "2") ?: "2"
+            irMsaa = p.getString("ir_msaa", "1") ?: "1"
+            irAnisotropy = p.getString("ir_anisotropy", "0") ?: "0"
+            irShowFps = p.getString("ir_show_fps", "disabled") ?: "disabled"
+            irWaitForShaders = p.getString("ir_wait_for_shaders", "disabled") ?: "disabled"
+            irAspect = p.getString("ir_aspect", "0") ?: "0"
+            irEfbToTexture = p.getString("ir_efb_to_texture", "enabled") ?: "enabled"
+            irEfbScaledCopy = p.getString("ir_efb_scaled_copy", "enabled") ?: "enabled"
+            irEfbAccess = p.getString("ir_efb_access", "enabled") ?: "enabled"
+            irAudioStretch = p.getString("ir_audio_stretch", "disabled") ?: "disabled"
+            irDspHle = p.getString("ir_dsp_hle", "enabled") ?: "enabled"
+            irWiimoteSpeaker = p.getString("ir_wiimote_speaker", "disabled") ?: "disabled"
+            irWiimoteScan = p.getString("ir_wiimote_scan", "disabled") ?: "disabled"
+            ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
+            ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
+            ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
+            ngcRStickP = loadBtn(p, "ngc_p_rstick", ButtonLayout(x = 0.82f, y = 0.40f, sizeDp = 60))
+            ngcBtnA = loadBtn(p, "ngc_btn_a", ButtonLayout(x = 0.90f, y = 0.62f, sizeDp = 54))
+            ngcBtnB = loadBtn(p, "ngc_btn_b", ButtonLayout(x = 0.84f, y = 0.70f, sizeDp = 54))
+            ngcBtnX = loadBtn(p, "ngc_btn_x", ButtonLayout(x = 0.84f, y = 0.54f, sizeDp = 54))
+            ngcBtnY = loadBtn(p, "ngc_btn_y", ButtonLayout(x = 0.78f, y = 0.62f, sizeDp = 54))
+            ngcBtnAP = loadBtn(p, "ngc_p_btn_a", ButtonLayout(x = 0.86f, y = 0.66f, sizeDp = 48))
+            ngcBtnBP = loadBtn(p, "ngc_p_btn_b", ButtonLayout(x = 0.80f, y = 0.74f, sizeDp = 48))
+            ngcBtnXP = loadBtn(p, "ngc_p_btn_x", ButtonLayout(x = 0.80f, y = 0.58f, sizeDp = 48))
+            ngcBtnYP = loadBtn(p, "ngc_p_btn_y", ButtonLayout(x = 0.74f, y = 0.66f, sizeDp = 48))
+            ngcBtnZ = loadBtn(p, "ngc_btn_z", ButtonLayout(x = 0.92f, y = 0.44f, sizeDp = 42))
+            ngcBtnZP = loadBtn(p, "ngc_p_btn_z", ButtonLayout(x = 0.88f, y = 0.48f, sizeDp = 38))
+            ngcBtnL = loadBtn(p, "ngc_btn_l", ButtonLayout(x = 0.10f, y = 0.13f, sizeDp = 62))
+            ngcBtnR = loadBtn(p, "ngc_btn_r", ButtonLayout(x = 0.90f, y = 0.13f, sizeDp = 62))
+            ngcBtnLP = loadBtn(p, "ngc_p_btn_l", ButtonLayout(x = 0.10f, y = 0.11f, sizeDp = 52))
+            ngcBtnRP = loadBtn(p, "ngc_p_btn_r", ButtonLayout(x = 0.90f, y = 0.11f, sizeDp = 52))
+            ngcBtnStart = loadBtn(p, "ngc_btn_start", ButtonLayout(x = 0.50f, y = 0.94f, sizeDp = 46))
+            ngcBtnStartP = loadBtn(p, "ngc_p_btn_start", ButtonLayout(x = 0.50f, y = 0.92f, sizeDp = 40))
+            ngcDpad = loadBtn(p, "ngc_dpad", ButtonLayout(x = 0.13f, y = 0.74f, sizeDp = 100))
+            ngcDpadP = loadBtn(p, "ngc_p_dpad", ButtonLayout(x = 0.18f, y = 0.74f, sizeDp = 92))
+            wiiBtnA = loadBtn(p, "wii_btn_a", ButtonLayout(x = 0.90f, y = 0.62f, sizeDp = 56))
+            wiiBtnB = loadBtn(p, "wii_btn_b", ButtonLayout(x = 0.84f, y = 0.52f, sizeDp = 52))
+            wiiBtn1 = loadBtn(p, "wii_btn_1", ButtonLayout(x = 0.84f, y = 0.74f, sizeDp = 48))
+            wiiBtn2 = loadBtn(p, "wii_btn_2", ButtonLayout(x = 0.90f, y = 0.84f, sizeDp = 48))
+            wiiBtnAP = loadBtn(p, "wii_p_btn_a", ButtonLayout(x = 0.86f, y = 0.66f, sizeDp = 50))
+            wiiBtnBP = loadBtn(p, "wii_p_btn_b", ButtonLayout(x = 0.80f, y = 0.56f, sizeDp = 46))
+            wiiBtn1P = loadBtn(p, "wii_p_btn_1", ButtonLayout(x = 0.80f, y = 0.76f, sizeDp = 42))
+            wiiBtn2P = loadBtn(p, "wii_p_btn_2", ButtonLayout(x = 0.86f, y = 0.86f, sizeDp = 42))
+            wiiBtnPlus = loadBtn(p, "wii_btn_plus", ButtonLayout(x = 0.62f, y = 0.94f, sizeDp = 44))
+            wiiBtnMinus = loadBtn(p, "wii_btn_minus", ButtonLayout(x = 0.38f, y = 0.94f, sizeDp = 44))
+            wiiBtnHome = loadBtn(p, "wii_btn_home", ButtonLayout(x = 0.50f, y = 0.94f, sizeDp = 44))
+            wiiBtnPlusP = loadBtn(p, "wii_p_btn_plus", ButtonLayout(x = 0.60f, y = 0.92f, sizeDp = 38))
+            wiiBtnMinusP = loadBtn(p, "wii_p_btn_minus", ButtonLayout(x = 0.40f, y = 0.92f, sizeDp = 38))
+            wiiBtnHomeP = loadBtn(p, "wii_p_btn_home", ButtonLayout(x = 0.50f, y = 0.92f, sizeDp = 38))
+            wiiDpad = loadBtn(p, "wii_dpad", ButtonLayout(x = 0.13f, y = 0.74f, sizeDp = 100))
+            wiiDpadP = loadBtn(p, "wii_p_dpad", ButtonLayout(x = 0.18f, y = 0.74f, sizeDp = 92))
+            wiiLStick = loadBtn(p, "wii_lstick", ButtonLayout(x = 0.13f, y = 0.46f, sizeDp = 104))
+            wiiLStickP = loadBtn(p, "wii_p_lstick", ButtonLayout(x = 0.18f, y = 0.48f, sizeDp = 92))
+            wiiBtnC = loadBtn(p, "wii_btn_c", ButtonLayout(x = 0.09f, y = 0.14f, sizeDp = 48))
+            wiiBtnZ = loadBtn(p, "wii_btn_z", ButtonLayout(x = 0.19f, y = 0.09f, sizeDp = 48))
+            wiiBtnCP = loadBtn(p, "wii_p_btn_c", ButtonLayout(x = 0.09f, y = 0.12f, sizeDp = 42))
+            wiiBtnZP = loadBtn(p, "wii_p_btn_z", ButtonLayout(x = 0.20f, y = 0.08f, sizeDp = 42))
+            wiiBtnIrNear = loadBtn(p, "wii_btn_ir_near", ButtonLayout(x = 0.95f, y = 0.26f, sizeDp = 42))
+            wiiBtnIrFar = loadBtn(p, "wii_btn_ir_far", ButtonLayout(x = 0.95f, y = 0.36f, sizeDp = 42))
+            wiiBtnIrNearP = loadBtn(p, "wii_p_btn_ir_near", ButtonLayout(x = 0.93f, y = 0.28f, sizeDp = 38))
+            wiiBtnIrFarP = loadBtn(p, "wii_p_btn_ir_far", ButtonLayout(x = 0.93f, y = 0.38f, sizeDp = 38))
+            hiddenButtonsNgcWii = p.getString("hidden_buttons_ngcwii", "") ?: ""
             // === Arcade extras ===
             btnL2 = loadBtn(p, "btn_l2", ButtonLayout(x = 0.08f, y = 0.32f, sizeDp = 48))
             btnR2 = loadBtn(p, "btn_r2", ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48))
@@ -2281,9 +2515,6 @@ object PadLayoutStore {
             comboButtonsArcade = p.getString("combo_buttons_arcade", "") ?: ""
             comboButtonsMd = p.getString("combo_buttons_md", "") ?: ""
             comboButtonsPce = p.getString("combo_buttons_pce", "") ?: ""
-            hiddenButtonsTg3ds = p.getString("hidden_buttons_tg3ds", "") ?: ""
-            comboButtons3ds = p.getString("combo_buttons_3ds", "") ?: ""
-            comboButtonsNgcwii = p.getString("combo_buttons_ngcwii", "") ?: ""
             // PCE button visibility toggles
             pceShowDpad = p.getBoolean("pce_show_dpad", true)
             pceShowA = p.getBoolean("pce_show_a", true)
@@ -2791,54 +3022,135 @@ object PadLayoutStore {
             saveBtn("ps2_p_btn_l3", layout.ps2BtnL3P)
             saveBtn("ps2_p_btn_r3", layout.ps2BtnR3P)
             putString("hidden_buttons_ps2", layout.hiddenButtonsPs2)
-            // ★ DC + NGC/WII 显隐 / 控制器切换 / 体感 / 3DS 解密·CIA
-            putString("hidden_buttons_dc", layout.hiddenButtonsDc)
-            putString("hidden_buttons_ngcwii", layout.hiddenButtonsNgcwii)
-            putString("ngcwii_controller", layout.ngcwiiController)
-            putString("ngcwii_motion", layout.ngcwiiMotion)
-            putString("tg3ds_decrypt_check", layout.tg3dsDecryptCheck)
-            putString("tg3ds_cia_mode", layout.tg3dsCiaMode)
-            putString("tg3ds_cpu_jit", layout.tg3dsCpuJit)
-            putString("tg3ds_cpu_clock", layout.tg3dsCpuClock)
-            putString("tg3ds_frame_limit", layout.tg3dsFrameLimit)
-            putString("tg3ds_frame_speed", layout.tg3dsFrameSpeed)
-            putString("tg3ds_resolution", layout.tg3dsResolution)
-            putString("tg3ds_vsync", layout.tg3dsVsync)
-            putString("tg3ds_hw_shader", layout.tg3dsHwShader)
-            putString("tg3ds_accurate_mul", layout.tg3dsAccurateMul)
-            putString("tg3ds_disk_shader", layout.tg3dsDiskShader)
-            putString("tg3ds_async_shader", layout.tg3dsAsyncShader)
-            putString("tg3ds_graphics_api", layout.tg3dsGraphicsApi)
-            putString("tg3ds_render_3d", layout.tg3dsRender3d)
-            putString("tg3ds_factor_3d", layout.tg3dsFactor3d)
-            putString("tg3ds_layout", layout.tg3dsLayout)
-            putString("tg3ds_portrait_layout", layout.tg3dsPortraitLayout)
-            putString("tg3ds_swap_screen", layout.tg3dsSwapScreen)
-            putString("tg3ds_upright", layout.tg3dsUpright)
-            putString("tg3ds_filter_mode", layout.tg3dsFilterMode)
-            putString("tg3ds_texture_filter", layout.tg3dsTextureFilter)
-            putString("tg3ds_audio_output", layout.tg3dsAudioOutput)
-            putString("tg3ds_audio_emulation", layout.tg3dsAudioEmulation)
-            putString("tg3ds_audio_stretch", layout.tg3dsAudioStretch)
-            putString("tg3ds_volume", layout.tg3dsVolume)
-            putString("tg3ds_new_3ds", layout.tg3dsNew3ds)
-            putString("tg3ds_region", layout.tg3dsRegion)
-            putString("tg3ds_init_clock", layout.tg3dsInitClock)
-            putString("tg3ds_lle_applets", layout.tg3dsLleApplets)
-            putString("ngcwii_cpu_core", layout.ngcwiiCpuCore)
-            putString("ngcwii_dsp_hle", layout.ngcwiiDspHle)
-            putString("ngcwii_audio_backend", layout.ngcwiiAudioBackend)
-            putString("ngcwii_emulation_speed", layout.ngcwiiEmulationSpeed)
-            putString("ngcwii_cheats", layout.ngcwiiCheats)
-            putString("ngcwii_scan", layout.ngcwiiScan)
-            putString("ngcwii_wii_language", layout.ngcwiiWiiLanguage)
-            putString("ngcwii_wii_aspect", layout.ngcwiiWiiAspect)
-            putString("ngcwii_internal_res", layout.ngcwiiInternalRes)
-            putString("ngcwii_aspect", layout.ngcwiiAspect)
-            putString("ngcwii_msaa", layout.ngcwiiMsaa)
-            putString("ngcwii_aniso", layout.ngcwiiAniso)
-            putString("ngcwii_wait_shaders", layout.ngcwiiWaitShaders)
-            putString("ngcwii_show_fps", layout.ngcwiiShowFps)
+            // === 3DS (Azahar) options + 专属按键布局 ===
+            putString("az_graphics_api", layout.azGraphicsApi)
+            putString("az_resolution", layout.azResolution)
+            putString("az_use_hw_shader", layout.azUseHwShader)
+            putString("az_use_shader_jit", layout.azUseShaderJit)
+            putString("az_use_vsync", layout.azUseVsync)
+            putString("az_use_disk_shader_cache", layout.azUseDiskShaderCache)
+            putString("az_async_presentation", layout.azAsyncPresentation)
+            putString("az_async_shader_compilation", layout.azAsyncShaderCompilation)
+            putString("az_accurate_multiplication", layout.azAccurateMultiplication)
+            putString("az_skip_duplicate_frames", layout.azSkipDuplicateFrames)
+            putString("az_texture_filter", layout.azTextureFilter)
+            putString("az_texture_sampling", layout.azTextureSampling)
+            putString("az_integer_scaling", layout.azIntegerScaling)
+            putString("az_frame_limit", layout.azFrameLimit)
+            putString("az_render_3d", layout.azRender3d)
+            putString("az_factor_3d", layout.azFactor3d)
+            putString("az_layout_option", layout.azLayoutOption)
+            putString("az_screen_gap", layout.azScreenGap)
+            putString("az_large_screen_proportion", layout.azLargeScreenProportion)
+            putString("az_swap_screens", layout.azSwapScreens)
+            putString("az_cpu_clock", layout.azCpuClock)
+            putString("az_use_cpu_jit", layout.azUseCpuJit)
+            putString("az_use_fast_interp", layout.azUseFastInterp)
+            putString("az_is_new_3ds", layout.azIsNew3ds)
+            putString("az_region", layout.azRegion)
+            putString("az_audio_emulation", layout.azAudioEmulation)
+            putString("az_volume", layout.azVolume)
+            putString("az_audio_stretching", layout.azAudioStretching)
+            putString("az_realtime_audio", layout.azRealtimeAudio)
+            putString("az_custom_textures", layout.azCustomTextures)
+            putString("az_preload_textures", layout.azPreloadTextures)
+            saveBtn("n3ds_dpad", layout.n3dsDpad)
+            saveBtn("n3ds_p_dpad", layout.n3dsDpadP)
+            saveBtn("n3ds_lstick", layout.n3dsLStick)
+            saveBtn("n3ds_p_lstick", layout.n3dsLStickP)
+            saveBtn("n3ds_rstick", layout.n3dsRStick)
+            saveBtn("n3ds_p_rstick", layout.n3dsRStickP)
+            saveBtn("n3ds_btn_a", layout.n3dsBtnA)
+            saveBtn("n3ds_btn_b", layout.n3dsBtnB)
+            saveBtn("n3ds_btn_x", layout.n3dsBtnX)
+            saveBtn("n3ds_btn_y", layout.n3dsBtnY)
+            saveBtn("n3ds_p_btn_a", layout.n3dsBtnAP)
+            saveBtn("n3ds_p_btn_b", layout.n3dsBtnBP)
+            saveBtn("n3ds_p_btn_x", layout.n3dsBtnXP)
+            saveBtn("n3ds_p_btn_y", layout.n3dsBtnYP)
+            saveBtn("n3ds_btn_l", layout.n3dsBtnL)
+            saveBtn("n3ds_btn_r", layout.n3dsBtnR)
+            saveBtn("n3ds_btn_zl", layout.n3dsBtnZL)
+            saveBtn("n3ds_btn_zr", layout.n3dsBtnZR)
+            saveBtn("n3ds_p_btn_l", layout.n3dsBtnLP)
+            saveBtn("n3ds_p_btn_r", layout.n3dsBtnRP)
+            saveBtn("n3ds_p_btn_zl", layout.n3dsBtnZLP)
+            saveBtn("n3ds_p_btn_zr", layout.n3dsBtnZRP)
+            saveBtn("n3ds_btn_start", layout.n3dsBtnStart)
+            saveBtn("n3ds_btn_select", layout.n3dsBtnSelect)
+            saveBtn("n3ds_p_btn_start", layout.n3dsBtnStartP)
+            saveBtn("n3ds_p_btn_select", layout.n3dsBtnSelectP)
+            putString("hidden_buttons_n3ds", layout.hiddenButtonsN3ds)
+            // === NGC/WII (Ishiiruka) options + 专属按键布局 ===
+            putString("ir_control_mode", layout.irControlMode)
+            putString("ir_wii_extension", layout.irWiiExtension)
+            putString("ir_cpu_core", layout.irCpuCore)
+            putString("ir_dual_core", layout.irDualCore)
+            putString("ir_overclock_enable", layout.irOverclockEnable)
+            putString("ir_overclock", layout.irOverclock)
+            putString("ir_backend", layout.irBackend)
+            putString("ir_resolution", layout.irResolution)
+            putString("ir_msaa", layout.irMsaa)
+            putString("ir_anisotropy", layout.irAnisotropy)
+            putString("ir_show_fps", layout.irShowFps)
+            putString("ir_wait_for_shaders", layout.irWaitForShaders)
+            putString("ir_aspect", layout.irAspect)
+            putString("ir_efb_to_texture", layout.irEfbToTexture)
+            putString("ir_efb_scaled_copy", layout.irEfbScaledCopy)
+            putString("ir_efb_access", layout.irEfbAccess)
+            putString("ir_audio_stretch", layout.irAudioStretch)
+            putString("ir_dsp_hle", layout.irDspHle)
+            putString("ir_wiimote_speaker", layout.irWiimoteSpeaker)
+            putString("ir_wiimote_scan", layout.irWiimoteScan)
+            saveBtn("ngc_lstick", layout.ngcLStick)
+            saveBtn("ngc_p_lstick", layout.ngcLStickP)
+            saveBtn("ngc_rstick", layout.ngcRStick)
+            saveBtn("ngc_p_rstick", layout.ngcRStickP)
+            saveBtn("ngc_btn_a", layout.ngcBtnA)
+            saveBtn("ngc_btn_b", layout.ngcBtnB)
+            saveBtn("ngc_btn_x", layout.ngcBtnX)
+            saveBtn("ngc_btn_y", layout.ngcBtnY)
+            saveBtn("ngc_p_btn_a", layout.ngcBtnAP)
+            saveBtn("ngc_p_btn_b", layout.ngcBtnBP)
+            saveBtn("ngc_p_btn_x", layout.ngcBtnXP)
+            saveBtn("ngc_p_btn_y", layout.ngcBtnYP)
+            saveBtn("ngc_btn_z", layout.ngcBtnZ)
+            saveBtn("ngc_p_btn_z", layout.ngcBtnZP)
+            saveBtn("ngc_btn_l", layout.ngcBtnL)
+            saveBtn("ngc_btn_r", layout.ngcBtnR)
+            saveBtn("ngc_p_btn_l", layout.ngcBtnLP)
+            saveBtn("ngc_p_btn_r", layout.ngcBtnRP)
+            saveBtn("ngc_btn_start", layout.ngcBtnStart)
+            saveBtn("ngc_p_btn_start", layout.ngcBtnStartP)
+            saveBtn("ngc_dpad", layout.ngcDpad)
+            saveBtn("ngc_p_dpad", layout.ngcDpadP)
+            saveBtn("wii_btn_a", layout.wiiBtnA)
+            saveBtn("wii_btn_b", layout.wiiBtnB)
+            saveBtn("wii_btn_1", layout.wiiBtn1)
+            saveBtn("wii_btn_2", layout.wiiBtn2)
+            saveBtn("wii_p_btn_a", layout.wiiBtnAP)
+            saveBtn("wii_p_btn_b", layout.wiiBtnBP)
+            saveBtn("wii_p_btn_1", layout.wiiBtn1P)
+            saveBtn("wii_p_btn_2", layout.wiiBtn2P)
+            saveBtn("wii_btn_plus", layout.wiiBtnPlus)
+            saveBtn("wii_btn_minus", layout.wiiBtnMinus)
+            saveBtn("wii_btn_home", layout.wiiBtnHome)
+            saveBtn("wii_p_btn_plus", layout.wiiBtnPlusP)
+            saveBtn("wii_p_btn_minus", layout.wiiBtnMinusP)
+            saveBtn("wii_p_btn_home", layout.wiiBtnHomeP)
+            saveBtn("wii_dpad", layout.wiiDpad)
+            saveBtn("wii_p_dpad", layout.wiiDpadP)
+            saveBtn("wii_lstick", layout.wiiLStick)
+            saveBtn("wii_p_lstick", layout.wiiLStickP)
+            saveBtn("wii_btn_c", layout.wiiBtnC)
+            saveBtn("wii_btn_z", layout.wiiBtnZ)
+            saveBtn("wii_p_btn_c", layout.wiiBtnCP)
+            saveBtn("wii_p_btn_z", layout.wiiBtnZP)
+            saveBtn("wii_btn_ir_near", layout.wiiBtnIrNear)
+            saveBtn("wii_btn_ir_far", layout.wiiBtnIrFar)
+            saveBtn("wii_p_btn_ir_near", layout.wiiBtnIrNearP)
+            saveBtn("wii_p_btn_ir_far", layout.wiiBtnIrFarP)
+            putString("hidden_buttons_ngcwii", layout.hiddenButtonsNgcWii)
             // === Arcade extras ===
             saveBtn("btn_l2", layout.btnL2)
             saveBtn("btn_r2", layout.btnR2)
@@ -2853,9 +3165,6 @@ object PadLayoutStore {
             putString("combo_buttons_arcade", layout.comboButtonsArcade)
             putString("combo_buttons_md", layout.comboButtonsMd)
             putString("combo_buttons_pce", layout.comboButtonsPce)
-            putString("hidden_buttons_tg3ds", layout.hiddenButtonsTg3ds)
-            putString("combo_buttons_3ds", layout.comboButtons3ds)
-            putString("combo_buttons_ngcwii", layout.comboButtonsNgcwii)
             // PCE button visibility toggles
             putBoolean("pce_show_dpad", layout.pceShowDpad)
             putBoolean("pce_show_a", layout.pceShowA)
@@ -2920,10 +3229,8 @@ object PadLayoutStore {
             GamePlatform.NDS -> isHiddenInList(layout.hiddenButtonsNds, key)
             GamePlatform.PSX -> isHiddenInList(layout.hiddenButtonsPsx, key)
             GamePlatform.PS2 -> isHiddenInList(layout.hiddenButtonsPs2, key)
-            // ★ DC 显隐修复：旧版落到 else 恒 false，显隐对话框对 DC 完全无效。
-            GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
-            GamePlatform.TG3DS -> isHiddenInList(layout.hiddenButtonsTg3ds, key)
-            GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcwii, key)
+            GamePlatform.N3DS -> isHiddenInList(layout.hiddenButtonsN3ds, key)
+            GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcWii, key)
             else -> false
         }
     }
@@ -2960,10 +3267,8 @@ object PadLayoutStore {
             GamePlatform.NDS -> layout.copy {hiddenButtonsNds = updateHiddenList(layout.hiddenButtonsNds, key, hidden)}
             GamePlatform.PSX -> layout.copy {hiddenButtonsPsx = updateHiddenList(layout.hiddenButtonsPsx, key, hidden)}
             GamePlatform.PS2 -> layout.copy {hiddenButtonsPs2 = updateHiddenList(layout.hiddenButtonsPs2, key, hidden)}
-            // ★ DC 显隐修复：与 NES/PSX 同模式持久化到专属列表。
-            GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
-            GamePlatform.TG3DS -> layout.copy {hiddenButtonsTg3ds = updateHiddenList(layout.hiddenButtonsTg3ds, key, hidden)}
-            GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcwii = updateHiddenList(layout.hiddenButtonsNgcwii, key, hidden)}
+            GamePlatform.N3DS -> layout.copy {hiddenButtonsN3ds = updateHiddenList(layout.hiddenButtonsN3ds, key, hidden)}
+            GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcWii = updateHiddenList(layout.hiddenButtonsNgcWii, key, hidden)}
             else -> layout
         }
     }
@@ -3085,37 +3390,30 @@ object PadLayoutStore {
                 "l" to "L键", "r" to "R键",
                 "start" to "START", "select" to "SELECT"
             )
-            GamePlatform.TG3DS -> listOf(
-                // 3DS（进程内 Azahar）：全量虚拟按键 —— 与 dispatchNativePadBits
-                // 的位→ButtonType 映射一致（ZL=bit12/L2 槽、ZR=bit13/R2 槽、
-                // L/R 扳机=bit10/11、HOME/换屏=组合键伪位 bit16/17）。
+            GamePlatform.N3DS -> listOf(
+                // 3DS（Azahar）：十字键 / ABXY 菱形 / L R / ZL ZR / START SELECT；
+                // CirclePad 与 C-Stick 为常驻模拟控件（不参与显隐），下屏触摸
+                // 由游戏区直通核心
                 "dpad" to "十字键", "a" to "A键", "b" to "B键",
                 "x" to "X键", "y" to "Y键",
-                "ta" to "连射A", "tb" to "连射B",
-                "l" to "L扳机", "r" to "R扳机",
-                "l2" to "ZL键 (New 3DS)", "r2" to "ZR键 (New 3DS)",
+                "l" to "L键", "r" to "R键",
+                "zl" to "ZL键", "zr" to "ZR键",
                 "start" to "START", "select" to "SELECT"
-                // Circle Pad / C 摇杆为常驻控件；HOME/换屏见组合键
+                // CirclePad / C-Stick 常驻，不参与显隐
             )
             GamePlatform.NGCWII -> listOf(
-                // NGC/WII（进程内 Ishiruka）：全量虚拟按键配置态 ——
-                // GameCube 手柄 (A/B/X/Y/Z + 双摇杆 + L/R 扳机) 与
-                // Wii Remote (+双节棍/经典手柄) 全键位均可在显隐对话框
-                // 单独开关（控制器切换见 ngcwiiController，游戏内菜单与
-                // 核心设置页可热切换）。
-                "dpad" to "十字键 (GC/Wii)",
-                "a" to "A键 (GC A / Wii A)",
-                "b" to "B键 (GC B / Wii B)",
-                "x" to "X键 (GC X / Wii 1)", "y" to "Y键 (GC Y / Wii 2)",
-                "l" to "Z/C键 (GC Z / 双节棍 C)",
-                "r" to "R键 (双节棍 Z / 经典 ZL)",
-                "l2" to "L/−键 (GC L扳机 / Wii − / 经典 Home)",
-                "r2" to "R/+键 (GC R扳机 / Wii + / IR Hide)",
-                "l3" to "摇晃Wii (体感)", "r3" to "摇晃双节棍 (体感)",
-                "ta" to "连射A", "tb" to "连射B",
-                "start" to "START", "select" to "SELECT"
-                // 体感开关 / 摇杆切换 / 即时存读档为通用尾项（qs/ql 全局追加，
-                // 体感见 ngcwiiMotion，摇杆切换见 inputMode）
+                // NGC/WII（Ishiiruka）：GC 手柄与 Wii Remote 两套按键均在列表中，
+                // 实际生效由控制模式决定；主摇杆 / C 摇杆 / 双节棍摇杆为常驻模拟
+                // 控件，IR 指针由游戏区触摸驱动（wii 模式）
+                "ngc_dpad" to "GC十字键", "ngc_a" to "GC·A键", "ngc_b" to "GC·B键",
+                "ngc_x" to "GC·X键", "ngc_y" to "GC·Y键", "ngc_z" to "GC·Z键",
+                "ngc_l" to "GC·L键", "ngc_r" to "GC·R键",
+                "ngc_start" to "GC·START",
+                "wii_dpad" to "Wii十字键", "wii_a" to "Wii·A键", "wii_b" to "Wii·B键",
+                "wii_1" to "Wii·1键", "wii_2" to "Wii·2键",
+                "wii_plus" to "Wii·+键", "wii_minus" to "Wii·−键",
+                "wii_home" to "Wii·HOME", "wii_c" to "双节棍·C", "wii_z" to "双节棍·Z",
+                "wii_ir_near" to "Wii·IR−", "wii_ir_far" to "Wii·IR+"
             )
             else -> emptyList()
         } + listOf("qs" to "即时存档", "ql" to "即时读档")
