@@ -29,7 +29,9 @@ import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.SportsEsports
+import androidx.compose.material.icons.rounded.TabletAndroid
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.VideogameAsset
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Slider
@@ -81,6 +83,8 @@ private fun platformIcon(p: GamePlatform) = when (p) {
     GamePlatform.DOS    -> Icons.Rounded.Terminal        // DOS 命令行
     GamePlatform.JAVA   -> Icons.Rounded.LocalCafe       // Java 咖啡
     GamePlatform.DC     -> Icons.Rounded.SportsEsports   // Dreamcast/NAOMI (Flycast)
+    GamePlatform.N3DS   -> Icons.Rounded.TabletAndroid   // 3DS 双屏掌机
+    GamePlatform.NGCWII -> Icons.Rounded.Tv              // NGC/Wii 电视主机
 }
 
 /** 解析磁贴自定义图标 JSON（{ tileKey → iconPath }），损坏时返回空 map。 */

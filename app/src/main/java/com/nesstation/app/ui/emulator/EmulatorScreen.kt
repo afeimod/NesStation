@@ -429,7 +429,7 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ngc_wii_2", KeyEvent.KEYCODE_BUTTON_2),
             KeyActionInternal("ngc_wii_plus", KeyEvent.KEYCODE_BUTTON_START),
             KeyActionInternal("ngc_wii_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("ngc_wii_home", KeyEvent.KEYCODE_BUTTON_HOMEPAGE),
+            KeyActionInternal("ngc_wii_home", KeyEvent.KEYCODE_BUTTON_MODE),
             KeyActionInternal("ngc_wii_c", KeyEvent.KEYCODE_BUTTON_L2),
             KeyActionInternal("ngc_wii_z", KeyEvent.KEYCODE_BUTTON_R2)
         )
@@ -5180,6 +5180,10 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准虚拟手柄体系，
         // 组合键与 NES 共用同一 PadLayout.comboButtons 表。
         GamePlatform.DC     -> padLayout.comboButtons
+        // 3DS / NGC-WII —— 独立模拟器形态核心（Azahar/Ishiiruka）走
+        // onGamePadEvent/onTouchEvent 契约，不支持位掩码组合键，返回空。
+        GamePlatform.N3DS   -> ""
+        GamePlatform.NGCWII -> ""
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -6000,6 +6004,12 @@ fun OnScreenController(
                                             BtnType.X, BtnType.Y,
                                             BtnType.L2, BtnType.R2,
                                             BtnType.L3, BtnType.R3,
+                                            BtnType.ZL, BtnType.ZR, BtnType.Z,
+                                            BtnType.HOME,
+                                            BtnType.WII_1, BtnType.WII_2,
+                                            BtnType.WII_PLUS, BtnType.WII_MINUS,
+                                            BtnType.WII_C, BtnType.WII_Z,
+                                            BtnType.IR_NEAR, BtnType.IR_FAR,
                                             BtnType.COMBO -> {
                                                 visualState = visualState and heldBits.inv()
                                                 sendStateNow(visualState, turboState)
@@ -11862,7 +11872,7 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {azUseHwShader = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("着色器 JIT", "着色器编译加速", padLayout.azUseShaderJit == "enabled"
                 ) { onLayoutChange(padLayout.copy {azUseShaderJit = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("垂直同步", padLayout.azUseVsync == "enabled"
+                SwitchSetting("垂直同步", "开启可消除画面撕裂，轻微增加延迟", padLayout.azUseVsync == "enabled"
                 ) { onLayoutChange(padLayout.copy {azUseVsync = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("磁盘着色器缓存", "减少重复编译卡顿", padLayout.azUseDiskShaderCache == "enabled"
                 ) { onLayoutChange(padLayout.copy {azUseDiskShaderCache = if (it) "enabled" else "disabled"}) }
@@ -11872,7 +11882,7 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {azAsyncShaderCompilation = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("精确乘法", "着色器精度修正 (个别游戏需要)", padLayout.azAccurateMultiplication == "enabled"
                 ) { onLayoutChange(padLayout.copy {azAccurateMultiplication = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("跳过重复帧", padLayout.azSkipDuplicateFrames == "enabled"
+                SwitchSetting("跳过重复帧", "跳过未变化的帧，降低 GPU 负载", padLayout.azSkipDuplicateFrames == "enabled"
                 ) { onLayoutChange(padLayout.copy {azSkipDuplicateFrames = if (it) "enabled" else "disabled"}) }
                 DropdownSetting("纹理过滤",
                     listOf("0" to "无", "1" to "Anime4K", "2" to "双三次", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
@@ -11908,7 +11918,7 @@ private fun SettingsPanel(
                     listOf("1.25" to "1.25 : 1", "1.5" to "1.5 : 1", "1.75" to "1.75 : 1", "2.0" to "2 : 1", "2.25" to "2.25 : 1 (默认)", "2.5" to "2.5 : 1", "3.0" to "3 : 1", "4.0" to "4 : 1"),
                     padLayout.azLargeScreenProportion
                 ) { onLayoutChange(padLayout.copy {azLargeScreenProportion = it}) }
-                SwitchSetting("上下屏交换", padLayout.azSwapScreens == "enabled"
+                SwitchSetting("上下屏交换", "交换 3DS 上下屏显示位置", padLayout.azSwapScreens == "enabled"
                 ) { onLayoutChange(padLayout.copy {azSwapScreens = if (it) "enabled" else "disabled"}) }
 
                 Text("系统", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -11941,7 +11951,7 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {azRealtimeAudio = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("自定义纹理", "加载 HD 纹理包", padLayout.azCustomTextures == "enabled"
                 ) { onLayoutChange(padLayout.copy {azCustomTextures = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("预加载纹理", padLayout.azPreloadTextures == "enabled"
+                SwitchSetting("预加载纹理", "启动时预载纹理到显存，减少卡顿", padLayout.azPreloadTextures == "enabled"
                 ) { onLayoutChange(padLayout.copy {azPreloadTextures = if (it) "enabled" else "disabled"}) }
             }
             // NGC/WII（Ishiiruka）专属设置 —— 与主界面 CoreSettingsPanel 同步
@@ -11967,7 +11977,7 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {irCpuCore = it}) }
                 SwitchSetting("双核模拟 (CPUThread)", "CPU/GPU 线程分离", padLayout.irDualCore == "enabled"
                 ) { onLayoutChange(padLayout.copy {irDualCore = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("CPU 超频开关", padLayout.irOverclockEnable == "enabled"
+                SwitchSetting("CPU 超频开关", "解除 CPU 时钟限制，部分游戏可能异常", padLayout.irOverclockEnable == "enabled"
                 ) { onLayoutChange(padLayout.copy {irOverclockEnable = if (it) "enabled" else "disabled"}) }
                 DropdownSetting("CPU 超频",
                     listOf("100" to "100% (默认)", "150" to "150%", "200" to "200%", "300" to "300%", "400" to "400%"),
@@ -11991,7 +12001,7 @@ private fun SettingsPanel(
                     listOf("0" to "1x (关)", "1" to "2x", "2" to "4x", "3" to "8x", "4" to "16x"),
                     padLayout.irAnisotropy
                 ) { onLayoutChange(padLayout.copy {irAnisotropy = it}) }
-                SwitchSetting("显示 FPS", padLayout.irShowFps == "enabled"
+                SwitchSetting("显示 FPS", "在画面角落显示实时帧率", padLayout.irShowFps == "enabled"
                 ) { onLayoutChange(padLayout.copy {irShowFps = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("启动时编译着色器", "减少游戏中卡顿 (启动变慢)", padLayout.irWaitForShaders == "enabled"
                 ) { onLayoutChange(padLayout.copy {irWaitForShaders = if (it) "enabled" else "disabled"}) }
@@ -12011,7 +12021,7 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {irAudioStretch = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("DSP HLE", "高速音频模拟 (推荐)", padLayout.irDspHle == "enabled"
                 ) { onLayoutChange(padLayout.copy {irDspHle = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("Wii 扬声器模拟", padLayout.irWiimoteSpeaker == "enabled"
+                SwitchSetting("Wii 扬声器模拟", "模拟 Wii 手柄扬声器音效", padLayout.irWiimoteSpeaker == "enabled"
                 ) { onLayoutChange(padLayout.copy {irWiimoteSpeaker = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("Wiimote 持续扫描", "实体 Wiimote 连接", padLayout.irWiimoteScan == "enabled"
                 ) { onLayoutChange(padLayout.copy {irWiimoteScan = if (it) "enabled" else "disabled"}) }

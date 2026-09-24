@@ -20,9 +20,10 @@ object IshirukaNative {
     @Volatile
     private var loadAttempted = false
 
-    /** 契约类（首次引用触发 static 块 → loadLibrary + 缓存 JNI 方法）。 */
-    val lib: org.dolphinemu.ishiiruka.NativeLibrary
-        get() = org.dolphinemu.ishiiruka.NativeLibrary
+    /** 契约类引用（首次访问触发 static 块 → loadLibrary + 缓存 JNI 方法）。
+     *  NativeLibrary 是 Java final class（静态成员形态），因此返回其 Class 而非实例。 */
+    val lib: Class<org.dolphinemu.ishiiruka.NativeLibrary>
+        get() = org.dolphinemu.ishiiruka.NativeLibrary::class.java
 
     /**
      * 尝试加载 libishiiruka.so。重复调用安全（幂等）。

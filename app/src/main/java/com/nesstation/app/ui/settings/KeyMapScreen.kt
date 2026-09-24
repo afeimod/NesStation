@@ -281,7 +281,7 @@ private val NGCWII_ACTIONS = listOf(
     KeyAction("ngc_wii_2",      "Wii 2",    Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_2,     "Wii 2"),
     KeyAction("ngc_wii_plus",   "Wii +",    Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START, "Wii +"),
     KeyAction("ngc_wii_minus",  "Wii −",    Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT,"Wii −"),
-    KeyAction("ngc_wii_home",   "Wii HOME", Color(0xFF607D8B), KeyEvent.KEYCODE_BUTTON_HOMEPAGE,"Wii HOME"),
+    KeyAction("ngc_wii_home",   "Wii HOME", Color(0xFF607D8B), KeyEvent.KEYCODE_BUTTON_MODE, "Wii HOME"),
     KeyAction("ngc_wii_c",      "双节棍 C", Color(0xFF16A085), KeyEvent.KEYCODE_BUTTON_L2,    "双节棍 C"),
     KeyAction("ngc_wii_z",      "双节棍 Z", Color(0xFF27AE60), KeyEvent.KEYCODE_BUTTON_R2,    "双节棍 Z")
 )
