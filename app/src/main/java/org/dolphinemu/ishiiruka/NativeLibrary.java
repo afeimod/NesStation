@@ -172,7 +172,10 @@ public final class NativeLibrary
          *
          * @return If we handled the button press.
          */
-        public static native boolean onGamePadEvent(String Device, int Button, int Action);
+        public static boolean onGamePadEvent(String Device, int Button, int Action)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.onGamePadEvent(Device, Button, Action);
+        }
 
         /**
          * Handles gamepad movement events.
@@ -181,13 +184,25 @@ public final class NativeLibrary
          * @param Axis   The axis ID
          * @param Value  The value of the axis represented by the given ID.
          */
-        public static native void onGamePadMoveEvent(String Device, int Axis, float Value);
+        public static void onGamePadMoveEvent(String Device, int Axis, float Value)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.onGamePadMoveEvent(Device, Axis, Value);
+        }
 
-        public static native String GetUserSetting(String gameID, String Section, String Key);
+        public static String GetUserSetting(String gameID, String Section, String Key)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetUserSetting(gameID, Section, Key);
+        }
 
-        public static native void SetUserSetting(String gameID, String Section, String Key, String Value);
+        public static void SetUserSetting(String gameID, String Section, String Key, String Value)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SetUserSetting(gameID, Section, Key, Value);
+        }
 
-        public static native void InitGameIni(String gameID);
+        public static void InitGameIni(String gameID)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.InitGameIni(gameID);
+        }
 
         /**
          * Gets a value from a key in the given ini-based config file.
@@ -199,7 +214,10 @@ public final class NativeLibrary
          *
          * @return the value stored at the key, or a default value if it doesn't exist.
          */
-        public static native String GetConfig(String configFile, String Section, String Key, String Default);
+        public static String GetConfig(String configFile, String Section, String Key, String Default)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetConfig(configFile, Section, Key, Default);
+        }
 
         /**
          * Sets a value to a key in the given ini config file.
@@ -209,7 +227,10 @@ public final class NativeLibrary
          * @param Key        The actual ini key to set.
          * @param Value      The string to set the ini key to.
          */
-        public static native void SetConfig(String configFile, String Section, String Key, String Value);
+        public static void SetConfig(String configFile, String Section, String Key, String Value)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SetConfig(configFile, Section, Key, Value);
+        }
 
         /**
          * Gets the embedded banner within the given ISO/ROM.
@@ -218,7 +239,10 @@ public final class NativeLibrary
          *
          * @return an integer array containing the color data for the banner.
          */
-        public static native int[] GetBanner(String filename);
+        public static int[] GetBanner(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetBanner(filename);
+        }
 
         /**
          * Gets the embedded title of the given ISO/ROM.
@@ -227,35 +251,65 @@ public final class NativeLibrary
          *
          * @return the embedded title of the ISO/ROM.
          */
-        public static native String GetTitle(String filename);
+        public static String GetTitle(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetTitle(filename);
+        }
 
-        public static native String GetDescription(String filename);
-        public static native String GetGameId(String filename);
+        public static String GetDescription(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetDescription(filename);
+        }
+        public static String GetGameId(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetGameId(filename);
+        }
 
-        public static native int GetCountry(String filename);
+        public static int GetCountry(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetCountry(filename);
+        }
 
-        public static native String GetCompany(String filename);
-        public static native long GetFilesize(String filename);
+        public static String GetCompany(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetCompany(filename);
+        }
+        public static long GetFilesize(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetFilesize(filename);
+        }
 
         /**
          * 查询游戏平台类型：0 = GameCube，1 = Wii 光盘，2 = WiiWare/ELF。
          * （MainAndroid.cpp GetPlatform —— NesStation 用于自动切换 NGC/Wii 控制布局）
          */
-        public static native int GetPlatform(String filename);
+        public static int GetPlatform(String filename)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetPlatform(filename);
+        }
 
         /**
          * Gets the Dolphin version string.
          *
          * @return the Dolphin version string.
          */
-        public static native String GetVersionString();
+        public static String GetVersionString()
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetVersionString();
+        }
 
-        public static native String GetGitRevision();
+        public static String GetGitRevision()
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetGitRevision();
+        }
 
         /**
          * Saves a screen capture of the game
          */
-        public static native void SaveScreenShot();
+        public static void SaveScreenShot()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SaveScreenShot();
+        }
 
         /**
          * Saves a game state to the slot number.
@@ -264,7 +318,10 @@ public final class NativeLibrary
          * @param wait  If false, returns as early as possible.
          *              If true, returns once the savestate has been written to disk.
          */
-        public static native void SaveState(int slot, boolean wait);
+        public static void SaveState(int slot, boolean wait)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SaveState(slot, wait);
+        }
 
         /**
          * Saves a game state to the specified path.
@@ -273,103 +330,160 @@ public final class NativeLibrary
          * @param wait  If false, returns as early as possible.
          *              If true, returns once the savestate has been written to disk.
          */
-        public static native void SaveStateAs(String path, boolean wait);
+        public static void SaveStateAs(String path, boolean wait)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SaveStateAs(path, wait);
+        }
 
         /**
          * Loads a game state from the slot number.
          *
          * @param slot  The slot location to load state from.
          */
-        public static native void LoadState(int slot);
+        public static void LoadState(int slot)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.LoadState(slot);
+        }
 
         /**
          * Loads a game state from the specified path.
          *
          * @param path  The path to load state from.
          */
-        public static native void LoadStateAs(String path);
+        public static void LoadStateAs(String path)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.LoadStateAs(path);
+        }
 
         /**
          * Sets the current working user directory
          * If not set, it auto-detects a location
          */
-        public static native void SetUserDirectory(String directory);
+        public static void SetUserDirectory(String directory)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SetUserDirectory(directory);
+        }
 
         /**
          * Returns the current working user directory
          */
-        public static native String GetUserDirectory();
+        public static String GetUserDirectory()
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.GetUserDirectory();
+        }
 
-        public static native int DefaultCPUCore();
+        public static int DefaultCPUCore()
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.DefaultCPUCore();
+        }
 
         /**
          * Begins emulation.
          */
-        public static native void Run(String path);
+        public static void Run(String path)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.Run(path);
+        }
 
         /**
          * Begins emulation from the specified savestate.
          */
-        public static native void Run(String path, String savestatePath, boolean deleteSavestate);
+        public static void Run(String path, String savestatePath, boolean deleteSavestate)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.Run(path);
+        }
 
-        public static native void ChangeDisc(String path);
+        public static void ChangeDisc(String path)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.ChangeDisc(path);
+        }
 
         // Surface Handling
-        public static native void SurfaceChanged(Surface surf);
-        public static native void SurfaceDestroyed();
+        public static void SurfaceChanged(Surface surf)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SurfaceChanged(surf);
+        }
+        public static void SurfaceDestroyed()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SurfaceDestroyed();
+        }
 
         /** Unpauses emulation from a paused state. */
-        public static native void UnPauseEmulation();
+        public static void UnPauseEmulation()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.UnPauseEmulation();
+        }
 
         /** Pauses emulation. */
-        public static native void PauseEmulation();
+        public static void PauseEmulation()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.PauseEmulation();
+        }
 
         /** Stops emulation. */
-        public static native void StopEmulation();
+        public static void StopEmulation()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.StopEmulation();
+        }
 
         /** Returns true if emulation is running (or is paused). */
-        public static native boolean IsRunning();
+        public static boolean IsRunning()
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.IsRunning();
+        }
 
         /**
          * Enables or disables CPU block profiling
          * @param enable
          */
-        public static native void SetProfiling(boolean enable);
+        public static void SetProfiling(boolean enable)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.SetProfiling(enable);
+        }
 
         /**
          * Writes out the block profile results
          */
-        public static native void WriteProfileResults();
+        public static void WriteProfileResults()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.WriteProfileResults();
+        }
 
         /** Native EGL functions not exposed by Java bindings **/
-        public static native void eglBindAPI(int api);
+        public static void eglBindAPI(int api)
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.eglBindAPI(api);
+        }
 
         /**
          * Provides a way to refresh the connections on Wiimotes
          */
-        public static native void RefreshWiimotes();
+        public static void RefreshWiimotes()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.RefreshWiimotes();
+        }
 
         /**
          * The methods C++ uses to find references to Java classes and methods
          * are really expensive. Rather than calling them every time we want to
          * run them, do it once when we load the native library.
          */
-        private static native void CacheClassesAndMethods();
 
         static
         {
-                // NesStation 集成补丁：库改名 libmain.so → libishiiruka.so（JNI 按类名绑定符号，
-                // 与文件名无关）。
-                try
-                {
-                        System.loadLibrary("ishiiruka");
-                }
-                catch (UnsatisfiedLinkError ex)
-                {
-                        android.util.Log.e("DolphinNative", "[NativeLibrary] " + ex.toString());
-                }
-
-                CacheClassesAndMethods();
+            // NesStation 集成补丁（闪退修复）：libishiiruka.so 的 JNI_OnLoad 内
+            // FindClass("org/dolphinemu/dolphinemu/NativeLibrary") 且全部导出符号按
+            // Java_org_dolphinemu_dolphinemu_* 绑定 —— 加载动作已移至新契约类
+            // org.dolphinemu.dolphinemu.NativeLibrary（static 块 loadLibrary）。
+            // 此处仅触发其 <clinit>，保证 JNI_OnLoad 执行时 FindClass 可命中。
+            try
+            {
+                Class.forName("org.dolphinemu.dolphinemu.NativeLibrary");
+            }
+            catch (Throwable ex)
+            {
+                android.util.Log.e("DolphinNative", "[NativeLibrary] " + ex.toString());
+            }
         }
 
         private static boolean alertResult = false;

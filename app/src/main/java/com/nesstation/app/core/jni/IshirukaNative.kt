@@ -4,9 +4,10 @@ package com.nesstation.app.core.jni
  * Ishiiruka（NGC/Wii）核心库加载器 —— NesStation 集成。
  *
  * libishiiruka.so（= 上游 libmain.so，由 scripts/fetch_azahar_ishiruka_libs.sh
- * 从 Ishiruka APK 提取改名）的 JNI 符号按 Java_org_dolphinemu_ishiiruka_* 绑定到
- * vendored 契约类 `org.dolphinemu.ishiiruka.NativeLibrary`（其 <clinit> 内
- * System.loadLibrary("ishiiruka") + CacheClassesAndMethods，与上游一致）。
+ * 从 Ishiruka APK 提取改名）的 JNI_OnLoad 内 FindClass("org/dolphinemu/dolphinemu/
+ * NativeLibrary")，全部导出符号按 Java_org_dolphinemu_dolphinemu_* 绑定到
+ * 新契约类 `org.dolphinemu.dolphinemu.NativeLibrary`（其 static 块加载 so）；
+ * org.dolphinemu.ishiiruka.NativeLibrary 保留为兼容门面（静态常量 + 委托方法）。
  * 本对象只做幂等触发 + 可用性探测，全部原生方法经 [lib] 访问。
  *
  * 仅提供 arm64-v8a；加载失败时 [loaded] 为 false，UI 报告不可用而非崩溃。
@@ -35,8 +36,10 @@ object IshirukaNative {
             if (loadAttempted) return false
             loadAttempted = true
             loaded = try {
-                // 触发契约类 static 块（loadLibrary("ishiiruka") + CacheClassesAndMethods）
-                Class.forName("org.dolphinemu.ishiiruka.NativeLibrary")
+                // 闪退修复：触发 dolphinemu 包契约类 static 块（loadLibrary("ishiiruka")）。
+                // libishiiruka.so 的 JNI_OnLoad FindClass("org/dolphinemu/dolphinemu/NativeLibrary")，
+                // 符号按 Java_org_dolphinemu_dolphinemu_* 绑定 —— 加载必须发生在新契约类上。
+                Class.forName("org.dolphinemu.dolphinemu.NativeLibrary")
                 // 再读一个静态常量确认类初始化成功
                 org.dolphinemu.ishiiruka.NativeLibrary.TouchScreenDevice.isNotEmpty()
             } catch (e: UnsatisfiedLinkError) {

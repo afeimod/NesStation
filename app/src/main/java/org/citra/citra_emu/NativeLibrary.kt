@@ -298,6 +298,27 @@ object NativeLibrary {
     fun onCompressProgress(progress: Long, total: Long) {
     }
 
+    // ------------------------------------------------------------------
+    // AzaharPlus 2125（"25" API）回调 —— libazahar.so JNI_OnLoad 实测契约
+    // （BuildId 0758b08c834910db672499f203daad47bd3598eb，strings 提取）。
+    // 该 fork 以 onSaveStateComplete25 / onNetPlayStatusMessageReceive25
+    // 取代上游 addNetPlayMessage / onSaveStateComplete 的回调位。
+    // ------------------------------------------------------------------
+
+    /** 存档状态完成回调。JNI 签名: (Z)V */
+    @Keep
+    @JvmStatic
+    fun onSaveStateComplete25(success: Boolean) {
+        android.util.Log.i("AzaharNative", "SaveState25 complete: $success")
+    }
+
+    /** 联机状态消息回调（替代上游 addNetPlayMessage）。JNI 签名: (ILjava/lang/String;)V */
+    @Keep
+    @JvmStatic
+    fun onNetPlayStatusMessageReceive25(type: Int, message: String) {
+        android.util.Log.i("AzaharNative", "NetPlay25[$type] $message")
+    }
+
     // ---- android_utils.h 文件系统桥 ----
     // 上游经 CitraApplication.documentsTree / FileUtil 走 SAF；NesStation 传给核心的均是
     // 真实文件路径（EmulatorScreen 已把 content:// 拷贝为真实文件），因此这里按本地文件实现，
