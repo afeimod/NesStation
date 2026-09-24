@@ -1,0 +1,124 @@
+diff --git a/app/src/main/java/org/citra/citra_emu/applets/MiiSelector.kt b/app/src/main/java/org/citra/citra_emu/applets/MiiSelector.kt
+index 34e43c4b..fcd5aaab 100644
+--- a/app/src/main/java/org/citra/citra_emu/applets/MiiSelector.kt
++++ b/app/src/main/java/org/citra/citra_emu/applets/MiiSelector.kt
+@@ -6,11 +6,12 @@ import androidx.annotation.Keep
+ /**
+  * Azahar Mii 选择器小程序 —— JNI 契约桩。
+  *
+- * 原生侧（jni/applets/mii_selector.cpp）在 InitJNI 时缓存
+- * `execute(Lorg/citra/citra_emu/applets/MiiSelector$MiiSelectorConfig;)Lorg/citra/citra_emu/applets/MiiSelector$MiiSelectorData;`
+- * 并按字段名反射读写 MiiSelectorConfig（enableCancelButton:Z / title:Ljava/lang/String; /
+- * initiallySelectedMiiIndex:J / miiNames:[Ljava/lang/String;）
+- * 与 MiiSelectorData（returnCode:J / index:I）。
++ * 原生侧（jni/applets/mii_selector.cpp）在 JNI_OnLoad（IDCache 初始化）时缓存
++ * `Execute(Lorg/citra/citra_emu/applets/MiiSelector$MiiSelectorConfig;)Lorg/citra/citra_emu/applets/MiiSelector$MiiSelectorData;`
++ * —— 注意是 **PascalCase 的 `Execute`**（AzaharPlus fork 的实际契约，经 libazahar.so
++ * 反汇编验证；上游官方 azahar 亦为 `Execute`），并按字段名反射读写 MiiSelectorConfig
++ * （enableCancelButton:Z / title:Ljava/lang/String; / initiallySelectedMiiIndex:J /
++ * miiNames:[Ljava/lang/String;）与 MiiSelectorData（returnCode:J / index:I）。
+  * 最小实现：取消（returnCode = 1，与上游 CANCEL 常量一致）。
+  */
+ @Keep
+@@ -41,8 +42,13 @@ object MiiSelector {
+         var index: Int = 0
+     }
+ 
++    /**
++     * 方法名必须为 `Execute`（PascalCase）—— JNI_OnLoad 按 GetStaticMethodID
++     * 字符串名查找，camelCase 的 `execute` 会抛 NoSuchMethodError 并因 pending
++     * exception 直接 SIGABRT 闪退（应用启动即崩，无法恢复）。
++     */
+     @JvmStatic
+-    fun execute(config: MiiSelectorConfig?): MiiSelectorData {
++    fun Execute(config: MiiSelectorConfig?): MiiSelectorData {
+         Log.i("AzaharNative", "MiiSelector executed (cancel stub)")
+         return MiiSelectorData().apply { returnCode = RETURN_CODE_CANCEL }
+     }
+diff --git a/app/src/main/java/org/citra/citra_emu/applets/SoftwareKeyboard.kt b/app/src/main/java/org/citra/citra_emu/applets/SoftwareKeyboard.kt
+index 0df1bbbc..cac9faf6 100644
+--- a/app/src/main/java/org/citra/citra_emu/applets/SoftwareKeyboard.kt
++++ b/app/src/main/java/org/citra/citra_emu/applets/SoftwareKeyboard.kt
+@@ -6,12 +6,13 @@ import androidx.annotation.Keep
+ /**
+  * Azahar 软键盘系统小程序 —— JNI 契约桩。
+  *
+- * 原生侧（jni/applets/swkbd.cpp）在 InitJNI 时缓存：
+- *  - `execute(Lorg/citra/citra_emu/applets/SoftwareKeyboard$KeyboardConfig;)Lorg/citra/citra_emu/applets/SoftwareKeyboard$KeyboardData;`
+- *  - `showError(Ljava/lang/String;)V`
+- * 并按字段名反射读写 KeyboardConfig（buttonConfig:I / maxTextLength:I /
+- * multilineMode:Z / hintText:Ljava/lang/String; / buttonText:[Ljava/lang/String;）
+- * 与 KeyboardData（text:Ljava/lang/String; / button:I）。
++ * 原生侧（jni/applets/swkbd.cpp）在 JNI_OnLoad（IDCache 初始化）时缓存：
++ *  - `Execute(Lorg/citra/citra_emu/applets/SoftwareKeyboard$KeyboardConfig;)Lorg/citra/citra_emu/applets/SoftwareKeyboard$KeyboardData;`
++ *  - `ShowError(Ljava/lang/String;)V`
++ * —— 均为 **PascalCase**（AzaharPlus fork 实际契约，经 libazahar.so 反汇编验证；
++ * 上游官方 azahar 源码同名），并按字段名反射读写 KeyboardConfig（buttonConfig:I /
++ * maxTextLength:I / multilineMode:Z / hintText:Ljava/lang/String; /
++ * buttonText:[Ljava/lang/String;）与 KeyboardData（text:Ljava/lang/String; / button:I）。
+  * 部分 3DS 游戏对话 / 命名时触发。NesStation 最小实现：返回空文本 +
+  * 默认按钮，游戏内弹出系统输入框的完整体验可后续按上游 UI 补充。
+  */
+@@ -58,8 +59,13 @@ object SoftwareKeyboard {
+         var button: Int = 0
+     }
+ 
++    /**
++     * 方法名必须为 `Execute`（PascalCase）—— JNI_OnLoad 按 GetStaticMethodID
++     * 字符串名查找，名字不符会抛 NoSuchMethodError → pending exception →
++     * SIGABRT 启动闪退。
++     */
+     @JvmStatic
+-    fun execute(config: KeyboardConfig?): KeyboardData {
++    fun Execute(config: KeyboardConfig?): KeyboardData {
+         // 最小可用实现：回车确认 + 空文本（等待宿主 UI 增强）
+         return KeyboardData().apply {
+             text = ""
+@@ -67,8 +73,9 @@ object SoftwareKeyboard {
+         }
+     }
+ 
++    /** 同上，必须为 `ShowError`（PascalCase）。 */
+     @JvmStatic
+-    fun showError(error: String) {
++    fun ShowError(error: String) {
+         Log.w("AzaharNative", "SoftwareKeyboard error: $error")
+     }
+ }
+diff --git a/app/src/main/java/org/citra/citra_emu/camera/StillImageCameraHelper.kt b/app/src/main/java/org/citra/citra_emu/camera/StillImageCameraHelper.kt
+index 42bdb196..273530af 100644
+--- a/app/src/main/java/org/citra/citra_emu/camera/StillImageCameraHelper.kt
++++ b/app/src/main/java/org/citra/citra_emu/camera/StillImageCameraHelper.kt
+@@ -7,22 +7,25 @@ import androidx.annotation.Keep
+ /**
+  * Azahar 静态图片相机 —— JNI 契约桩。
+  *
+- * 原生侧（jni/camera/still_image_camera.cpp）在 InitJNI 时缓存：
+- *  - `openFilePicker()Ljava/lang/String;`
+- *  - `loadImageFromFile(Ljava/lang/String;II)Landroid/graphics/Bitmap;`
++ * 原生侧（jni/camera/still_image_camera.cpp）在 JNI_OnLoad（IDCache 初始化）时缓存：
++ *  - `OpenFilePicker()Ljava/lang/String;`
++ *  - `LoadImageFromFile(Ljava/lang/String;II)Landroid/graphics/Bitmap;`
++ * —— 均为 **PascalCase**（AzaharPlus fork 实际契约，经 libazahar.so 反汇编验证；
++ * 上游官方 azahar 源码同名），名字不符会在 JNI_OnLoad 抛 NoSuchMethodError →
++ * pending exception → SIGABRT 启动闪退。
+  * 游戏使用相机（如 AR / 拍照小游戏）时触发。NesStation 最小实现：
+- * openFilePicker 返回空串（上游空串语义 = 用户取消），后续可挂接
++ * OpenFilePicker 返回空串（上游空串语义 = 用户取消），后续可挂接
+  * 系统相册选择器。
+  */
+ @Keep
+ object StillImageCameraHelper {
+ 
+     @JvmStatic
+-    fun openFilePicker(): String = ""
++    fun OpenFilePicker(): String = ""
+ 
+     @JvmStatic
+-    fun loadImageFromFile(filePath: String, width: Int, height: Int): Bitmap? {
+-        Log.i("AzaharNative", "StillImageCamera loadImageFromFile: $filePath")
++    fun LoadImageFromFile(filePath: String, width: Int, height: Int): Bitmap? {
++        Log.i("AzaharNative", "StillImageCamera LoadImageFromFile: $filePath")
+         return try {
+             val raw = android.graphics.BitmapFactory.decodeFile(filePath) ?: return null
+             if (width <= 0 || height <= 0) raw
