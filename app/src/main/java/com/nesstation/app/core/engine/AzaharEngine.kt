@@ -195,9 +195,13 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     lastErrorText = "Azahar 退出（status=$result）"
                 }
             })
-            lib.setUserDirectory(userDir())
-            // 首次运行生成默认配置树（已有则核心按存在文件处理）
-            try { lib.createConfigFile() } catch (_: Throwable) {}
+            // ⚠ 上游硬性契约（DirectoryInitialization.start() 同序）：必须先
+            // createLogFile()（= Common::Log::Initialize/Start）再 createConfigFile()/
+            // reloadSettings() —— 否则 Config::ReadValues() 内
+            // Common::Log::SetGlobalFilter 抛 "Using Logging instance before its
+            // initialization"，C++ 异常跨 JNI 边界 → std::terminate → SIGABRT 闪退
+            //（Java try/catch 拦不住 native abort，顺序即修复）。详见 AzaharNative。
+            AzaharNative.initConfigPipeline(userDir())
             flushConfig()
             try { lib.reloadSettings() } catch (_: Throwable) {}
         } catch (t: Throwable) {

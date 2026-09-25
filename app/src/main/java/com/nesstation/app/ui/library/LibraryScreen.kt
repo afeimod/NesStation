@@ -884,8 +884,11 @@ fun LibraryScreen(
         // 与 AzaharEngine.loadRom 相同的用户目录初始化（NAND 路径解析依赖它）
         val userDir = java.io.File(context.filesDir, "azahar").apply { mkdirs() }.absolutePath
         try {
-            lib.setUserDirectory(userDir)
-            try { lib.createConfigFile() } catch (_: Throwable) {}
+            // ⚠ 先 createLogFile()（= Common::Log::Initialize/Start）再
+            // createConfigFile()/reloadSettings() —— 日志后端未初始化时
+            // Config::ReadValues() 触发 native abort 闪退（try/catch 拦不住）。
+            // 序列与 AzaharEngine.loadRom 一致，详见 AzaharNative.initConfigPipeline。
+            com.nesstation.app.core.jni.AzaharNative.initConfigPipeline(userDir)
             try { lib.reloadSettings() } catch (_: Throwable) {}
         } catch (t: Throwable) {
             android.util.Log.w("LibraryScreen", "CIA: azahar user dir init failed", t)
