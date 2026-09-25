@@ -379,10 +379,12 @@ public final class NativeLibrary
 
         /**
          * Begins emulation.
+         * （转发到符号宿主类；无存档启动 —— 第二参传空串而非 null，
+         * 避免原生侧 jstring 转换空指针。）
          */
         public static void Run(String path)
         {
-            org.dolphinemu.dolphinemu.NativeLibrary.Run(path);
+            org.dolphinemu.dolphinemu.NativeLibrary.Run(path, "", false);
         }
 
         /**
@@ -390,7 +392,7 @@ public final class NativeLibrary
          */
         public static void Run(String path, String savestatePath, boolean deleteSavestate)
         {
-            org.dolphinemu.dolphinemu.NativeLibrary.Run(path);
+            org.dolphinemu.dolphinemu.NativeLibrary.Run(path, savestatePath, deleteSavestate);
         }
 
         public static void ChangeDisc(String path)

@@ -377,3 +377,6 @@ index 3ccc8d55..3e4ea5d5 100644
 -			CreateUserDirectories();
 +			org.dolphinemu.dolphinemu.utils.DirectoryInitialization
 +					.CreateUserDirectories();
+ 
+ 			// NesStation 补丁：上游经 assets 写入 GCPadNew.ini / WiimoteNew.ini 绑定
+ 			// Touchscreen 设备；NesStation 由 IshirukaEngine.writeControllerInis() 以

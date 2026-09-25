@@ -38,9 +38,10 @@ public final class DirectoryInitializationService
 		// Disallows instantiation.
 	}
 
-	private static native void CreateUserDirectories();
-
-	private static native void SetSysDirectory(String path);
+	// 闪退/目录初始化修复：native 方法已移至符号真正的宿主类
+	// org.dolphinemu.dolphinemu.utils.DirectoryInitialization
+	// （so 导出 Java_org_dolphinemu_dolphinemu_utils_DirectoryInitialization_*，
+	// 按声明类名解析符号；声明在本类上会 UnsatisfiedLinkError）。
 
 	/**
 	 * NesStation 补丁：引擎层入口 —— 用应用私有目录初始化核心目录体系。
@@ -59,11 +60,13 @@ public final class DirectoryInitializationService
 			// 与上游一致：先告知 Sys 目录，再设定 User 目录并建立结构。
 			File sys = new File(sysDir, "sys");
 			sys.mkdirs();
-			SetSysDirectory(sys.getPath());
+			org.dolphinemu.dolphinemu.utils.DirectoryInitialization
+					.SetSysDirectory(sys.getPath());
 
 			userDir.mkdirs();
 			SetUserDirectoryCompat(userDir.getPath());
-			CreateUserDirectories();
+			org.dolphinemu.dolphinemu.utils.DirectoryInitialization
+					.CreateUserDirectories();
 
 			// NesStation 补丁：上游经 assets 写入 GCPadNew.ini / WiimoteNew.ini 绑定
 			// Touchscreen 设备；NesStation 由 IshirukaEngine.writeControllerInis() 以

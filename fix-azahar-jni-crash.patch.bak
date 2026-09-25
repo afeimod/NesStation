@@ -377,3 +377,4 @@ index 3ccc8d55..3e4ea5d5 100644
 -			CreateUserDirectories();
 +			org.dolphinemu.dolphinemu.utils.DirectoryInitialization
 +					.CreateUserDirectories();
+ 

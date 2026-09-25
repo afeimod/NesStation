@@ -167,7 +167,23 @@
 
 # ─── Ishiiruka（NGC/WII）核心 JNI 契约 ────────────────────────────────────
 # libishiiruka.so（= 上游 libmain.so，Ishiruka APK 提取）通过 JNI 符号名
-# （Java_org_dolphinemu_ishiiruka_*）与 CacheClassesAndMethods 缓存的
-# displayAlertMsg 方法、DirectoryInitializationService 的 SetSysDirectory /
-# CreateUserDirectories native 方法绑定 —— 同样必须按名保留。
+# （Java_org_dolphinemu_dolphinemu_*）与 JNI_OnLoad / Run 懒初始化路径的
+# FindClass/GetStaticMethodID/GetStaticFieldID/GetFieldID/GetMethodID 字符串
+# 查找 org.dolphinemu.dolphinemu 下的契约类：
+#   - NativeLibrary.displayAlertMsg (String,String,boolean)boolean /
+#     rumble (int,double) / updateWindowSize (int,int)；
+#   - model/IniFile.mPointer:J 字段；
+#   - model/GameFile.mPointer:J 字段 + <init>(J)V 构造器；
+#   - utils/Java_WiimoteAdapter.wiimote_payload:[[B 静态字段 + Input/Output；
+#   - utils/Java_GCAdapter / utils/DirectoryInitialization native 方法。
+# ⚠ 历史教训（启动闪退第二根因）：这些类/成员只被原生字符串引用，
+#   R8 看不到任何 Java 调用方 —— 旧规则只 keep 了 org.dolphinemu.ishiiruka.**
+#   门面包，dolphinemu 契约包完全没 keep，release 构建会被整体裁剪/混淆，
+#   JNI_OnLoad 抛 NoSuchMethodError → pending exception → SIGABRT。
+# 必须整个包 keep。
+-keep class org.dolphinemu.dolphinemu.** { *; }
+
+# vendored 门面/兼容层（org.dolphinemu.ishiiruka.**，含 NesStationHost 宿主桥、
+# DirectoryInitializationService、ButtonType/TouchScreenDevice 常量）同样被
+# 引擎层直接调用，保持 keep。
 -keep class org.dolphinemu.ishiiruka.** { *; }
