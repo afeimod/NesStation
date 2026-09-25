@@ -499,7 +499,7 @@ object NativeLibrary {
     fun decompressFile(inputPath: String?, outputPath: String): Int =
         decompressFileNative(inputPath, outputPath)
 
-    fun getInstalledGamePaths(): Array<String> = emptyArray()
+    
 
     /**
      * NesStation 宿主桥 —— 由 AzaharEngine 在启动时注册，替代上游 EmulationActivity 上下文。
