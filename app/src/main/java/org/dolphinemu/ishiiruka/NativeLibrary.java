@@ -379,20 +379,25 @@ public final class NativeLibrary
 
         /**
          * Begins emulation.
-         * （转发到符号宿主类；无存档启动 —— 第二参传空串而非 null，
-         * 避免原生侧 jstring 转换空指针。）
+         * （转发到符号宿主类；原生侧 Run 实为 (String[] paths, String savestate)
+         * —— 反汇编 0xd01d0/0xc5920 实测，第1参必须是数组。无存档启动 ——
+         * 第二参传空串而非 null，避免原生侧 jstring 转换空指针。）
          */
         public static void Run(String path)
         {
-            org.dolphinemu.dolphinemu.NativeLibrary.Run(path, "", false);
+            org.dolphinemu.dolphinemu.NativeLibrary.Run(new String[] { path }, "");
         }
 
         /**
          * Begins emulation from the specified savestate.
+         * （兼容旧 API 形状：原生侧不读第三参 —— deleteSavestate 由 savestate
+         * 路径含 "temp.sav" 子串派生，此处仅透传路径。）
          */
         public static void Run(String path, String savestatePath, boolean deleteSavestate)
         {
-            org.dolphinemu.dolphinemu.NativeLibrary.Run(path, savestatePath, deleteSavestate);
+            org.dolphinemu.dolphinemu.NativeLibrary.Run(
+                new String[] { path },
+                savestatePath == null ? "" : savestatePath);
         }
 
         public static void ChangeDisc(String path)

@@ -102,9 +102,12 @@ object PlatformDetector {
         "pce" to GamePlatform.PCE, "sgx" to GamePlatform.PCE,
         // Nintendo DS（排除 app —— 撞 APK / macOS 应用 / 应用数据）
         "nds" to GamePlatform.NDS, "srl" to GamePlatform.NDS,
-        // Nintendo 3DS（.3ds/.cci/.cxi/.cia 为专属格式，日常文件不撞名）
+        // Nintendo 3DS（.3ds/.cci/.cxi 为可直接启动格式，日常文件不撞名）。
+        // ⚠ .cia 是安装包不是可启动镜像 —— 不在自动扫描白名单里
+        // （自动扫描/文件夹导入只收可启动格式；CIA 走「安装CIA」专用入口，
+        // 安装后经 getInstalledGamePaths 以 NAND 标题形式入库）。
         "3ds" to GamePlatform.N3DS, "cci" to GamePlatform.N3DS,
-        "cxi" to GamePlatform.N3DS, "cia" to GamePlatform.N3DS,
+        "cxi" to GamePlatform.N3DS,
         // GameCube / Wii（rvz/gcm/gcz/wad/dol 为专属格式；.elf 撞 Linux 可执行不收）
         "rvz" to GamePlatform.NGCWII, "gcm" to GamePlatform.NGCWII,
         "gcz" to GamePlatform.NGCWII, "wad" to GamePlatform.NGCWII,
@@ -244,6 +247,9 @@ object PlatformDetector {
     fun detectForRefresh(file: File, hintPlatform: GamePlatform? = null): GamePlatform? {
         val ext = file.extension.lowercase()
         if (ext == "apk") return null
+        // 3DS 页 .app（裸 CXI）跟随 hint —— 与 detectFromUri 同规则，
+        // 保证刷新重扫不丢手动导入的 3DS .app 条目。
+        if (ext == "app" && hintPlatform == GamePlatform.N3DS) return GamePlatform.N3DS
         if (ext == "zip") return isZipContentRecognizable(file, hintPlatform)
         if (ext == "7z" || ext == "gz") {
             return if (hintPlatform == GamePlatform.ARCADE) GamePlatform.ARCADE else null
@@ -264,6 +270,9 @@ object PlatformDetector {
     ): GamePlatform? {
         val ext = fileName.substringAfterLast('.', "").lowercase()
         if (ext == "apk") return null
+        // 3DS 页 .app（裸 CXI）跟随 hint —— 与 detectFromUri 同规则，
+        // 保证刷新重扫不丢手动导入的 3DS .app 条目。
+        if (ext == "app" && hintPlatform == GamePlatform.N3DS) return GamePlatform.N3DS
         if (ext == "zip") return isZipContentRecognizable(context, uri, fileName, hintPlatform)
         if (ext == "7z" || ext == "gz") {
             return if (hintPlatform == GamePlatform.ARCADE) GamePlatform.ARCADE else null
@@ -288,6 +297,13 @@ object PlatformDetector {
         hintPlatform: GamePlatform? = null
     ): GamePlatform {
         val ext = fileName.substringAfterLast('.', "").lowercase()
+
+        // === 3DS 可直接启动格式：.app 在 NDS（DSiWare）与 3DS（裸 CXI dump）
+        // 之间撞名 —— 用户在 3DS 平台页导入时按 N3DS 解析。
+        // （.app 也是 CIA 安装后 NAND 标题的形态；NDS 页导入仍归 NDS。）
+        if (ext == "app" && hintPlatform == GamePlatform.N3DS) {
+            return GamePlatform.N3DS
+        }
 
         // === CD-image 扩展名歧义 ===
         if (ext in CD_IMAGE_EXTENSIONS) {
@@ -345,6 +361,12 @@ object PlatformDetector {
         pathHint: String? = null
     ): GamePlatform {
         val ext = file.extension.lowercase()
+
+        // === 3DS 可直接启动格式：.app 在 NDS（DSiWare）与 3DS（裸 CXI dump）
+        // 之间撞名 —— 3DS 页 hint 优先归 N3DS（与 detectFromUri 同规则）。 ===
+        if (ext == "app" && hintPlatform == GamePlatform.N3DS) {
+            return GamePlatform.N3DS
+        }
 
         // CD-image 扩展名歧义消解：先看路径关键字，再看 hint，最后默认 MD
         if (ext in CD_IMAGE_EXTENSIONS) {

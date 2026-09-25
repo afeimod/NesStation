@@ -26,9 +26,12 @@ import android.view.Surface;
  *   1. static 块加载 libishiiruka.so（触发 JNI_OnLoad，此时本类已可被 FindClass 命中）；
  *   2. 提供原生层反向回调 displayAlertMsg / rumble / updateWindowSize；
  *   3. 声明 so 导出符号对应的 native 方法（符号自动绑定）。
- *      ⚠ Run 原生实现实为两参 (jstring path, jstring savestatePath)（反汇编
- *      0xd01d0 实测：x2、x3 均经 jstring→std::string 转换，x4 未读），
- *      Java 侧必须声明 ≥2 个 String 参数 —— 单参会读到垃圾指针。
+ *      ⚠ Run 原生实现实为两参 (jobjectArray jPaths, jstring jSavestate)
+ *      （反汇编 0xd01d0 + 崩溃帧 0xc5920 实测：第1参经 GetArrayLength /
+ *      GetObjectArrayElement 循环转 std::vector<std::string>；第2参经
+ *      GetStringUTFChars 转 std::string；x4 未读）—— Java 侧必须声明
+ *      (String[], String)，否则 GetArrayLength 拿到 String 触发
+ *      "not an array" JNI abort（第二阶段启动闪退根因）。
  *      so 未导出的旧 API（GetConfig / GetBanner / GetTitle 等）改为 Java 兜底实现，
  *      避免调用时 UnsatisfiedLinkError。
  *
@@ -126,17 +129,24 @@ public final class NativeLibrary
         public static native int DefaultCPUCore();
 
         /**
-         * 开始模拟。原生实现实际读取两个 jstring（path / savestatePath，反汇编
-         * 0xd01d0 实测），第三个参数（若上游有 boolean deleteSavestate）原生侧
-         * 未读 —— 声明三参形态兼容上游 API 形状，且保证原生侧 x2/x3 不读到
-         * 垃圾指针。无存档启动传 ""（空串）而非 null，避免 JNI 字符串转换空指针。
+         * 开始模拟。原生实现实际签名（反汇编 0xd01d0 + 崩溃帧 0xc5920 实测）：
+         * Run(jobjectArray jPaths, jstring jSavestate) ——
+         *   - 第1参 x2：String[]，原生循环 GetObjectArrayElement +
+         *     GetStringUTFChars 转成 std::vector<std::string>；vector 为空时
+         *     走 MsgAlert 断言（"An error occurred. Line: 743 File:
+         *     jni/MainAndroid.cpp"）并中止启动，故至少要传一个路径；
+         *   - 第2参 x3：jstring（可为 null）→ savestate 路径；原生在其内容
+         *     中搜索 "temp.sav" 子串决定 deleteSavestate（含则 true）；
+         *   - 第三参（若上游有 boolean deleteSavestate）原生侧未读。
+         *     误声明为 (String,String,boolean) 时第1参是 String 却被
+         *     GetArrayLength → "not an array" JNI abort（第二阶段闪退）。
          */
-        public static native void Run(String path, String savestatePath, boolean deleteSavestate);
+        public static native void Run(String[] paths, String savestate);
 
         /** 单参便捷入口：无存档启动（等价于上游默认路径）。 */
         public static void Run(String path)
         {
-                Run(path, "", false);
+                Run(new String[] { path }, "");
         }
 
         public static native void ChangeDisc(String path);

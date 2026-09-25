@@ -84,6 +84,12 @@ int audioTargetSampleRate();
 // Supports up to 4 controllers via the standard 4 ports.
 void setControllerInput(int port, uint16_t bits);
 
+// Push analog stick state for one controller port (libretro int16 axes,
+// −32768..32767, 0 = center). Slot order: [LX, LY, RX, RY] — flycast
+// polls RETRO_DEVICE_INDEX_ANALOG_LEFT/RIGHT X/Y for the DC analog
+// stick (libretro.cpp: joyx/joyy = LEFT X/Y). Zeroed on load/unload.
+void setControllerAnalog(int port, int16_t lx, int16_t ly, int16_t rx, int16_t ry);
+
 // Set system (BIOS files: dc_boot.bin / dc_flash.bin / naomi.zip / awbios.zip)
 // and save (VMU vmu_save_*.bin / nvmem / .state) directories.
 void setPaths(const std::string& systemDir, const std::string& saveDir);

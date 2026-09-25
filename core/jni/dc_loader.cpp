@@ -177,6 +177,12 @@ static std::atomic<uint16_t> s_pad2{0};
 static std::atomic<uint16_t> s_pad3{0};
 static std::atomic<uint16_t> s_pad4{0};
 
+// Analog stick axes (port 0..3) — [LX, LY, RX, RY] as libretro int16 values
+// (−32768..32767, 0 = center). Feeding the on-screen virtual stick: flycast
+// polls RETRO_DEVICE_ANALOG LEFT/RIGHT X/Y for the DC pad's analog stick
+// regardless of the port device id (libretro.cpp joyx/joyy ← LEFT X/Y).
+static std::atomic<int16_t> s_analog[4][4]{};
+
 static std::atomic<int>  s_videoFilter{0};
 static std::atomic<bool> s_highQualityScaling{false};
 static std::atomic<bool> s_fastForward{false};
@@ -972,11 +978,19 @@ static void cb_input_poll() { /* state is read on demand */ }
 
 static int16_t cb_input_state(unsigned port, unsigned device,
                               unsigned index, unsigned id) {
-    // Analog axes: the on-screen UI feeds digital bits only; sticks rest at
-    // center (0). Analog-only games still see a present-but-neutral stick.
+    // Analog axes: the on-screen virtual stick (and physical gamepads via
+    // the engine) push real int16 values through setControllerAnalog().
+    // flycast queries (index, id) pairs:
+    //   (INDEX_ANALOG_LEFT=0, ID_ANALOG_X=0 / Y=1) → DC 摇杆 X/Y
+    //   (INDEX_ANALOG_RIGHT=1, ID_ANALOG_X=0 / Y=1) → 右轴（DC 手柄无右摇杆，
+    //    但部分外设/轮式控制器会读 —— 保持可写，默认 0）。
     if (device == RETRO_DEVICE_ANALOG) {
-        if (index == 0 && id <= 3) return 0;  // LX / LY / RX / RY neutral
-        device = RETRO_DEVICE_JOYPAD;         // fall through for pad ids
+        if (port > 3) return 0;
+        if (index == 0 && id == 0) return s_analog[port][0].load(std::memory_order_relaxed);  // LX
+        if (index == 0 && id == 1) return s_analog[port][1].load(std::memory_order_relaxed);  // LY
+        if (index == 1 && id == 0) return s_analog[port][2].load(std::memory_order_relaxed);  // RX
+        if (index == 1 && id == 1) return s_analog[port][3].load(std::memory_order_relaxed);  // RY
+        return 0;
     }
     if (device != RETRO_DEVICE_JOYPAD) return 0;
     // DC supports up to 4 controllers (ports 0-3).
@@ -1195,6 +1209,10 @@ void unload() {
     s_pad2.store(0, std::memory_order_relaxed);
     s_pad3.store(0, std::memory_order_relaxed);
     s_pad4.store(0, std::memory_order_relaxed);
+    // 虚拟摇杆/物理手柄轴一并归零（防止上局游戏的倾斜残留到新游戏）。
+    for (int p = 0; p < 4; ++p)
+        for (int a = 0; a < 4; ++a)
+            s_analog[p][a].store(0, std::memory_order_relaxed);
     s_hwContextReset = nullptr;
     s_hwContextDestroy = nullptr;
 
@@ -1310,6 +1328,15 @@ void setControllerInput(int port, uint16_t bits) {
     else if (port == 1) s_pad2.store(bits, std::memory_order_relaxed);
     else if (port == 2) s_pad3.store(bits, std::memory_order_relaxed);
     else if (port == 3) s_pad4.store(bits, std::memory_order_relaxed);
+}
+
+void setControllerAnalog(int port, int16_t lx, int16_t ly, int16_t rx, int16_t ry) {
+    if (port < 0 || port > 3) return;
+    const unsigned p = (unsigned)port;
+    s_analog[p][0].store(lx, std::memory_order_relaxed);
+    s_analog[p][1].store(ly, std::memory_order_relaxed);
+    s_analog[p][2].store(rx, std::memory_order_relaxed);
+    s_analog[p][3].store(ry, std::memory_order_relaxed);
 }
 
 void setPaths(const std::string& systemDir, const std::string& saveDir) {

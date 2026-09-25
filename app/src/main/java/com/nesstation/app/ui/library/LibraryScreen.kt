@@ -37,6 +37,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Clear
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Refresh
@@ -135,6 +136,11 @@ val ROM_EXTENSIONS = listOf(
     "pce", "sgx", "hes",
     // Nintendo DS (melonDS)
     "nds", "app", "ids", "srl", "dsi",
+    // Nintendo 3DS (Azahar) — .3ds/.cci/.cxi 为可直接启动格式；
+    // .app 在 3DS 页导入时按 N3DS 解析（见 PlatformDetector.detectFromUri
+    // 的 hint 消歧）；.cia 是安装包不是可启动镜像 —— 不入白名单，
+    // 走「安装CIA」专用入口（导入ROM 按钮旁）。
+    "3ds", "cci", "cxi",
     // PlayStation 1 (PCSX-ReARMed)
     "pbp", "m3u", "ecm", "mdf", "mds",
     // SEGA Dreamcast / NAOMI (Flycast standalone)
@@ -635,7 +641,8 @@ fun LibraryScreen(
         // Recursively scan the selected folder for ROM files
         val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5)
         if (romFiles.isEmpty()) {
-            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd）"
+            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd .3ds .cci .cxi .app）\n" +
+                "（.cia 是安装包不是可直接启动镜像 —— 请用「安装CIA」入口安装）"
             return
         }
         // Save the folder URI so the Refresh button can re-scan it
@@ -845,6 +852,163 @@ fun LibraryScreen(
         }
     }
 
+    // ===== CIA 安装（3DS 专属）：「导入ROM」旁的「安装CIA」入口 =====
+    // .cia 是 3DS 安装包（数字版游戏 / 更新 / DLC），必须先装进 Azahar 的
+    // NAND 才能启动 —— 与可直接启动的 .3ds/.cci/.cxi/.app 走不同路径：
+    // 原生 org.citra.citra_emu.utils.CiaInstallWorker.installCIA(String)
+    // （libazahar.so 导出，AzaharPlus 同源）把 CIA 内容写入 NAND，随后经
+    // NativeLibrary.getInstalledGamePaths() 枚举已装标题入库（可直接启动）。
+    var ciaInstallMsg by remember { mutableStateOf<String?>(null) }
+
+    /** InstallStatus → 用户可读文案。 */
+    fun ciaStatusText(s: org.citra.citra_emu.NativeLibrary.InstallStatus): String =
+        when (s) {
+            org.citra.citra_emu.NativeLibrary.InstallStatus.Success -> "成功"
+            org.citra.citra_emu.NativeLibrary.InstallStatus.ErrorFailedToOpenFile -> "打开文件失败"
+            org.citra.citra_emu.NativeLibrary.InstallStatus.ErrorFileNotFound -> "文件不存在"
+            org.citra.citra_emu.NativeLibrary.InstallStatus.ErrorAborted -> "安装被中止"
+            org.citra.citra_emu.NativeLibrary.InstallStatus.ErrorInvalid -> "CIA 无效或损坏"
+            org.citra.citra_emu.NativeLibrary.InstallStatus.ErrorEncrypted ->
+                "CIA 已加密（需在 3DS 系统目录放置 aes_keys.txt 密钥文件）"
+        }
+
+    /**
+     * 安装选中的 .cia 文件到 Azahar NAND（后台协程执行）。
+     * 原生 installCIA 需要真实文件系统路径 —— SAF URI 先拷贝到 cacheDir
+     * 再安装（完成后删除临时副本）。全部安装完成后枚举 NAND 已安装标题，
+     * 以「已安装标题」形式补进 3DS 游戏库（romPath 为 file:// 前缀的
+     * NAND .app 真实路径，启动走既有 cache 复制 + AzaharEngine.loadRom 链）。
+     */
+    suspend fun runCiaInstall(context: android.content.Context, uris: List<android.net.Uri>) {
+        val lib = org.citra.citra_emu.NativeLibrary
+        // 与 AzaharEngine.loadRom 相同的用户目录初始化（NAND 路径解析依赖它）
+        val userDir = java.io.File(context.filesDir, "azahar").apply { mkdirs() }.absolutePath
+        try {
+            lib.setUserDirectory(userDir)
+            try { lib.createConfigFile() } catch (_: Throwable) {}
+            try { lib.reloadSettings() } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.w("LibraryScreen", "CIA: azahar user dir init failed", t)
+        }
+
+        var successCount = 0
+        val failures = mutableListOf<String>()
+        uris.forEach { uri ->
+            val name = queryDisplayName(uri) ?: "cia_${System.currentTimeMillis()}.cia"
+            if (!name.endsWith(".cia", ignoreCase = true)) {
+                failures += "$name：不是 .cia 文件"
+                return@forEach
+            }
+            // SAF → 本地临时文件（原生侧按真实路径读取）
+            val tmp = java.io.File(
+                context.cacheDir,
+                "cia_install_${System.currentTimeMillis()}_" +
+                    name.replace(Regex("[^\\w.-]"), "_")
+            )
+            try {
+                val opened = context.contentResolver.openInputStream(uri)
+                if (opened == null) {
+                    failures += "$name：无法读取所选文件"
+                    return@forEach
+                }
+                opened.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                // 安装进度观察（原生侧在调用线程同步回调；节流刷 UI）
+                var lastUi = 0L
+                org.citra.citra_emu.utils.CiaInstallWorker.listener = { max: Int, progress: Int ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastUi > 300) {
+                        lastUi = now
+                        ciaInstallMsg = "正在安装 $name…\n$progress / $max"
+                    }
+                }
+                val status = try {
+                    org.citra.citra_emu.utils.CiaInstallWorker().installCIA(tmp.absolutePath)
+                } finally {
+                    org.citra.citra_emu.utils.CiaInstallWorker.listener = null
+                }
+                if (status == org.citra.citra_emu.NativeLibrary.InstallStatus.Success) {
+                    successCount++
+                } else {
+                    failures += "$name：${ciaStatusText(status)}"
+                }
+            } finally {
+                tmp.delete()
+            }
+        }
+
+        // 安装产物入库：NAND 已安装标题 → 3DS 游戏库（可直接启动的 .app）
+        var addedTitles = 0
+        if (successCount > 0) {
+            try {
+                val installed = lib.getInstalledGamePaths()
+                val known = importedGames.mapNotNull { it.romPath }.toSet()
+                val items = installed.mapNotNull { (path, _) ->
+                    val fileUri = "file://$path"
+                    if (fileUri in known) return@mapNotNull null
+                    // NAND 路径形如 …/nand/title/<高ID>/<低ID>/content/xxxx.app
+                    val lowId = path.substringBeforeLast("/content/", "")
+                        .substringAfterLast('/')
+                        .uppercase().padStart(8, '0')
+                    val title = if (lowId.length == 8) "已安装标题 $lowId"
+                        else java.io.File(path).nameWithoutExtension
+                    Triple(title, fileUri, GamePlatform.N3DS)
+                }
+                if (items.isNotEmpty()) {
+                    RomStore.importGames(context, items)
+                    addedTitles = items.size
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("LibraryScreen", "CIA: enumerate installed titles failed", t)
+            }
+        }
+
+        refreshList(
+            postMessage = buildString {
+                append("CIA 安装完成：成功 $successCount 个")
+                if (failures.isNotEmpty()) {
+                    append("，失败 ${failures.size} 个（${failures.joinToString("；")}）")
+                }
+                if (addedTitles > 0) {
+                    append("\n已加入 $addedTitles 个数字版标题到 3DS 游戏库")
+                } else if (successCount > 0) {
+                    append("\n（数字版标题已在此前入库）")
+                }
+            }
+        )
+    }
+
+    // SAF picker for selecting .cia files
+    val ciaPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        if (importing) {
+            dialogMsg = "上一次导入还在进行中，请稍候再试"
+            return@rememberLauncherForActivityResult
+        }
+        importing = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                runCiaInstall(context, uris)
+            } catch (e: Exception) {
+                dialogMsg = "CIA 安装失败：${e.message}"
+            } finally {
+                ciaInstallMsg = null
+                importing = false
+            }
+        }
+    }
+
+    fun installCiaFiles() {
+        try {
+            ciaPickerLauncher.launch(arrayOf("*/*"))
+        } catch (_: android.content.ActivityNotFoundException) {
+            showFileBrowser = true
+        } catch (e: Exception) {
+            dialogMsg = "无法打开文件选择器：${e.message}"
+        }
+    }
+
     fun requestManageStorage() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
@@ -955,6 +1119,10 @@ fun LibraryScreen(
                 FsdToolButton(Icons.Rounded.Search, "搜索") { showSearch = !showSearch }
                 if (selectedPlatform != GamePlatform.JAVA) {
                     FsdToolButton(Icons.Rounded.Add, "导入ROM") { importFiles() }
+                    // 3DS 专属：CIA 安装包入口（与可直接启动的 .3ds/.cci/.cxi 区分）
+                    if (selectedPlatform == GamePlatform.N3DS) {
+                        FsdToolButton(Icons.Rounded.Download, "安装CIA") { installCiaFiles() }
+                    }
                     FsdToolButton(Icons.Rounded.Folder, "导入文件夹") { importFolder() }
                     FsdToolButton(Icons.Rounded.Storage, "本地浏览") { showFileBrowser = true }
                 } else {
@@ -1294,7 +1462,7 @@ fun LibraryScreen(
                     )
                     Spacer(Modifier.width(16.dp))
                     Text(
-                        "正在扫描并导入游戏…\n大目录可能需要一些时间，请稍候",
+                        ciaInstallMsg ?: "正在扫描并导入游戏…\n大目录可能需要一些时间，请稍候",
                         color = Color(0xFF1E2A3A),
                         fontSize = 13.sp,
                         lineHeight = 18.sp

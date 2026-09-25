@@ -887,6 +887,14 @@ class PadLayout {
     var wiiBtnIrNearP: ButtonLayout = ButtonLayout(x = 0.93f, y = 0.28f, sizeDp = 38)
     var wiiBtnIrFarP: ButtonLayout = ButtonLayout(x = 0.93f, y = 0.38f, sizeDp = 38)
 
+    // === DC (Flycast) on-screen pad extras ===
+    // Dreamcast 手柄：十字键（左上）+ 左侧模拟摇杆（左中偏下，真正的模拟轴 ——
+    // 绝大多数 DC 游戏靠它移动）+ ABXY + L/R + Start。摇杆为常驻模拟控件
+    // （不参与显隐），输出经 onAnalogAxes → DcCoreEngine.setAnalogAxes →
+    // dc_loader 的 RETRO_DEVICE_ANALOG 左轴。
+    var dcLStick: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.50f, sizeDp = 104)
+    var dcLStickP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.52f, sizeDp = 92)
+
     // === Arcade (FBNeo) on-screen pad extras ===
     // L2/R2 button positions (bit12/bit13 in the libretro joypad word).
     // Used for 6-button fight-stick layouts and as Coin/Start shortcuts.
@@ -954,6 +962,7 @@ class PadLayout {
     var hiddenButtonsPs2: String = ""     // PS2 hidden button keys (含 l3/r3；双摇杆常驻不隐藏)
     var hiddenButtonsN3ds: String = ""    // 3DS hidden button keys (双摇杆常驻不隐藏)
     var hiddenButtonsNgcWii: String = ""  // NGC/WII hidden button keys (双摇杆常驻不隐藏)
+    var hiddenButtonsDc: String = ""      // DC hidden button keys（摇杆常驻不隐藏）
 
     // === Input mode (joystick vs D-pad) ===
     // "dpad" = cross-shaped digital D-pad (default); "analog" = circular
@@ -1434,6 +1443,8 @@ class PadLayout {
         n3dsLStickP = another.n3dsLStickP
         n3dsRStick = another.n3dsRStick
         n3dsRStickP = another.n3dsRStickP
+        dcLStick = another.dcLStick
+        dcLStickP = another.dcLStickP
         n3dsBtnA = another.n3dsBtnA
         n3dsBtnB = another.n3dsBtnB
         n3dsBtnX = another.n3dsBtnX
@@ -2406,6 +2417,8 @@ object PadLayoutStore {
             n3dsDpadP = loadBtn(p, "n3ds_p_dpad", ButtonLayout(x = 0.18f, y = 0.72f, sizeDp = 96))
             n3dsLStick = loadBtn(p, "n3ds_lstick", ButtonLayout(x = 0.13f, y = 0.50f, sizeDp = 104))
             n3dsLStickP = loadBtn(p, "n3ds_p_lstick", ButtonLayout(x = 0.18f, y = 0.52f, sizeDp = 92))
+            dcLStick = loadBtn(p, "dc_lstick", ButtonLayout(x = 0.13f, y = 0.50f, sizeDp = 104))
+            dcLStickP = loadBtn(p, "dc_p_lstick", ButtonLayout(x = 0.18f, y = 0.52f, sizeDp = 92))
             n3dsRStick = loadBtn(p, "n3ds_rstick", ButtonLayout(x = 0.87f, y = 0.30f, sizeDp = 72))
             n3dsRStickP = loadBtn(p, "n3ds_p_rstick", ButtonLayout(x = 0.82f, y = 0.36f, sizeDp = 64))
             n3dsBtnA = loadBtn(p, "n3ds_btn_a", ButtonLayout(x = 0.90f, y = 0.68f, sizeDp = 54))
@@ -2501,6 +2514,7 @@ object PadLayoutStore {
             wiiBtnIrNearP = loadBtn(p, "wii_p_btn_ir_near", ButtonLayout(x = 0.93f, y = 0.28f, sizeDp = 38))
             wiiBtnIrFarP = loadBtn(p, "wii_p_btn_ir_far", ButtonLayout(x = 0.93f, y = 0.38f, sizeDp = 38))
             hiddenButtonsNgcWii = p.getString("hidden_buttons_ngcwii", "") ?: ""
+            hiddenButtonsDc = p.getString("hidden_buttons_dc", "") ?: ""
             // === Arcade extras ===
             btnL2 = loadBtn(p, "btn_l2", ButtonLayout(x = 0.08f, y = 0.32f, sizeDp = 48))
             btnR2 = loadBtn(p, "btn_r2", ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48))
@@ -3058,6 +3072,8 @@ object PadLayoutStore {
             saveBtn("n3ds_p_dpad", layout.n3dsDpadP)
             saveBtn("n3ds_lstick", layout.n3dsLStick)
             saveBtn("n3ds_p_lstick", layout.n3dsLStickP)
+            saveBtn("dc_lstick", layout.dcLStick)
+            saveBtn("dc_p_lstick", layout.dcLStickP)
             saveBtn("n3ds_rstick", layout.n3dsRStick)
             saveBtn("n3ds_p_rstick", layout.n3dsRStickP)
             saveBtn("n3ds_btn_a", layout.n3dsBtnA)
@@ -3151,6 +3167,7 @@ object PadLayoutStore {
             saveBtn("wii_p_btn_ir_near", layout.wiiBtnIrNearP)
             saveBtn("wii_p_btn_ir_far", layout.wiiBtnIrFarP)
             putString("hidden_buttons_ngcwii", layout.hiddenButtonsNgcWii)
+            putString("hidden_buttons_dc", layout.hiddenButtonsDc)
             // === Arcade extras ===
             saveBtn("btn_l2", layout.btnL2)
             saveBtn("btn_r2", layout.btnR2)
@@ -3231,6 +3248,7 @@ object PadLayoutStore {
             GamePlatform.PS2 -> isHiddenInList(layout.hiddenButtonsPs2, key)
             GamePlatform.N3DS -> isHiddenInList(layout.hiddenButtonsN3ds, key)
             GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcWii, key)
+            GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
             else -> false
         }
     }
@@ -3269,6 +3287,7 @@ object PadLayoutStore {
             GamePlatform.PS2 -> layout.copy {hiddenButtonsPs2 = updateHiddenList(layout.hiddenButtonsPs2, key, hidden)}
             GamePlatform.N3DS -> layout.copy {hiddenButtonsN3ds = updateHiddenList(layout.hiddenButtonsN3ds, key, hidden)}
             GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcWii = updateHiddenList(layout.hiddenButtonsNgcWii, key, hidden)}
+            GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
             else -> layout
         }
     }

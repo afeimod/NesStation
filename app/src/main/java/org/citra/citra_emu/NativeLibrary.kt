@@ -129,6 +129,29 @@ object NativeLibrary {
 
     private external fun getInstalledGamePathsImpl(): Array<String?>
 
+    /**
+     * 枚举已安装到 NAND 的数字版标题（CIA 安装产物 / 系统应用）。
+     *
+     * 原生返回 "<path>|<mediaType>" 字符串数组（上游 AzaharPlus
+     * GameHelper.getInstalledGamePaths 同款解析）：path 为可直接 run()
+     * 启动的 NAND 内 .app 真实路径，mediaType 为游戏媒体类型整数。
+     *
+     * @return (path, mediaType) 列表；无已安装标题时为空列表
+     */
+    fun getInstalledGamePaths(): List<Pair<String, Int>> =
+        getInstalledGamePathsImpl().mapNotNull { entry ->
+            entry?.let {
+                val sep = it.lastIndexOf('|')
+                if (sep <= 0) {
+                    null
+                } else {
+                    val path = it.substring(0, sep)
+                    val media = it.substring(sep + 1).toIntOrNull() ?: 0
+                    path to media
+                }
+            }
+        }
+
     // Create the config.ini file.
     external fun createConfigFile()
     external fun createLogFile()

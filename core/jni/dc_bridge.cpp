@@ -55,6 +55,9 @@ void Engine::setPad1(int bits)        { rom::setControllerInput(0, (uint16_t)bit
 void Engine::setPad2(int bits)        { rom::setControllerInput(1, (uint16_t)bits); }
 void Engine::setPad3(int bits)        { rom::setControllerInput(2, (uint16_t)bits); }
 void Engine::setPad4(int bits)        { rom::setControllerInput(3, (uint16_t)bits); }
+void Engine::setAnalogAxes(int port, int lx, int ly, int rx, int ry) {
+    rom::setControllerAnalog(port, (int16_t)lx, (int16_t)ly, (int16_t)rx, (int16_t)ry);
+}
 void Engine::setRegion(int region)    { rom::applyRegion(region); }
 void Engine::setSampleRate(int hz)    { rom::applySampleRate(hz); }
 void Engine::setFastForward(int speed)  { rom::applySpeed(speed > 0 ? (float)speed : 1.0f); }
@@ -199,6 +202,12 @@ Java_com_nesstation_app_core_jni_DcNative_setFastForward(JNIEnv*, jobject, jint 
 extern "C" JNIEXPORT void JNICALL
 Java_com_nesstation_app_core_jni_DcNative_setControllerDevice(JNIEnv*, jobject, jint port, jint device) {
     dccore::Engine::instance().setPortDevice(port, device);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_nesstation_app_core_jni_DcNative_setAnalogAxes(JNIEnv*, jobject,
+                                                       jint port, jint lx, jint ly, jint rx, jint ry) {
+    dccore::Engine::instance().setAnalogAxes(port, lx, ly, rx, ry);
 }
 
 extern "C" JNIEXPORT jdouble JNICALL

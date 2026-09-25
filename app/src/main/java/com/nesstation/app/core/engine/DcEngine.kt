@@ -38,7 +38,7 @@ import kotlin.concurrent.thread
  *   bit4=Up, bit5=Down, bit6=Left, bit7=Right,
  *   bit8=B, bit9=Y, bit10=L, bit11=R
  */
-class DcEngine private constructor() : EmulatorEngine {
+class DcEngine private constructor() : EmulatorEngine, DcCoreEngine {
 
     /**
      * DC frame buffer. Standard VGA is 640x480; internal resolution up to
@@ -322,6 +322,23 @@ class DcEngine private constructor() : EmulatorEngine {
     override fun setPad2(bits: Int) = DcNative.setPad2(bits)
     fun setPad3(bits: Int) = DcNative.setPad3(bits)
     fun setPad4(bits: Int) = DcNative.setPad4(bits)
+
+    /**
+     * DC 手柄模拟摇杆（端口 0）：归一化 -1..1（屏幕坐标约定，向上为负）
+     * 转 libretro int16 轴（−32768..32767，0 居中）。虚拟摇杆
+     * （OnScreenController 经 onAnalogAxes）与物理手柄轴由此推送；
+     * flycast 每帧以 RETRO_DEVICE_ANALOG 轮询。DC 无右摇杆，
+     * (rx, ry) 预留给外设（当前透传）。
+     */
+    override fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float) {
+        DcNative.setAnalogAxes(
+            0,
+            (lx * 32767f).toInt().coerceIn(-32768, 32767),
+            (ly * 32767f).toInt().coerceIn(-32768, 32767),
+            (rx * 32767f).toInt().coerceIn(-32768, 32767),
+            (ry * 32767f).toInt().coerceIn(-32768, 32767)
+        )
+    }
 
     /**
      * Switch controller ports between the standard digital pad and an

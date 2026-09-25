@@ -109,6 +109,16 @@ object DcNative {
     /** Fourth controller (port 3). Same bit layout as setPad1. */
     @JvmStatic external fun setPad4(bits: Int)
 
+    /**
+     * Analog stick state for a controller port — libretro int16 axes
+     * (−32768..32767, 0 = center), order LX/LY/RX/RY. DC 手柄的摇杆是模拟轴
+     * （绝大多数 DC 游戏靠它移动）：flycast 每帧按
+     * RETRO_DEVICE_INDEX_ANALOG_LEFT/RIGHT + ID_ANALOG_X/Y 轮询（libretro.cpp
+     * joyx/joyy ← LEFT X/Y）。供 OnScreenController 的虚拟摇杆与物理手柄
+     * 轴推送（DcEngine.setAnalogAxes 包装端口 0）。
+     */
+    @JvmStatic external fun setAnalogAxes(port: Int, lx: Int, ly: Int, rx: Int, ry: Int)
+
     @JvmStatic external fun setRegion(region: Int)
     @JvmStatic external fun setSampleRate(rate: Int)
     @JvmStatic external fun setFastForward(speed: Int)

@@ -9,9 +9,9 @@
 // The Dreamcast pad uses the standard 12-button libretro gamepad layout
 // (same bit layout as SNES after the Kotlin-side dcToLibretroLayout()
 // conversion — flycast maps JOYPAD_B→DC A, JOYPAD_A→DC B, JOYPAD_Y→DC X,
-// JOYPAD_X→DC Y). The bridge therefore only needs setPad1/2/3/4(int) for
-// input. The analog sticks report neutral axes via RETRO_DEVICE_ANALOG so
-// analog-aware games still see a present stick.
+// JOYPAD_X→DC Y). The bridge provides setPad1/2/3/4(int) for buttons and
+// setAnalogAxes() for the analog stick (RETRO_DEVICE_ANALOG int16 axes —
+// the DC pad's stick is analog and most DC games read it).
 //
 // Video is hardware-rendered (GLES3 FBO → ANativeWindow blit + swap) —
 // see dc_loader.cpp for the full frontend contract.
@@ -46,6 +46,11 @@ public:
     void setPad3(int bits);
     // Fourth controller (port 3). Same bit layout.
     void setPad4(int bits);
+
+    // Analog stick for a controller port — libretro int16 axes
+    // (−32768..32767, 0 = center), order LX/LY/RX/RY. Feeds the DC pad's
+    // analog stick (flycast polls RETRO_DEVICE_ANALOG LEFT X/Y).
+    void setAnalogAxes(int port, int lx, int ly, int rx, int ry);
 
     void setRegion(int region);
     void setSampleRate(int hz);

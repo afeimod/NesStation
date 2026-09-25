@@ -835,6 +835,167 @@ private fun loadGameFolder(
 }
 
 /**
+ * DC / NAOMI / AtomisWave ROM 物化（两级策略）：
+ *
+ *  A) tree URI（「导入文件夹」/ 本地浏览产生的 document URI 含 tree 段，
+ *     持久 tree 授权）：沿用 [loadGameFolder] 整夹复制 —— 轨道文件与
+ *     同名 CHD 子文件夹一并带过来。
+ *
+ *  B) 兜底（文件选择器 URI 无 tree 授权，或 A 因 SecurityException 失败）：
+ *     单文件复制并**保留原始文件名**。flycast 按「压缩包名 = 游戏名」识别
+ *     NAOMI ROM set（naomi_cart.cpp FindGame(fileName)）—— 重命名成
+ *     temp_rom.zip 会直接 "Romset is unknown"，绝不能改名；复制后再尽力
+ *     把同名 CHD 子文件夹带过来（MAME 约定：chd 位于
+ *     <zip 同目录>/<zip 名>/<gdrom 名>.chd —— flycast gdcartridge.cpp
+ *     getSubPath(parent, basename(gdrom_name)) 实测）。无权限时静默跳过
+ *     （CHD 型游戏会在加载失败时给出明确提示）。
+ *
+ *  返回物化后的 ROM 文件；非 content:// 路径直接返回原文件。
+ */
+private fun materializeDcGame(
+    context: android.content.Context,
+    romUriStr: String,
+    gameId: String
+): java.io.File? {
+    if (!romUriStr.startsWith("content://")) {
+        val f = java.io.File(romUriStr)
+        return if (f.exists()) f else null
+    }
+
+    // 兜底路径的快路径：此前已单文件物化过（独立子目录 dc_cd_file，与
+    // loadGameFolder 的 dc_cd 互不干扰 —— 其重拷前的 deleteRecursively
+    // 不会波及这里）。
+    val safeId = gameId.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
+        .takeIf { it.isNotBlank() } ?: "game"
+    val fallbackRoot = java.io.File(context.filesDir, "dc_cd_file/$safeId")
+
+    // A) tree URI → 整夹复制（轨道 / CHD 文件夹一并；失败返回 null）
+    val folderCopy = try {
+        loadGameFolder(context, romUriStr, gameId, "dc_cd")
+    } catch (_: Exception) { null }
+    if (folderCopy != null) return folderCopy
+
+    // B) 单文件兜底：保留原始文件名复制
+    val uri = android.net.Uri.parse(romUriStr)
+    val fileName = run {
+        var name = ""
+        try {
+            context.contentResolver.query(
+                uri, null, null, null, null
+            )?.use { c ->
+                val idx = c.getColumnIndex(
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME
+                )
+                if (idx >= 0 && c.moveToFirst()) {
+                    val n = c.getString(idx)
+                    if (!n.isNullOrBlank()) name = n
+                }
+            }
+        } catch (_: Exception) { }
+        if (name.isBlank()) {
+            try {
+                uri.lastPathSegment?.let {
+                    name = android.net.Uri.decode(it).substringAfterLast('/')
+                }
+            } catch (_: Exception) { }
+        }
+        name
+    }
+    if (fileName.isBlank()) return null
+    val safeName = fileName.replace(Regex("[^\\w.-]"), "_").ifBlank { "dc_rom.zip" }
+
+    fallbackRoot.mkdirs()
+    val dest = java.io.File(fallbackRoot, safeName)
+
+    // 快路径：上次已物化且非空（zip 本体已就位；CHD 文件夹也在首次
+    // 物化时尽力带过 —— 此处直接复用，避免每次启动重拷多 GB 的 chd）
+    if (dest.exists() && dest.length() > 0L) return dest
+
+    return try {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { input.copyTo(it) }
+        } ?: return null
+        tryCopyDcSiblingFolder(context, uri, fallbackRoot, safeName)
+        dest
+    } catch (e: Exception) {
+        android.util.Log.w("EmulatorScreen", "DC single-file materialize failed", e)
+        null
+    }
+}
+
+/**
+ * 尽力复制 NAOMI CHD 同名子文件夹（MAME 约定 <zip名>/<gdrom名>.chd）到
+ * [destRoot]。需要 SAF 对父目录的列举权限 —— 文件选择器 URI 通常没有，
+ * 此时返回 null 并静默跳过（调用方已保证 zip 本体复制成功）。
+ * 返回值恒为 null（仅为链式书写便利）；复制成功无返回语义。
+ */
+private fun tryCopyDcSiblingFolder(
+    context: android.content.Context,
+    romUri: android.net.Uri,
+    destRoot: java.io.File,
+    zipSafeName: String
+): java.io.File? {
+    try {
+        val docId = android.provider.DocumentsContract.getDocumentId(romUri)
+        val lastSlash = docId.lastIndexOf('/')
+        if (lastSlash <= 0) return null
+        val parentDocId = docId.substring(0, lastSlash)
+        // 目标子文件夹名 = zip 文件名去扩展（同名文件夹）
+        val baseName = zipSafeName.substringBeforeLast('.').ifBlank { return null }
+
+        // 构造父目录的 tree URI（与 loadGameFolder 同法）
+        val paths = romUri.pathSegments
+        val treeUri = if (paths.indexOf("tree") >= 0 && paths.size > paths.indexOf("tree") + 1) {
+            android.net.Uri.Builder()
+                .scheme(android.content.ContentResolver.SCHEME_CONTENT)
+                .authority(romUri.authority)
+                .appendPath("tree")
+                .appendPath(paths[paths.indexOf("tree") + 1])
+                .build()
+        } else {
+            android.net.Uri.Builder()
+                .scheme(android.content.ContentResolver.SCHEME_CONTENT)
+                .authority(romUri.authority)
+                .appendPath("tree")
+                .appendPath(parentDocId)
+                .build()
+        }
+        val parentUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocId)
+        val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri, parentDocId
+        )
+        val cr = context.contentResolver
+        // 无权限时 query 抛 SecurityException → 静默跳过
+        cr.query(childrenUri, null, null, null, null)?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(cursor.getColumnIndexOrThrow(
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)) ?: continue
+                val mimeType = cursor.getString(cursor.getColumnIndexOrThrow(
+                    android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE))
+                if (mimeType != android.provider.DocumentsContract.Document.MIME_TYPE_DIR) continue
+                if (!name.equals(baseName, ignoreCase = true)) continue
+                // 找到同名文件夹 → 递归复制到 destRoot/<baseName>/
+                val childId = cursor.getString(cursor.getColumnIndexOrThrow(
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID)) ?: continue
+                val folderUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
+                val destFolder = java.io.File(destRoot, baseName)
+                if (destFolder.exists()) destFolder.deleteRecursively()
+                destFolder.mkdirs()
+                copySafFolderRecursive(context, treeUri, folderUri, destFolder)
+                android.util.Log.i("EmulatorScreen", "DC CHD folder copied: $baseName/")
+                return null
+            }
+        }
+    } catch (_: SecurityException) {
+        // 文件选择器 URI 无父目录列举权限 —— 跳过（CHD 型游戏加载失败时
+        // 引擎错误信息会给出指引）
+    } catch (e: Exception) {
+        android.util.Log.w("EmulatorScreen", "DC sibling folder copy skipped: ${e.message}")
+    }
+    return null
+}
+
+/**
  * 递归统计 SAF 文件夹下的文件数与总字节数。
  * 返回 (文件数, 总字节数)；无法读取时返回 null（调用方视为不可验证，
  * 走重新复制兜底）。用于验证历史副本（无 copy_ok 标记）是否完整。
@@ -1880,19 +2041,20 @@ fun EmulatorScreen(
                     romPath.endsWith(".cdi", ignoreCase = true) ||
                     romPath.endsWith(".iso", ignoreCase = true) ||
                     romPath.endsWith(".lst", ignoreCase = true) ||
+                    romPath.endsWith(".bin", ignoreCase = true) ||
                     romPath.endsWith(".zip", ignoreCase = true) ||
                     romPath.endsWith(".7z", ignoreCase = true))) {
             // === DC disc image / NAOMI archive via SAF (content://) ===
             // DC 光盘镜像（.gdi/.cue+.bin 多轨道 / .chd）引用同目录的轨道
-            // 文件；NAOMI/AtomisWave .zip 的文件名决定游戏识别。与 PSX 的
-            // 处理一致：content:// 时复制整个游戏文件夹，把轨道文件放回
-            // 主文件旁边，再传复制后的真实路径给核心。flycast 核心按路径
-            // 自行打开镜像（见 dc_loader.cpp）。
+            // 文件；NAOMI/AtomisWave .zip 的文件名决定游戏识别（压缩包名=
+            // 游戏名，绝不能重命名），CHD 型街机游戏的 .chd 在同名子文件夹
+            // （MAME 约定）。见 materializeDcGame 的两级物化策略注释。
             val cdFile = withContext(Dispatchers.IO) {
-                loadGameFolder(context, romPath, game.id, "dc_cd")
+                materializeDcGame(context, romPath, game.id)
             }
             if (cdFile == null) {
-                errorMsg = "DC 加载失败：无法读取文件夹内容（.gdi/.cue/.bin 轨道）"
+                errorMsg = "DC 加载失败：无法读取所选文件（SAF 权限或目录结构）。\n" +
+                    "NAOMI 街机建议用「导入文件夹」选择包含 .zip 与同名 CHD 子文件夹的目录"
             } else {
                 // ★ 全核心统一 IO 线程加载（重开闪退/ANR 防护）
                 val ok = withContext(Dispatchers.IO) {
@@ -2056,6 +2218,11 @@ fun EmulatorScreen(
                     val sanitizedOrigName = origName.replace(Regex("[^A-Za-z0-9._-]"), "_")
                     val tempFileName = when {
                         platform == GamePlatform.ARCADE && sanitizedOrigName.isNotBlank() -> sanitizedOrigName
+                        // DC/NAOMI：flycast 按「压缩包名=游戏名」识别 NAOMI ROM set，
+                        // 且 .gdi/.cue 引用同目录轨道 —— 一律保留原始文件名
+                        // （与街机同规则；正常情况下走上方 materializeDcGame 分支，
+                        //  这里兜住扩展名不常见而漏进通用分支的 DC 文件）。
+                        platform == GamePlatform.DC && sanitizedOrigName.isNotBlank() -> sanitizedOrigName
                         // PSX single-file formats (.pbp/.ecm/.m3u/.ccd): use game ID
                         // to create unique temp files. Previously all PSX games
                         // shared "temp_rom.pbp" etc., causing the second game
@@ -2117,6 +2284,9 @@ fun EmulatorScreen(
                         origName.endsWith(".3ds", ignoreCase = true) -> ".3ds"
                         origName.endsWith(".cci", ignoreCase = true) -> ".cci"
                         origName.endsWith(".cxi", ignoreCase = true) -> ".cxi"
+                        // .app：3DS 裸 CXI / NAND 数字版标题（CIA 安装产物，
+                        // romPath 为 file:// 前缀的真实路径）
+                        origName.endsWith(".app", ignoreCase = true) -> ".app"
                         origName.endsWith(".cia", ignoreCase = true) -> ".cia"
                         // GameCube / Wii (Ishiiruka) extensions
                         origName.endsWith(".gcm", ignoreCase = true) -> ".gcm"
@@ -2743,6 +2913,14 @@ fun EmulatorScreen(
                         platform == GamePlatform.NGCWII -> {
                             { lx: Float, ly: Float, rx: Float, ry: Float ->
                                 (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                                    ?.setAnalogAxes(lx, ly, rx, ry)
+                            }
+                        }
+                        // DC（Flycast）：DC 手柄摇杆（归一化 -1..1，引擎内转
+                        // libretro int16；DC 无右摇杆，(rx, ry) 预留透传）
+                        platform == GamePlatform.DC -> {
+                            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                                (engine as? com.nesstation.app.core.engine.DcCoreEngine)
                                     ?.setAnalogAxes(lx, ly, rx, ry)
                             }
                         }
@@ -5542,6 +5720,9 @@ fun OnScreenController(
     val ngcLStick = if (isPortrait) padLayout.ngcLStickP else padLayout.ngcLStick
     val ngcRStick = if (isPortrait) padLayout.ngcRStickP else padLayout.ngcRStick
     val wiiLStick = if (isPortrait) padLayout.wiiLStickP else padLayout.wiiLStick
+    // DC（Flycast）左摇杆 —— 常驻模拟控件（不参与显隐）；输出经
+    // onAnalogAxes → DcCoreEngine.setAnalogAxes → RETRO_DEVICE_ANALOG。
+    val dcLStick = if (isPortrait) padLayout.dcLStickP else padLayout.dcLStick
     // 3DS ZL/ZR；NGC/WII Z；Wii 专属按键（A/B/1/2/+/−/HOME/C/Z/IR−/IR+）
     val n3dsBtnZL = if (isPortrait) padLayout.n3dsBtnZLP else padLayout.n3dsBtnZL
     val n3dsBtnZR = if (isPortrait) padLayout.n3dsBtnZRP else padLayout.n3dsBtnZR
@@ -5708,9 +5889,10 @@ fun OnScreenController(
                 val r3Rect = if (showR3Btn) btnRect(ps2BtnR3, 1.4f, 1.4f) else null
                 // NGC/WII 摇杆命中区按控制模式选择：ngc → 主摇杆/C 摇杆；
                 // wii → 双节棍摇杆（无右摇杆）。两套摇杆都渲染，但只有当前
-                // 模式的摇杆可拖动。
+                // 模式的摇杆可拖动。DC（Flycast）：左摇杆（唯一模拟轴）。
                 val lStickRect = if (isPs2) btnRect(ps2LStick, 1.3f, 1.3f)
                                  else if (is3ds) btnRect(n3dsLStick, 1.3f, 1.3f)
+                                 else if (platform == GamePlatform.DC) btnRect(dcLStick, 1.3f, 1.3f)
                                  else if (isNgcWii && ngcWiiMode == "ngc") btnRect(ngcLStick, 1.3f, 1.3f)
                                  else if (isNgcWii) btnRect(wiiLStick, 1.3f, 1.3f)
                                  else null
@@ -6435,6 +6617,18 @@ fun OnScreenController(
                 thumbColor = themeButtonColor(overlayTheme, "r3", Color(0xFFFFD66B)),
                 thumbPressedColor = themePressedButtonColor(overlayTheme, "r3") ?: Color(0xFFFFE57F),
                 image = cpImg, pressedImage = cpImgPressed
+            )
+        }
+        // DC（Flycast）专属：左模拟摇杆（常驻）—— DC 手柄唯一的模拟轴，
+        // 绝大多数 DC 游戏靠它移动；输出经 onAnalogAxes 推 RETRO_DEVICE_ANALOG。
+        if (platform == GamePlatform.DC) {
+            val (dcStickImg, dcStickImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+            AnalogStickCanvas(
+                layout = dcLStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = lStickDirs, thumbX = lStickTX, thumbY = lStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
+                image = dcStickImg, pressedImage = dcStickImgPressed
             )
         }
         // NGC/WII 专属：GC Z + 主/C 摇杆 + Wii Remote 全套按键 + 双节棍摇杆
@@ -8645,6 +8839,8 @@ private fun PadLayoutEditor(
     val ngcRStick = if (isPortrait) padLayout.ngcRStickP else padLayout.ngcRStick
     val ngcBtnZ = if (isPortrait) padLayout.ngcBtnZP else padLayout.ngcBtnZ
     val wiiLStick = if (isPortrait) padLayout.wiiLStickP else padLayout.wiiLStick
+    // DC（Flycast）左摇杆（与 OnScreenController 一致）
+    val dcLStick = if (isPortrait) padLayout.dcLStickP else padLayout.dcLStick
     val wiiBtnA = if (isPortrait) padLayout.wiiBtnAP else padLayout.wiiBtnA
     val wiiBtnB = if (isPortrait) padLayout.wiiBtnBP else padLayout.wiiBtnB
     val wiiBtn1 = if (isPortrait) padLayout.wiiBtn1P else padLayout.wiiBtn1
@@ -8696,6 +8892,7 @@ private fun PadLayoutEditor(
             BtnType.LSTICK -> when {
                 isPs2 -> if (isPortrait) padLayout.copy {this.ps2LStickP = newLayout} else padLayout.copy {this.ps2LStick = newLayout}
                 is3ds -> if (isPortrait) padLayout.copy {this.n3dsLStickP = newLayout} else padLayout.copy {this.n3dsLStick = newLayout}
+                platform == GamePlatform.DC -> if (isPortrait) padLayout.copy {this.dcLStickP = newLayout} else padLayout.copy {this.dcLStick = newLayout}
                 isNgcWii -> if (isPortrait) padLayout.copy {this.ngcLStickP = newLayout} else padLayout.copy {this.ngcLStick = newLayout}
                 else -> padLayout
             }
@@ -8952,6 +9149,17 @@ private fun PadLayoutEditor(
                         updateBtn(BtnType.RSTICK, n3dsRStick.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.RSTICK }
+                )
+            }
+            // DC（Flycast）专属可编辑控件：左模拟摇杆（常驻）
+            if (platform == GamePlatform.DC) {
+                EditableRoundBtn("摇杆", Color(0xFFFFD66B), dcLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.LSTICK, dcLStick.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.LSTICK }
                 )
             }
             // NGC/WII 专属可编辑控件：GC Z + 主/C 摇杆 + Wii 全套按键 + 双节棍摇杆
@@ -9341,6 +9549,7 @@ private fun PadLayoutEditor(
                         val stick = when {
                             isPs2 -> ps2LStick
                             is3ds -> n3dsLStick
+                            platform == GamePlatform.DC -> dcLStick
                             isNgcWii -> ngcLStick
                             else -> ps2LStick
                         }
@@ -9405,6 +9614,7 @@ private fun PadLayoutEditor(
                             BtnType.LSTICK -> when {
                                 isPs2 -> ps2LStick
                                 is3ds -> n3dsLStick
+                                platform == GamePlatform.DC -> dcLStick
                                 isNgcWii -> ngcLStick
                                 else -> ps2LStick
                             }

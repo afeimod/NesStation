@@ -86,3 +86,20 @@ interface NgcWiiCoreEngine : EmulatorEngine {
      */
     fun isCoreAvailable(): Boolean
 }
+
+/**
+ * Flycast（DC/NAOMI/AtomisWave）核心引擎契约 —— 在 [EmulatorEngine] 之上
+ * 补充 DC 手柄模拟摇杆能力。
+ *
+ * Dreamcast 手柄只有一颗左侧模拟摇杆（无右摇杆）：[setAnalogAxes] 的
+ * (lx, ly) 喂左摇杆，(rx, ry) 预留（外设/轮式控制器用，当前忽略）。
+ * 取值 lx/ly/rx/ry ∈ [-1, 1]，屏幕坐标约定（向上为负）；引擎负责转换为
+ * libretro int16 轴（−32768..32767，0 居中）。
+ */
+interface DcCoreEngine : EmulatorEngine {
+
+    /**
+     * 推送 DC 手柄摇杆：(lx, ly) = 左摇杆，(rx, ry) 预留位。
+     */
+    fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float)
+}
