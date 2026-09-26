@@ -165,6 +165,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                     } else if (current != null) {
                         val eq = line.indexOf('=')
                         if (eq > 0) {
+                            // current 是在闭包中被修改的局部 var，Kotlin 智能转换
+                            // 无法覆盖，故此处需显式 !!。
                             val sec = sections.getOrPut(current!!) { LinkedHashMap() }
                             sec[line.substring(0, eq).trim()] = line.substring(eq + 1).trim()
                         }
@@ -803,6 +805,9 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     // ------------------------------------------------------------------
     // 控制模式
     // ------------------------------------------------------------------
+
+    /** 返回当前生效的 Wii 扩展手柄类型：classic / none / nunchuk。 */
+    private fun effectiveWiiExtension(): String = wiiExtension
 
     override fun isGameCubeGame(): Boolean {
         val path = romPath ?: return false
