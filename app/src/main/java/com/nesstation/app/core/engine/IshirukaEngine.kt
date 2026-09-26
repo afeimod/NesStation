@@ -16,7 +16,7 @@ import kotlin.concurrent.thread
  * 集成方式参照 DraStic（激烈）核心：上游 Java 宿主层以**原包名 JNI 契约**形式
  * vendored（`org.dolphinemu.ishiiruka.NativeLibrary` +
  * `services.DirectoryInitializationService`，见契约文件），预编译核心库
- * `libishiiruka.so`（= 上游 libmain.so，来自 Ishiruka APK）放
+ * `libishiiruka.so`（= 上游 libmain.so，来自 Ishiiruka APK）放
  * `app/src/main/jniLibs/arm64-v8a/`，经 scripts/fetch_azahar_ishiruka_libs.sh 提取。
  *
  * 架构（推模型，Dolphin 5.0 系 —— 引擎不拥有模拟循环）：
@@ -104,7 +104,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                     false,
                     "libishiiruka 加载失败（当前进程非 ARM64，或库缺失）\n" +
                         "Ishiiruka 核心仅提供 arm64-v8a；请运行 " +
-                        "scripts/fetch_azahar_ishiruka_libs.sh 从 Ishiruka APK 提取核心库。"
+                        "scripts/fetch_azahar_ishiruka_libs.sh 从 Ishiiruka APK 提取核心库。"
                 )
             }
         } catch (e: Throwable) {
@@ -159,8 +159,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                     } else if (current != null) {
                         val eq = line.indexOf('=')
                         if (eq > 0) {
-                            sections[current!!][line.substring(0, eq).trim()] =
-                                line.substring(eq + 1).trim()
+                            val sec = sections.getOrPut(current!!) { LinkedHashMap() }
+                            sec[line.substring(0, eq).trim()] = line.substring(eq + 1).trim()
                         }
                     }
                 }
