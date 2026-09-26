@@ -141,6 +141,14 @@ val ROM_EXTENSIONS = listOf(
     // 的 hint 消歧）；.cia 是安装包不是可启动镜像 —— 不入白名单，
     // 走「安装CIA」专用入口（导入ROM 按钮旁）。
     "3ds", "cci", "cxi",
+    // ★ NGC/WII（Ishiiruka）原生格式补录 —— 修复"Wii 游戏格式被刷掉，
+    //   wbfs 等正常格式刷新不了"：此前 ROM_EXTENSIONS 完全没有 NGC/WII
+    //   专属扩展名，文件选择器/文件夹扫描/SAF 重扫（scanLocalFolderForRoms
+    //   与 scanUriForRomsRecursive 都按本表过滤）只能靠 .iso 的 CD 镜像
+    //   通道混入，.wbfs/.gcm/.rvz/.gcz/.wad/.dol/.nkit/.ciso 全被挡在
+    //   扫描之外。现在全部收录 —— 与 GamePlatform.fromExtension 的
+    //   NGCWII 映射及 PlatformDetector.AUTO_TRUSTED_EXTENSIONS 保持一致。
+    "gcm", "rvz", "gcz", "wbfs", "wad", "dol", "nkit", "ciso",
     // PlayStation 1 (PCSX-ReARMed)
     "pbp", "m3u", "ecm", "mdf", "mds",
     // SEGA Dreamcast / NAOMI (Flycast standalone)

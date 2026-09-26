@@ -109,9 +109,15 @@ object PlatformDetector {
         "3ds" to GamePlatform.N3DS, "cci" to GamePlatform.N3DS,
         "cxi" to GamePlatform.N3DS,
         // GameCube / Wii（rvz/gcm/gcz/wad/dol 为专属格式；.elf 撞 Linux 可执行不收）
+        // ★ wbfs/ciso 补录修复："Wii 游戏格式被刷掉，wbfs 等正常格式刷新不了"。
+        //   .wbfs 是 Wii 光盘最常见格式，此前不在白名单 → 自动扫描/刷新重扫
+        //   全部跳过（detectFromFileStrict / detectForRefresh 返回 null）。
+        //   .ciso 同理（Compact ISO，Dolphin 原生支持）。两者均为 Wii 专属
+        //   扩展名，日常文件不会撞名，符合自动扫描白名单的收录标准。
         "rvz" to GamePlatform.NGCWII, "gcm" to GamePlatform.NGCWII,
         "gcz" to GamePlatform.NGCWII, "wad" to GamePlatform.NGCWII,
         "dol" to GamePlatform.NGCWII, "nkit" to GamePlatform.NGCWII,
+        "wbfs" to GamePlatform.NGCWII, "ciso" to GamePlatform.NGCWII,
         // SEGA Dreamcast / NAOMI（.gdi/.cdi 为 DC 专属格式，日常文件不撞名）
         "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC
     )

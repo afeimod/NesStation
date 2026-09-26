@@ -697,6 +697,80 @@ private fun arcadeToLibretroLayout(bits: Int): Int {
 // characters — DocumentsContract handles the encoding transparently, and
 // the destination filenames use the original Unicode names.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ★ 3DS/NGC-WII 黑屏修复：加载前可读性预检 + MediaStore 救援拷贝
+// ---------------------------------------------------------------------------
+/**
+ * 直接读取探测：尝试以流方式打开 [file] 并读 1 字节。
+ *
+ * `File.exists()` 为 true 不代表核心的 fopen 能成功 —— Android 11+ 的
+ * FUSE/作用域存储对非媒体文件可能是"可 stat、不可 open"（典型场景：
+ * 重装 APK 后『所有文件访问』授权被系统重置）。核心侧 fopen 失败只会
+ * 打一条 "Failed to load file" 日志然后退出，表现为黑屏；UI 层必须先行
+ * 自检。返回 true 表示可直接读取。
+ */
+private fun probeDirectlyReadable(file: java.io.File): Boolean {
+    if (!file.exists()) return false
+    return try {
+        file.inputStream().use { it.read() } >= 0
+    } catch (_: Throwable) {
+        false
+    }
+}
+
+/**
+ * MediaStore 救援：当直接路径 open 被拒时，按绝对路径查系统媒体库
+ * （MediaStore.Files 覆盖所有被扫描过的文件，不限媒体类型），命中则经
+ * content URI 流式拷贝到应用私有目录 `<filesDir>/romcache/<gameId>/` 并
+ * 返回拷贝文件 —— 该目录对本 App 永远可读，核心可以正常 fopen。
+ *
+ * 游戏镜像普遍 1-4GB，拷贝在 IO 线程进行、以 1MB 块写入；失败/中途
+ * 异常时删除半成品并返回 null（调用方给出可操作的错误提示）。
+ */
+private fun rescueRomViaMediaStore(
+    context: android.content.Context,
+    romFile: java.io.File,
+    gameId: String
+): java.io.File? {
+    val targetPath = romFile.absolutePath
+    try {
+        val collection = android.provider.MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(
+            android.provider.MediaStore.Files.FileColumns._ID
+        )
+        val selection = "${android.provider.MediaStore.Files.FileColumns.DATA}=?"
+        val uri = context.contentResolver.query(
+            collection, projection, selection, arrayOf(targetPath), null
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                val id = c.getLong(0)
+                android.content.ContentUris.withAppendedId(collection, id)
+            } else null
+        } ?: return null
+
+        val destDir = java.io.File(context.filesDir, "romcache/$gameId").apply { mkdirs() }
+        val dest = java.io.File(destDir, romFile.name)
+        // 半成品清理：上次救援中断留下的不完整文件不可复用
+        if (dest.exists()) dest.delete()
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            dest.outputStream().use { out ->
+                val buf = ByteArray(1 shl 20)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                }
+                out.flush()
+            }
+        } ?: return null
+        return if (probeDirectlyReadable(dest) && dest.length() == romFile.length()) dest
+        else { dest.delete(); null }
+    } catch (t: Throwable) {
+        android.util.Log.w("EmulatorScreen", "MediaStore rescue failed: ${t.message}")
+        return null
+    }
+}
+
 private fun loadDosGameFolder(
     context: android.content.Context,
     launcherUriStr: String,
@@ -1968,8 +2042,38 @@ fun EmulatorScreen(
             // ★ 重开闪退修复（全核心）：重开时 loadRom 还要等 lifecycleLock
             // 里的上一局完整卸载（join 线程 + 原生 unload，街机可达数秒），
             // 主线程同步等待会被 ANR 杀进程 —— 所有平台统一移到 IO 线程。
+            //
+            // ★★★ 3DS 黑屏修复（同样适用于 NGC/WII）：加载前先做可读性预检。
+            // Azahar/Ishiiruka 核心直接 fopen 游戏文件；当 Java 层
+            // File.exists() 为 true 但 FUSE/权限层拒绝 open（存储权限被系统
+            // 重置、HyperOS 特殊规则等）时，核心只会留下 "Failed to load
+            // file" 日志并直接退出 —— UI 表现为永久黑屏。此处先行探测：
+            // 不可直接读时尝试经系统媒体库（MediaStore）救援拷贝到应用私有
+            // 目录再加载；救援也失败则给出明确可操作的错误提示，绝不再黑屏。
+            var effectiveRom = romFile
+            if (platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII) {
+                val directlyReadable = withContext(Dispatchers.IO) { probeDirectlyReadable(romFile) }
+                if (!directlyReadable) {
+                    android.util.Log.w("EmulatorScreen",
+                        "ROM not directly readable, trying MediaStore rescue: ${romFile.absolutePath}")
+                    val rescued = withContext(Dispatchers.IO) {
+                        rescueRomViaMediaStore(context, romFile, game.id)
+                    }
+                    if (rescued != null) {
+                        effectiveRom = rescued
+                        Toast.makeText(context, "已通过系统媒体库恢复文件读取", Toast.LENGTH_LONG).show()
+                    } else {
+                        errorMsg = "无法读取游戏文件：\n${romFile.absolutePath}\n\n" +
+                            "常见原因：\n" +
+                            "1. 文件已被移动/重命名 —— 请回到游戏库刷新或重新导入；\n" +
+                            "2. 存储权限被系统重置 —— 请到 系统设置 → 应用 → NesStation → 权限，" +
+                            "重新授予『所有文件访问』后再进游戏。"
+                        return@LaunchedEffect
+                    }
+                }
+            }
             val ok = withContext(Dispatchers.IO) {
-                engine.loadRom(romFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                engine.loadRom(effectiveRom, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
             }
             if (!ok) {
                 val err = engine.lastError()
@@ -2102,6 +2206,15 @@ fun EmulatorScreen(
                     loaded = true
                 }
             }
+        } else if ((platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII) &&
+                   !romPath.startsWith("content://") &&
+                   !java.io.File(romPath).exists()) {
+            // ★ 3DS/NGC-WII 文件缺失兜底：本地路径不存在时给出明确提示，
+            //   避免落入 content:// 兜底分支后得到难以理解的报错或黑屏。
+            //   常见原因：文件被移动/重命名、SD 卡未挂载、导入后未刷新游戏库。
+            errorMsg = "游戏文件不存在：\n$romPath\n\n" +
+                "常见原因：文件已被移动/重命名，或存储卡未挂载。\n" +
+                "请回到游戏库点击『刷新』重新扫描，或删除该游戏后重新导入。"
         } else {
             try {
                 val input = context.contentResolver.openInputStream(android.net.Uri.parse(romPath))
@@ -3686,13 +3799,19 @@ private fun shiftTurboDefault(
 // libretro flycast 的官方映射（与 RetroArch 完全一致）：
 //   JOYPAD_B(bit0)=DC A、JOYPAD_Y(bit1)=DC X、JOYPAD_A(bit8)=DC B、
 //   JOYPAD_X(bit9)=DC Y、Select(bit2)="D"、Start(bit3)、方向 bit4-7、
-//   L(bit10)/R(bit11)=DC 模拟扳机的数字值。
+//   DC 模拟扳机 L/R = JOYPAD_L2(bit12)/R2(bit13)。
 // 屏幕标签保持 A/B/X/Y 语义直转（与街机 arcadeToLibretroLayout 同思路）：
 //   A (项目 A/bit0)  -> libretro bit0  (JOYPAD_B = DC A)
 //   B (项目 B/bit1)  -> libretro bit8  (JOYPAD_A = DC B)
 //   X (项目 X/bit8)  -> libretro bit1  (JOYPAD_Y = DC X)
 //   Y (项目 Y/bit9)  -> libretro bit9  (JOYPAD_X = DC Y)
-//   方向/Select/Start/L/R 与 libretro 同位。
+//   方向/Select/Start 与 libretro 同位。
+//   L/R（项目 bit10/11）同时置 libretro L(bit10)/R(bit11) 与
+//   L2(bit12)/R2(bit13) —— ★ 触发器修复：flycast 的 Dreamcast 扳机
+//   L/R 映射在 libretro L2/R2 上（DC 手柄没有 L1/R1，只有模拟扳机），
+//   旧实现只置 bit10/11 → 核心从来不轮询这两个位 → "LT/RT 输出不对，
+//   没作用"。双置位后 DC 游戏（轮询 L2/R2）与 NAOMI 游戏（轮询 L/R）
+//   都能收到虚拟/实体按键的扳机输入；数字扳机在 flycast 内按满值处理。
 private fun dcToLibretroLayout(bits: Int): Int {
     var r = 0
     if (bits and BTN_A != 0)       r = r or (1 shl 0)   // DC A
@@ -3705,8 +3824,8 @@ private fun dcToLibretroLayout(bits: Int): Int {
     if (bits and BTN_DOWN != 0)    r = r or (1 shl 5)   // Down
     if (bits and BTN_LEFT != 0)    r = r or (1 shl 6)   // Left
     if (bits and BTN_RIGHT != 0)   r = r or (1 shl 7)   // Right
-    if (bits and BTN_L_SNES != 0)  r = r or (1 shl 10)  // L
-    if (bits and BTN_R_SNES != 0)  r = r or (1 shl 11)  // R
+    if (bits and BTN_L_SNES != 0)  r = r or ((1 shl 10) or (1 shl 12))  // LT：L + L2
+    if (bits and BTN_R_SNES != 0)  r = r or ((1 shl 11) or (1 shl 13))  // RT：R + R2
     return r
 }
 
@@ -6344,6 +6463,8 @@ fun OnScreenController(
             GamePlatform.PSX, GamePlatform.PS2 -> "L1"
             // MD 6 键手柄：libretro L 对应 SEGA Y
             GamePlatform.MD -> "Y"
+            // DC：手柄只有模拟扳机，屏幕标签用 LT/RT（同时置 libretro L2/R2 位，见 dcToLibretroLayout）
+            GamePlatform.DC -> "LT"
             else -> "L"
         }
         val labelR = when (platform) {
@@ -6351,6 +6472,7 @@ fun OnScreenController(
             GamePlatform.PSX, GamePlatform.PS2 -> "R1"
             // MD 6 键手柄：libretro R 对应 SEGA Z
             GamePlatform.MD -> "Z"
+            GamePlatform.DC -> "RT"
             else -> "R"
         }
         val labelL2 = when (platform) {
@@ -9007,6 +9129,7 @@ private fun PadLayoutEditor(
                 val lLabel = when (platform) {
                     GamePlatform.PCE -> "V"
                     GamePlatform.MD -> "Y"  // libretro L → SEGA Y
+                    GamePlatform.DC -> "LT" // DC 模拟扳机标签（输入双置 L/L2 位）
                     else -> "L"
                 }
                 EditablePillBtn(lLabel, btnL, surfaceSize, selectedBtn == BtnType.L,
@@ -9022,6 +9145,7 @@ private fun PadLayoutEditor(
                 val rLabel = when (platform) {
                     GamePlatform.PCE -> "VI"
                     GamePlatform.MD -> "Z"  // libretro R → SEGA Z
+                    GamePlatform.DC -> "RT"
                     else -> "R"
                 }
                 EditablePillBtn(rLabel, btnR, surfaceSize, selectedBtn == BtnType.R,

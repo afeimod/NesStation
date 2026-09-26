@@ -128,6 +128,65 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         return File(ctx.filesDir, "ishiiruka/user").apply { mkdirs() }.absolutePath
     }
 
+    /**
+     * ★ 设置不生效修复 —— 直接写 INI 文件到 `<userDir>/Config/`。
+     *
+     * 旧实现全部经 NativeLibrary.SetConfig(file, section, key, value) 下发，但
+     * 该 JNI 的写盘路径由 so 内部 GetUserPath(ConfigDir) 决定 —— 在本预编译
+     * libishiiruka.so 里与核心读取的 `<userDir>/Config/` 不一致（SetConfig 的
+     * 异常又被调用侧 catch 吞掉），导致"分辨率倍数等所有设置全都不生效"。
+     *
+     * Dolphin 核心（4.x/5.x 全系）启动时固定从 `<SetUserDirectory>/Config/`
+     * 读 Dolphin.ini / GFX.ini，从 `<userDir>/Config/` 读 GCPadNew.ini /
+     * WiimoteNew.ini —— 该位置只由 SetUserDirectory 决定，与 SetConfig 无关，
+     * 因此直接以普通文件写入 100% 覆盖核心的读取路径，不存在静默失败。
+     *
+     * [updates] 结构：section → (key → value)。与已有文件内容**合并**（保留
+     * 未涉及的段/键，如 GameSettings、Display 等），不会整文件覆盖。
+     */
+    private fun writeIniMerged(file: File, updates: Map<String, Map<String, String>>) {
+        if (updates.isEmpty()) return
+        val sections = LinkedHashMap<String, LinkedHashMap<String, String>>()
+        if (file.exists()) {
+            var current: String? = null
+            try {
+                file.forEachLine { raw ->
+                    val line = raw.trim()
+                    if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) return@forEachLine
+                    if (line.startsWith("[") && line.endsWith("]")) {
+                        current = line.substring(1, line.length - 1).trim()
+                        sections.getOrPut(current!!) { LinkedHashMap() }
+                    } else if (current != null) {
+                        val eq = line.indexOf('=')
+                        if (eq > 0) {
+                            sections[current!!][line.substring(0, eq).trim()] =
+                                line.substring(eq + 1).trim()
+                        }
+                    }
+                }
+            } catch (_: Throwable) { }
+        }
+        updates.forEach { (sec, kv) ->
+            val target = sections.getOrPut(sec) { LinkedHashMap() }
+            kv.forEach { (k, v) -> target[k] = v }
+        }
+        val sb = StringBuilder()
+        sections.forEach { (sec, kv) ->
+            sb.append('[').append(sec).append("]\n")
+            kv.forEach { (k, v) -> sb.append(k).append(" = ").append(v).append('\n') }
+            sb.append('\n')
+        }
+        try {
+            file.parentFile?.mkdirs()
+            file.writeText(sb.toString())
+        } catch (t: Throwable) {
+            android.util.Log.w("IshirukaEngine", "writeIniMerged failed: ${file.name}", t)
+        }
+    }
+
+    /** `<userDir>/Config/` 目录（Dolphin 全部运行时 INI 的规范位置）。 */
+    private fun configDir(): File = File(userDir(), "Config").apply { mkdirs() }
+
     private fun filesRoot(): String {
         val ctx = appContext
             ?: throw IllegalStateException("IshirukaEngine: app context not initialised")
@@ -140,10 +199,16 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      * Wiimote 的标准控制组）。
      */
     private fun writeControllerInis() {
+        // ★ 与 writeCoreIni 同款双通道：SetConfig + 直写 <userDir>/Config/。
+        //   （GCPadNew.ini / WiimoteNew.ini 同样位于 Config 目录 —— 旧实现只经
+        //   SetConfig 下发，写盘位置不可靠；直写保证 Touchscreen 绑定必然生效。）
+        val gcUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
+        val wiiUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
         val gc = "GCPadNew.ini"
         val gcSection = "GCPad1"
         fun gcSet(key: String, value: String) {
             try { NativeLibrary.SetConfig(gc, gcSection, key, value) } catch (_: Throwable) {}
+            gcUpdates.getOrPut(gcSection) { LinkedHashMap() }[key] = value
         }
         gcSet("Device", "Android/0/Touchscreen")
         gcSet("Buttons/A", "Button 0")
@@ -170,6 +235,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val wii = "WiimoteNew.ini"
         fun wiiSet(section: String, key: String, value: String) {
             try { NativeLibrary.SetConfig(wii, section, key, value) } catch (_: Throwable) {}
+            wiiUpdates.getOrPut(section) { LinkedHashMap() }[key] = value
         }
         for (slot in 1..4) {
             val sec = "Wiimote$slot"
@@ -238,18 +304,38 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 wiiSet("Classic", "Triggers/R", "Axis 324+")
             }
         }
+        // 直写规范位置（与 SetConfig 通道等价内容，保证绑定必然落盘）
+        writeIniMerged(File(configDir(), "GCPadNew.ini"), gcUpdates)
+        writeIniMerged(File(configDir(), "WiimoteNew.ini"), wiiUpdates)
     }
 
     /** GC 主手柄（P1）SIDevice = 标准手柄（6）。 */
     private fun writeCoreIni() {
+        // ★ 双通道下发：SetConfig（若 so 内部路径正确可热生效）+ 直接写
+        //   <userDir>/Config/Dolphin.ini、GFX.ini（本次修复的主通道，
+        //   保证下次启动核心必然读到用户设置）。
+        val dolphinUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
+        val gfxUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
+        fun addTo(target: LinkedHashMap<String, LinkedHashMap<String, String>>,
+                  section: String, key: String, value: String) {
+            target.getOrPut(section) { LinkedHashMap() }[key] = value
+        }
         coreOptions.forEach { (composite, value) ->
             val parts = composite.split('/', limit = 3)
             if (parts.size != 3) return@forEach
             val (file, section, key) = parts
             try { NativeLibrary.SetConfig(file, section, key, value) } catch (_: Throwable) {}
+            when (file) {
+                "Dolphin.ini" -> addTo(dolphinUpdates, section, key, value)
+                "GFX.ini"     -> addTo(gfxUpdates, section, key, value)
+            }
         }
         // 确保四个 GC 手柄位都是标准手柄（虚拟手柄 + 实体手柄共用 Touchscreen 通道 P1）
         try { NativeLibrary.SetConfig("Dolphin.ini", "Core", "SIDevice0", "6") } catch (_: Throwable) {}
+        addTo(dolphinUpdates, "Core", "SIDevice0", "6")
+        // 直写规范位置（核心启动唯一读取路径）
+        writeIniMerged(File(configDir(), "Dolphin.ini"), dolphinUpdates)
+        writeIniMerged(File(configDir(), "GFX.ini"), gfxUpdates)
     }
 
     override fun setCoreOption(key: String, value: String) {
