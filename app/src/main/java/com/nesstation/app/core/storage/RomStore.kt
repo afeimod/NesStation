@@ -25,6 +25,10 @@ object RomStore {
     private const val KEY_PREFIX_LASTPLAYED = "rom_lastplayed_"
     private const val KEY_PREFIX_FAVORITE = "rom_favorite_"
     private const val KEY_PREFIX_CUSTOM_TITLE = "rom_customtitle_"
+    // ★ 封面持久化修复：coverPath（网络下载的封面）与 playTimeMs 此前
+    //   只存在于内存 GameEntry，saveAll 从不落盘 → 重启后封面/时长全丢。
+    private const val KEY_PREFIX_COVER = "rom_cover_"
+    private const val KEY_PREFIX_PLAYTIME = "rom_playtime_"
 
     private val ACCENT_COLORS = listOf(
         0xFFE74C3C.toInt(), 0xFF27AE60.toInt(), 0xFF3498DB.toInt(),
@@ -127,6 +131,8 @@ object RomStore {
             val lastPlayed = p.getLong("${KEY_PREFIX_LASTPLAYED}$i", 0L)
             val favorite = p.getBoolean("${KEY_PREFIX_FAVORITE}$i", false)
             val customTitle = p.getString("${KEY_PREFIX_CUSTOM_TITLE}$i", null)
+            val coverPath = p.getString("${KEY_PREFIX_COVER}$i", null)
+            val playTimeMs = p.getLong("${KEY_PREFIX_PLAYTIME}$i", 0L)
             list.add(GameEntry(
                 id = id, title = title, romPath = path,
                 accent = Color(accentInt.toLong() and 0xFFFFFFFF),
@@ -134,7 +140,9 @@ object RomStore {
                 customIconPath = iconPath,
                 lastPlayedAt = lastPlayed,
                 isFavorite = favorite,
-                customTitle = customTitle
+                customTitle = customTitle,
+                coverPath = coverPath,
+                playTimeMs = playTimeMs
             ))
         }
         return list
@@ -166,6 +174,8 @@ object RomStore {
                 putLong("${KEY_PREFIX_LASTPLAYED}$i", entry.lastPlayedAt)
                 putBoolean("${KEY_PREFIX_FAVORITE}$i", entry.isFavorite)
                 putString("${KEY_PREFIX_CUSTOM_TITLE}$i", entry.customTitle)
+                putString("${KEY_PREFIX_COVER}$i", entry.coverPath)
+                putLong("${KEY_PREFIX_PLAYTIME}$i", entry.playTimeMs)
             }
             // 恢复被 clear() 清掉的文件夹记忆键。
             if (importedFolders != null) putString(KEY_IMPORTED_FOLDERS, importedFolders)
@@ -303,6 +313,45 @@ object RomStore {
             list[idx] = list[idx].copy(customIconPath = iconPath)
             saveAll(ctx, list)
         }
+    }
+
+    /**
+     * ★ 封面获取：为游戏设置下载的封面路径（CoverFetcher 写入）。
+     * 与 customIconPath 的优先级关系见 GameIconExtractor.resolveIconPath
+     * （自定义图标 > 封面）。
+     */
+    fun setCoverPath(ctx: Context, gameId: String, coverPath: String?) {
+        val list = loadAll(ctx)
+        val idx = list.indexOfFirst { it.id == gameId }
+        if (idx >= 0) {
+            if (list[idx].coverPath != coverPath) {
+                list[idx] = list[idx].copy(coverPath = coverPath)
+                saveAll(ctx, list)
+            }
+        }
+    }
+
+    /**
+     * ★ 封面批量落盘（CoverFetcher 用）：一次 loadAll + 一次 saveAll
+     * 写回多个游戏的封面路径 —— 逐个调 [setCoverPath] 是全量读+全量写，
+     * 大库里批量抓封面时是平方级 IO，这里是线性。
+     *
+     * @return 实际发生变更的条目数
+     */
+    fun setCoverPaths(ctx: Context, coverPaths: Map<String, String>): Int {
+        if (coverPaths.isEmpty()) return 0
+        val list = loadAll(ctx)
+        var changed = 0
+        for (i in list.indices) {
+            val entry = list[i]
+            val newPath = coverPaths[entry.id] ?: continue
+            if (entry.coverPath != newPath) {
+                list[i] = entry.copy(coverPath = newPath)
+                changed++
+            }
+        }
+        if (changed > 0) saveAll(ctx, list)
+        return changed
     }
 
     /**

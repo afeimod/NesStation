@@ -147,6 +147,12 @@ class NesApp : Application() {
         tryInit("NdsBios")            { ensureNdsBios() }
         tryInit("PsxBios")            { ensurePsxBios() }
         tryInit("DcBios")             { ensureDcBios() }
+        tryInit("Ps2Bios")            { ensurePs2Bios() }
+        // ★ 3DS 加密卡带密钥（aes_keys.txt）自动安装：构建者把密钥放进
+        //   assets/azahar/aes_keys.txt 即可让加密 .3ds 直接运行（缺失时
+        //   核心加载失败 → 表现为黑屏；配合 AzaharEngine 的错误上报，
+        //   缺密钥时用户能看到明确提示）。
+        tryInit("AzaharKeys")         { ensureAzaharKeys() }
         tryInit("ArcadeTitleMigrate") { migrateArcadeTitles() }
         tryInit("LibraryJunkSanitize") { sanitizeLibraryOnce() }
     }
@@ -708,6 +714,109 @@ class NesApp : Application() {
             Log.i("NesApp", "DC BIOS: no bundled BIOS files found in assets/dc/. " +
                     "Dreamcast disc games require dc_boot.bin + dc_flash.bin " +
                     "in <filesDir>/dc/ (import via Settings → DC).")
+        }
+    }
+
+    /**
+     * ★ PS2 默认 BIOS 自动识别（NesStation 集成补丁）：
+     * 把 APK assets/ps2/bios/ 内打包的 BIOS 文件自动安装到
+     * `<filesDir>/ps2/pcsx2/bios/`（ARMSX2/PCSX2 的 BIOS 目录，由
+     * Psx2Native.setPaths → NativeApp.initialize 指定）。
+     *
+     * 为什么放进去就能用（零配置）：PCSX2 的 LoadBIOS() 在未配置
+     * BIOS 文件名时会自动调用 FindBiosImage() 扫描整个 BIOS 目录，
+     * 按大小校验 + IsBIOS 魔数识别后自动选用（见 ARMSX2-master/
+     * pcsx2/ps2/BiosTools.cpp）—— 用户无需手动导入，也无需写任何
+     * 配置项。
+     *
+     * 安装策略（与 DC/PSX 一致）：
+     *   - 目标已存在且非空 → 保留（用户自行导入的 BIOS 优先）；
+     *   - assets 里放多少装多少（assets.list 枚举，不限定文件名，
+     *     scph10000.bin / scph39001.bin / scph70004.bin 等均可）；
+     *   - 空目录 / 未打包 → 记录日志静默跳过（开源自建流程不崩溃）。
+     *
+     * ROM 版权说明：PS2 BIOS 为 Sony 专有固件，开源仓库不随包分发；
+     * 构建者可自行放入 assets/ps2/bios/（见该目录 README.md 与
+     * scripts/fetch_ps2_bios.sh），运行侧机制与 DC BIOS 完全一致。
+     */
+    private fun ensurePs2Bios() {
+        val destDir = File(File(filesDir, "ps2"), "pcsx2/bios")
+        if (!destDir.exists()) destDir.mkdirs()
+        // 旧版目录迁移：<filesDir>/ps2/bios/ 里的文件搬进规范位置
+        //（与设置面板说明的“旧版 ps2/bios 的文件会自动迁移”一致）。
+        val legacyDir = File(File(filesDir, "ps2"), "bios")
+        var migrated = 0
+        if (legacyDir.isDirectory) {
+            legacyDir.listFiles()?.forEach { src ->
+                if (src.isFile && src.length() > 0) {
+                    val dest = File(destDir, src.name)
+                    if (!dest.exists() || dest.length() == 0L) {
+                        try {
+                            src.copyTo(dest, overwrite = false)
+                            migrated++
+                        } catch (_: Exception) { }
+                    }
+                }
+            }
+            if (migrated > 0) {
+                Log.i("NesApp", "PS2 BIOS: migrated $migrated file(s) from legacy ps2/bios/")
+            }
+        }
+
+        var extracted = 0
+        try {
+            val names = assets.list("ps2/bios") ?: emptyArray()
+            for (name in names) {
+                if (name.endsWith(".md", true) || name.endsWith(".txt", true)) continue
+                val dest = File(destDir, name)
+                if (dest.exists() && dest.length() > 0) continue  // keep existing
+                try {
+                    assets.open("ps2/bios/$name").use { input ->
+                        dest.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    extracted++
+                    Log.i("NesApp", "PS2 BIOS installed from assets: $name")
+                } catch (e: Exception) {
+                    Log.w("NesApp", "Failed to install PS2 BIOS $name", e)
+                    if (dest.exists()) dest.delete()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("NesApp", "Failed to enumerate assets/ps2/bios/", e)
+        }
+
+        if (extracted + migrated > 0) {
+            Log.i("NesApp", "PS2 BIOS: ${extracted + migrated} file(s) present in " +
+                    destDir.absolutePath + " — PCSX2 will auto-detect (FindBiosImage)")
+        } else {
+            Log.i("NesApp", "PS2 BIOS: none bundled in assets/ps2/bios/. " +
+                    "Users can import one via Settings → PS2 · BIOS 管理, or the " +
+                    "builder can drop files there before packaging (see README).")
+        }
+    }
+
+    /**
+     * ★ 3DS 黑屏修复链配套：把 assets/azahar/aes_keys.txt（构建者自备）
+     * 安装到 `<filesDir>/azahar/aes_keys.txt`（Azahar 用户目录根 ——
+     * AzaharEngine.loadRom 的 userDir()）。加密 .3ds 卡带缺少该密钥时
+     * 核心无法解密 ROM，加载失败表现为黑屏。与 DC/PS2 BIOS 同一
+     * "assets 自动安装" 模式：文件不打包则静默跳过（开源自建流程不受影响），
+     * 已存在（用户手动放置）则保留不覆盖。
+     */
+    private fun ensureAzaharKeys() {
+        val dest = File(File(filesDir, "azahar"), "aes_keys.txt")
+        if (dest.exists() && dest.length() > 0) return  // 用户自备优先
+        try {
+            assets.open("azahar/aes_keys.txt").use { input ->
+                dest.parentFile?.mkdirs()
+                dest.outputStream().use { output -> input.copyTo(output) }
+            }
+            Log.i("NesApp", "Azahar aes_keys.txt installed from assets -> ${dest.absolutePath}")
+        } catch (_: java.io.FileNotFoundException) {
+            // 未打包（默认）—— 正常
+        } catch (e: Exception) {
+            Log.w("NesApp", "Failed to install azahar aes_keys.txt", e)
+            if (dest.exists()) dest.delete()
         }
     }
 

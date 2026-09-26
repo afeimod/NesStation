@@ -84,6 +84,24 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     /** App context — set by NesApp.onCreate so the engine can locate user dirs. */
     @Volatile var appContext: Context? = null
 
+    /**
+     * ★ 3DS 黑屏修复（错误可见化）：非用户请求的模拟退出回调。
+     *
+     * Azahar 是推模型核心：loadRom 返回 true 后若核心因 ROM 加载失败
+     * （加密卡带缺 aes_keys.txt / 文件损坏 / 系统文件缺失）自行退出，
+     * 旧实现只把错误写进 lastErrorText 而无人消费 —— UI 永远停在
+     * loaded=true 的黑屏上，用户完全不知道原因。现在 UI（EmulatorScreen）
+     * 在启动后注册本回调，核心异常退出时立刻把 lastError 呈现成错误
+     * 对话框而不是永久黑屏。
+     *
+     * 线程：回调在原生线程 / 模拟线程触发，宿主必须自行 post 到主线程。
+     * 用户主动退出（unload/reset/shutdown）不触发。
+     */
+    @Volatile var onPrematureExit: ((String) -> Unit)? = null
+
+    /** 用户主动停止标记（true 时 run() 返回不触发 [onPrematureExit]）。 */
+    @Volatile private var userRequestedStop = false
+
     // ------------------------------------------------------------------
     // 可用性
     // ------------------------------------------------------------------
@@ -233,6 +251,8 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             return false
         }
         cleanupLocked()
+        // 主动停止标记：本局由用户发起的重载，退出回调不算异常
+        userRequestedStop = false
 
         // 引擎传来的 systemDir 即 <filesDir>/azahar（EmulatorScreen 平台分支）——
         // 即 Azahar 用户目录（config/sdmc/nand/states 均在其中）。
@@ -246,7 +266,16 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 override fun appContext(): Context? = this@AzaharEngine.appContext
                 override fun azaharUserDirectory(): String = userDir()
                 override fun onEmulationExited(result: Int) {
-                    lastErrorText = "Azahar 退出（status=$result）"
+                    // ★ 黑屏修复：非用户请求的退出 → 上报给 UI（见 onPrematureExit）。
+                    if (!userRequestedStop && isLoaded) {
+                        val msg = "Azahar 核心提前退出（status=$result）" +
+                            (lastErrorText.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: "") +
+                            "\n常见原因：加密卡带需 aes_keys.txt（放入 azahar 目录）；" +
+                            "镜像损坏或不完整；系统文件缺失。"
+                        onPrematureExit?.invoke(msg)
+                    } else {
+                        lastErrorText = "Azahar 退出（status=$result）"
+                    }
                 }
             })
             // ⚠ 上游硬性契约（DirectoryInitialization.start() 同序）：必须先
@@ -297,11 +326,32 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             try { lib.setTemporaryFrameLimit(100.0 * _ffSpeed) } catch (_: Throwable) {}
         }
         emuThread = thread(name = "AzaharNative") {
+            // ★ 3DS 黑屏/中止修复（surface 竞态加固）：run() 原生侧构造
+            //   EmuWindow_Android 时直接读全局 s_surf（由 surfaceChanged
+            //   设置）。从 startEmulationLocked 到这里存在一个窗口：
+            //   Compose 重组可能把 SurfaceView 拆重建（surfaceDestroyed
+            //   → s_surf=null → surfaceCreated），若恰好落在窗口内，
+            //   EmuWindow 拿到 null window → 原生 Critical "surface is
+            //   nullptr" → abort + 永久黑屏（用户实测日志的 abort 消息
+            //   正是这一行）。进场后立刻用**当前** surface 重申一次
+            //   surfaceChanged 再 run，把窗口收敛到微秒级。
+            val surf = surface
+            if (surf != null && surf.isValid) {
+                try { lib.surfaceChanged(surf) } catch (_: Throwable) {}
+            }
             try {
                 lib.run(path)
             } catch (t: Throwable) {
                 android.util.Log.e("AzaharEngine", "run() crashed", t)
                 lastErrorText = t.message ?: "run() crashed"
+            }
+            // run() 自然返回（未被用户停止）且核心从未报过错误 → 同样属于
+            // 提前退出，上报（覆盖核心不调 exitEmulationActivity 的路径）。
+            if (!userRequestedStop && isLoaded && emuThread === Thread.currentThread()) {
+                val msg = "Azahar 模拟已结束" +
+                    (lastErrorText.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: "") +
+                    "\n若非预期退出，常见原因：加密卡带需 aes_keys.txt（放入 azahar 目录）。"
+                try { onPrematureExit?.invoke(msg) } catch (_: Throwable) {}
             }
         }
         startPresentation()
@@ -323,6 +373,17 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                             AzaharNative.lib.isRunning()
                         } catch (_: Throwable) { false }
                         if (isRunning2() && nativeRunning) {
+                            // ★ surface 竞态终极保险：核心刚跑起来（EmuWindow 已
+                            //   构造、原生 running 标志已置位）时，把**当前**
+                            //   surface 再推给核心一次 —— 原生 surfaceChanged
+                            //   会把新窗口转发给已构造的 EmuWindow（见
+                            //   EmuWindow_Android::OnSurfaceChanged）。无论启动
+                            //   过程中发生过多少次 SurfaceView 重建抖动，这一步
+                            //   都把呈现窗口收敛到用户眼前这块 Surface。
+                            val surf = surface
+                            if (surf != null && surf.isValid) {
+                                try { AzaharNative.lib.surfaceChanged(surf) } catch (_: Throwable) {}
+                            }
                             refreshFramebufferLayout()
                             return@thread
                         }
@@ -369,7 +430,19 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 try { lib.surfaceChanged(surface) } catch (_: Throwable) {}
                 if (emuThread?.isAlive != true) startEmulationLocked()
             } else {
-                try { lib.surfaceDestroyed() } catch (_: Throwable) {}
+                // ★ 3DS 黑屏/中止修复：仅在核心已真正跑起来（EmuWindow 已
+                //   构造）或无启动在途时才通知原生销毁。若模拟线程还在
+                //   boot 窗口内（surfaceCreated→run() 间的重组抖动），
+                //   surfaceDestroyed 会把 s_surf 置空，run() 构造
+                //   EmuWindow_Android 读到 null → "surface is nullptr"
+                //   abort。跳过本次通知时窗口仍属于旧（已死）surface，
+                //   待新 surface 到达 surfaceChanged 会转发
+                //   OnSurfaceChanged 到已构造的窗口自动恢复。
+                val nativeRunning = try { lib.isRunning() } catch (_: Throwable) { false }
+                val booting = emuThread?.isAlive == true
+                if (!booting || nativeRunning) {
+                    try { lib.surfaceDestroyed() } catch (_: Throwable) {}
+                }
             }
         }
     }
@@ -403,11 +476,13 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         synchronized(lifecycleLock) {
             if (!isLoaded || romPath == null) return@synchronized
             val lib = AzaharNative.lib
+            userRequestedStop = true   // 重置属于用户请求，退出不上报
             try {
                 lib.stopEmulation()
                 emuThread?.join(8000)
             } catch (_: Throwable) {}
             emuThread = null
+            userRequestedStop = false
             val surf = surface ?: return@synchronized
             try { lib.surfaceChanged(surf) } catch (_: Throwable) {}
             startEmulationLocked()
@@ -419,6 +494,7 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     override fun shutdown() = synchronized(lifecycleLock) { cleanupLocked() }
 
     private fun cleanupLocked() {
+        userRequestedStop = true   // 主动卸载，run() 返回不上报
         running.set(false)
         heartbeatThread?.let { t ->
             t.interrupt()

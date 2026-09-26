@@ -40,6 +40,7 @@ import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Image as ImageIcon
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Storage
@@ -78,6 +79,7 @@ import androidx.core.content.ContextCompat
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.ArcadeTitleMapper
+import com.nesstation.app.core.storage.CoverFetcher
 import com.nesstation.app.core.storage.PlatformDetector
 import com.nesstation.app.core.storage.JavaGameSettings
 import com.nesstation.app.core.storage.JavaGameSettingsStore
@@ -860,6 +862,61 @@ fun LibraryScreen(
         }
     }
 
+    // ===== ★ 封面自动获取（全核心，flycast 式）=====
+    // 手动入口：工具栏「获取封面」按钮（后台下载当前平台缺失的封面）。
+    // 自动入口：进入平台页时 LaunchedEffect 静默补齐（见下方）。
+    var coverFetching by remember { mutableStateOf(false) }
+    var coverProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    fun fetchCoversManual() {
+        if (coverFetching) return
+        coverFetching = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                val platformGames = importedGames.toList().filter { it.platform == selectedPlatform }
+                val fetched = CoverFetcher.fetchAllMissing(
+                    context, platformGames, onlyMissing = true, limit = 400,
+                    onProgress = { done, total -> coverProgress = done to total }
+                )
+                if (fetched > 0) {
+                    withContext(Dispatchers.Main) {
+                        refreshList(postMessage = "已获取 $fetched 个游戏封面")
+                    }
+                } else {
+                    dialogMsg = "未下载到新封面\n（可能：已有封面 / 无网络 / 该平台暂无匹配源）"
+                }
+            } catch (t: Throwable) {
+                dialogMsg = "封面获取失败：${t.message}"
+            } finally {
+                coverFetching = false
+                coverProgress = null
+            }
+        }
+    }
+
+    // ★ 封面自动获取：首次进入每个平台页时后台静默补齐缺失封面
+    //   （每平台一次，会话内不重复；下载成功后刷新列表与封面卡片）。
+    val coverAutoDone = remember { mutableStateListOf<GamePlatform>() }
+    LaunchedEffect(selectedPlatform) {
+        if (selectedPlatform == GamePlatform.JAVA) return@LaunchedEffect
+        if (selectedPlatform in coverAutoDone) return@LaunchedEffect
+        coverAutoDone.add(selectedPlatform)
+        val platformGames = importedGames.toList().filter { it.platform == selectedPlatform }
+        if (platformGames.isEmpty()) return@LaunchedEffect
+        val fetched = withContext(Dispatchers.IO) {
+            try {
+                CoverFetcher.fetchAllMissing(context, platformGames, limit = 200)
+            } catch (_: Throwable) { 0 }
+        }
+        if (fetched > 0) {
+            // 静默重载：不弹提示、不重扫文件夹，只重读库并同步外部列表
+            val reloaded = RomStore.loadAll(context)
+            importedGames.clear()
+            importedGames.addAll(reloaded)
+            onGamesChanged?.invoke()
+        }
+    }
+
     // ===== CIA 安装（3DS 专属）：「导入ROM」旁的「安装CIA」入口 =====
     // .cia 是 3DS 安装包（数字版游戏 / 更新 / DLC），必须先装进 Azahar 的
     // NAND 才能启动 —— 与可直接启动的 .3ds/.cci/.cxi/.app 走不同路径：
@@ -1150,6 +1207,10 @@ fun LibraryScreen(
                     }
                 }
                 FsdToolButton(Icons.Rounded.Refresh, "刷新") { refreshList() }
+                // ★ 封面获取（全核心）：手动批量下载当前平台缺失的游戏封面
+                FsdToolButton(Icons.Rounded.ImageIcon, if (coverFetching) {
+                    "封面 ${coverProgress?.first ?: 0}/${coverProgress?.second ?: 0}"
+                } else "获取封面") { fetchCoversManual() }
                 Spacer(Modifier.size(6.dp))
                 FsdToolButton(Icons.Rounded.Home, "主页") { onHome() }
             }
@@ -1698,6 +1759,11 @@ private fun scanUriForRomsRecursive(
     //   - If the folder has .cue → import only .cue (skip .img/.bin/.ccd/.sub/.iso)
     //   - If the folder has .ccd (no .cue) → import only .ccd (skip .img/.sub)
     //   - .chd and standalone .iso are always imported (single-file formats)
+    // ★ DC 修复（多文件只收启动文件）：.gdi 与 .cue 同样是“多轨描述文件”
+    //   —— Dreamcast 的 .gdi dump 是 game.gdi + track01.bin + track02.bin...
+    //   若不做与 .cue 同样的去重，每个轨道 .bin 都会被当成独立游戏入库
+    //   （列表被几十个 track 填满，点 track01.bin 也启动不了）。现在：
+    //   文件夹存在 .gdi → 只收 .gdi，跳过 .bin/.raw/.img/.iso 轨道文件。
     // This ensures each game appears as ONE entry in the library.
     data class FileEntry(val name: String, val uri: Uri, val ext: String)
     val candidates = mutableListOf<FileEntry>()
@@ -1734,15 +1800,21 @@ private fun scanUriForRomsRecursive(
     val folderExts = candidates.map { it.ext }.toSet()
     val hasCue = "cue" in folderExts
     val hasCcd = "ccd" in folderExts
+    // ★ DC 修复：.gdi 存在 → 轨道文件全部作为伴随文件跳过
+    val hasGdi = "gdi" in folderExts
     // .bin is tricky — it could be a Mega-CD data track OR a SEGA MD
     // cartridge dump. Only skip .bin if we have a .cue (which references
     // it as a CD data track); otherwise keep it (it's likely a cart).
     val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
     val skipIfCcd = setOf("img", "sub")
+    // .gdi 轨道伴随：bin/raw/img/iso（raw 不在扩展名白名单内，防御性保留）
+    val skipIfGdi = setOf("bin", "raw", "img", "iso")
 
     for (c in candidates) {
         if (hasCue && c.ext in skipIfCue) continue
         if (hasCue.not() && hasCcd && c.ext in skipIfCcd) continue
+        // ★ DC：同文件夹存在 .gdi 时轨道文件不入库，只保留启动文件 .gdi
+        if (hasGdi && c.ext in skipIfGdi) continue
         // .sub is always a companion file — never import standalone.
         if (c.ext == "sub") continue
         results.add(c.name to c.uri)
@@ -1769,6 +1841,7 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
     // === Two-pass deduplication (same logic as scanUriForRomsRecursive) ===
     // If folder contains .cue → skip .img/.bin/.ccd/.sub/.iso (CD companions)
     // If folder contains .ccd (no .cue) → skip .img/.sub
+    // ★ DC：folder contains .gdi → skip .bin/.raw/.img/.iso (轨道伴随文件)
     // .sub is always skipped (always a companion file).
     val fileChildren = children.filter { it.isFile && !it.name.startsWith(".") }
     val dirChildren = children.filter { it.isDirectory && !it.name.startsWith(".") }
@@ -1776,14 +1849,17 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
     val folderExts = fileChildren.map { it.extension.lowercase() }.toSet()
     val hasCue = "cue" in folderExts
     val hasCcd = "ccd" in folderExts
+    val hasGdi = "gdi" in folderExts
     val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
     val skipIfCcd = setOf("img", "sub")
+    val skipIfGdi = setOf("bin", "raw", "img", "iso")
 
     for (f in fileChildren) {
         val ext = f.extension.lowercase()
         if (ext !in ROM_EXTENSIONS) continue
         if (hasCue && ext in skipIfCue) continue
         if (hasCue.not() && hasCcd && ext in skipIfCcd) continue
+        if (hasGdi && ext in skipIfGdi) continue
         if (ext == "sub") continue
         results.add(f)
     }

@@ -1557,6 +1557,12 @@ class PadLayout {
         hiddenButtonsPce = another.hiddenButtonsPce
         hiddenButtonsNds = another.hiddenButtonsNds
         hiddenButtonsPsx = another.hiddenButtonsPsx
+        // ★ DC 显隐持久化修复：copyFrom 此前唯独漏了 hiddenButtonsDc ——
+        //   所有 PadLayout.copy{}（含 EmulatorScreen 的 saveSessionLayout
+        //   合并、DC 设置面板、输入模式切换、拖动等）都会把它重置成默认
+        //   空串 → 防抖保存每次都把 hidden_buttons_dc 写成空 → 下次启动
+        //   DC 虚拟按键全部重新显示（"显隐没有保存"的根因）。
+        hiddenButtonsDc = another.hiddenButtonsDc
         inputMode = another.inputMode
         homeBackgroundUri = another.homeBackgroundUri
         homeBackgroundIsVideo = another.homeBackgroundIsVideo

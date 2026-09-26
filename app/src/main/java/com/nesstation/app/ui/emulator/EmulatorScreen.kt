@@ -943,6 +943,39 @@ private fun materializeDcGame(
         .takeIf { it.isNotBlank() } ?: "game"
     val fallbackRoot = java.io.File(context.filesDir, "dc_cd_file/$safeId")
 
+    val uri = android.net.Uri.parse(romUriStr)
+
+    // ★ DC 多文件读取修复（只读启动文件 + 其引用的轨道）：
+    //   旧实现 A) 对 tree URI 一律整夹复制 —— 多游戏同夹/带无关文件时
+    //   全部拷进缓存（几 GB 级浪费）；B) 对单文件 URI 只拷 .gdi/.cue
+    //   本体 —— 轨道文件不在旁边，核心直接打不开（"游戏读取有问题"）。
+    //   现对 .gdi/.cue 两类多轨启动文件走精确物化：
+    //     1) 拷贝启动文件本体（保留原始文件名）；
+    //     2) 解析其引用的轨道文件名（.gdi 行内引号字段 / .cue 的 FILE 行）；
+    //     3) 经 SAF "父 docId + /文件名" 构造兄弟 URI 逐个拷贝 ——
+    //        绝不多拷一个无关文件，也绝不少拷一条轨道；
+    //     4) 任何一步失败 → 回落旧的整夹复制（loadGameFolder）保底。
+    //   .chd/.cdi/.iso/.bin/.zip/.7z/.lst 等单文件格式维持原有两级策略。
+    val launchExt = romUriStr.substringAfterLast('.', "").lowercase()
+    if (launchExt == "gdi" || launchExt == "cue") {
+        val precise = try {
+            materializeDcMultiTrack(context, uri, safeId)
+        } catch (e: Exception) {
+            android.util.Log.w("EmulatorScreen", "DC multi-track precise copy failed: ${e.message}")
+            null
+        }
+        if (precise != null) return precise
+        // 精确物化失败（个别 provider 的 docId 不支持路径拼接等）→ 整夹保底
+        val folderCopy = try {
+            loadGameFolder(context, romUriStr, gameId, "dc_cd")
+        } catch (_: Exception) { null }
+        if (folderCopy != null) return folderCopy
+        // 单文件兜底（保持原始名）
+        val single = copyDcSingleFile(context, uri, fallbackRoot)
+        if (single != null) return single
+        return null
+    }
+
     // A) tree URI → 整夹复制（轨道 / CHD 文件夹一并；失败返回 null）
     val folderCopy = try {
         loadGameFolder(context, romUriStr, gameId, "dc_cd")
@@ -950,7 +983,141 @@ private fun materializeDcGame(
     if (folderCopy != null) return folderCopy
 
     // B) 单文件兜底：保留原始文件名复制
-    val uri = android.net.Uri.parse(romUriStr)
+    val single = copyDcSingleFile(context, uri, fallbackRoot) ?: return null
+    tryCopyDcSiblingFolder(context, uri, fallbackRoot, single.name)
+    return single
+}
+
+/**
+ * DC 多轨启动文件（.gdi/.cue）精确物化：只拷贝启动文件 + 它引用的轨道。
+ *
+ * SAF 细节：document URI 的 docId 在 externalstorage 等 provider 上是
+ * 路径形（"primary:DC/game.gdi"）—— 拿到父 docId 后用
+ * "父docId/轨道名" 直接构造兄弟文件的 document URI，无需列举权限。
+ * docId 不是路径形的 provider（如 MediaProvider 数字 id）会打不开，
+ * 上层捕获后回落整夹复制。
+ *
+ * 快路径：物化目录里启动文件 + 全部轨道齐全（按解析结果校验）→ 直接复用。
+ */
+private fun materializeDcMultiTrack(
+    context: android.content.Context,
+    romUri: android.net.Uri,
+    safeId: String
+): java.io.File? {
+    val docId = try {
+        android.provider.DocumentsContract.getDocumentId(romUri)
+    } catch (_: Exception) { return null }
+    val lastSlash = docId.lastIndexOf('/')
+    if (lastSlash <= 0) return null
+    val parentDocId = docId.substring(0, lastSlash)
+
+    // 启动文件原始名（docId 末段即可，无需 query）
+    val launchName = docId.substring(lastSlash + 1)
+    if (launchName.isBlank()) return null
+
+    // 解析 tree URI（与 tryCopyDcSiblingFolder 同法）
+    val paths = romUri.pathSegments
+    val treeUri = if (paths.indexOf("tree") >= 0 && paths.size > paths.indexOf("tree") + 1) {
+        android.net.Uri.Builder()
+            .scheme(android.content.ContentResolver.SCHEME_CONTENT)
+            .authority(romUri.authority)
+            .appendPath("tree")
+            .appendPath(paths[paths.indexOf("tree") + 1])
+            .build()
+    } else {
+        android.net.Uri.Builder()
+            .scheme(android.content.ContentResolver.SCHEME_CONTENT)
+            .authority(romUri.authority)
+            .appendPath("tree")
+            .appendPath(parentDocId)
+            .build()
+    }
+
+    val destDir = java.io.File(context.filesDir, "dc_cd/$safeId")
+    val destLaunch = java.io.File(destDir, launchName)
+
+    // 拷启动文件（缺失时从 SAF 拉取）
+    if (!destLaunch.exists() || destLaunch.length() == 0L) {
+        destDir.mkdirs()
+        try {
+            context.contentResolver.openInputStream(romUri)?.use { input ->
+                java.io.File(destDir, launchName).outputStream().use { input.copyTo(it) }
+            } ?: return null
+        } catch (e: Exception) {
+            android.util.Log.w("EmulatorScreen", "DC copy launch file failed: ${e.message}")
+            return null
+        }
+    }
+
+    // 解析轨道引用（读本地启动文件文本 —— .gdi/.cue 都是纯文本）
+    val tracks = try {
+        parseDiscTrackReferences(destLaunch)
+    } catch (_: Exception) { emptyList<String>() }
+
+    // 逐轨道校验/拷贝：缺哪个补哪个，全部就位才返回。
+    // 目标路径**保持启动文件里的相对引用原样**（一般是平铺文件名；
+    // 个别 dump 用子目录 —— 必须原样落盘，否则核心按引用找不到轨道）。
+    for (trackName in tracks) {
+        val destTrack = java.io.File(destDir, trackName)
+        if (destTrack.exists() && destTrack.length() > 0L) continue
+        val trackUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(
+            treeUri, "$parentDocId/${trackName}"
+        )
+        try {
+            destTrack.parentFile?.mkdirs()
+            context.contentResolver.openInputStream(trackUri)?.use { input ->
+                destTrack.outputStream().use { input.copyTo(it) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("EmulatorScreen",
+                "DC track copy failed: $trackName (${e.message}) — fall back to folder copy")
+            return null   // 有一轨拿不到 → 整个精确物化作废，回落整夹
+        }
+    }
+    android.util.Log.i("EmulatorScreen",
+        "DC multi-track materialized: $launchName + ${tracks.size} track(s) -> $destDir")
+    return destLaunch
+}
+
+/**
+ * 解析光盘启动文件引用的轨道文件名：
+ *  - .gdi：每行格式 "track 类型 LBA 长度 \"文件名\" ..." → 取行内引号字段；
+ *  - .cue：FILE "文件名" 类型 → 取 FILE 行的引号字段。
+ * 自动去重；忽略空名/"0" 占位。
+ */
+private fun parseDiscTrackReferences(launchFile: java.io.File): List<String> {
+    if (!launchFile.exists() || launchFile.length() > 1_000_000) return emptyList()
+    val text = launchFile.readText(Charsets.UTF_8)
+    val isGdi = launchFile.name.endsWith(".gdi", ignoreCase = true)
+    val names = LinkedHashSet<String>()
+    for (line in text.lineSequence()) {
+        val refs = Regex("\"([^\"]+)\"").findAll(line).map { it.groupValues[1] }.toList()
+        if (refs.isEmpty()) continue
+        if (isGdi) {
+            // gdi 行通常只有一个引号字段（轨道文件名）
+            refs.forEach { r ->
+                if (r.isNotBlank() && r != "0") names.add(r)
+            }
+        } else {
+            // cue：只取 FILE "xxx" 行的第一个引号字段
+            if (line.trim().startsWith("FILE", ignoreCase = true)) {
+                val r = refs.firstOrNull() ?: continue
+                if (r.isNotBlank()) names.add(r)
+            }
+        }
+    }
+    return names.toList()
+}
+
+/**
+ * DC 单文件物化（保留原始文件名）—— 原分支 B 的实现体。
+ * 返回物化后的 File；已物化且非空时直接复用（快路径）。
+ */
+private fun copyDcSingleFile(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    fallbackRoot: java.io.File
+): java.io.File? {
     val fileName = run {
         var name = ""
         try {
@@ -989,7 +1156,6 @@ private fun materializeDcGame(
         context.contentResolver.openInputStream(uri)?.use { input ->
             dest.outputStream().use { input.copyTo(it) }
         } ?: return null
-        tryCopyDcSiblingFolder(context, uri, fallbackRoot, safeName)
         dest
     } catch (e: Exception) {
         android.util.Log.w("EmulatorScreen", "DC single-file materialize failed", e)
@@ -1248,6 +1414,20 @@ fun EmulatorScreen(
             val notice = eng?.sessionNotice.orEmpty()
             if (notice.isNotBlank()) {
                 Toast.makeText(context, notice, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // ★ 3DS 黑屏修复（错误可见化）：注册 Azahar 提前退出回调 —— 核心因
+    //   加密卡带缺 aes_keys.txt / 镜像损坏等原因自行退出时，旧实现只把
+    //   错误写进 lastError 而无人消费，UI 停留在 loaded=true 的永久黑屏。
+    //   现在把原因直接呈现成错误对话框（回调在原生线程触发，post 回主线程）。
+    LaunchedEffect(platform) {
+        if (platform == GamePlatform.N3DS) {
+            val azEngine = engine as? com.nesstation.app.core.engine.AzaharEngine
+            val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+            azEngine?.onPrematureExit = { msg ->
+                mainHandler.post { errorMsg = msg }
             }
         }
     }
@@ -4853,6 +5033,8 @@ private fun GameSurfaceView(
             )
         } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
                    platform != GamePlatform.NDS &&
+                   platform != GamePlatform.N3DS &&
+                   platform != GamePlatform.NGCWII &&
                    engine !is com.nesstation.app.core.engine.Psx2Engine) {
             // === 仿电视机（CRT 弧面）画布路径 ===
             // tv 系滤镜 + 支持「无 Surface framebuffer 回退」的引擎：
@@ -4866,6 +5048,12 @@ private fun GameSurfaceView(
             //     真实 Surface 中转）；
             //   - NDS 双屏的触摸映射依赖平面几何，且双屏各自 4:3，不进弧面
             //     （继续走原有路径）。
+            //   - ★ 3DS/NGC-WII 黑屏修复：Azahar / Ishiiruka 均为「直绘
+            //     Surface 的推模型核心」，frameBuffer 只是 1 元素占位数组
+            //     （无 CPU 回读）。旧实现把它们也送进本路径 → 永远拿不到
+            //     Surface 也拉不到帧 → 选中 tv 系滤镜即黑屏。现在排除，
+            //     两者回落到普通 SurfaceView 分支（直绘，无弧面效果，
+            //     但画面正常）。
             // 外层容器与 SurfaceView 分支共用同一套缩放比例（宽高比由容器
             // 决定，弧面在容器内做桶形变形）。
             val curvedModifier = when (effectiveVideoScale) {

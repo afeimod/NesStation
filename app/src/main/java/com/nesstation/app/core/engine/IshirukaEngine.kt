@@ -77,6 +77,25 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     /** 摇杆当前轴值缓存（方向轴仅在变化时推送）。 */
     private var stickLast = FloatArray(8)
 
+    /**
+     * ★ NGC/WII 闪退修复：本局游戏的平台判定缓存（null = 未判定）。
+     *
+     * 旧实现 [isGameCubeGame] 在**每次调用**时都走 JNI
+     * GameFileCache.addOrGet —— 而它被 overlay 渲染（每帧/每次重组的
+     * effectiveMode 查询）、每个输入事件（setPad1/setAnalogAxes/触摸）
+     * 高频调用，且原生侧 AddOrGet 需要解析光盘卷头（重量级 I/O）。
+     * 更致命的是：从未调用 GameFileCache.init() 时原生单例为 null →
+     * addOrGet 直接 SIGSEGV（见契约文件注释）。现在：
+     *   1. loadRom（IO 线程）先 init() 创建单例，再一次性判定并缓存；
+     *   2. isGameCubeGame 只读缓存，渲染/输入线程零 JNI、零 I/O；
+     *   3. 缓存缺失时（理论上仅 loadRom 前的短暂窗口）兑底用纯 Kotlin
+     *      魔数探测（32 字节读取）并就地缓存。
+     */
+    @Volatile private var cachedIsGameCube: Boolean? = null
+
+    /** GameFileCache.init() 是否已成功（决定 JNI 判定通道可用性）。 */
+    @Volatile private var gameFileCacheReady = false
+
     // === Netplay（推模型核心不支持锁步 —— 接受但无效） ===
     @Volatile private var _frameHook: NetplayHook? = null
     @Volatile private var _netFrame = 0L
@@ -433,6 +452,18 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         }
         cleanupLocked()
 
+        // ★ NGC/WII 闪退修复（根因处置）：先创建原生 GameFileCache 单例，
+        //   再做一次性平台判定（IO 线程，安全窗口内）。旧实现从未 init()，
+        //   单例槽为 null，overlay 线程的 addOrGet 直接空指针解引用闪退。
+        try {
+            org.dolphinemu.dolphinemu.model.GameFileCache.init()
+            gameFileCacheReady = true
+        } catch (t: Throwable) {
+            gameFileCacheReady = false
+            android.util.Log.w("IshirukaEngine", "GameFileCache.init failed", t)
+        }
+        cachedIsGameCube = detectIsGameCube(rom.absolutePath)
+
         try {
             NativeLibrary.NesStationHost.register(object : NativeLibrary.Host {
                 override fun onPanicAlert(caption: String, text: String, yesNo: Boolean) {
@@ -483,6 +514,14 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             android.util.Log.w("IshirukaEngine", "SurfaceChanged failed", t)
         }
         emuThread = thread(name = "IshiirukaNative") {
+            // ★ surface 竞态加固（与 AzaharEngine 同款）：Run() 原生侧构造
+            //   EmuWindow 时读取全局窗口（由 SurfaceChanged 设置）；启动
+            //   线程到此处之间的 SurfaceView 重建抖动可能把它清空 → 原生
+            //   abort。进场后立刻用**当前** surface 重申再 Run。
+            val surf = surface
+            if (surf != null && surf.isValid) {
+                try { NativeLibrary.SurfaceChanged(surf) } catch (_: Throwable) {}
+            }
             try {
                 NativeLibrary.Run(path)
             } catch (t: Throwable) {
@@ -500,7 +539,16 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 try { NativeLibrary.SurfaceChanged(surface) } catch (_: Throwable) {}
                 if (emuThread?.isAlive != true) startEmulationLocked()
             } else {
-                try { NativeLibrary.SurfaceDestroyed() } catch (_: Throwable) {}
+                // ★ surface 竞态防御（与 AzaharEngine 同款）：模拟线程还在
+                //   Run() 的 boot 窗口内（EmuWindow 尚未构造完成）时不通知
+                //   原生销毁 —— SurfaceDestroyed 会清空全局窗口，Run() 内
+                //   构造渲染窗口时读到 null → 原生 abort（黑屏/闪退）。
+                //   核心已跑起来（IsRunning）或无启动在途时才正常销毁。
+                val nativeRunning = try { NativeLibrary.IsRunning() } catch (_: Throwable) { false }
+                val booting = emuThread?.isAlive == true
+                if (!booting || nativeRunning) {
+                    try { NativeLibrary.SurfaceDestroyed() } catch (_: Throwable) {}
+                }
             }
         }
     }
@@ -571,6 +619,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         irLast = FloatArray(6)
         stickLast = FloatArray(8)
         lastErrorText = ""
+        cachedIsGameCube = null
     }
 
     // ------------------------------------------------------------------
@@ -810,18 +859,32 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     private fun effectiveWiiExtension(): String = wiiExtension
 
     override fun isGameCubeGame(): Boolean {
+        // ★ 只读缓存 —— 渲染/输入线程零 JNI 零 I/O（见 cachedIsGameCube 注释）。
+        cachedIsGameCube?.let { return it }
         val path = romPath ?: return false
-        // ★ 精确判定（首选）：走 so 导出的 GameFileCache/GameFile JNI ——
-        //   Dolphin 卷头解析，覆盖 .gcm/.iso/.rvz/.gcz/.wbfs/.ciso/.nkit/.wad
-        //   全部容器格式（GetPlatform: 0 = GameCube, 1 = Wii 光盘, 2 = WiiWare）。
-        //   ★ 修复：旧实现调用的 GetPlatform 是 Java 兑底恒返 0，导致
-        //   auto 模式把所有游戏（包括 Wii）都判成 NGC —— 控制模式判定、
-        //   IR 触摸、Wii 按键路由全部失效，是 "Wii 虚拟按键不对/闪退" 的根因之一。
-        try {
-            val gf = org.dolphinemu.dolphinemu.model.GameFileCache.addOrGet(path)
-            if (gf != null) return gf.platform == 0
-        } catch (_: Throwable) {}
-        // 兑底：无法经核心判定时按扩展名 + GC 卷头魔数猜。
+        val result = detectIsGameCube(path)
+        cachedIsGameCube = result
+        return result
+    }
+
+    /**
+     * 平台判定（一次性，IO 线程调用）：
+     * 1. 首选 JNI GameFileCache.addOrGet —— Dolphin 卷头解析，覆盖
+     *    .gcm/.iso/.rvz/.gcz/.wbfs/.ciso/.nkit/.wad 全部容器格式
+     *    （GetPlatform: 0 = GameCube, 1 = Wii 光盘, 2 = WiiWare）。
+     *    仅在 init() 成功后启用；任何异常都降级到 2。
+     * 2. 兑底：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。
+     */
+    private fun detectIsGameCube(path: String): Boolean {
+        if (gameFileCacheReady) {
+            try {
+                val gf = org.dolphinemu.dolphinemu.model.GameFileCache.addOrGet(path)
+                if (gf != null) return gf.platform == 0
+            } catch (t: Throwable) {
+                gameFileCacheReady = false
+                android.util.Log.w("IshirukaEngine", "addOrGet failed, fall back to magic probe", t)
+            }
+        }
         return fallbackIsGameCube(path)
     }
 
@@ -831,7 +894,9 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val ext = lower.substringAfterLast('.', "")
         // Wii 专属容器：直接判 Wii
         if (ext in setOf("rvz", "wbfs", "gcz", "ciso", "nkit", "wad", "dol", "elf")) return false
-        // .gcm/.iso：GC 卷头魔数 0xC2339F3D（偏移 0x18）判 GC，否则 Wii
+        // .gcm/.iso：读 0x18 偏移 4 字节魔数判平台 ——
+        //   GameCube: 0xC2339F3D，Wii: 0x5D1C9EA3（读不到/未知 → 按兼容
+        //   性取向兑底 Wii：wii 布局兼容 GC 的 SI 手柄，反之无输入）。
         if (ext in setOf("gcm", "iso")) {
             return try {
                 java.io.RandomAccessFile(path, "r").use { raf ->
@@ -839,10 +904,11 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                     raf.seek(0x18)
                     val b = ByteArray(4)
                     raf.readFully(b)
-                    (b[0].toInt() and 0xFF) == 0xC2 &&
-                        (b[1].toInt() and 0xFF) == 0x33 &&
-                        (b[2].toInt() and 0xFF) == 0x9F &&
-                        (b[3].toInt() and 0xFF) == 0x3D
+                    val magic = ((b[0].toInt() and 0xFF) shl 24) or
+                        ((b[1].toInt() and 0xFF) shl 16) or
+                        ((b[2].toInt() and 0xFF) shl 8) or
+                        (b[3].toInt() and 0xFF)
+                    magic == 0xC2339F3D   // GC 卷头魔数；Wii(0x5D1C9EA3) 与未知 → false
                 }
             } catch (_: Throwable) { false }
         }
