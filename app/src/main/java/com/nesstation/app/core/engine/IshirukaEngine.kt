@@ -875,14 +875,15 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      *    仅在 init() 成功后启用；任何异常都降级到 2。
      * 2. 兑底：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。
      *
-     * ★ 编译修复：gf.platform 为 Long，与 Int 字面量比较会触发
-     *   "Operator '==' cannot be applied to 'Int' and 'Long'" —— 改用 0L。
+     * ★ 编译修复：GameFile.platform 为 Int，与字面量比较必须同为 Int。
+     *   （上一版误改为 0L，导致 "Operator '==' cannot be applied to
+     *   'Int' and 'Long'"；现改回 Int 0。）
      */
     private fun detectIsGameCube(path: String): Boolean {
         if (gameFileCacheReady) {
             try {
                 val gf = org.dolphinemu.dolphinemu.model.GameFileCache.addOrGet(path)
-                if (gf != null) return gf.platform == 0L
+                if (gf != null) return gf.platform == 0   // Int == Int
             } catch (t: Throwable) {
                 gameFileCacheReady = false
                 android.util.Log.w("IshirukaEngine", "addOrGet failed, fall back to magic probe", t)
@@ -911,7 +912,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                         ((b[1].toInt() and 0xFF) shl 16) or
                         ((b[2].toInt() and 0xFF) shl 8) or
                         (b[3].toInt() and 0xFF)
-                    magic == 0xC2339F3D   // GC 卷头魔数；Wii(0x5D1C9EA3) 与未知 → false
+                    magic == 0xC2339F3D   // Int == Int
                 }
             } catch (_: Throwable) { false }
         }
