@@ -874,12 +874,15 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      *    （GetPlatform: 0 = GameCube, 1 = Wii 光盘, 2 = WiiWare）。
      *    仅在 init() 成功后启用；任何异常都降级到 2。
      * 2. 兑底：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。
+     *
+     * ★ 编译修复：gf.platform 为 Long，与 Int 字面量比较会触发
+     *   "Operator '==' cannot be applied to 'Int' and 'Long'" —— 改用 0L。
      */
     private fun detectIsGameCube(path: String): Boolean {
         if (gameFileCacheReady) {
             try {
                 val gf = org.dolphinemu.dolphinemu.model.GameFileCache.addOrGet(path)
-                if (gf != null) return gf.platform == 0
+                if (gf != null) return gf.platform == 0L
             } catch (t: Throwable) {
                 gameFileCacheReady = false
                 android.util.Log.w("IshirukaEngine", "addOrGet failed, fall back to magic probe", t)

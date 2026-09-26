@@ -247,15 +247,32 @@ object CoverFetcher {
         }
     }
 
-    /** PNG / JPEG / GIF / WebP 魔数粗校验（libretro 偶发返回 HTML 错误页）。 */
+    /**
+     * PNG / JPEG / GIF / WebP 魔数粗校验（libretro 偶发返回 HTML 错误页）。
+     *
+     * ★ 编译修复：head 是 ByteArray，元素为 Byte，直接与 Int 十六进制
+     *   字面量比较在 Kotlin 中会编译失败（"Operator '==' cannot be
+     *   applied to 'Byte' and 'Int'"）。所有字节比较统一先做无符号
+     *   整数转换：(head[i].toInt() and 0xFF)。
+     */
     private fun looksLikeImage(head: ByteArray): Boolean {
-        val png = head.size >= 8 && (head[0].toInt() and 0xFF) == 0x89 && head[1] == 0x50 &&
-            head[2] == 0x4E && head[3] == 0x47
-        val jpg = head.size >= 3 && (head[0].toInt() and 0xFF) == 0xFF &&
+        val png = head.size >= 8 &&
+            (head[0].toInt() and 0xFF) == 0x89 &&
+            (head[1].toInt() and 0xFF) == 0x50 &&
+            (head[2].toInt() and 0xFF) == 0x4E &&
+            (head[3].toInt() and 0xFF) == 0x47
+        val jpg = head.size >= 3 &&
+            (head[0].toInt() and 0xFF) == 0xFF &&
             (head[1].toInt() and 0xFF) == 0xD8
-        val gif = head.size >= 4 && head[0] == 0x47 && head[1] == 0x49 && head[2] == 0x46
-        val webp = head.size >= 12 && head[8] == 0x57 && head[9] == 0x45 &&
-            head[10] == 0x42 && head[11] == 0x50
+        val gif = head.size >= 4 &&
+            (head[0].toInt() and 0xFF) == 0x47 &&
+            (head[1].toInt() and 0xFF) == 0x49 &&
+            (head[2].toInt() and 0xFF) == 0x46
+        val webp = head.size >= 12 &&
+            (head[8].toInt() and 0xFF) == 0x57 &&
+            (head[9].toInt() and 0xFF) == 0x45 &&
+            (head[10].toInt() and 0xFF) == 0x42 &&
+            (head[11].toInt() and 0xFF) == 0x50
         return png || jpg || gif || webp
     }
 }
