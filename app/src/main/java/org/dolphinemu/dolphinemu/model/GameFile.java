@@ -25,4 +25,16 @@ public final class GameFile
         {
                 this.mPointer = pointer;
         }
+
+        /**
+         * 查询游戏平台（NesStation 集成补丁）：
+         * 0 = GameCube，1 = Wii 光盘，2 = WiiWare/WAD/ELF。
+         *
+         * so 导出符号 Java_org_dolphinemu_dolphinemu_model_GameFile_getPlatform
+         * （0xc64dc 反汇编实测：经缓存的 mPointer FieldID 取 C++ GameFile*，
+         * 读取对象偏移 0x130 的 int 字段返回）。IshiirukaEngine 用它做
+         * NGC/Wii 平台判定 —— 修复 Java 兑底 GetPlatform 恒返 0 导致的
+         * auto 控制模式失效。
+         */
+        public native int getPlatform();
 }

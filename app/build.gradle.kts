@@ -30,8 +30,8 @@ android {
         // ioctl(SIOCGIFCONF) 兼容实现，在 Android 沙箱里拿不到 wlan0 等接口。
         minSdk = 24
         targetSdk = 34
-        versionCode = 11
-        versionName = "3.7"
+        versionCode = 12
+        versionName = "3.8"
         // NDK 必须 >= r28c(28.2.13676358)：ARMSX2 的 common/pcsx2 以 C++20 编译并用到
         // std::lexicographical_compare_three_way，而 r26 的 libc++ 快照没有该符号，
         // 会在编译 WindowInfo.cpp 时报 "no member named 'lexicographical_compare_three_way'".

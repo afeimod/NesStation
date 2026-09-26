@@ -72,6 +72,12 @@ interface NgcWiiCoreEngine : EmulatorEngine {
     var controlMode: String
 
     /**
+     * Wii 扩展手柄（wii 模式）："nunchuk" / "classic" / "none"。
+     * 决定虚拟按键布局与核心输入路由（双节棍 / 经典手柄 / 纯 Wiimote）。
+     */
+    var wiiExtension: String
+
+    /**
      * 当前 ROM 是否为 GameCube 游戏（auto 模式的判定依据）。
      */
     fun isGameCubeGame(): Boolean
@@ -102,4 +108,11 @@ interface DcCoreEngine : EmulatorEngine {
      * 推送 DC 手柄摇杆：(lx, ly) = 左摇杆，(rx, ry) 预留位。
      */
     fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float)
+
+    /**
+     * 前端帧数限制（Hz）。0 = 跟随游戏制式（NTSC 59.94 / PAL 50）不限速；
+     * >0 时把模拟线程步进频率硬限制到该值（不高于核心刷新率）。
+     * 部分游戏在满速下逻辑超速，用户可降到 30/50 帧恢复原手感。
+     */
+    fun setFrameLimit(hz: Int)
 }

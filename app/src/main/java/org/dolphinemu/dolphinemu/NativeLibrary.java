@@ -164,6 +164,14 @@ public final class NativeLibrary
         public static native void eglBindAPI(int api);
         public static native void RefreshWiimotes();
 
+        /**
+         * 让核心重新加载 Wiimote 配置（NesStation 集成补丁新增声明）。
+         * so 导出符号 Java_org_dolphinemu_dolphinemu_NativeLibrary_ReloadWiimoteConfig
+         * （0xd01cc）；运行中热切换扩展手柄（双节棍/经典手柄/无）后调用，
+         * 使 WiimoteNew.ini 的 Extension 变更无需重启游戏即生效。
+         */
+        public static native void ReloadWiimoteConfig();
+
         // ------------------------------------------------------------------
         // Java 兜底（so 未导出这些符号；保留旧 API 形状防 UnsatisfiedLinkError）
         // ------------------------------------------------------------------

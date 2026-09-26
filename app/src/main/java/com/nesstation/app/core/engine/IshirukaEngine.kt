@@ -61,7 +61,13 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     @Volatile override var controlMode: String = "auto"
 
     /** Wii 扩展手柄（wii 模式）："nunchuk" / "classic" / "none"。 */
-    @Volatile var wiiExtension: String = "nunchuk"
+    @Volatile override var wiiExtension: String = "nunchuk"
+
+    /**
+     * Wii Remote 握持方向（仅影响前端虚拟按键布局）："vertical" / "horizontal"。
+     * 由 UI 经门面键 "IshirukaEngine/wiiOrientation" 下发。
+     */
+    @Volatile var wiiOrientation: String = "vertical"
 
     /** 复合键（"文件.ini/Section/key"）→ 配置值 的热更新集合。 */
     private val coreOptions = LinkedHashMap<String, String>()
@@ -198,10 +204,11 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      * （把 ButtonManager "Touchscreen" 设备的全部按钮 / 方向轴绑进 GC 手柄与
      * Wiimote 的标准控制组）。
      */
-    private fun writeControllerInis() {
+    private fun writeControllerInis(onlyExtension: Boolean = false) {
         // ★ 与 writeCoreIni 同款双通道：SetConfig + 直写 <userDir>/Config/。
         //   （GCPadNew.ini / WiimoteNew.ini 同样位于 Config 目录 —— 旧实现只经
         //   SetConfig 下发，写盘位置不可靠；直写保证 Touchscreen 绑定必然生效。）
+        //   [onlyExtension] 运行中热切换扩展手柄时仅重写 WiimoteNew.ini。
         val gcUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
         val wiiUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
         val gc = "GCPadNew.ini"
@@ -237,9 +244,22 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             try { NativeLibrary.SetConfig(wii, section, key, value) } catch (_: Throwable) {}
             wiiUpdates.getOrPut(section) { LinkedHashMap() }[key] = value
         }
+
+        if (onlyExtension) {
+            // 热切换扩展手柄：只重写 P1 的 Extension 键（其余绑定不变），
+            // 随后由调用方触发 ReloadWiimoteConfig。
+            wiiSet("Wiimote1", "Extension", when (effectiveWiiExtension()) {
+                "classic" -> "Classic"
+                "none" -> "None"
+                else -> "Nunchuk"
+            })
+            writeIniMerged(File(configDir(), "WiimoteNew.ini"), wiiUpdates)
+            return
+        }
+
         for (slot in 1..4) {
             val sec = "Wiimote$slot"
-            if (slot > 1) wiiSet(sec, "Source", "0") // 仅 P1 用虚拟手柄
+            wiiSet(sec, "Source", if (slot == 1) "1" else "0") // 仅 P1 启用模拟 Wiimote
             wiiSet(sec, "Device", "Android/0/Touchscreen")
             wiiSet(sec, "Buttons/A", "Button 100")
             wiiSet(sec, "Buttons/B", "Button 101")
@@ -307,6 +327,22 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         // 直写规范位置（与 SetConfig 通道等价内容，保证绑定必然落盘）
         writeIniMerged(File(configDir(), "GCPadNew.ini"), gcUpdates)
         writeIniMerged(File(configDir(), "WiimoteNew.ini"), wiiUpdates)
+
+        // ★ Wii 闪退/无输入修复：Wiimote 源（Source）存的是 Dolphin.ini 的
+        //   [Wiimote1..4] 段（与 WiimoteNew.ini 是两个不同文件）。旧实现从未写
+        //   [Wiimote1] Source = 1，若存档残留其它值，核心启动后 P1 Wiimote 处于
+        //   禁用态，Wii 游戏读不到任何手柄输入。显式写死：P1 = 模拟 Wiimote，
+        //   P2-P4 = 关闭，与 Touchscreen 单通道一致。
+        val dolphinWiiUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
+        for (slot in 1..4) {
+            try {
+                NativeLibrary.SetConfig("Dolphin.ini", "Wiimote$slot", "Source",
+                        if (slot == 1) "1" else "0")
+            } catch (_: Throwable) {}
+            dolphinWiiUpdates.getOrPut("Wiimote$slot") { LinkedHashMap() }["Source"] =
+                    if (slot == 1) "1" else "0"
+        }
+        writeIniMerged(File(configDir(), "Dolphin.ini"), dolphinWiiUpdates)
     }
 
     /** GC 主手柄（P1）SIDevice = 标准手柄（6）。 */
@@ -339,7 +375,39 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     }
 
     override fun setCoreOption(key: String, value: String) {
-        // key 形如 "Dolphin.ini/Core/CPUCore"
+        // key 形如 "Dolphin.ini/Core/CPUCore"；"IshirukaEngine/*" 前缀是
+        // 引擎内部门面键（控制模式 / 扩展手柄），不落 INI 而是改运行时属性。
+        // ★ 修复：旧实现把这两个键存进 coreOptions 后在 writeCoreIni 里因
+        //   parts.size != 3 被静默丢弃，controlMode/wiiExtension 永远停在
+        //   默认值 —— UI 选"GameCube 手柄/Wii Remote/经典手柄"全部无效，
+        //   auto 模式也只会给出错误的 effectiveMode（进而路由错误按键）。
+        when (key) {
+            "IshirukaEngine/controlMode" -> {
+                controlMode = if (value in setOf("ngc", "wii", "auto")) value else "auto"
+                return
+            }
+            "IshirukaEngine/wiiExtension" -> {
+                val ext = if (value in setOf("nunchuk", "classic", "none")) value else "nunchuk"
+                if (ext != wiiExtension) {
+                    wiiExtension = ext
+                    // 运行中切换扩展手柄：重写 WiimoteNew.ini 的 Extension 段并
+                    // 让核心重载 Wiimote 配置（ReloadWiimoteConfig 为 so 导出符号），
+                    // 无需重启游戏即可生效。
+                    if (isRunning2()) {
+                        try {
+                            writeControllerInis(onlyExtension = true)
+                            NativeLibrary.ReloadWiimoteConfig()
+                        } catch (_: Throwable) {}
+                    }
+                }
+                return
+            }
+            "IshirukaEngine/wiiOrientation" -> {
+                // 仅前端虚拟按键布局使用；引擎存一份供 effective 布局查询。
+                wiiOrientation = if (value == "horizontal") "horizontal" else "vertical"
+                return
+            }
+        }
         coreOptions[key] = value
         val parts = key.split('/', limit = 3)
         if (parts.size == 3 && isRunning2()) {
@@ -736,15 +804,46 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     // 控制模式
     // ------------------------------------------------------------------
 
-    private fun effectiveWiiExtension(): String = wiiExtension
-
     override fun isGameCubeGame(): Boolean {
         val path = romPath ?: return false
-        return try {
-            NativeLibrary.GetPlatform(path) == 0
-        } catch (_: Throwable) {
-            false
+        // ★ 精确判定（首选）：走 so 导出的 GameFileCache/GameFile JNI ——
+        //   Dolphin 卷头解析，覆盖 .gcm/.iso/.rvz/.gcz/.wbfs/.ciso/.nkit/.wad
+        //   全部容器格式（GetPlatform: 0 = GameCube, 1 = Wii 光盘, 2 = WiiWare）。
+        //   ★ 修复：旧实现调用的 GetPlatform 是 Java 兑底恒返 0，导致
+        //   auto 模式把所有游戏（包括 Wii）都判成 NGC —— 控制模式判定、
+        //   IR 触摸、Wii 按键路由全部失效，是 "Wii 虚拟按键不对/闪退" 的根因之一。
+        try {
+            val gf = org.dolphinemu.dolphinemu.model.GameFileCache.addOrGet(path)
+            if (gf != null) return gf.platform == 0
+        } catch (_: Throwable) {}
+        // 兑底：无法经核心判定时按扩展名 + GC 卷头魔数猜。
+        return fallbackIsGameCube(path)
+    }
+
+    /** 兑底平台判定：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。 */
+    private fun fallbackIsGameCube(path: String): Boolean {
+        val lower = path.lowercase()
+        val ext = lower.substringAfterLast('.', "")
+        // Wii 专属容器：直接判 Wii
+        if (ext in setOf("rvz", "wbfs", "gcz", "ciso", "nkit", "wad", "dol", "elf")) return false
+        // .gcm/.iso：GC 卷头魔数 0xC2339F3D（偏移 0x18）判 GC，否则 Wii
+        if (ext in setOf("gcm", "iso")) {
+            return try {
+                java.io.RandomAccessFile(path, "r").use { raf ->
+                    if (raf.length() < 0x20) return false
+                    raf.seek(0x18)
+                    val b = ByteArray(4)
+                    raf.readFully(b)
+                    (b[0].toInt() and 0xFF) == 0xC2 &&
+                        (b[1].toInt() and 0xFF) == 0x33 &&
+                        (b[2].toInt() and 0xFF) == 0x9F &&
+                        (b[3].toInt() and 0xFF) == 0x3D
+                }
+            } catch (_: Throwable) { false }
         }
+        // 未知扩展名：默认按 Wii 处理（wii 布局兼容 GC 游戏的 SI 手柄，
+        // 反之 NGC 布局对 Wii 游戏完全无输入）
+        return false
     }
 
     override fun effectiveMode(): String = when (controlMode) {

@@ -647,6 +647,10 @@ class PadLayout {
     var dcLanguage: String = "Default"                // Default | Japanese | English | German | French | Spanish | Italian
     var dcBroadcast: String = "Default"               // Default | NTSC | PAL | PAL-M | PAL-N (电视制式)
     var dcCableType: String = "TV (Composite)"        // VGA | TV (Composite) (视频输出)
+    // 前端帧数限制（Hz）："0" = 跟随游戏制式（NTSC 59.94 / PAL 50）不限速；
+    // "30" / "50" / "60" 把模拟线程步进硬限制到该频率（部分游戏在满速下逻辑超速，
+    // 用户可手动降到 30 帧恢复原手感）。属于前端 pacing 能力，不经 reicast_* 下发。
+    var dcFrameLimit: String = "0"                    // 0(不限, 跟随制式) | 30 | 50 | 60 (帧数上限)
 
     // === PS2 (PCEE2 — PCSX2 v2.7.523 core) core options ===
     // ps2ResMulti: 内部分辨率倍数，发给核心的 pcsx2_upscale_multiplier。
@@ -726,6 +730,11 @@ class PadLayout {
     // 引擎以 SetConfig(file, section, key, value) 热写 Dolphin.ini / GFX.ini。
     var irControlMode: String = "auto"              // auto | ngc | wii (控制模式, auto 按游戏判定)
     var irWiiExtension: String = "nunchuk"          // nunchuk | classic | none (Wii 扩展手柄)
+    // Wii Remote 握持方向（仅 wii 模式且无扩展/双节棍时影响虚拟按键布局）：
+    // vertical = 竖持（十字键在下、A/B/1/2 在上, 默认）；horizontal = 横持
+    // （十字键在左、A/B/1/2 在右, NES 式握法）。只影响前端按键布局与显隐,
+    // 核心按键绑定不变（游戏自己读取 wiimote 键值）。
+    var irWiiOrientation: String = "vertical"       // vertical | horizontal (Wii 手柄横/竖持)
     var irCpuCore: String = "4"                     // "0" 解释器 | "4" JIT ARM64 (CPUCore)
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
     var irOverclockEnable: String = "disabled"      // enabled | disabled (OverclockEnable)
@@ -1331,6 +1340,7 @@ class PadLayout {
         dcLanguage = another.dcLanguage
         dcBroadcast = another.dcBroadcast
         dcCableType = another.dcCableType
+        dcFrameLimit = another.dcFrameLimit
         ps2ResMulti = another.ps2ResMulti
         ps2Renderer = another.ps2Renderer
         ps2Bilinear = another.ps2Bilinear
@@ -1419,6 +1429,7 @@ class PadLayout {
         azPreloadTextures = another.azPreloadTextures
         irControlMode = another.irControlMode
         irWiiExtension = another.irWiiExtension
+        irWiiOrientation = another.irWiiOrientation
         irCpuCore = another.irCpuCore
         irDualCore = another.irDualCore
         irOverclockEnable = another.irOverclockEnable
@@ -2306,6 +2317,9 @@ object PadLayoutStore {
             dcLanguage = p.getString("dc_language", "Default") ?: "Default"
             dcBroadcast = p.getString("dc_broadcast", "Default") ?: "Default"
             dcCableType = p.getString("dc_cable_type", "TV (Composite)") ?: "TV (Composite)"
+            // 帧数限制：仅接受 0/30/50/60，其余回落不限速
+            dcFrameLimit = p.getString("dc_frame_limit", "0")?.takeIf {
+                it in setOf("0", "30", "50", "60") } ?: "0"
             // === PS2 (PCEE2 — PCSX2 core) core options + 专属按键布局 ===
             // PCEE2 迁移：旧值 "1x"/"2x"/"4x"/"8x" 自动归一到 "1".."4"
             ps2ResMulti = PadLayout.normalizePs2ResMulti(p.getString("ps2_res_multi", null))
@@ -2447,6 +2461,8 @@ object PadLayoutStore {
                 it in setOf("auto", "ngc", "wii") } ?: "auto"
             irWiiExtension = p.getString("ir_wii_extension", "nunchuk")?.takeIf {
                 it in setOf("nunchuk", "classic", "none") } ?: "nunchuk"
+            irWiiOrientation = p.getString("ir_wii_orientation", "vertical")?.takeIf {
+                it in setOf("vertical", "horizontal") } ?: "vertical"
             irCpuCore = p.getString("ir_cpu_core", "4") ?: "4"
             irDualCore = p.getString("ir_dual_core", "enabled") ?: "enabled"
             irOverclockEnable = p.getString("ir_overclock_enable", "disabled") ?: "disabled"
@@ -2981,6 +2997,7 @@ object PadLayoutStore {
             putString("dc_language", layout.dcLanguage)
             putString("dc_broadcast", layout.dcBroadcast)
             putString("dc_cable_type", layout.dcCableType)
+            putString("dc_frame_limit", layout.dcFrameLimit)
             // === PS2 (PCEE2 — PCSX2 core) core options + 专属按键布局 ===
             putString("ps2_res_multi", layout.ps2ResMulti)
             putString("ps2_renderer", layout.ps2Renderer)
@@ -3100,6 +3117,7 @@ object PadLayoutStore {
             // === NGC/WII (Ishiiruka) options + 专属按键布局 ===
             putString("ir_control_mode", layout.irControlMode)
             putString("ir_wii_extension", layout.irWiiExtension)
+            putString("ir_wii_orientation", layout.irWiiOrientation)
             putString("ir_cpu_core", layout.irCpuCore)
             putString("ir_dual_core", layout.irDualCore)
             putString("ir_overclock_enable", layout.irOverclockEnable)

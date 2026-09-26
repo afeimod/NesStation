@@ -64,6 +64,13 @@ class DcEngine private constructor() : EmulatorEngine, DcCoreEngine {
     /** Core-reported refresh rate; used for pacing (NTSC 59.94 / PAL 50). */
     @Volatile private var _targetHz: Int = 60
 
+    /**
+     * 前端帧数限制（Hz）。0 = 跟随核心刷新率不限速；>0 时把步进频率硬限制到
+     * min(核心刷新率, 限制值)（快进时豁免 —— 用户显式要求超速）。修复
+     * "默认 60 帧下部分游戏运行过快"：游戏逻辑超速时降到 30/50 帧即可恢复。
+     */
+    @Volatile private var _frameLimitHz: Int = 0
+
     /** FPS HUD：上次轮询提交帧数的时间戳（ns），用于按真实时间间隔换算帧率。 */
     @Volatile private var _fpsPollNs: Long = 0L
 
@@ -161,9 +168,12 @@ class DcEngine private constructor() : EmulatorEngine, DcCoreEngine {
                     onFrame()
 
                     // Pacing — melonDS/PSX-style fast-forward, paced to the
-                    // CORE refresh rate (not a hard-coded 60).
+                    // CORE refresh rate (not a hard-coded 60), 并叠加用户
+                    // 手动帧数上限（快进时豁免，见 _frameLimitHz 注释）。
                     val ff = _ffSpeed
-                    val hz = if (ff > 0) _targetHz * ff else _targetHz
+                    var hz = if (ff > 0) _targetHz * ff else _targetHz
+                    val limit = _frameLimitHz
+                    if (limit > 0 && ff <= 0) hz = minOf(hz, limit)
                     val paced = FramePacer.pace(t0, hz.coerceIn(30, 600))
                     if (!paced) break
                 }
@@ -212,6 +222,10 @@ class DcEngine private constructor() : EmulatorEngine, DcCoreEngine {
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
         if (isLoaded) DcNative.setFastForward(speed)
+    }
+
+    override fun setFrameLimit(hz: Int) {
+        _frameLimitHz = hz.coerceIn(0, 120)
     }
 
     override fun setPaused(paused: Boolean) {
@@ -315,6 +329,7 @@ class DcEngine private constructor() : EmulatorEngine, DcCoreEngine {
         _ffSpeed = 0
         hasSurface = false
         _targetHz = 60
+        _frameLimitHz = 0
         _fpsPollNs = 0L
     }
 

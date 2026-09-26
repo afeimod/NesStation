@@ -50,6 +50,8 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var frameCallback: Choreographer.FrameCallback? = null
     private val presentationActive = AtomicBoolean(false)
+    /** 布局保障线程去重标志（每次启动补一次 updateFramebuffer）。 */
+    private val layoutEnsurePending = AtomicBoolean(false)
 
     @Volatile private var surface: Surface? = null
     @Volatile private var romPath: String? = null
@@ -129,14 +131,40 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         File(File(userDirPath, "config").apply { mkdirs() }, "config.ini")
 
     /**
-     * 把 coreOptions 复合键写入 config.ini（简单 INI 分组写法 —— 与原生 INIReader
-     * 兼容；未涉及的段/键保持核心默认值）。
+     * 把 coreOptions 复合键写入 config.ini。
+     *
+     * ★ 3DS 黑屏修复：旧实现直接用 UI 提供的键**整体覆盖** config.ini，
+     * 把 createConfigFile() 刚生成的完整默认配置（[Controls]/[Data Storage]/
+     * [Core] 等全部段）毁掉。本实现改为**合并写入**（与 Ishiruka 的
+     * writeIniMerged 同模式）：读出已有内容，仅更新 UI 涉及的段/键，
+     * 其余保持不变，核心的 INIReader 依然按完整配置读取。
      */
     private fun flushConfig() {
         val dir = systemDir ?: return
         try {
             val cfg = configFile(dir)
             val grouped = LinkedHashMap<String, LinkedHashMap<String, String>>()
+            // 读入已有配置（createConfigFile 生成的默认完整配置或上次合并结果）
+            if (cfg.exists()) {
+                var current: String? = null
+                try {
+                    cfg.forEachLine { raw ->
+                        val line = raw.trim()
+                        if (line.isEmpty() || line.startsWith("#") || line.startsWith(";")) return@forEachLine
+                        if (line.startsWith("[") && line.endsWith("]")) {
+                            current = line.substring(1, line.length - 1).trim()
+                            grouped.getOrPut(current!!) { LinkedHashMap() }
+                        } else if (current != null) {
+                            val eq = line.indexOf('=')
+                            if (eq > 0) {
+                                grouped.getOrPut(current!!) { LinkedHashMap() }[line.substring(0, eq).trim()] =
+                                    line.substring(eq + 1).trim()
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+            // 叠加 UI 提供的键（"段/键" 复合键）
             coreOptions.forEach { (composite, value) ->
                 val idx = composite.indexOf('/')
                 if (idx <= 0 || idx == composite.length - 1) return@forEach
@@ -156,11 +184,37 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         }
     }
 
+    /**
+     * 当前 App 方向是否竖屏（与原生 isPortraitMode() 回调同语义）。
+     * 用于 updateFramebuffer —— 上游 SettingsActivityPresenter /
+     * ScreenAdjustmentUtil 在每次设置重载后都会调用它刷新帧缓冲布局。
+     */
+    private fun isPortraitNow(): Boolean = try {
+        appContext?.resources?.configuration?.orientation ==
+            android.content.res.Configuration.ORIENTATION_PORTRAIT
+    } catch (_: Throwable) { false }
+
+    /**
+     * 布局刷新（上游 reloadSettings + updateFramebuffer 等价对）：
+     * ★ 3DS 黑屏修复的关键一环 —— 屏幕布局/间距/立体 3D 等设置变更后
+     * 原生侧必须收到 updateFramebuffer 才会用新布局重算两个屏幕在
+     * Surface 内的矩形；旧实现从不调用，改动后画面可能保持旧布局
+     * （或布局失效后不重绘 → 黑屏）。
+     * system.IsPoweredOn() 前调用是无害 no-op（native 侧自身判断）。
+     */
+    private fun refreshFramebufferLayout() {
+        try { AzaharNative.lib.updateFramebuffer(isPortraitNow()) } catch (_: Throwable) {}
+    }
+
     override fun setCoreOption(key: String, value: String) {
         coreOptions[key] = value
         if (isRunning2()) {
             flushConfig()
             try { AzaharNative.lib.reloadSettings() } catch (_: Throwable) {}
+            // 布局/呈现相关设置变更后刷新帧缓冲布局（上游同款对）
+            if (key.startsWith("Layout/") || key.startsWith("Renderer/")) {
+                refreshFramebufferLayout()
+            }
         }
     }
 
@@ -251,6 +305,36 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             }
         }
         startPresentation()
+
+        // ★ 3DS 黑屏修复：核心完成 System::Init 后刷新一次帧缓冲布局。
+        // 原生 updateFramebuffer 在 system.IsPoweredOn() 前是 no-op，而
+        // OnSurfaceChanged 计算布局发生在 System::Init 之前 —— 启动窗口
+        // 内若方向/尺寸判定与最终不一致，或寄存布局被后续流程重置，
+        // 画面会停留在未初始化布局上（黑屏/单屏错位）。等核心真正跑起
+        // 后再补一次 updateFramebuffer（与上游 runWithValidSurface 后的
+        // 布局保障等价），最多等 15s，命中即刷并退出。
+        if (layoutEnsurePending.compareAndSet(false, true)) {
+            thread(name = "azahar-layout-ensure", isDaemon = true) {
+                try {
+                    var waited = 0
+                    while (waited < 15_000) {
+                        if (!running.get()) return@thread
+                        val nativeRunning = try {
+                            AzaharNative.lib.isRunning()
+                        } catch (_: Throwable) { false }
+                        if (isRunning2() && nativeRunning) {
+                            refreshFramebufferLayout()
+                            return@thread
+                        }
+                        Thread.sleep(100)
+                        waited += 100
+                    }
+                } catch (_: InterruptedException) {
+                } finally {
+                    layoutEnsurePending.set(false)
+                }
+            }
+        }
     }
 
     /** UI 线程 Choreographer 每帧 → doFrame()（上游 EmulationFragment 同款）。 */

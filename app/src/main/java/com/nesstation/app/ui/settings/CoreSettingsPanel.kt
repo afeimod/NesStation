@@ -1517,6 +1517,15 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (保帧率)"),
                         padLayout.dcFrameSkipping
                     ) { updateLayout(padLayout.copy {dcFrameSkipping = it}) }
+                    DropdownRow("帧数限制",
+                        listOf(
+                            "0" to "不限 (跟随游戏制式, 默认)",
+                            "60" to "60 FPS",
+                            "50" to "50 FPS (PAL 制式)",
+                            "30" to "30 FPS (部分游戏原速)"
+                        ),
+                        padLayout.dcFrameLimit
+                    ) { updateLayout(padLayout.copy {dcFrameLimit = it}) }
                 }
 
                 SettingsSection("DC (Flycast) · 系统") {
@@ -1726,6 +1735,15 @@ fun CoreSettingsPanel(
                         listOf("nunchuk" to "双节棍 (推荐)", "classic" to "经典手柄", "none" to "无"),
                         padLayout.irWiiExtension
                     ) { updateLayout(padLayout.copy {irWiiExtension = it}) }
+                    DropdownRow("Wii 手柄方向",
+                        listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式)"),
+                        padLayout.irWiiOrientation
+                    ) { updateLayout(padLayout.copy {irWiiOrientation = it}) }
+                    Text(
+                        "虚拟按键随所选控制器变化：GameCube 手柄 → GC 键组；" +
+                        "经典手柄 → ABXY + ZL/ZR + 双摇杆；双节棍 → 竖持 Wiimote + C/Z + 摇杆；" +
+                        "无扩展 + 横持 → NES 式十字键 + A/B/1/2。",
+                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 SettingsSection("NGC/WII (Ishiiruka) · 性能 / 图形") {
                     DropdownRow("CPU 核心",

@@ -471,6 +471,16 @@ public final class NativeLibrary
         }
 
         /**
+         * 让核心重新加载 Wiimote 配置（NesStation 集成补丁，转发到符号宿主类）。
+         * 运行中热切换扩展手柄（双节棍/经典手柄/无）后调用，使 WiimoteNew.ini
+         * 的 Extension 变更无需重启游戏即生效。
+         */
+        public static void ReloadWiimoteConfig()
+        {
+            org.dolphinemu.dolphinemu.NativeLibrary.ReloadWiimoteConfig();
+        }
+
+        /**
          * The methods C++ uses to find references to Java classes and methods
          * are really expensive. Rather than calling them every time we want to
          * run them, do it once when we load the native library.
