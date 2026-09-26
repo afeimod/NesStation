@@ -875,15 +875,15 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      *    仅在 init() 成功后启用；任何异常都降级到 2。
      * 2. 兑底：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。
      *
-     * ★ 编译修复：GameFile.platform 为 Int，与字面量比较必须同为 Int。
-     *   （上一版误改为 0L，导致 "Operator '==' cannot be applied to
-     *   'Int' and 'Long'"；现改回 Int 0。）
+     * ★ 编译修复：GameFile.platform 在不同契约版本中可能被声明为 Int 或 Long。
+     *   直接 `== 0` / `== 0L` 均会在某一版本上失败；这里统一用 `.toLong() == 0L`
+     *   归一化，无论上游声明成什么类型都能通过编译。
      */
     private fun detectIsGameCube(path: String): Boolean {
         if (gameFileCacheReady) {
             try {
                 val gf = org.dolphinemu.dolphinemu.model.GameFileCache.addOrGet(path)
-                if (gf != null) return gf.platform == 0   // Int == Int
+                if (gf != null) return gf.platform.toLong() == 0L
             } catch (t: Throwable) {
                 gameFileCacheReady = false
                 android.util.Log.w("IshirukaEngine", "addOrGet failed, fall back to magic probe", t)
@@ -892,7 +892,14 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         return fallbackIsGameCube(path)
     }
 
-    /** 兑底平台判定：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。 */
+    /**
+     * 兑底平台判定：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。
+     *
+     * ★ 编译修复：`magic` 由 shl/or 运算得出，为 Int；而 `0xC2339F3D` 超过
+     *   Int.MAX_VALUE（2147483647），Kotlin 会把该字面量推断为 Long，导致
+     *   `Int == Long` 编译失败。修复：两侧统一转 Long
+     *   （`magic.toLong() == 0xC2339F3DL`）。
+     */
     private fun fallbackIsGameCube(path: String): Boolean {
         val lower = path.lowercase()
         val ext = lower.substringAfterLast('.', "")
@@ -912,7 +919,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                         ((b[1].toInt() and 0xFF) shl 16) or
                         ((b[2].toInt() and 0xFF) shl 8) or
                         (b[3].toInt() and 0xFF)
-                    magic == 0xC2339F3D   // Int == Int
+                    // 两侧统一 Long，彻底消除 Int/Long 推断歧义
+                    magic.toLong() == 0xC2339F3DL
                 }
             } catch (_: Throwable) { false }
         }
