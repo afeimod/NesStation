@@ -41,7 +41,36 @@ object AzaharNative {
      * createLogFile 符号存在，且 so 内含 "Using Logging instance before its
      * initialization" 与 "Logging backend initialised" 字符串，机制吻合。）
      */
+    /**
+     * 补建 Azahar 用户目录的基础目录树 —— 上游 DirectoryInitialization 的
+     * nand/sdmc/sysdata 等目录由 Java 层显式创建（FileUtil::CreateFullPath 只
+     * 在写文件时按需建父目录，但原生 Service::AM::InstallCIA / 系统 Title
+     * 枚举 / 共享字体加载都要先探测这些目录存在与否）。不先建树时：
+     *  - installCIA 写 NAND 前 getFilesName/createDir 探测失败 → 安装返回 Error*；
+     *  - 启动时 ArchiveFactory_NAND/SDMC 枚举不到既有目录 → 黑屏/系统 Title 缺失。
+     * 与上游 citra-android 的 DirectoryInitialization.start() 行为一致
+     * （CreateDirectory("sysdata"/"nand"/"sdmc"/... )）。
+     */
+    private fun ensureUserDirTree(userDir: String) {
+        val subDirs = listOf(
+            "nand", "nand/title", "sdmc", "sysdata",
+            "config", "log", "states", "shaderCache", "load", "dump"
+        )
+        val root = java.io.File(userDir)
+        try { root.mkdirs() } catch (_: Throwable) {}
+        for (rel in subDirs) {
+            try {
+                // 与原生 createDir 回调同语义：仅当不存在才创建，幂等
+                java.io.File(root, rel).mkdirs()
+            } catch (_: Throwable) {}
+        }
+    }
+
     fun initConfigPipeline(userDir: String) {
+        // 目录树先行：原生 FileUtil::CreateFullPath 按需建父目录，但 C++ 侧
+        // 对"目录是否存在"的探测（GetFilesName/Exists）发生在安装/启动早期，
+        // 显式建树保证 NAND/SDMC/共享字体槽位必然存在。
+        ensureUserDirTree(userDir)
         lib.setUserDirectory(userDir)
         // 关键一步：先初始化日志后端，再触碰任何 Config 读取
         lib.createLogFile()

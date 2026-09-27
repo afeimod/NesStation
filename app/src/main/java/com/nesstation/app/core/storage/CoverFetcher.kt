@@ -23,8 +23,8 @@ import java.net.URLEncoder
  * 工作流：
  *   1. 扫描/刷新入库后，对缺封面（coverPath 为空且无自定义图标）的游戏
  *      逐个尝试下载；
- *   2. 文件名 → libretro 命名归一化（去扩展名 / 去分区/版本标签 / 下划线
- *      转空格），依次尝试"原名 → 去标签名 → 截图兜底"三个候选；
+ *   2. 文件名 → libretro 命名候选（基础变体 + 标题补点 + 区域码映射，
+ *      详见 [nameCandidates]），每个系统目录依次尝试盒装封面与截图兜底；
  *   3. 校验图片魔数（PNG/JPEG）后落盘 <filesDir>/covers/<gameId>.png，
  *      并写回 RomStore（coverPath 持久化，重启不丢）；
  *   4. 库卡片（FsdGameCover → GameIconExtractor.resolveIconPath 已支持
@@ -40,6 +40,98 @@ object CoverFetcher {
     private const val USER_AGENT = "NesStation/1.0 (Android; cover-fetcher)"
     private const val MAX_IMAGE_BYTES = 4 * 1024 * 1024
     private const val FETCH_INTERVAL_MS = 250L
+
+    /** 单个游戏最多尝试的候选名数量（防止极端命名膨胀请求数）。 */
+    private const val MAX_CANDIDATES = 16
+
+    /**
+     * GoodTools 旧式区域码 → libretro No-Intro 区域名。
+     *
+     * 多区域组合（JU/JUE/UE...）按 libretro 常见收录形式展开多个候选：
+     * No-Intro 里多区域条目常以 "(World)" 收录，也可能拆成单个区域
+     * （实测 NES "Super Mario Bros. (Europe)" 才是收录名）。每个候选
+     * 命中不了只会多一个 404，无害。
+     */
+    private val REGION_ALIASES: Map<String, List<String>> = mapOf(
+        // 单区域缩写 → No-Intro 全名
+        "U" to listOf("USA"),
+        "US" to listOf("USA"),
+        "USA" to listOf("USA"),
+        "J" to listOf("Japan"),
+        "JP" to listOf("Japan"),
+        "JPN" to listOf("Japan"),
+        "JAPAN" to listOf("Japan"),
+        "E" to listOf("Europe"),
+        "EU" to listOf("Europe"),
+        "EUR" to listOf("Europe"),
+        "EUROPE" to listOf("Europe"),
+        "W" to listOf("World"),
+        "WORLD" to listOf("World"),
+        "UK" to listOf("UK"),
+        "AU" to listOf("Australia"),
+        "AUS" to listOf("Australia"),
+        "AS" to listOf("Asia"),
+        "ASIA" to listOf("Asia"),
+        "CN" to listOf("China"),
+        "CHN" to listOf("China"),
+        "CHINA" to listOf("China"),
+        "TW" to listOf("Taiwan"),
+        "TWN" to listOf("Taiwan"),
+        "TAIWAN" to listOf("Taiwan"),
+        "KR" to listOf("Korea"),
+        "KOR" to listOf("Korea"),
+        "KOREA" to listOf("Korea"),
+        "BR" to listOf("Brazil"),
+        "BRA" to listOf("Brazil"),
+        "BRAZIL" to listOf("Brazil"),
+        "CA" to listOf("Canada"),
+        "CAN" to listOf("Canada"),
+        "CANADA" to listOf("Canada"),
+        "F" to listOf("France"),
+        "FR" to listOf("France"),
+        "FRANCE" to listOf("France"),
+        "G" to listOf("Germany"),
+        "DE" to listOf("Germany"),
+        "GER" to listOf("Germany"),
+        "GERMANY" to listOf("Germany"),
+        "ES" to listOf("Spain"),
+        "SPA" to listOf("Spain"),
+        "SPAIN" to listOf("Spain"),
+        "I" to listOf("Italy"),
+        "IT" to listOf("Italy"),
+        "ITALY" to listOf("Italy"),
+        "NL" to listOf("Netherlands"),
+        "NED" to listOf("Netherlands"),
+        "NETHERLANDS" to listOf("Netherlands"),
+        "SW" to listOf("Sweden"),
+        "SWE" to listOf("Sweden"),
+        "SWEDEN" to listOf("Sweden"),
+        "RU" to listOf("Russia"),
+        "RUS" to listOf("Russia"),
+        "RUSSIA" to listOf("Russia"),
+        "HK" to listOf("Hong Kong"),
+        "GR" to listOf("Greece"),
+        "GREECE" to listOf("Greece"),
+        "NO" to listOf("Norway"),
+        "NOR" to listOf("Norway"),
+        "NORWAY" to listOf("Norway"),
+        "SC" to listOf("Scandinavia"),
+        "SCANDINAVIA" to listOf("Scandinavia"),
+        // 多区域组合（GoodTools 旧码 → 常见 No-Intro 收录形态）
+        "JU" to listOf("World", "USA", "Japan", "Europe"),
+        "UJ" to listOf("World", "USA", "Japan", "Europe"),
+        "JUE" to listOf("World", "USA", "Europe", "Japan"),
+        "UJE" to listOf("World", "USA", "Europe", "Japan"),
+        "JEU" to listOf("World", "USA", "Europe", "Japan"),
+        "EJU" to listOf("World", "USA", "Europe", "Japan"),
+        "EUJ" to listOf("World", "USA", "Europe", "Japan"),
+        "UE" to listOf("World", "USA", "Europe"),
+        "JE" to listOf("World", "Japan", "Europe"),
+        "EJ" to listOf("World", "Japan", "Europe"),
+        "WE" to listOf("World", "Europe"),
+        "USJ" to listOf("World", "USA", "Japan"),
+        "USE" to listOf("World", "USA", "Europe")
+    )
 
     /** 平台 → libretro 缩略图系统目录名（null = 无源，跳过）。 */
     fun libretroSystemDir(platform: GamePlatform, romFileName: String?): List<String> {
@@ -74,18 +166,26 @@ object CoverFetcher {
     }
 
     /**
-     * ROM 文件名 / 标题 → libretro 缩略图命名候选（按命中概率排序）：
-     *   "Super Mario Bros (JU) [!]" →
-     *     1) "Super Mario Bros (JU) [!]"（原名直试）
-     *     2) "Super Mario Bros (JU)"（只去 [] 保留区域/Disc）
-     *     3) "Super Mario Bros"（全去标签）
-     *     4) "Super Mario Bros."（末尾加点 —— libretro No-Intro 规范）
+     * ROM 文件名 / 标题 → libretro 缩略图命名候选（按命中概率排序）。
      *
-     * ★ 候选名清理修复：
-     *   - 旧实现只生成 2 个候选（原名 + 全 stripped），丢失必要的
-     *     `(USA)`、`(Disc 1)` 标签 → 多 Disc 游戏大量 404。
-     *   - 旧实现对 SAF 导入的 content:// URI 直接处理导致双重 URL 编码。
-     *   - 新实现增加"只去 []"、"末尾加点"变体，提高命中率。
+     * libretro 缩略图库按 **No-Intro 命名** 组织（"Contra (USA).png"、
+     * "Super Mario Bros. (Europe).png"），而用户 ROM 文件常是旧式 GoodTools
+     * 命名（"Contra (U) [!].nes"、"Super Mario Bros (JU) [!].nes"），两者
+     * 不一致是命中率的最大瓶颈。本函数分三档生成候选：
+     *
+     *   1. 基础变体：原名 → 只去 []（处理 [!]/[b]/[h] 等标签，保留区域/Disc）→ 全去标签
+     *   2. 标题补点：No-Intro 标题里的缩写常带句点（"Bros."/"Dr."/"Vs."），
+     *      对标题部分末尾补 "."（"Super Mario Bros" → "Super Mario Bros."）
+     *   3. 区域码映射：GoodTools 旧区域码（(U)/(J)/(E)/(JU)/(JUE)...）替换为
+     *      No-Intro 区域名（(USA)/(Japan)/(Europe)/(World)...），并对每个
+     *      映射结果同样生成补点变体
+     *
+     * ★ 命中率修复：旧实现只生成"原名 + 全 stripped"2 个候选，既丢失
+     *   `(USA)`/`(Disc 1)` 等 No-Intro 必需的标签，也无法处理 `(U)/(JU)`
+     *   旧码与 "Bros." 句点 → 大量非 No-Intro 命名 ROM 永久 404。
+     *   实测（thumbnails.libretro.com）："Mega Man 2 (U)" 只有映射成
+     *   "Mega Man 2 (USA)" 才 200；"Super Mario Bros (JU) [!]" 必须走到
+     *   "Super Mario Bros. (Europe)" 补点 + 区域映射组合才命中。
      */
     fun nameCandidates(rawName: String): List<String> {
         val n0 = rawName.trim()
@@ -94,18 +194,67 @@ object CoverFetcher {
             .trim()
         if (n0.isEmpty()) return emptyList()
         val candidates = LinkedHashSet<String>()
-        candidates.add(n0)
-        // 变体 1：只去 [] 标签（保留区域/Disc 信息）
+        // 1) 基础变体
         val noBrackets = n0.replace(Regex("\\s*\\[[^]]*]"), "").trim()
+        val noTags = noBrackets.replace(Regex("\\s*\\([^)]*\\)"), "").trim()
+        candidates.add(n0)
         if (noBrackets.isNotBlank() && noBrackets != n0) candidates.add(noBrackets)
-        // 变体 2：全去标签（[] 与 () 都去）
-        val stripped = noBrackets.replace(Regex("\\s*\\([^)]*\\)"), "").trim()
-        if (stripped.isNotBlank() && stripped != n0 && stripped != noBrackets) candidates.add(stripped)
-        // 变体 3：末尾加点（libretro No-Intro 习惯 "Super Mario Bros."）
-        if (!n0.endsWith(".") && !n0.endsWith(" ")) {
-            candidates.add("$n0.".replace("..", "."))
+        if (noTags.isNotBlank() && noTags != n0 && noTags != noBrackets) candidates.add(noTags)
+        // 2) 标题补点变体（No-Intro 缩写句点）
+        for (v in listOf(n0, noBrackets, noTags)) {
+            dotTitle(v)?.let { candidates.add(it) }
         }
-        return candidates.toList()
+        // 3) 区域码映射变体（GoodTools 旧码 → No-Intro 区域名）+ 补点组合
+        for (mapped in mapRegions(noBrackets)) {
+            candidates.add(mapped)
+            dotTitle(mapped)?.let { candidates.add(it) }
+        }
+        // 极端命名（多 () 标签全命中映射表）可能膨胀候选，截断防止单游戏
+        // 发过多请求。
+        return candidates.toList().take(MAX_CANDIDATES)
+    }
+
+    /**
+     * 标题部分末尾补句点（No-Intro 命名规范）。
+     *
+     *   "Super Mario Bros (JU)" → "Super Mario Bros. (JU)"
+     *   "Contra"                → "Contra."
+     *
+     * 只对标题最后一个字符是字母/数字（或 !/?) 时追加 "."；标题已以句点 /
+     * 空格 / 括号结尾时不处理。补点变体命中不了也只是多一个 404，无害；
+     * 命中 "Bros."/"Dr."/"Vs." 类标题时是关键修复。
+     */
+    private fun dotTitle(name: String): String? {
+        if (name.isBlank()) return null
+        val idx = name.indexOf('(')
+        val title = if (idx >= 0) name.substring(0, idx).trim() else name.trim()
+        if (title.isEmpty()) return null
+        val last = title.last()
+        if (!last.isLetterOrDigit() && last !in "!?") return null
+        return if (idx >= 0) "$title. ${name.substring(idx)}" else "$title."
+    }
+
+    /**
+     * 区域码映射：把 GoodTools 旧式区域标签替换为 No-Intro 区域名。
+     *
+     *   "Contra (U)"          → "Contra (USA)"
+     *   "Super Mario Bros (JU)" → "Super Mario Bros (World)" / "(USA)" / "(Japan)" / "(Europe)"
+     *
+     * 只处理 () 标签且内容命中 [REGION_ALIASES]；"Disc 1"、"Rev 1"、
+     * "(En)" 等非区域标签不映射。每次只替换一个标签，保留其余部分。
+     */
+    private fun mapRegions(name: String): List<String> {
+        if (name.isEmpty()) return emptyList()
+        val results = LinkedHashSet<String>()
+        val tagPattern = Regex("\\(([^)]+)\\)")
+        for (m in tagPattern.findAll(name)) {
+            val code = m.groupValues[1].trim().uppercase()
+            val mapped = REGION_ALIASES[code] ?: continue
+            for (r in mapped) {
+                results.add(name.replaceRange(m.range, "($r)"))
+            }
+        }
+        return results.toList()
     }
 
     /** 封面缓存目录。 */
@@ -114,8 +263,16 @@ object CoverFetcher {
 
     /**
      * 为单个游戏抓取封面。成功（已有或新下载）返回封面文件，否则 null。
+     *
+     * @param cache 批内 URL 结果去重缓存（[fetchAllMissing] 创建并共享）：
+     *              同一 URL 在一批里只请求一次，成功结果直接复制复用。
+     *              单游戏调用不传即可。
      */
-    fun fetchCover(context: Context, game: GameEntry): File? {
+    fun fetchCover(
+        context: Context,
+        game: GameEntry,
+        cache: MutableMap<String, File?>? = null
+    ): File? {
         // 已有封面 → 直接复用
         game.coverPath?.let { p ->
             val f = File(p)
@@ -141,12 +298,12 @@ object CoverFetcher {
             // 1) 盒装封面（Named_Boxarts）
             for (name in candidates) {
                 val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
-                if (downloadImage(url, dest)) return dest
+                if (downloadCached(url, dest, cache)) return dest
             }
             // 2) 游戏截图兜底（Named_Snaps —— 有图总比占位色块好）
             for (name in candidates) {
                 val url = "$BASE/${urlSeg(sys)}/Named_Snaps/${urlSeg(name)}.png"
-                if (downloadImage(url, dest)) return dest
+                if (downloadCached(url, dest, cache)) return dest
             }
         }
         return null
@@ -175,6 +332,11 @@ object CoverFetcher {
         val batch = pending.take(limit)
         var done = 0
         var fetched = 0
+        // ★ 批内 URL 结果去重：同一批次里大量游戏的候选名重复（如
+        //   "Contra.nes" 与 "Contra (U).nes" 都生成 "Contra (USA)"），
+        //   不缓存的话同一 URL 会被反复请求。缓存后每个 URL 只请求一次，
+        //   命中结果直接复制给后续同候选游戏，请求量大幅下降。
+        val urlCache = HashMap<String, File?>()
         // 批量缓冲：每 25 个或批次结束时一次 setCoverPaths（线性 IO），
         // 中途被杀最多丢最近 25 个的入库记录（封面文件仍在缓存目录，
         // 下次抓取会重新关联）。
@@ -192,7 +354,7 @@ object CoverFetcher {
         }
         for (game in batch) {
             try {
-                val cover = fetchCover(context, game)
+                val cover = fetchCover(context, game, urlCache)
                 if (cover != null && !cover.absolutePath.equals(game.coverPath)) {
                     buffer[game.id] = cover.absolutePath
                 }
@@ -228,6 +390,39 @@ object CoverFetcher {
             .replace("+", "%20")
             .replace("%28", "(")
             .replace("%29", ")")
+
+    /**
+     * 带批内去重缓存的下载。
+     *
+     * - URL 未缓存：真正请求 [downloadImage]，成功缓存已落盘文件、
+     *   失败缓存 null；
+     * - URL 已缓存成功：把缓存文件复制到本游戏 dest，不重复联网；
+     * - URL 已缓存失败：直接返回 false，跳过。
+     */
+    private fun downloadCached(
+        url: String,
+        dest: File,
+        cache: MutableMap<String, File?>?
+    ): Boolean {
+        if (cache != null && cache.containsKey(url)) {
+            val cached = cache[url]
+            if (cached != null && cached.exists() && cached.length() > 0) {
+                if (cached.absolutePath != dest.absolutePath) {
+                    try {
+                        cached.copyTo(dest, overwrite = true)
+                        return true
+                    } catch (_: Throwable) {
+                        return false
+                    }
+                }
+                return true
+            }
+            return false
+        }
+        val ok = downloadImage(url, dest)
+        cache?.put(url, if (ok) dest else null)
+        return ok
+    }
 
     /** 下载并校验图片魔数；成功落盘返回 true。 */
     private fun downloadImage(urlStr: String, dest: File): Boolean {

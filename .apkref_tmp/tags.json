@@ -1,0 +1,232 @@
+[
+  {
+    "ref": "refs/tags/2.0",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzIuMA==",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2.0",
+    "object": {
+      "sha": "a1a975d688f86bcff61d3f23ebf6582749e38f6b",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/a1a975d688f86bcff61d3f23ebf6582749e38f6b"
+    }
+  },
+  {
+    "ref": "refs/tags/2407",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI0MDc=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2407",
+    "object": {
+      "sha": "76d17887d2fadac1d8327e0c5a4c2c62bd5277e9",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/76d17887d2fadac1d8327e0c5a4c2c62bd5277e9"
+    }
+  },
+  {
+    "ref": "refs/tags/2409",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI0MDk=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2409",
+    "object": {
+      "sha": "34994013f5a6e7422ad58c89c9cc38b74c8369fd",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/34994013f5a6e7422ad58c89c9cc38b74c8369fd"
+    }
+  },
+  {
+    "ref": "refs/tags/2412",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI0MTI=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2412",
+    "object": {
+      "sha": "7c4cbfa6ebdeaf8e8f6c8684210e39a90021e093",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/7c4cbfa6ebdeaf8e8f6c8684210e39a90021e093"
+    }
+  },
+  {
+    "ref": "refs/tags/2503",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI1MDM=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2503",
+    "object": {
+      "sha": "37d32c62ed83c3c4c3d32f79ce7364f71f408859",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/37d32c62ed83c3c4c3d32f79ce7364f71f408859"
+    }
+  },
+  {
+    "ref": "refs/tags/2503a",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI1MDNh",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2503a",
+    "object": {
+      "sha": "175a5c8929976cca15e87a5de376786e7a0fd415",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/175a5c8929976cca15e87a5de376786e7a0fd415"
+    }
+  },
+  {
+    "ref": "refs/tags/2506",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI1MDY=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2506",
+    "object": {
+      "sha": "c05cb9bd09d6e13875468479b414d7903b044f13",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/c05cb9bd09d6e13875468479b414d7903b044f13"
+    }
+  },
+  {
+    "ref": "refs/tags/2506a",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI1MDZh",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2506a",
+    "object": {
+      "sha": "15304b7b398d14fe37ce88cabcc452b2707708d5",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/15304b7b398d14fe37ce88cabcc452b2707708d5"
+    }
+  },
+  {
+    "ref": "refs/tags/2509",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI1MDk=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2509",
+    "object": {
+      "sha": "5bd42ae34e89f4fda3586ec41b63e7ffa3dd0296",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/5bd42ae34e89f4fda3586ec41b63e7ffa3dd0296"
+    }
+  },
+  {
+    "ref": "refs/tags/2512",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI1MTI=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2512",
+    "object": {
+      "sha": "7d1311aaef67e8ccfbb0b61027e679d87ec52b9f",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/7d1311aaef67e8ccfbb0b61027e679d87ec52b9f"
+    }
+  },
+  {
+    "ref": "refs/tags/2603",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI2MDM=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2603",
+    "object": {
+      "sha": "0f91df8a55d6fe1b6c1b5485882c98a65be3c16b",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/0f91df8a55d6fe1b6c1b5485882c98a65be3c16b"
+    }
+  },
+  {
+    "ref": "refs/tags/2603a",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI2MDNh",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2603a",
+    "object": {
+      "sha": "dd41b1e4865e60785700929254b744ea67184c5b",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/dd41b1e4865e60785700929254b744ea67184c5b"
+    }
+  },
+  {
+    "ref": "refs/tags/2606",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI2MDY=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2606",
+    "object": {
+      "sha": "c97c36fe3b59e1cdb360fb6f894bc529e86259aa",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/c97c36fe3b59e1cdb360fb6f894bc529e86259aa"
+    }
+  },
+  {
+    "ref": "refs/tags/2606a",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI2MDZh",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2606a",
+    "object": {
+      "sha": "8f91bb3119a043e9d6e7145e6330d63d149292e6",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/8f91bb3119a043e9d6e7145e6330d63d149292e6"
+    }
+  },
+  {
+    "ref": "refs/tags/2609",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzI2MDk=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/2609",
+    "object": {
+      "sha": "b134d026ab4e71df13b3657ea6787d499962664b",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/b134d026ab4e71df13b3657ea6787d499962664b"
+    }
+  },
+  {
+    "ref": "refs/tags/3.0",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzMuMA==",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/3.0",
+    "object": {
+      "sha": "44c27f60ef8c7f183bd8037f9ca7e0c8afcd45f0",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/44c27f60ef8c7f183bd8037f9ca7e0c8afcd45f0"
+    }
+  },
+  {
+    "ref": "refs/tags/3.5",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzMuNQ==",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/3.5",
+    "object": {
+      "sha": "b01aeba6f629bb830022490941da3d5412d4a493",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/b01aeba6f629bb830022490941da3d5412d4a493"
+    }
+  },
+  {
+    "ref": "refs/tags/4.0",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzQuMA==",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/4.0",
+    "object": {
+      "sha": "fc022bfa1f678cd1999506eef3260bea9b4fe595",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/fc022bfa1f678cd1999506eef3260bea9b4fe595"
+    }
+  },
+  {
+    "ref": "refs/tags/4.0.1",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzQuMC4x",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/4.0.1",
+    "object": {
+      "sha": "c04a153b2c42ad67b017c8051e1d191cdd0aae32",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/c04a153b2c42ad67b017c8051e1d191cdd0aae32"
+    }
+  },
+  {
+    "ref": "refs/tags/4.0.2",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzQuMC4y",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/4.0.2",
+    "object": {
+      "sha": "88fabf78b0df92d7683c30b1477ef209587b6e31",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/88fabf78b0df92d7683c30b1477ef209587b6e31"
+    }
+  },
+  {
+    "ref": "refs/tags/5.0",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzUuMA==",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/5.0",
+    "object": {
+      "sha": "f992b9aaff8a195ec86dc55ee692149de8cb1f36",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/f992b9aaff8a195ec86dc55ee692149de8cb1f36"
+    }
+  },
+  {
+    "ref": "refs/tags/5.0-rc",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzLzUuMC1yYw==",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/5.0-rc",
+    "object": {
+      "sha": "d84b02f8da2b62c77de0b2763b2cf3ff6e6e819a",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/d84b02f8da2b62c77de0b2763b2cf3ff6e6e819a"
+    }
+  },
+  {
+    "ref": "refs/tags/nJoy",
+    "node_id": "MDM6UmVmMTE1NzczMDQ6cmVmcy90YWdzL25Kb3k=",
+    "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/refs/tags/nJoy",
+    "object": {
+      "sha": "46620c8fb5b53d3293bd547e2f3a377cdbd7d462",
+      "type": "tag",
+      "url": "https://api.github.com/repos/dolphin-emu/dolphin/git/tags/46620c8fb5b53d3293bd547e2f3a377cdbd7d462"
+    }
+  }
+]

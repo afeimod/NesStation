@@ -78,6 +78,30 @@ documentId（含 `%20 %28 %5B` 等编码字符）。旧实现直接 `substringAf
 **根因**：`len < 0`（chunked encoding 无 Content-Length）时直接返回 false。
 **修复**：仅拦超大响应（>4MB），其它情况都走流式拷贝。
 
+### 2f. 命名不匹配：GoodTools 旧码 / 缩写句点 → No-Intro（继续修复）
+**文件**：同上
+**位置**：`nameCandidates` / `mapRegions` / `dotTitle` + `REGION_ALIASES`
+**根因**：libretro 缩略图库按 **No-Intro 命名** 组织（"Contra (USA).png"、
+"Super Mario Bros. (Europe).png"），而用户 ROM 常是旧式 GoodTools 命名
+（"Contra (U) [!].nes"、"Super Mario Bros (JU) [!].nes"）。上轮修复后只有
+No-Intro 精确名能命中；(U)/(JU) 旧区域码、"Bros." 缩写句点仍全部 404。
+实测 "Super Mario Bros (JU) [!]" 在旧实现下无任何候选命中。
+**修复**：`nameCandidates` 升级为三档候选：
+1. 基础变体：原名 → 只去 [] → 全去标签；
+2. 标题补点："Super Mario Bros" → "Super Mario Bros."（No-Intro 缩写句点）；
+3. 区域码映射：`REGION_ALIASES` 把 (U)→(USA)、(J)→(Japan)、(E)→(Europe)，
+   (JU)/(JUE)/(UE)... 展开为 World/USA/Japan/Europe 多个候选，并对映射结果同样补点。
+实测真实库命中率从"仅 No-Intro 精确名"提升到 12/17（70%）——"Mega Man 2 (U)"、
+"Zelda II - The Adventure of Link (U)"、"Super Mario Bros (JU) [!]" 等均可命中。
+
+### 2g. 批内重复请求（URL 结果去重缓存）
+**文件**：同上
+**位置**：`fetchAllMissing` / `fetchCover` / `downloadCached`
+**根因**：同一批次内大量游戏生成重复候选 URL（"Contra.nes" 与 "Contra (U).nes"
+都生成 "Contra (USA)"），无缓存时同一 URL 被反复请求，放大网络开销与限速排队。
+**修复**：`fetchAllMissing` 创建批内共享 `urlCache`，`downloadCached` 保证每个 URL
+只真正请求一次——命中结果复制复用，失败结果直接跳过。
+
 ---
 
 ## 问题 3 · 3DS 游戏黑屏（核心立即退出 exit result=2）

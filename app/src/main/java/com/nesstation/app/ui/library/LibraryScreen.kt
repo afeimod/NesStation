@@ -949,6 +949,18 @@ fun LibraryScreen(
         // 与 AzaharEngine.loadRom 相同的用户目录初始化（NAND 路径解析依赖它）
         val userDir = java.io.File(context.filesDir, "azahar").apply { mkdirs() }.absolutePath
         try {
+            // ★ CIA 安装失败修复：注册 NesStationHost —— 原生 installCIA 经
+            // android_utils.h 的 getUserDirectory() Java 回调定位 NAND/SDMC 基路径。
+            // 旧实现只调 initConfigPipeline（setUserDirectory 设的是原生侧
+            // FileUtil::SetUserPath，但 android_utils 桥的回调位未注册），
+            // NesStationHost.userDirectory() 落回 externalFilesDir /data/local/tmp
+            // （应用私有目录之外，通常不可写）→ 安装 ErrorFailedToOpenFile。
+            // 注册后 getUserDirectory() 返回真实 <filesDir>/azahar，与引擎一致。
+            org.citra.citra_emu.NativeLibrary.NesStationHost.register(object : org.citra.citra_emu.NativeLibrary.Host {
+                override fun appContext(): android.content.Context? = context.applicationContext
+                override fun azaharUserDirectory(): String = userDir
+                override fun onEmulationExited(result: Int) {}
+            })
             // ⚠ 先 createLogFile()（= Common::Log::Initialize/Start）再
             // createConfigFile()/reloadSettings() —— 日志后端未初始化时
             // Config::ReadValues() 触发 native abort 闪退（try/catch 拦不住）。

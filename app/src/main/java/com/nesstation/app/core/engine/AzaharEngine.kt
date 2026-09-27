@@ -286,6 +286,14 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             //（Java try/catch 拦不住 native abort，顺序即修复）。详见 AzaharNative。
             AzaharNative.initConfigPipeline(userDir())
             flushConfig()
+            // ★ 黑屏修复：上游 EmulationFragment.onCreate 在启动前必调
+            //   initializeGpuDriver(…)。libcitra-android.so 渲染后端初始化
+            //   读取 GpuDriverHelper 状态（hook 目录 / 自定义驱动名），
+            //   未装配时部分构建在 run() 的渲染初始化阶段读到未初始化
+            //   路径而黑屏。传 null = 使用系统驱动，是安全占位。
+            try {
+                lib.initializeGpuDriver(null, null, null, null)
+            } catch (_: Throwable) {}
             try { lib.reloadSettings() } catch (_: Throwable) {}
         } catch (t: Throwable) {
             android.util.Log.w("AzaharEngine", "user dir / config init failed", t)

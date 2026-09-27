@@ -4562,15 +4562,21 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("Dolphin.ini/Core/WiimoteContinuousScanning", b(layout.irWiimoteScan))
             engine.setCoreOption("Dolphin.ini/Core/AudioStretch", b(layout.irAudioStretch))
             engine.setCoreOption("Dolphin.ini/Core/DSPHLE", b(layout.irDspHle))
-            engine.setCoreOption("GFX.ini/Settings/EFBScale", layout.irResolution)
-            engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
-            engine.setCoreOption("GFX.ini/Settings/ShowFPS", b(layout.irShowFps))
-            engine.setCoreOption("GFX.ini/Settings/CompileShaderOnStartup", b(layout.irWaitForShaders))
-            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.irAspect)
-            engine.setCoreOption("GFX.ini/Enhancements/MaxAnisotropy", layout.irAnisotropy)
-            engine.setCoreOption("GFX.ini/Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
-            engine.setCoreOption("GFX.ini/Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
-            engine.setCoreOption("GFX.ini/Hacks/EFBAccessEnable", b(layout.irEfbAccess))
+            // ★ 键名/段名修复：liishiiruka.so（Dolphin 5.0+ Config 系统）实际读取的是
+            //   GFX.ini [Video_Settings]/[Video_Enhancements]/[Video_Hacks] 段下的
+            //   InternalResolution / WaitForShadersBeforeStarting 等新键名。旧实现写成
+            //   [Settings] EFBScale / CompileShaderOnStartup，核心完全忽略，导致分辨率
+            //   倍数、着色器选项全部无效。irResolution 的 UI 值 2/4/6/7 恰为 lib 枚举
+            //   SCALE_1X/SCALE_2X/SCALE_3X/SCALE_4X 原值，直接透传。
+            engine.setCoreOption("GFX.ini/Video_Settings/InternalResolution", layout.irResolution)
+            engine.setCoreOption("GFX.ini/Video_Settings/MSAA", layout.irMsaa)
+            engine.setCoreOption("GFX.ini/Video_Settings/ShowFPS", b(layout.irShowFps))
+            engine.setCoreOption("GFX.ini/Video_Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
+            engine.setCoreOption("GFX.ini/Video_Settings/AspectRatio", layout.irAspect)
+            engine.setCoreOption("GFX.ini/Video_Enhancements/MaxAnisotropy", layout.irAnisotropy)
+            engine.setCoreOption("GFX.ini/Video_Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
+            engine.setCoreOption("GFX.ini/Video_Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
+            engine.setCoreOption("GFX.ini/Video_Hacks/EFBAccessEnable", b(layout.irEfbAccess))
         }
     }
 }
