@@ -286,8 +286,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             wiiSet(sec, "Buttons/B", "Button 101")
             wiiSet(sec, "Buttons/1", "Button 105")
             wiiSet(sec, "Buttons/2", "Button 106")
-            wiiSet(sec, "Buttons/Minus", "Button 102")
-            wiiSet(sec, "Buttons/Plus", "Button 103")
+            wiiSet(sec, "Buttons/-", "Button 102")   // ★ Wii 按键名修复：上游 Dolphin ButtonManager 的 Control 名是字面字符 "-"，而非 "Minus"。同样 "+" 而非 "Plus"
+            wiiSet(sec, "Buttons/+", "Button 103")
             wiiSet(sec, "Buttons/Home", "Button 104")
             wiiSet(sec, "D-Pad/Up", "Button 107")
             wiiSet(sec, "D-Pad/Down", "Button 108")
@@ -300,7 +300,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             wiiSet(sec, "IR/Forward", "Axis 116-")
             wiiSet(sec, "IR/Backward", "Axis 117+")
             wiiSet(sec, "IR/Hide", "Button 118")
-            wiiSet(sec, "IR/Recenter", "")
+            // IR/Recenter 空值无意义，删除
             wiiSet(sec, "Shake/X", "Button 132")
             wiiSet(sec, "Shake/Y", "Button 133")
             wiiSet(sec, "Shake/Z", "Button 134")
@@ -326,8 +326,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 wiiSet("Classic", "Buttons/Y", "Button 303")
                 wiiSet("Classic", "Buttons/ZL", "Axis 323+")
                 wiiSet("Classic", "Buttons/ZR", "Axis 324+")
-                wiiSet("Classic", "Buttons/Minus", "Button 304")
-                wiiSet("Classic", "Buttons/Plus", "Button 305")
+                wiiSet("Classic", "Buttons/-", "Button 304")   // ★ Classic Controller 同款修复
+                wiiSet("Classic", "Buttons/+", "Button 305")
                 wiiSet("Classic", "Buttons/Home", "Button 306")
                 wiiSet("Classic", "D-Pad/Up", "Button 309")
                 wiiSet("Classic", "D-Pad/Down", "Button 310")
@@ -433,6 +433,30 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val parts = key.split('/', limit = 3)
         if (parts.size == 3 && isRunning2()) {
             try { NativeLibrary.SetConfig(parts[0], parts[1], parts[2], value) } catch (_: Throwable) {}
+            // ★ 分辨率倍数设置无效修复：旧实现运行中改设置只调
+            //   NativeLibrary.SetConfig（路径被 so 内部 GetUserPath 决定，
+            //   与核心读取的 <userDir>/Config/ 可能不一致，异常被 catch
+            //   静默吞掉），INI 文件没更新。
+            //   修复：同步直写 INI 文件，保证下次启动 / 下次 writeCoreIni
+            //   时已是最新值。
+            when (parts[0]) {
+                "Dolphin.ini" -> {
+                    try {
+                        writeIniMerged(
+                            java.io.File(configDir(), "Dolphin.ini"),
+                            mapOf(parts[1] to mapOf(parts[2] to value))
+                        )
+                    } catch (_: Throwable) {}
+                }
+                "GFX.ini" -> {
+                    try {
+                        writeIniMerged(
+                            java.io.File(configDir(), "GFX.ini"),
+                            mapOf(parts[1] to mapOf(parts[2] to value))
+                        )
+                    } catch (_: Throwable) {}
+                }
+            }
         }
     }
 
@@ -694,13 +718,18 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 NativeLibrary.ButtonType.WIIMOTE_RIGHT to BIT_RIGHT,
                 NativeLibrary.ButtonType.WIIMOTE_SHAKE_X to BIT_L,
                 NativeLibrary.ButtonType.WIIMOTE_SHAKE_Z to BIT_R,
-                NativeLibrary.ButtonType.WIIMOTE_IR_HIDE to BIT_Z,
-                NativeLibrary.ButtonType.WIIMOTE_IR_FORWARD to BIT_IR_FAR,
-                NativeLibrary.ButtonType.WIIMOTE_IR_BACKWARD to BIT_IR_NEAR
+                NativeLibrary.ButtonType.WIIMOTE_IR_HIDE to BIT_Z
+                // ★ IR Forward/Backward（BIT_IR_FAR/NEAR）从按键事件列表中
+                //   移除 —— WiimoteNew.ini 把 IR/Forward、IR/Backward 绑定为
+                //   "Axis 116-" / "Axis 117+"（轴绑定），按键事件无法激活轴绑定
+                //   → IR+/IR- 永久失效。改由下方 setPointerDepth 走轴事件。
             )
             for ((button, bit) in pairs) {
                 NativeLibrary.onGamePadEvent(dev, button, state(bit))
             }
+            // ★ IR+/IR- 修复：改走轴事件（与 WiimoteNew.ini 的 Axis 绑定对齐）
+            setPointerDepth(forward = true,  pressed = (bits and BIT_IR_FAR  != 0))
+            setPointerDepth(forward = false, pressed = (bits and BIT_IR_NEAR != 0))
             when (effectiveWiiExtension()) {
                 "classic" -> {
                     // 经典手柄（复用 Wii 布局位 + L/R/Z 扳机位）
@@ -813,11 +842,22 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val dev = NativeLibrary.TouchScreenDevice
         val x = nx.coerceIn(0f, 1f)
         val y = ny.coerceIn(0f, 1f)
+        // ★ IR X/Y 互换 + 符号修复：
+        //   - 旧实现 IR_UP/IR_DOWN 用 x 算（错），IR_LEFT/IR_RIGHT 用 y 算（错）
+        //     → 用户触摸左/右侧时 IR 上下移动，触上/下侧时 IR 左右移动
+        //   - 旧实现所有值都是 `maxOf(0f, ...)`，恒非负 → 但 WiimoteNew.ini
+        //     把 IR/Up、IR/Left 绑定为 "Axis 112-"、"Axis 114-"（负方向），
+        //     Dolphin ButtonManager 对 "Axis N-" 的语义是 max(0, -value)，
+        //     发正值 → 不激活 → IR 上、左永不工作
+        //   修复：
+        //   - Y 轴 → IR_UP / IR_DOWN（向上→UP，向下→DOWN）
+        //   - X 轴 → IR_LEFT / IR_RIGHT（向左→LEFT，向右→RIGHT）
+        //   - 负方向绑定（"Axis 112-"、"Axis 114-"）发负值，正方向绑定发正值
         val values = if (!pressed) floatArrayOf(0f, 0f, 0f, 0f) else floatArrayOf(
-            maxOf(0f, (0.5f - x) * 2f),   // IR_UP
-            maxOf(0f, (x - 0.5f) * 2f),   // IR_DOWN
-            maxOf(0f, (0.5f - y) * 2f),   // IR_LEFT
-            maxOf(0f, (y - 0.5f) * 2f)    // IR_RIGHT
+            -(0.5f - y).coerceAtLeast(0f) * 2f,   // IR_UP   (Axis 112-) → 触上半屏发负值
+             (y - 0.5f).coerceAtLeast(0f) * 2f,   // IR_DOWN (Axis 113+) → 触下半屏发正值
+            -(0.5f - x).coerceAtLeast(0f) * 2f,   // IR_LEFT (Axis 114-) → 触左半屏发负值
+             (x - 0.5f).coerceAtLeast(0f) * 2f    // IR_RIGHT(Axis 115+) → 触右半屏发正值
         )
         val ids = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_IR_UP,
@@ -843,7 +883,16 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val dev = NativeLibrary.TouchScreenDevice
         val id = if (forward) NativeLibrary.ButtonType.WIIMOTE_IR_FORWARD
         else NativeLibrary.ButtonType.WIIMOTE_IR_BACKWARD
-        val value = if (pressed) 1f else 0f
+        // ★ IR+/IR- 符号修复：
+        //   WiimoteNew.ini: IR/Forward = "Axis 116-"（负方向），IR/Backward = "Axis 117+"（正方向）
+        //   - Forward 按下应发 -1f（不是 1f）
+        //   - Backward 按下应发 +1f
+        //   旧实现恒发 +1f → Forward 永不激活
+        val value = when {
+            !pressed -> 0f
+            forward -> -1f
+            else -> 1f
+        }
         val idx = if (forward) 4 else 5
         if (irLast[idx] != value) {
             irLast[idx] = value

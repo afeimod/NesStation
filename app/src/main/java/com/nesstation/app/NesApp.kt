@@ -802,21 +802,60 @@ class NesApp : Application() {
      * 核心无法解密 ROM，加载失败表现为黑屏。与 DC/PS2 BIOS 同一
      * "assets 自动安装" 模式：文件不打包则静默跳过（开源自建流程不受影响），
      * 已存在（用户手动放置）则保留不覆盖。
+     *
+     * ★ 扩展：3DS 加密卡带除 aes_keys.txt 外，部分情况下还需要：
+     *   - boot9.bin（ARM9 boot ROM，含进程密钥）
+     *   - boot11.bin（ARM11 boot ROM）
+     *   - seeddb.bin（种子数据库，部分卡带 NCCH 解密需要）
+     *   - sysdata/（系统档案目录，部分系统软件需要）
+     * 这些文件按同款"assets 自动安装"模式从 assets/azahar/ 复制到
+     * `<filesDir>/azahar/`。已存在则保留不覆盖。
      */
     private fun ensureAzaharKeys() {
-        val dest = File(File(filesDir, "azahar"), "aes_keys.txt")
-        if (dest.exists() && dest.length() > 0) return  // 用户自备优先
-        try {
-            assets.open("azahar/aes_keys.txt").use { input ->
-                dest.parentFile?.mkdirs()
-                dest.outputStream().use { output -> input.copyTo(output) }
+        val azaharDir = File(filesDir, "azahar")
+        if (!azaharDir.exists()) azaharDir.mkdirs()
+        // 主密钥文件 + 其它 3DS 系统档案
+        val azaharAssets = listOf(
+            "aes_keys.txt",        // AES 密钥表（加密卡带解密必需）
+            "boot9.bin",           // ARM9 boot ROM（部分游戏需要）
+            "boot11.bin",          // ARM11 boot ROM（部分游戏需要）
+            "seeddb.bin"           // 种子数据库（NCCH 解密需要）
+        )
+        for (assetName in azaharAssets) {
+            val dest = File(azaharDir, assetName)
+            if (dest.exists() && dest.length() > 0) continue  // 用户自备优先
+            try {
+                assets.open("azahar/$assetName").use { input ->
+                    dest.parentFile?.mkdirs()
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                Log.i("NesApp", "Azahar $assetName installed from assets -> ${dest.absolutePath}")
+            } catch (_: java.io.FileNotFoundException) {
+                // 未打包（默认）—— 正常
+            } catch (e: Exception) {
+                Log.w("NesApp", "Failed to install azahar $assetName", e)
+                if (dest.exists()) dest.delete()
             }
-            Log.i("NesApp", "Azahar aes_keys.txt installed from assets -> ${dest.absolutePath}")
-        } catch (_: java.io.FileNotFoundException) {
-            // 未打包（默认）—— 正常
-        } catch (e: Exception) {
-            Log.w("NesApp", "Failed to install azahar aes_keys.txt", e)
-            if (dest.exists()) dest.delete()
+        }
+        // sysdata/ 目录（系统档案子目录）—— 仅当 assets/azahar/sysdata/ 存在时复制
+        try {
+            val sysdataFiles = assets.list("azahar/sysdata") ?: emptyArray()
+            if (sysdataFiles.isNotEmpty()) {
+                val sysdataDir = File(azaharDir, "sysdata")
+                if (!sysdataDir.exists()) sysdataDir.mkdirs()
+                for (name in sysdataFiles) {
+                    val dest = File(sysdataDir, name)
+                    if (dest.exists() && dest.length() > 0) continue
+                    try {
+                        assets.open("azahar/sysdata/$name").use { input ->
+                            dest.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        Log.i("NesApp", "Azahar sysdata/$name installed from assets")
+                    } catch (_: Throwable) {}
+                }
+            }
+        } catch (_: Throwable) {
+            // assets.list 失败说明无 sysdata 目录 —— 正常
         }
     }
 

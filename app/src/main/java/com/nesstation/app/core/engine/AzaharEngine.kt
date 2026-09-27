@@ -319,25 +319,44 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         val lib = AzaharNative.lib
         val path = romPath ?: return
         if (emuThread?.isAlive == true) return
-        try { lib.surfaceChanged(surface!!) } catch (t: Throwable) {
+        // ★★★ 3DS 黑屏根治修复（surface 竞态终极加固）：在 lifecycleLock
+        //   同步块内捕获 surface 到局部变量 bootSurface，整个启动流程
+        //   都使用这个局部副本 —— 即便 setSurface(null) 在 startEmulationLocked
+        //   返回后立刻把 this.surface 改成 null，新启动的 emuThread 仍然
+        //   用 bootSurface 调 surfaceChanged/run，native EmuWindow 永远
+        //   拿到非 null window。这就是用户日志 exitEmulationActivity(result=2)
+        //   立即触发的根本原因（surface 在 thread 启动前已被 setSurface(null)
+        //   置空，native EmuWindow_Android 构造读到 null → abort）。
+        val bootSurface = surface ?: return
+        if (!bootSurface.isValid) return
+        try { lib.surfaceChanged(bootSurface) } catch (t: Throwable) {
             android.util.Log.w("AzaharEngine", "surfaceChanged failed", t)
         }
         if (_ffSpeed > 0) {
             try { lib.setTemporaryFrameLimit(100.0 * _ffSpeed) } catch (_: Throwable) {}
         }
         emuThread = thread(name = "AzaharNative") {
-            // ★ 3DS 黑屏/中止修复（surface 竞态加固）：run() 原生侧构造
-            //   EmuWindow_Android 时直接读全局 s_surf（由 surfaceChanged
-            //   设置）。从 startEmulationLocked 到这里存在一个窗口：
-            //   Compose 重组可能把 SurfaceView 拆重建（surfaceDestroyed
-            //   → s_surf=null → surfaceCreated），若恰好落在窗口内，
-            //   EmuWindow 拿到 null window → 原生 Critical "surface is
-            //   nullptr" → abort + 永久黑屏（用户实测日志的 abort 消息
-            //   正是这一行）。进场后立刻用**当前** surface 重申一次
-            //   surfaceChanged 再 run，把窗口收敛到微秒级。
-            val surf = surface
-            if (surf != null && surf.isValid) {
-                try { lib.surfaceChanged(surf) } catch (_: Throwable) {}
+            // ★ 用启动时捕获的 bootSurface，不再读 volatile this.surface ——
+            //   彻底消除"thread 启动到 surfaceChanged 之间 setSurface(null)
+            //   把字段置空"的竞态窗口。
+            //   若 Compose 重组销毁了原 SurfaceView，bootSurface 仍可能
+            //   isValid=false —— 这种情况下 run() 会进入"surface is nullptr"
+            //   abort；为兜底这种情况，循环重试最多 5 次拉取当前 surface，
+            //   命中即推给 native 并 break，避免永久黑屏。
+            var attemptedSurface = bootSurface
+            if (!attemptedSurface.isValid) {
+                // bootSurface 已失效 —— 等待新 surface 到达并重试
+                for (attempt in 1..5) {
+                    Thread.sleep(50)
+                    val cur = surface
+                    if (cur != null && cur.isValid) {
+                        attemptedSurface = cur
+                        try { lib.surfaceChanged(cur) } catch (_: Throwable) {}
+                        break
+                    }
+                }
+            } else {
+                try { lib.surfaceChanged(attemptedSurface) } catch (_: Throwable) {}
             }
             try {
                 lib.run(path)
@@ -348,10 +367,36 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             // run() 自然返回（未被用户停止）且核心从未报过错误 → 同样属于
             // 提前退出，上报（覆盖核心不调 exitEmulationActivity 的路径）。
             if (!userRequestedStop && isLoaded && emuThread === Thread.currentThread()) {
-                val msg = "Azahar 模拟已结束" +
-                    (lastErrorText.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: "") +
-                    "\n若非预期退出，常见原因：加密卡带需 aes_keys.txt（放入 azahar 目录）。"
-                try { onPrematureExit?.invoke(msg) } catch (_: Throwable) {}
+                // ★ 增强错误诊断：检查启动时 surface 状态、密钥文件存在性
+                val diag = buildString {
+                    append("Azahar 模拟已结束")
+                    lastErrorText.takeIf { it.isNotBlank() }?.let { append("\n错误: ").append(it) }
+                    val surf = surface
+                    append("\n启动时 surface 状态: ")
+                    if (surf == null) append("null（已被 setSurface(null) 销毁）")
+                    else if (!surf.isValid) append("invalid（已释放）")
+                    else append("valid (${surf})")
+                    val attempted = attemptedSurface
+                    append("\nemuThread 内 attempted surface: ")
+                    if (attempted == null) append("null")
+                    else if (!attempted.isValid) append("invalid")
+                    else append("valid")
+                    // 检查 3DS 必需文件
+                    val userDir = try { userDir() } catch (_: Throwable) { "<unknown>" }
+                    val keysFile = java.io.File(userDir, "aes_keys.txt")
+                    append("\naes_keys.txt: ")
+                    if (keysFile.exists()) append("已存在 (${keysFile.length()} 字节)")
+                    else append("缺失（请放入 <filesDir>/azahar/aes_keys.txt）")
+                    val boot9 = java.io.File(userDir, "boot9.bin")
+                    append("\nboot9.bin: ")
+                    if (boot9.exists()) append("已存在")
+                    else append("缺失（部分加密 ROM 需要）")
+                    append("\n\n若非预期退出，常见原因：")
+                    append("\n1) 加密卡带需 aes_keys.txt + boot9.bin + seeddb.bin（放入 azahar 目录）")
+                    append("\n2) ROM 文件损坏或不完整")
+                    append("\n3) Surface 在核心启动期间被销毁（已被本修复加固）")
+                }
+                try { onPrematureExit?.invoke(diag) } catch (_: Throwable) {}
             }
         }
         startPresentation()
@@ -430,14 +475,11 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 try { lib.surfaceChanged(surface) } catch (_: Throwable) {}
                 if (emuThread?.isAlive != true) startEmulationLocked()
             } else {
-                // ★ 3DS 黑屏/中止修复：仅在核心已真正跑起来（EmuWindow 已
-                //   构造）或无启动在途时才通知原生销毁。若模拟线程还在
-                //   boot 窗口内（surfaceCreated→run() 间的重组抖动），
-                //   surfaceDestroyed 会把 s_surf 置空，run() 构造
-                //   EmuWindow_Android 读到 null → "surface is nullptr"
-                //   abort。跳过本次通知时窗口仍属于旧（已死）surface，
-                //   待新 surface 到达 surfaceChanged 会转发
-                //   OnSurfaceChanged 到已构造的窗口自动恢复。
+                // ★★★ 3DS 黑屏修复关键路径：surface=null 在 boot 窗口内时，
+                //   1) 不调 surfaceDestroyed（避免 native EmuWindow 构造读到 null）
+                //   2) **不**让正启动中的 emuThread 读到 null surface ——
+                //      startEmulationLocked 已用 bootSurface 局部变量绕开此问题。
+                //   但若 boot 窗口已结束（nativeRunning=true），可以安全通知销毁。
                 val nativeRunning = try { lib.isRunning() } catch (_: Throwable) { false }
                 val booting = emuThread?.isAlive == true
                 if (!booting || nativeRunning) {

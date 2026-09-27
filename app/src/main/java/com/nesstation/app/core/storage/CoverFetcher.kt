@@ -64,8 +64,11 @@ object CoverFetcher {
                     listOf("Nintendo - GameCube", "Nintendo - Wii")
                 }
             }
-            // JAVA/DOS/ARCADE 无统一缩略图源（街机标题是驱动名，对不上
-            // libretro 命名）—— 跳过，保留原有占位/内置图标逻辑。
+            // ★ 街机接入修复：libretro 缩略图库确实有 FBNeo/MAME 街机封面
+            //   目录按 No-Intro 长名组织，驱动名（如 kof98h.zip）匹配率低，
+            //   但少量 ROM 仍可命中。同时尝试两个目录提高命中率。
+            GamePlatform.ARCADE -> listOf("FBNeo - Arcade Games", "MAME")
+            // JAVA/DOS 仍无源 —— 跳过（Java 已有内置 icon，DOS 用占位）
             else -> emptyList()
         }
     }
@@ -74,7 +77,15 @@ object CoverFetcher {
      * ROM 文件名 / 标题 → libretro 缩略图命名候选（按命中概率排序）：
      *   "Super Mario Bros (JU) [!]" →
      *     1) "Super Mario Bros (JU) [!]"（原名直试）
-     *     2) "Super Mario Bros"（去标签）
+     *     2) "Super Mario Bros (JU)"（只去 [] 保留区域/Disc）
+     *     3) "Super Mario Bros"（全去标签）
+     *     4) "Super Mario Bros."（末尾加点 —— libretro No-Intro 规范）
+     *
+     * ★ 候选名清理修复：
+     *   - 旧实现只生成 2 个候选（原名 + 全 stripped），丢失必要的
+     *     `(USA)`、`(Disc 1)` 标签 → 多 Disc 游戏大量 404。
+     *   - 旧实现对 SAF 导入的 content:// URI 直接处理导致双重 URL 编码。
+     *   - 新实现增加"只去 []"、"末尾加点"变体，提高命中率。
      */
     fun nameCandidates(rawName: String): List<String> {
         val n0 = rawName.trim()
@@ -82,12 +93,19 @@ object CoverFetcher {
             .replace(Regex("\\s+"), " ")
             .trim()
         if (n0.isEmpty()) return emptyList()
-        val stripped = n0
-            .replace(Regex("\\s*\\[[^]]*]"), "")    // [!] / [b1] / [T+Chi] ...
-            .replace(Regex("\\s*\\([^)]*\\)"), "")    // (JU) / (USA) / (Rev 1) ...
-            .replace(Regex("\\s+"), " ")
-            .trim()
-        return if (stripped.isNotBlank() && stripped != n0) listOf(n0, stripped) else listOf(n0)
+        val candidates = LinkedHashSet<String>()
+        candidates.add(n0)
+        // 变体 1：只去 [] 标签（保留区域/Disc 信息）
+        val noBrackets = n0.replace(Regex("\\s*\\[[^]]*]"), "").trim()
+        if (noBrackets.isNotBlank() && noBrackets != n0) candidates.add(noBrackets)
+        // 变体 2：全去标签（[] 与 () 都去）
+        val stripped = noBrackets.replace(Regex("\\s*\\([^)]*\\)"), "").trim()
+        if (stripped.isNotBlank() && stripped != n0 && stripped != noBrackets) candidates.add(stripped)
+        // 变体 3：末尾加点（libretro No-Intro 习惯 "Super Mario Bros."）
+        if (!n0.endsWith(".") && !n0.endsWith(" ")) {
+            candidates.add("$n0.".replace("..", "."))
+        }
+        return candidates.toList()
     }
 
     /** 封面缓存目录。 */
@@ -103,13 +121,19 @@ object CoverFetcher {
             val f = File(p)
             if (f.exists() && f.length() > 0) return f
         }
-        val romFile = game.romPath?.substringAfterLast('/') ?: return null
+        val romFile = game.romPath?.substringAfterLast('/') ?: ""
         val systemDirs = libretroSystemDir(game.platform, romFile)
         if (systemDirs.isEmpty()) return null
-        val candidates = nameCandidates(
-            romFile.substringBeforeLast('.')            // 去扩展名
-                .takeIf { it.isNotBlank() } ?: game.title
-        )
+        // ★ SAF URI 双重编码修复：game.romPath 在 SAF 导入时是 content:// URI，
+        //   最后一段是 URL 编码的 documentId（含 %20 %28 %5B 等编码字符）。
+        //   旧实现对它直接 substringAfterLast + substringBeforeLast('.'),
+        //   再经 urlSeg 二次编码 → 永远 404。
+        //   game.title 在导入时由 queryDisplayName 解码后写入，是干净的可读名。
+        //   优先用 game.title；只有 title 为空时才退回 romPath 解析。
+        val rawName = game.title.takeIf { it.isNotBlank() }
+            ?: romFile.substringBeforeLast('.').takeIf { it.isNotBlank() }
+            ?: return null
+        val candidates = nameCandidates(rawName)
         if (candidates.isEmpty()) return null
 
         val dest = File(coversDir(context), "${game.id}.png")
@@ -194,8 +218,16 @@ object CoverFetcher {
     // 内部
     // ------------------------------------------------------------------
 
+    // ★ URL 括号编码修复：libretro 缩略图库的实际 URL 使用未编码的括号
+    //   （如 ".../Named_Boxarts/Super Mario Bros. (World).png"），
+    //   但 URLEncoder.encode("(", "UTF-8") = "%28"，
+    //   导致带 (USA)/(World)/(Disc 1) 的游戏名大量 404。
+    //   修复：把 %28/%29 还原为未编码括号。
     private fun urlSeg(s: String): String =
-        URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+        URLEncoder.encode(s, "UTF-8")
+            .replace("+", "%20")
+            .replace("%28", "(")
+            .replace("%29", ")")
 
     /** 下载并校验图片魔数；成功落盘返回 true。 */
     private fun downloadImage(urlStr: String, dest: File): Boolean {
@@ -211,8 +243,10 @@ object CoverFetcher {
             val code = conn0.responseCode
             if (code != HttpURLConnection.HTTP_OK) return false
             val len = conn0.contentLengthLong
-            if (len > 0 && len < MAX_IMAGE_BYTES) {
-                // 大小已知：流式拷贝 + 头 12 字节魔数校验
+            // ★ chunked encoding 修复：len < 0 表示未知长度（chunked），
+            //   旧实现直接返回 false 导致部分 libretro 缩略图失败。
+            //   仅拦超大响应（>4MB），其它情况都走流式拷贝。
+            if (len in 1..MAX_IMAGE_BYTES.toLong() || len <= 0) {
                 val tmp = File(dest.absolutePath + ".tmp")
                 conn0.inputStream.use { input ->
                     val head = ByteArray(12)

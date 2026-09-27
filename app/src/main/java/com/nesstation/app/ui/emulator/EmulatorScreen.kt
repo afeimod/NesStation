@@ -6158,6 +6158,29 @@ fun OnScreenController(
     // The LaunchedEffect loop below maintains state at 60fps for turbo and
     // held buttons, but this ensures D-pad moves and button presses feel
     // instant with no 16ms frame delay.
+    //
+    // ★ 三指连键根治修复：从 activePointers 重算 visualState/turboState 的
+    //   helper。原来 UP 时用 `visualState and heldBits.inv()` 清位，会误清
+    //   掉其它仍按住的同位（典型场景：指A按 A、指B按 AB 组合、指C按 B，
+    //   松开指B → A 和 B 都被清掉，但 A、B 仍按住 → "连键"）。重算方案
+    //   彻底消除此问题。
+    val recomputeVisualState = remember {
+        {
+            visualState = activePointers.values
+                .filter { it.first != BtnType.TURBO_A && it.first != BtnType.TURBO_B &&
+                    it.first != BtnType.LSTICK && it.first != BtnType.RSTICK &&
+                    it.first != BtnType.GAME_AREA &&
+                    it.first != BtnType.QUICK_SAVE && it.first != BtnType.QUICK_LOAD }
+                .fold(0) { acc, e -> acc or e.second }
+        }
+    }
+    val recomputeTurboState = remember {
+        {
+            turboState = activePointers.values
+                .filter { it.first == BtnType.TURBO_A || it.first == BtnType.TURBO_B }
+                .fold(0) { acc, e -> acc or e.second }
+        }
+    }
     val sendStateNow = remember {
         { vs: Int, ts: Int ->
             if (ts != 0) {
@@ -6551,7 +6574,12 @@ fun OnScreenController(
                                             BtnType.WII_C, BtnType.WII_Z,
                                             BtnType.IR_NEAR, BtnType.IR_FAR,
                                             BtnType.COMBO -> {
-                                                visualState = visualState and heldBits.inv()
+                                                // ★ 三指连键修复：UP 时不再用
+                                                //   `visualState and heldBits.inv()` 清位（会误清掉
+                                                //   其它仍按住的同位按键），改为从剩余 activePointers
+                                                //   重算 visualState，确保多指重叠按键松手时只清
+                                                //   该指贡献的位（若该位被其它指继续按住则保留）。
+                                                recomputeVisualState()
                                                 sendStateNow(visualState, turboState)
                                                 // Reset analog thumb when DPAD is released
                                                 if (bt == BtnType.DPAD && useAnalogStick) {
@@ -6575,7 +6603,8 @@ fun OnScreenController(
                                                 pushAnalog()
                                             }
                                             BtnType.TURBO_A, BtnType.TURBO_B -> {
-                                                turboState = turboState and heldBits.inv()
+                                                // ★ 三指连键修复：turbo 同样改用重算
+                                                recomputeTurboState()
                                                 sendStateNow(visualState, turboState)
                                             }
                                         }
@@ -6583,8 +6612,10 @@ fun OnScreenController(
                                 } else if (change.positionChanged()) {
                                     val entry = activePointers[pid]
                                     if (entry != null && entry.first == BtnType.DPAD) {
-                                        val oldBits = entry.second
-                                        visualState = visualState and oldBits.inv()
+                                        // ★ 三指连键修复：DPAD 拖动时也用重算（不清 oldBits），
+                                        //   避免两指同时按 DPAD 拖动时清掉另一指还在按的方向
+                                        // val oldBits = entry.second  // 不再使用清位
+                                        // visualState = visualState and oldBits.inv()  // 删除
                                         // NGC/WII 双十字键：拖动中按所在矩形重算方向
                                         val (newBits, tx, ty) =
                                             if (isNgcWii && wiiDpadRect?.contains(change.position) == true) {
@@ -6592,8 +6623,9 @@ fun OnScreenController(
                                             } else {
                                                 computeDirection(change.position)
                                             }
-                                        visualState = visualState or newBits
                                         activePointers[pid] = BtnType.DPAD to newBits
+                                        // ★ 用重算代替 or newBits —— 兼容其它指同时按 DPAD
+                                        recomputeVisualState()
                                         if (useAnalogStick) {
                                             analogThumbX = tx
                                             analogThumbY = ty
@@ -9739,7 +9771,8 @@ private fun PadLayoutEditor(
                         val updated = combos.map { if (it.id == combo.id) it.copy(x = nx, y = ny) else it }
                         val json = serializeComboButtons(updated)
                         val newLayout = when (platform) {
-                            GamePlatform.NES, GamePlatform.GB -> padLayout.copy {comboButtons = json}
+                            // ★ DC 组合键修复：DC 与 NES/GB 共用 comboButtons 字段
+                            GamePlatform.NES, GamePlatform.GB, GamePlatform.DC -> padLayout.copy {comboButtons = json}
                             GamePlatform.SFC -> padLayout.copy {comboButtonsSfc = json}
                             GamePlatform.GBA -> padLayout.copy {comboButtonsGba = json}
                             GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
@@ -10061,7 +10094,8 @@ private fun PadLayoutEditor(
                             val updated = combos2.filter { it.id != combo.id }
                             val json = serializeComboButtons(updated)
                             val newLayout = when (platform) {
-                                GamePlatform.NES, GamePlatform.GB -> padLayout.copy {comboButtons = json}
+                                // ★ DC 组合键修复：DC 与 NES/GB 共用 comboButtons 字段
+                                GamePlatform.NES, GamePlatform.GB, GamePlatform.DC -> padLayout.copy {comboButtons = json}
                                 GamePlatform.SFC -> padLayout.copy {comboButtonsSfc = json}
                                 GamePlatform.GBA -> padLayout.copy {comboButtonsGba = json}
                                 GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
@@ -10102,7 +10136,8 @@ private fun PadLayoutEditor(
                     val updated = current + newCombo
                     val json = serializeComboButtons(updated)
                     val newLayout = when (platform) {
-                        GamePlatform.NES, GamePlatform.GB -> padLayout.copy {comboButtons = json}
+                        // ★ DC 组合键修复：DC 与 NES/GB 共用 comboButtons 字段
+                        GamePlatform.NES, GamePlatform.GB, GamePlatform.DC -> padLayout.copy {comboButtons = json}
                         GamePlatform.SFC -> padLayout.copy {comboButtonsSfc = json}
                         GamePlatform.GBA -> padLayout.copy {comboButtonsGba = json}
                         GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
@@ -10266,20 +10301,23 @@ private fun ComboButtonPickerDialog(
             ButtonOption("Start", BTN_START),
             ButtonOption("Select", BTN_SELECT)
         )
-        // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX
+        // ★ DC 组合键修复：DC 也加 X/Y/L/R
+        // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX/DC
         // 街机（FBNeo）屏幕标签为 A/B/C/D：bit8 显示为 C、bit9 显示为 D
         if (platform == GamePlatform.SFC || platform == GamePlatform.MD ||
-            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX) {
+            platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
+            platform == GamePlatform.PSX || platform == GamePlatform.DC) {
             list.add(ButtonOption("X", BTN_X))
             list.add(ButtonOption("Y", BTN_Y))
         } else if (platform == GamePlatform.ARCADE) {
             list.add(ButtonOption("C", BTN_X))
             list.add(ButtonOption("D", BTN_Y))
         }
-        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX
+        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX/DC
         if (platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
             platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
-            platform == GamePlatform.PCE || platform == GamePlatform.NDS || platform == GamePlatform.PSX) {
+            platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
+            platform == GamePlatform.PSX || platform == GamePlatform.DC) {
             list.add(ButtonOption("L", lBit))
             list.add(ButtonOption("R", rBit))
         }
@@ -10288,6 +10326,11 @@ private fun ComboButtonPickerDialog(
             list.add(ButtonOption("L2", BTN_L2))
             list.add(ButtonOption("R2", BTN_R2))
         }
+        // ★ 方向键组合（所有平台通用）：用于"↓+A 滑铲"、"↑+B 上挑"等组合
+        list.add(ButtonOption("↑", BTN_UP))
+        list.add(ButtonOption("↓", BTN_DOWN))
+        list.add(ButtonOption("←", BTN_LEFT))
+        list.add(ButtonOption("→", BTN_RIGHT))
         list.toList()
     }
 
