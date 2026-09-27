@@ -1,1 +1,0 @@
-bash: line 1: /data/data/com.termux/files/home/android-sdk/build-tools/34.0.0/dexdump: cannot execute binary file: Exec format error
