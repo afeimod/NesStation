@@ -277,6 +277,18 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                         lastErrorText = "Azahar 退出（status=$result）"
                     }
                 }
+
+                // ★ 3DS 黑屏修复配套：核心致命错误上报（onCoreError → 此处）。
+                // 旧链路：onCoreError 永远返回 true → 核心继续空转 → 永久黑屏。
+                // 新链路：onCoreError 上报错误并返回 false 终止模拟 → 本回调把
+                // 原因写入 lastErrorText 并立即通过 onPrematureExit 弹窗展示，
+                // 与参考 APK 的 CoreErrorDialogFragment 行为对齐。
+                override fun onCoreErrorReport(errorName: String, details: String) {
+                    lastErrorText = "核心错误 $errorName${
+                        details.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""
+                    }"
+                    try { onPrematureExit?.invoke(lastErrorText) } catch (_: Throwable) {}
+                }
             })
             // ⚠ 上游硬性契约（DirectoryInitialization.start() 同序）：必须先
             // createLogFile()（= Common::Log::Initialize/Start）再 createConfigFile()/
@@ -286,13 +298,22 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             //（Java try/catch 拦不住 native abort，顺序即修复）。详见 AzaharNative。
             AzaharNative.initConfigPipeline(userDir())
             flushConfig()
-            // ★ 黑屏修复：上游 EmulationFragment.onCreate 在启动前必调
-            //   initializeGpuDriver(…)。libcitra-android.so 渲染后端初始化
-            //   读取 GpuDriverHelper 状态（hook 目录 / 自定义驱动名），
-            //   未装配时部分构建在 run() 的渲染初始化阶段读到未初始化
-            //   路径而黑屏。传 null = 使用系统驱动，是安全占位。
+            // ★ 3DS 黑屏修复：GPU 驱动参数初始化对齐参考 APK。
+            //   参考 AzaharPlus 的 DirectoryInitialization.start() →
+            //   GpuDriverHelper.initializeDriverParameters()（反编译实测）传入：
+            //     hookLibPath          = <nativeLibraryDir>/
+            //     driverInstallationPath = <filesDir>/gpu_driver/
+            //     customDriverLibraryName = 未安装自定义驱动时空串
+            //     fileRedirectionPath  = <userDir>/gpu/vk_file_redirect/
+            //   旧实现传四个 null —— 部分构建在渲染后端初始化阶段读到未初始化
+            //   路径而黑屏；按参考语义传入真实路径（无自定义驱动时 hook 逻辑
+            //   自动跳过，与参考 APK 无自定义驱动时行为一致）。
             try {
-                lib.initializeGpuDriver(null, null, null, null)
+                val ctx = appContext
+                val hookLibPath = ctx?.applicationInfo?.nativeLibraryDir?.let { "$it/" } ?: ""
+                val driverInstallPath = ctx?.filesDir?.let { File(it, "gpu_driver") }?.apply { mkdirs() }?.absolutePath ?: ""
+                val fileRedirectPath = File(File(userDir(), "gpu"), "vk_file_redirect").apply { mkdirs() }.absolutePath
+                lib.initializeGpuDriver(hookLibPath, driverInstallPath, "", fileRedirectPath)
             } catch (_: Throwable) {}
             try { lib.reloadSettings() } catch (_: Throwable) {}
         } catch (t: Throwable) {

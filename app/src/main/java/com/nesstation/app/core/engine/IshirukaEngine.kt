@@ -230,6 +230,16 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         //   （GCPadNew.ini / WiimoteNew.ini 同样位于 Config 目录 —— 旧实现只经
         //   SetConfig 下发，写盘位置不可靠；直写保证 Touchscreen 绑定必然生效。）
         //   [onlyExtension] 运行中热切换扩展手柄时仅重写 WiimoteNew.ini。
+        //
+        // ★★ 虚拟按键全部失灵根治修复（绑定表达式格式对齐参考 APK）★★
+        //   参考版 Ishiruka APK 的 assets/GCPadNew.ini / WiimoteNew.ini 使用：
+        //     Device = Android/N/Touchscreen   （段内默认设备 = 完整限定名）
+        //     Buttons/A = `Button 0`           （反引号裸表达式，作用于默认设备）
+        //   旧实现写成 `Device 'Touchscreen'-Button 0`（内联设备限定符），而
+        //   Dolphin 表达式解析器把 'Touchscreen' 解析为 source 组件（"Android/N/
+        //   Touchscreen" 的 source 是 "Android"），永远匹配不到任何设备 →
+        //   全部虚拟按键绑定永不激活（按键全死的根因，且 SetConfig 不报错）。
+        //   现在逐字采用参考 APK 的绑定格式。
         val gcUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
         val wiiUpdates = LinkedHashMap<String, LinkedHashMap<String, String>>()
         val gc = "GCPadNew.ini"
@@ -239,30 +249,30 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             gcUpdates.getOrPut(gcSection) { LinkedHashMap() }[key] = value
         }
         gcSet("Device", "Android/0/Touchscreen")
-        gcSet("Buttons/A", "Device 'Touchscreen'-Button 0")
-        gcSet("Buttons/B", "Device 'Touchscreen'-Button 1")
-        gcSet("Buttons/Start", "Device 'Touchscreen'-Button 2")
-        gcSet("Buttons/X", "Device 'Touchscreen'-Button 3")
-        gcSet("Buttons/Y", "Device 'Touchscreen'-Button 4")
-        gcSet("Buttons/Z", "Device 'Touchscreen'-Button 5")
-        gcSet("D-Pad/Up", "Device 'Touchscreen'-Button 6")
-        gcSet("D-Pad/Down", "Device 'Touchscreen'-Button 7")
-        gcSet("D-Pad/Left", "Device 'Touchscreen'-Button 8")
-        gcSet("D-Pad/Right", "Device 'Touchscreen'-Button 9")
-        gcSet("Main Stick/Up", "Device 'Touchscreen'-Axis 11")
-        gcSet("Main Stick/Down", "Device 'Touchscreen'-Axis 12")
-        gcSet("Main Stick/Left", "Device 'Touchscreen'-Axis 13")
-        gcSet("Main Stick/Right", "Device 'Touchscreen'-Axis 14")
+        gcSet("Buttons/A", "`Button 0`")
+        gcSet("Buttons/B", "`Button 1`")
+        gcSet("Buttons/Start", "`Button 2`")
+        gcSet("Buttons/X", "`Button 3`")
+        gcSet("Buttons/Y", "`Button 4`")
+        gcSet("Buttons/Z", "`Button 5`")
+        gcSet("D-Pad/Up", "`Button 6`")
+        gcSet("D-Pad/Down", "`Button 7`")
+        gcSet("D-Pad/Left", "`Button 8`")
+        gcSet("D-Pad/Right", "`Button 9`")
+        gcSet("Main Stick/Up", "`Axis 11`")
+        gcSet("Main Stick/Down", "`Axis 12`")
+        gcSet("Main Stick/Left", "`Axis 13`")
+        gcSet("Main Stick/Right", "`Axis 14`")
         gcSet("Main Stick/Radius", "100,000000")
-        gcSet("C-Stick/Up", "Device 'Touchscreen'-Axis 16")
-        gcSet("C-Stick/Down", "Device 'Touchscreen'-Axis 17")
-        gcSet("C-Stick/Left", "Device 'Touchscreen'-Axis 18")
-        gcSet("C-Stick/Right", "Device 'Touchscreen'-Axis 19")
+        gcSet("C-Stick/Up", "`Axis 16`")
+        gcSet("C-Stick/Down", "`Axis 17`")
+        gcSet("C-Stick/Left", "`Axis 18`")
+        gcSet("C-Stick/Right", "`Axis 19`")
         gcSet("C-Stick/Radius", "100,000000")
-        gcSet("Triggers/L", "Device 'Touchscreen'-Axis 20")
-        gcSet("Triggers/R", "Device 'Touchscreen'-Axis 21")
-        gcSet("Triggers/L-Analog", "Device 'Touchscreen'-Axis 20 | Device 'Touchscreen'-Axis 22")
-        gcSet("Triggers/R-Analog", "Device 'Touchscreen'-Axis 21 | Device 'Touchscreen'-Axis 23")
+        gcSet("Triggers/L", "`Axis 20`")
+        gcSet("Triggers/R", "`Axis 21`")
+        gcSet("Triggers/L-Analog", "`Axis 20` | `Axis 22`")
+        gcSet("Triggers/R-Analog", "`Axis 21` | `Axis 23`")
         gcSet("Triggers/Threshold", "90,000000")
         gcSet("Rumble/Motor", "`Rumble 700`")
 
@@ -287,34 +297,34 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         for (slot in 1..4) {
             val sec = "Wiimote$slot"
             wiiSet(sec, "Source", if (slot == 1) "1" else "0") // 仅 P1 启用模拟 Wiimote
-            // ★ Device 通道修复：参考 APK 的 Wiimote 从 Android/4 起，GC 手柄占 Android/0..3。
-            //   旧实现 Wiimote 也写 Android/0 会与 GCPad1 冲突 —— 核心识别出 Wiimote 未绑定
-            //   到任何触摸设备，导致 Wii 遥控器全部无效。
+            // ★ Device 通道：与参考 APK 一致 —— Wiimote1..4 = Android/4..7/Touchscreen
+            //   （GC 手柄占 Android/0..3）。
             wiiSet(sec, "Device", "Android/${3 + slot}/Touchscreen")
-            wiiSet(sec, "Buttons/A", "Device 'Touchscreen'-Button 100")
-            wiiSet(sec, "Buttons/B", "Device 'Touchscreen'-Button 101")
-            wiiSet(sec, "Buttons/1", "Device 'Touchscreen'-Button 105")
-            wiiSet(sec, "Buttons/2", "Device 'Touchscreen'-Button 106")
-            wiiSet(sec, "Buttons/-", "Device 'Touchscreen'-Button 102")
-            wiiSet(sec, "Buttons/+", "Device 'Touchscreen'-Button 103")
-            wiiSet(sec, "Buttons/Home", "Device 'Touchscreen'-Button 104")
-            wiiSet(sec, "D-Pad/Up", "Device 'Touchscreen'-Button 107")
-            wiiSet(sec, "D-Pad/Down", "Device 'Touchscreen'-Button 108")
-            wiiSet(sec, "D-Pad/Left", "Device 'Touchscreen'-Button 109")
-            wiiSet(sec, "D-Pad/Right", "Device 'Touchscreen'-Button 110")
-            wiiSet(sec, "IR/Up", "Device 'Touchscreen'-Axis 112")
-            wiiSet(sec, "IR/Down", "Device 'Touchscreen'-Axis 113")
-            wiiSet(sec, "IR/Left", "Device 'Touchscreen'-Axis 114")
-            wiiSet(sec, "IR/Right", "Device 'Touchscreen'-Axis 115")
-            wiiSet(sec, "IR/Forward", "Device 'Touchscreen'-Axis 116")
-            wiiSet(sec, "IR/Backward", "Device 'Touchscreen'-Axis 117")
-            wiiSet(sec, "IR/Hide", "Device 'Touchscreen'-Button 118")
+            // ★ 绑定格式对齐参考 APK（反引号裸表达式，见 GCPad 部分注释）。
+            wiiSet(sec, "Buttons/A", "`Button 100`")
+            wiiSet(sec, "Buttons/B", "`Button 101`")
+            wiiSet(sec, "Buttons/1", "`Button 105`")
+            wiiSet(sec, "Buttons/2", "`Button 106`")
+            wiiSet(sec, "Buttons/-", "`Button 102`")
+            wiiSet(sec, "Buttons/+", "`Button 103`")
+            wiiSet(sec, "Buttons/Home", "`Button 104`")
+            wiiSet(sec, "D-Pad/Up", "`Button 107`")
+            wiiSet(sec, "D-Pad/Down", "`Button 108`")
+            wiiSet(sec, "D-Pad/Left", "`Button 109`")
+            wiiSet(sec, "D-Pad/Right", "`Button 110`")
+            wiiSet(sec, "IR/Up", "`Axis 112`")
+            wiiSet(sec, "IR/Down", "`Axis 113`")
+            wiiSet(sec, "IR/Left", "`Axis 114`")
+            wiiSet(sec, "IR/Right", "`Axis 115`")
+            wiiSet(sec, "IR/Forward", "`Axis 116`")
+            wiiSet(sec, "IR/Backward", "`Axis 117`")
+            wiiSet(sec, "IR/Hide", "`Button 118`")
             wiiSet(sec, "IR/Total Pitch", "15")
             wiiSet(sec, "IR/Total Yaw", "15")
             wiiSet(sec, "IR/Vertical Offset", "10")
-            wiiSet(sec, "Shake/X", "Device 'Touchscreen'-Button 132")
-            wiiSet(sec, "Shake/Y", "Device 'Touchscreen'-Button 133")
-            wiiSet(sec, "Shake/Z", "Device 'Touchscreen'-Button 134")
+            wiiSet(sec, "Shake/X", "`Button 132`")
+            wiiSet(sec, "Shake/Y", "`Button 133`")
+            wiiSet(sec, "Shake/Z", "`Button 134`")
             // 扩展手柄由控制模式决定（P1），且 Nunchuk/Classic 的绑定键名带
             // "Nunchuk/"、"Classic/" 前缀，写在 [WiimoteN] 主段内（参考 APK 结构）。
             // ★ 旧实现写成独立的 [Nunchuk] / [Classic] 段 —— 核心在 [WiimoteN] 段
@@ -327,43 +337,42 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             }
             wiiSet(sec, "Extension", ext)
             if (slot == 1) {
-                wiiSet(sec, "Nunchuk/Buttons/C", "Device 'Touchscreen'-Button 200")
-                wiiSet(sec, "Nunchuk/Buttons/Z", "Device 'Touchscreen'-Button 201")
-                wiiSet(sec, "Nunchuk/Stick/Up", "Device 'Touchscreen'-Axis 203")
-                wiiSet(sec, "Nunchuk/Stick/Down", "Device 'Touchscreen'-Axis 204")
-                wiiSet(sec, "Nunchuk/Stick/Left", "Device 'Touchscreen'-Axis 205")
-                wiiSet(sec, "Nunchuk/Stick/Right", "Device 'Touchscreen'-Axis 206")
+                wiiSet(sec, "Nunchuk/Buttons/C", "`Button 200`")
+                wiiSet(sec, "Nunchuk/Buttons/Z", "`Button 201`")
+                wiiSet(sec, "Nunchuk/Stick/Up", "`Axis 203`")
+                wiiSet(sec, "Nunchuk/Stick/Down", "`Axis 204`")
+                wiiSet(sec, "Nunchuk/Stick/Left", "`Axis 205`")
+                wiiSet(sec, "Nunchuk/Stick/Right", "`Axis 206`")
                 wiiSet(sec, "Nunchuk/Stick/Radius", "100,000000")
-                wiiSet(sec, "Nunchuk/Shake/X", "Device 'Touchscreen'-Button 220")
-                wiiSet(sec, "Nunchuk/Shake/Y", "Device 'Touchscreen'-Button 221")
-                wiiSet(sec, "Nunchuk/Shake/Z", "Device 'Touchscreen'-Button 222")
-                wiiSet(sec, "Classic/Buttons/A", "Device 'Touchscreen'-Button 300")
-                wiiSet(sec, "Classic/Buttons/B", "Device 'Touchscreen'-Button 301")
-                wiiSet(sec, "Classic/Buttons/X", "Device 'Touchscreen'-Button 302")
-                wiiSet(sec, "Classic/Buttons/Y", "Device 'Touchscreen'-Button 303")
-                // ★ Classic ZL/ZR 是按钮（Button 307/308），旧实现绑定成 Axis 323+/324+，
-                //   与 Triggers/L、Triggers/R 冲突且手感错误。
-                wiiSet(sec, "Classic/Buttons/ZL", "Device 'Touchscreen'-Button 307")
-                wiiSet(sec, "Classic/Buttons/ZR", "Device 'Touchscreen'-Button 308")
-                wiiSet(sec, "Classic/Buttons/-", "Device 'Touchscreen'-Button 304")
-                wiiSet(sec, "Classic/Buttons/+", "Device 'Touchscreen'-Button 305")
-                wiiSet(sec, "Classic/Buttons/Home", "Device 'Touchscreen'-Button 306")
-                wiiSet(sec, "Classic/D-Pad/Up", "Device 'Touchscreen'-Button 309")
-                wiiSet(sec, "Classic/D-Pad/Down", "Device 'Touchscreen'-Button 310")
-                wiiSet(sec, "Classic/D-Pad/Left", "Device 'Touchscreen'-Button 311")
-                wiiSet(sec, "Classic/D-Pad/Right", "Device 'Touchscreen'-Button 312")
-                wiiSet(sec, "Classic/Left Stick/Up", "Device 'Touchscreen'-Axis 314")
-                wiiSet(sec, "Classic/Left Stick/Down", "Device 'Touchscreen'-Axis 315")
-                wiiSet(sec, "Classic/Left Stick/Left", "Device 'Touchscreen'-Axis 316")
-                wiiSet(sec, "Classic/Left Stick/Right", "Device 'Touchscreen'-Axis 317")
+                wiiSet(sec, "Nunchuk/Shake/X", "`Button 220`")
+                wiiSet(sec, "Nunchuk/Shake/Y", "`Button 221`")
+                wiiSet(sec, "Nunchuk/Shake/Z", "`Button 222`")
+                wiiSet(sec, "Classic/Buttons/A", "`Button 300`")
+                wiiSet(sec, "Classic/Buttons/B", "`Button 301`")
+                wiiSet(sec, "Classic/Buttons/X", "`Button 302`")
+                wiiSet(sec, "Classic/Buttons/Y", "`Button 303`")
+                // ★ Classic ZL/ZR 是按钮（Button 307/308），与参考 APK 一致。
+                wiiSet(sec, "Classic/Buttons/ZL", "`Button 307`")
+                wiiSet(sec, "Classic/Buttons/ZR", "`Button 308`")
+                wiiSet(sec, "Classic/Buttons/-", "`Button 304`")
+                wiiSet(sec, "Classic/Buttons/+", "`Button 305`")
+                wiiSet(sec, "Classic/Buttons/Home", "`Button 306`")
+                wiiSet(sec, "Classic/D-Pad/Up", "`Button 309`")
+                wiiSet(sec, "Classic/D-Pad/Down", "`Button 310`")
+                wiiSet(sec, "Classic/D-Pad/Left", "`Button 311`")
+                wiiSet(sec, "Classic/D-Pad/Right", "`Button 312`")
+                wiiSet(sec, "Classic/Left Stick/Up", "`Axis 314`")
+                wiiSet(sec, "Classic/Left Stick/Down", "`Axis 315`")
+                wiiSet(sec, "Classic/Left Stick/Left", "`Axis 316`")
+                wiiSet(sec, "Classic/Left Stick/Right", "`Axis 317`")
                 wiiSet(sec, "Classic/Left Stick/Radius", "100,000000")
-                wiiSet(sec, "Classic/Right Stick/Up", "Device 'Touchscreen'-Axis 319")
-                wiiSet(sec, "Classic/Right Stick/Down", "Device 'Touchscreen'-Axis 320")
-                wiiSet(sec, "Classic/Right Stick/Left", "Device 'Touchscreen'-Axis 321")
-                wiiSet(sec, "Classic/Right Stick/Right", "Device 'Touchscreen'-Axis 322")
+                wiiSet(sec, "Classic/Right Stick/Up", "`Axis 319`")
+                wiiSet(sec, "Classic/Right Stick/Down", "`Axis 320`")
+                wiiSet(sec, "Classic/Right Stick/Left", "`Axis 321`")
+                wiiSet(sec, "Classic/Right Stick/Right", "`Axis 322`")
                 wiiSet(sec, "Classic/Right Stick/Radius", "100,000000")
-                wiiSet(sec, "Classic/Triggers/L", "Device 'Touchscreen'-Axis 323")
-                wiiSet(sec, "Classic/Triggers/R", "Device 'Touchscreen'-Axis 324")
+                wiiSet(sec, "Classic/Triggers/L", "`Axis 323`")
+                wiiSet(sec, "Classic/Triggers/R", "`Axis 324`")
                 wiiSet(sec, "Classic/Triggers/Threshold", "90,000000")
             }
             if (slot == 1) wiiSet(sec, "Rumble/Motor", "`Rumble 700`")
@@ -865,22 +874,19 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val dev = NativeLibrary.TouchScreenDevice
         val x = nx.coerceIn(0f, 1f)
         val y = ny.coerceIn(0f, 1f)
-        // ★ IR X/Y 互换 + 符号修复：
-        //   - 旧实现 IR_UP/IR_DOWN 用 x 算（错），IR_LEFT/IR_RIGHT 用 y 算（错）
-        //     → 用户触摸左/右侧时 IR 上下移动，触上/下侧时 IR 左右移动
-        //   - 旧实现所有值都是 `maxOf(0f, ...)`，恒非负 → 但 WiimoteNew.ini
-        //     把 IR/Up、IR/Left 绑定为 "Axis 112-"、"Axis 114-"（负方向），
-        //     Dolphin ButtonManager 对 "Axis N-" 的语义是 max(0, -value)，
-        //     发正值 → 不激活 → IR 上、左永不工作
-        //   修复：
-        //   - Y 轴 → IR_UP / IR_DOWN（向上→UP，向下→DOWN）
-        //   - X 轴 → IR_LEFT / IR_RIGHT（向左→LEFT，向右→RIGHT）
-        //   - 负方向绑定（"Axis 112-"、"Axis 114-"）发负值，正方向绑定发正值
+        // ★ IR 方向值约定修复（与绑定格式修复配套）：
+        //   WiimoteNew.ini 现在与参考 APK 一致使用裸轴绑定（IR/Up = `Axis 112`），
+        //   裸轴绑定的语义是"原始值"（可正可负），WiimoteEmu 内部按
+        //   up - down / left - right 合成 —— 因此每个方向控制必须发送**正值**：
+        //     触上半屏 → IR_UP 发正值；下半屏 → IR_DOWN 发正值；左右同理。
+        //   旧实现按 "Axis 112-"（负方向绑定）假设发负值 —— 在裸轴绑定下
+        //   up - down 合成为负 → IR 上下/左右反向漂移。
+        //   与参考 APK 的摇杆/IR overlay 约定一致：每方向正值，幅度 0..1。
         val values = if (!pressed) floatArrayOf(0f, 0f, 0f, 0f) else floatArrayOf(
-            -(0.5f - y).coerceAtLeast(0f) * 2f,   // IR_UP   (Axis 112-) → 触上半屏发负值
-             (y - 0.5f).coerceAtLeast(0f) * 2f,   // IR_DOWN (Axis 113+) → 触下半屏发正值
-            -(0.5f - x).coerceAtLeast(0f) * 2f,   // IR_LEFT (Axis 114-) → 触左半屏发负值
-             (x - 0.5f).coerceAtLeast(0f) * 2f    // IR_RIGHT(Axis 115+) → 触右半屏发正值
+            (0.5f - y).coerceAtLeast(0f) * 2f,    // IR_UP   (Axis 112) → 触上半屏发正值
+            (y - 0.5f).coerceAtLeast(0f) * 2f,    // IR_DOWN (Axis 113) → 触下半屏发正值
+            (0.5f - x).coerceAtLeast(0f) * 2f,    // IR_LEFT (Axis 114) → 触左半屏发正值
+            (x - 0.5f).coerceAtLeast(0f) * 2f     // IR_RIGHT(Axis 115) → 触右半屏发正值
         )
         val ids = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_IR_UP,
@@ -906,16 +912,11 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val dev = NativeLibrary.TouchScreenDevice
         val id = if (forward) NativeLibrary.ButtonType.WIIMOTE_IR_FORWARD
         else NativeLibrary.ButtonType.WIIMOTE_IR_BACKWARD
-        // ★ IR+/IR- 符号修复：
-        //   WiimoteNew.ini: IR/Forward = "Axis 116-"（负方向），IR/Backward = "Axis 117+"（正方向）
-        //   - Forward 按下应发 -1f（不是 1f）
-        //   - Backward 按下应发 +1f
-        //   旧实现恒发 +1f → Forward 永不激活
-        val value = when {
-            !pressed -> 0f
-            forward -> -1f
-            else -> 1f
-        }
+        // ★ IR+/IR- 符号修复（与裸轴绑定配套）：IR/Forward = `Axis 116`、
+        //   IR/Backward = `Axis 117`（均为裸轴绑定），各自独立发送正值即可。
+        //   旧实现按 "Axis 116-" 假设对 Forward 发 -1f → 在裸轴绑定下
+        //   up 深度合成结果为负 → IR+ 永远把指针推向屏幕深处之外。
+        val value = if (pressed) 1f else 0f
         val idx = if (forward) 4 else 5
         if (irLast[idx] != value) {
             irLast[idx] = value

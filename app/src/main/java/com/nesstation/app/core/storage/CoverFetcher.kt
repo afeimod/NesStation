@@ -186,6 +186,12 @@ object CoverFetcher {
      *   实测（thumbnails.libretro.com）："Mega Man 2 (U)" 只有映射成
      *   "Mega Man 2 (USA)" 才 200；"Super Mario Bros (JU) [!]" 必须走到
      *   "Super Mario Bros. (Europe)" 补点 + 区域映射组合才命中。
+     *
+     * ★★ 封面模糊匹配修复（本轮）：精确候选仍是第一梯队（零额外请求、
+     *   最准确）；全部失败后，新增 [fetchSystemIndex] + [fuzzyMatch]
+     *   路径 —— 拉取一次该系统的完整封面名索引并本地模糊匹配，
+     *   覆盖"标题改写/分隔符差异/副标题缺失/序号写法不同"等精确候选
+     *   永远覆盖不到的命名差异（"模糊读取 ROM 名而不是绝对名字"的需求）。
      */
     fun nameCandidates(rawName: String): List<String> {
         val n0 = rawName.trim()
@@ -306,7 +312,191 @@ object CoverFetcher {
                 if (downloadCached(url, dest, cache)) return dest
             }
         }
+        // ★★ 封面模糊匹配（第二轮）：所有精确候选都 404 后，用系统索引
+        //   + 本地模糊匹配找到最接近的官方 No-Intro 名再试。每个系统
+        //   只拉一次索引（磁盘缓存 30 天），覆盖"标题改写/分隔符差异/
+        //   副标题缺失/序号写法不同"等精确候选永远覆盖不到的命名差异
+        //   （"模糊读取 ROM 名而不是绝对名字"的需求）。
+        for (sys in systemDirs) {
+            val index = fetchSystemIndex(context, sys) ?: continue
+            val fuzzy = fuzzyMatch(rawName, index)
+            for (name in fuzzy) {
+                // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
+                if (candidates.any { it.equals(name, ignoreCase = true) }) continue
+                val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
+                if (downloadImage(url, dest)) {
+                    Log.i(TAG, "fuzzy cover hit: '$rawName' -> '$name' ($sys)")
+                    return dest
+                }
+            }
+        }
         return null
+    }
+
+    // ------------------------------------------------------------------
+    // ★★ 封面模糊匹配（索引 + 本地相似度）
+    // ------------------------------------------------------------------
+
+    /** 内存内索引缓存：system → 官方 No-Intro 名列表（不含 .png 后缀）。 */
+    private val indexMemory = HashMap<String, List<String>>()
+
+    /** 索引磁盘缓存有效期（毫秒，30 天）。 */
+    private const val INDEX_TTL_MS = 30L * 24 * 60 * 60 * 1000
+
+    /** 单游戏最多尝试的模糊命中名数量。 */
+    private const val MAX_FUZZY_TRIES = 3
+
+    /** 模糊匹配最低相似度阈值（低于此值视为无匹配，避免误配到别的游戏）。 */
+    private const val FUZZY_MIN_SCORE = 0.62
+
+    /**
+     * 拉取并缓存某系统的 Named_Boxarts 目录索引（Apache autoindex HTML）。
+     *
+     * thumbnails.libretro.com 对目录请求返回自动生成的 HTML 列表
+     * （实测 HTTP 200，每系统约几百 KB ~ 数 MB）。解析出所有 .png
+     * 链接名（= 官方 No-Intro 名），磁盘缓存 30 天。
+     */
+    private fun fetchSystemIndex(context: Context, system: String): List<String>? {
+        indexMemory[system]?.let { return it }
+        val dir = File(context.filesDir, "cover_index").apply { mkdirs() }
+        // 文件名：系统名做了 url 友好化（避免文件系统非法字符）
+        val safeName = system.replace(Regex("[^A-Za-z0-9]+"), "_").trim('_')
+        val cacheFile = File(dir, "$safeName.txt")
+        if (cacheFile.exists() &&
+            System.currentTimeMillis() - cacheFile.lastModified() < INDEX_TTL_MS) {
+            try {
+                val lines = cacheFile.readLines().filter { it.isNotBlank() }
+                if (lines.isNotEmpty()) {
+                    indexMemory[system] = lines
+                    return lines
+                }
+            } catch (_: Throwable) {}
+        }
+        // 拉取目录列表（限 8MB，防异常大响应）
+        var conn: HttpURLConnection? = null
+        return try {
+            val url = "$BASE/${urlSeg(system)}/Named_Boxarts/"
+            val c = URL(url).openConnection() as HttpURLConnection
+            conn = c
+            c.connectTimeout = 10000
+            c.readTimeout = 20000
+            c.instanceFollowRedirects = true
+            c.setRequestProperty("User-Agent", USER_AGENT)
+            if (c.responseCode != HttpURLConnection.HTTP_OK) return null
+            val html = c.inputStream.use { input ->
+                val buf = java.io.ByteArrayOutputStream()
+                val buf8k = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val n = input.read(buf8k)
+                    if (n < 0) break
+                    total += n
+                    if (total > 8 * 1024 * 1024) return null
+                    buf.write(buf8k, 0, n)
+                }
+                buf.toString("UTF-8")
+            }
+            // Apache autoindex 行形如 <a href="Contra%20%28USA%29.png">Contra (USA).png</a>
+            // 用显示名（已解码）比 href 更可靠。
+            val names = LinkedHashSet<String>()
+            for (m in Regex("<a\\s+href=\"([^\"]+)\">([^<]*)</a>", RegexOption.IGNORE_CASE).findAll(html)) {
+                val text = m.groupValues[2].trim()
+                if (!text.endsWith(".png", ignoreCase = true)) continue
+                val name = text.removeSuffix(".png").removeSuffix(".PNG")
+                if (name.isNotBlank()) names.add(name)
+            }
+            if (names.isEmpty()) return null
+            val list = names.toList()
+            indexMemory[system] = list
+            try { cacheFile.writeText(list.joinToString("\n")) } catch (_: Throwable) {}
+            Log.i(TAG, "cover index loaded: $system (${list.size} names)")
+            list
+        } catch (t: Throwable) {
+            Log.d(TAG, "cover index fetch failed: $system (${t.message})")
+            null
+        } finally {
+            try { conn?.disconnect() } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * 本地模糊匹配：把 ROM 名与官方 No-Intro 名列表比对，返回最接近的
+     * 前几个官方名（按相似度降序，低于阈值的不返回）。
+     *
+     * 归一化策略（对双方一致应用）：
+     *   - 全小写；
+     *   - 去掉所有括号段（()/[]，区域/版本/标签差异不参与匹配）；
+     *   - "&" → "and"、罗马数字 → 阿拉伯数字（II→2）、去标点、压缩空格；
+     *   - "the" 等冠词丢弃。
+     * 相似度 = 词集合 Jaccard 相似度 + 编辑距离比加权；完全相等直接 1.0，
+     * 前缀包含有加分。
+     */
+    fun fuzzyMatch(rawName: String, officialNames: List<String>): List<String> {
+        val target = normalizeForFuzzy(rawName)
+        if (target.isBlank()) return emptyList()
+        val targetTokens = target.split(' ').filter { it.isNotBlank() }.toSet()
+        data class Scored(val name: String, val score: Double)
+        val scored = ArrayList<Scored>(officialNames.size)
+        for (official in officialNames) {
+            val cand = normalizeForFuzzy(official)
+            if (cand.isBlank()) continue
+            var score = if (cand == target) 1.0 else {
+                val candTokens = cand.split(' ').filter { it.isNotBlank() }.toSet()
+                val inter = targetTokens.intersect(candTokens).size.toDouble()
+                val union = targetTokens.union(candTokens).size.toDouble()
+                val jaccard = if (union > 0) inter / union else 0.0
+                val lev = levenshteinRatio(target, cand)
+                var s = 0.55 * jaccard + 0.45 * lev
+                // 前缀包含加分："zelda" vs "the legend of zelda" 类标题差异
+                if (target.length >= 4 && (cand.startsWith(target) || target.startsWith(cand))) s += 0.08
+                s
+            }
+            if (score > 1.0) score = 1.0
+            if (score >= FUZZY_MIN_SCORE) scored.add(Scored(official, score))
+        }
+        return scored.sortedByDescending { it.score }
+            .take(MAX_FUZZY_TRIES)
+            .map { it.name }
+    }
+
+    /** 模糊匹配归一化（双方一致应用，见 [fuzzyMatch] 注释）。 */
+    private fun normalizeForFuzzy(name: String): String {
+        var s = name.lowercase()
+        // 去掉括号段（()/[]）：区域/版本/标签不参与匹配
+        s = s.replace(Regex("\\([^)]*\\)"), " ")
+        s = s.replace(Regex("\\[[^]]*]"), " ")
+        s = s.replace("&", " and ")
+        // 常见罗马数字（词边界）→ 阿拉伯数字（"Final Fight II" → "final fight 2"）
+        s = s.replace(Regex("\\bii\\b"), "2")
+        s = s.replace(Regex("\\biii\\b"), "3")
+        s = s.replace(Regex("\\biv\\b"), "4")
+        s = s.replace(Regex("\\bvi\\b"), "6")
+        s = s.replace(Regex("\\bvii\\b"), "7")
+        s = s.replace(Regex("\\bviii\\b"), "8")
+        s = s.replace(Regex("\\bix\\b"), "9")
+        // 去标点（保留字母数字与空格，保留 CJK）
+        s = s.replace(Regex("[^a-z0-9\\u4e00-\\u9fff]+"), " ")
+        // 丢冠词
+        s = s.split(' ').filter { it.isNotBlank() && it != "the" }.joinToString(" ")
+        return s.trim()
+    }
+
+    /** 编辑距离相似度（0..1）。 */
+    private fun levenshteinRatio(a: String, b: String): Double {
+        if (a == b) return 1.0
+        if (a.isEmpty() || b.isEmpty()) return 0.0
+        val maxLen = maxOf(a.length, b.length).toDouble()
+        var prev = IntArray(b.length + 1) { it }
+        var cur = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            cur[0] = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            val tmp = prev; prev = cur; cur = tmp
+        }
+        return 1.0 - prev[b.length] / maxLen
     }
 
     /**

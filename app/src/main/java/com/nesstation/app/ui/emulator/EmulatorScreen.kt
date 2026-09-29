@@ -4562,21 +4562,25 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("Dolphin.ini/Core/WiimoteContinuousScanning", b(layout.irWiimoteScan))
             engine.setCoreOption("Dolphin.ini/Core/AudioStretch", b(layout.irAudioStretch))
             engine.setCoreOption("Dolphin.ini/Core/DSPHLE", b(layout.irDspHle))
-            // ★ 键名/段名修复：liishiiruka.so（Dolphin 5.0+ Config 系统）实际读取的是
-            //   GFX.ini [Video_Settings]/[Video_Enhancements]/[Video_Hacks] 段下的
-            //   InternalResolution / WaitForShadersBeforeStarting 等新键名。旧实现写成
-            //   [Settings] EFBScale / CompileShaderOnStartup，核心完全忽略，导致分辨率
-            //   倍数、着色器选项全部无效。irResolution 的 UI 值 2/4/6/7 恰为 lib 枚举
-            //   SCALE_1X/SCALE_2X/SCALE_3X/SCALE_4X 原值，直接透传。
-            engine.setCoreOption("GFX.ini/Video_Settings/InternalResolution", layout.irResolution)
-            engine.setCoreOption("GFX.ini/Video_Settings/MSAA", layout.irMsaa)
-            engine.setCoreOption("GFX.ini/Video_Settings/ShowFPS", b(layout.irShowFps))
-            engine.setCoreOption("GFX.ini/Video_Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
-            engine.setCoreOption("GFX.ini/Video_Settings/AspectRatio", layout.irAspect)
-            engine.setCoreOption("GFX.ini/Video_Enhancements/MaxAnisotropy", layout.irAnisotropy)
-            engine.setCoreOption("GFX.ini/Video_Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
-            engine.setCoreOption("GFX.ini/Video_Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
-            engine.setCoreOption("GFX.ini/Video_Hacks/EFBAccessEnable", b(layout.irEfbAccess))
+            // ★★ 分辨率倍数设置无效根治修复（段名对齐参考 APK）★★
+            //   参考版 Ishiruka APK 的设置界面把 GFX.ini 的段名定为
+            //   Settings / Enhancements / Hacks（与其 Java 设置模型一致，
+            //   反编译 features/settings/ui/i::c/g 实测），本 libmain.so 的
+            //   主 GFX.ini 加载器同样按新段名读取；"Video_Settings" 等
+            //   旧段名只存在于游戏配置加载器（GameSettings/*.ini 兼容），
+            //   写进 User/Config/GFX.ini 的 [Video_Settings] 段核心根本
+            //   不读 —— 这就是"分辨率倍数设置一直无效"的根因。
+            //   irResolution 的 UI 值 1/2/3/4 恰为 InternalResolution 枚举
+            //   原值（1x/2x/3x/4x），直接透传。
+            engine.setCoreOption("GFX.ini/Settings/InternalResolution", layout.irResolution)
+            engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
+            engine.setCoreOption("GFX.ini/Settings/ShowFPS", b(layout.irShowFps))
+            engine.setCoreOption("GFX.ini/Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
+            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.irAspect)
+            engine.setCoreOption("GFX.ini/Enhancements/MaxAnisotropy", layout.irAnisotropy)
+            engine.setCoreOption("GFX.ini/Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
+            engine.setCoreOption("GFX.ini/Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
+            engine.setCoreOption("GFX.ini/Hacks/EFBAccessEnable", b(layout.irEfbAccess))
         }
     }
 }
@@ -5685,9 +5689,11 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         GamePlatform.PSX    -> padLayout.comboButtonsSfc  // PSX uses SNES-style combos
         GamePlatform.PS2    -> padLayout.comboButtonsSfc  // PS2 uses SNES-style combos
         GamePlatform.JAVA   -> ""
-        // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准虚拟手柄体系，
-        // 组合键与 NES 共用同一 PadLayout.comboButtons 表。
-        GamePlatform.DC     -> padLayout.comboButtons
+        // DC（Dreamcast/NAOMI）—— libretro Flycast 核心走标准虚拟手柄体系。
+        // ★ DC 组合键隔离修复：旧实现 DC 与 NES/GB 共用 padLayout.comboButtons，
+        //   导致 DC 里添加的组合键直接出现在 FC/GBC 上并触发同样的按键位。
+        //   现在 DC 使用独立的 PadLayout.comboButtonsDc 字段，彻底隔离。
+        GamePlatform.DC     -> padLayout.comboButtonsDc
         // 3DS / NGC-WII —— 独立模拟器形态核心（Azahar/Ishiiruka）走
         // onGamePadEvent/onTouchEvent 契约，不支持位掩码组合键，返回空。
         GamePlatform.N3DS   -> ""
@@ -9777,8 +9783,10 @@ private fun PadLayoutEditor(
                         val updated = combos.map { if (it.id == combo.id) it.copy(x = nx, y = ny) else it }
                         val json = serializeComboButtons(updated)
                         val newLayout = when (platform) {
-                            // ★ DC 组合键修复：DC 与 NES/GB 共用 comboButtons 字段
-                            GamePlatform.NES, GamePlatform.GB, GamePlatform.DC -> padLayout.copy {comboButtons = json}
+                            // ★ DC 组合键隔离修复：DC 独立使用 comboButtonsDc，
+                            //   不再与 NES/GB 共用 comboButtons 字段
+                            GamePlatform.DC -> padLayout.copy {comboButtonsDc = json}
+                            GamePlatform.NES, GamePlatform.GB -> padLayout.copy {comboButtons = json}
                             GamePlatform.SFC -> padLayout.copy {comboButtonsSfc = json}
                             GamePlatform.GBA -> padLayout.copy {comboButtonsGba = json}
                             GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
@@ -10100,8 +10108,9 @@ private fun PadLayoutEditor(
                             val updated = combos2.filter { it.id != combo.id }
                             val json = serializeComboButtons(updated)
                             val newLayout = when (platform) {
-                                // ★ DC 组合键修复：DC 与 NES/GB 共用 comboButtons 字段
-                                GamePlatform.NES, GamePlatform.GB, GamePlatform.DC -> padLayout.copy {comboButtons = json}
+                                // ★ DC 组合键隔离修复：DC 独立使用 comboButtonsDc
+                                GamePlatform.DC -> padLayout.copy {comboButtonsDc = json}
+                                GamePlatform.NES, GamePlatform.GB -> padLayout.copy {comboButtons = json}
                                 GamePlatform.SFC -> padLayout.copy {comboButtonsSfc = json}
                                 GamePlatform.GBA -> padLayout.copy {comboButtonsGba = json}
                                 GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
@@ -10142,8 +10151,9 @@ private fun PadLayoutEditor(
                     val updated = current + newCombo
                     val json = serializeComboButtons(updated)
                     val newLayout = when (platform) {
-                        // ★ DC 组合键修复：DC 与 NES/GB 共用 comboButtons 字段
-                        GamePlatform.NES, GamePlatform.GB, GamePlatform.DC -> padLayout.copy {comboButtons = json}
+                        // ★ DC 组合键隔离修复：DC 独立使用 comboButtonsDc
+                        GamePlatform.DC -> padLayout.copy {comboButtonsDc = json}
+                        GamePlatform.NES, GamePlatform.GB -> padLayout.copy {comboButtons = json}
                         GamePlatform.SFC -> padLayout.copy {comboButtonsSfc = json}
                         GamePlatform.GBA -> padLayout.copy {comboButtonsGba = json}
                         GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}

@@ -937,6 +937,13 @@ class PadLayout {
     var comboButtonsMd: String = ""       // MD combo list (JSON)
     var comboButtonsPce: String = ""      // PCE combo list (JSON)
 
+    // ★ DC 组合键隔离修复：此前 DC 与 NES/GB 共用同一 comboButtons 字段，
+    //   用户在 DC 虚拟按键里添加的组合键（如 AB/XY/L+R）会原封不动地
+    //   出现在 FC（NES）与 GB/GBC 的虚拟手柄上，并在这些系统里触发
+    //   同样的按键位 —— 跨系统干扰。现在 DC 使用独立字段存储，
+    //   与 NES/GB 彻底隔离。
+    var comboButtonsDc: String = ""       // DC combo list (JSON)
+
     // === PCE button visibility toggles (which on-screen buttons are shown) ===
     // PCE uses the shared SNES/Arcade/MD layout slots (D-pad, I/II, RUN,
     // SELECT, V/VI, IV/III, Turbo I/II). Each can be individually shown or
@@ -1538,6 +1545,7 @@ class PadLayout {
         comboButtonsArcade = another.comboButtonsArcade
         comboButtonsMd = another.comboButtonsMd
         comboButtonsPce = another.comboButtonsPce
+        comboButtonsDc = another.comboButtonsDc
         pceShowDpad = another.pceShowDpad
         pceShowA = another.pceShowA
         pceShowB = another.pceShowB
@@ -2551,6 +2559,7 @@ object PadLayoutStore {
             comboButtonsArcade = p.getString("combo_buttons_arcade", "") ?: ""
             comboButtonsMd = p.getString("combo_buttons_md", "") ?: ""
             comboButtonsPce = p.getString("combo_buttons_pce", "") ?: ""
+            comboButtonsDc = p.getString("combo_buttons_dc", "") ?: ""
             // PCE button visibility toggles
             pceShowDpad = p.getBoolean("pce_show_dpad", true)
             pceShowA = p.getBoolean("pce_show_a", true)
@@ -3206,6 +3215,7 @@ object PadLayoutStore {
             putString("combo_buttons_arcade", layout.comboButtonsArcade)
             putString("combo_buttons_md", layout.comboButtonsMd)
             putString("combo_buttons_pce", layout.comboButtonsPce)
+            putString("combo_buttons_dc", layout.comboButtonsDc)
             // PCE button visibility toggles
             putBoolean("pce_show_dpad", layout.pceShowDpad)
             putBoolean("pce_show_a", layout.pceShowA)

@@ -272,7 +272,17 @@ object NativeLibrary {
     private external fun decompressFileNative(inputPath: String?, outputPath: String): Int
     external fun getRecommendedExtension(inputPath: String?, shouldCompress: Boolean): String
 
-    external fun initMultiplayer()
+    /**
+     * 初始化多人联机（宿主不使用）。
+     *
+     * ★ 契约修复：原声明为 external —— 但 libazahar.so 实际未导出
+     *   Java_org_citra_citra_1emu_NativeLibrary_initMultiplayer 符号
+     *   （nm 实测，导出表中无此项），任何调用都会 UnsatisfiedLinkError。
+     *   改为 Java 兜底空实现，保住 API 形状并消除隐患。
+     */
+    fun initMultiplayer() {
+        // no-op —— so 未导出该符号，见注释
+    }
 
     // ---- 原生侧回调（id_cache.cpp / android_utils.h 契约，签名逐一核对） ----
     // 以下方法由 libcitra-android.so 在 JNI_OnLoad 时 GetStaticMethodID 缓存，
@@ -281,13 +291,25 @@ object NativeLibrary {
     /**
      * Handles a core error.
      * @return true: continue; false: abort
+     *
+     * ★ 3DS 黑屏根治修复（对齐参考 APK 语义）：
+     *   参考 AzaharPlus APK 的 onCoreError（反编译 classes.dex 实测）在
+     *   "EmulationActivity 不存在"时返回 **false**（终止），存在时弹对话框
+     *   由用户决定是否继续。旧实现无条件返回 true（继续），核心报致命
+     *   错误（缺系统文件/共享字体、GPU 初始化失败等）后继续空转 ——
+     *   模拟线程活着但永远不渲染 = 无提示的永久黑屏（此前所有 surface
+     *   竞态修复无效的真正原因）。
+     *   现在把错误上报给宿主（UI 弹出原因）并返回 false 干净地终止模拟，
+     *   run() 返回后 onPrematureExit 兑底错误提示也会触发。
      */
     @Keep
     @JvmStatic
     fun onCoreError(error: CoreError?, details: String): Boolean {
         android.util.Log.e("AzaharNative", "Core error: $error / $details")
-        // 返回 true 表示"继续"——是否退出由宿主引擎决定
-        return true
+        NesStationHost.notifyCoreError(error?.name ?: "ErrorUnknown", details)
+        // 返回 false：终止模拟 —— 与参考 APK "无活动 UI 时返回 false" 语义一致，
+        // 避免"继续运行但永远黑屏"的静默故障。
+        return false
     }
 
     @Keep
@@ -508,6 +530,13 @@ object NativeLibrary {
         fun appContext(): Context?
         fun azaharUserDirectory(): String
         fun onEmulationExited(result: Int)
+
+        /**
+         * ★ 3DS 黑屏修复配套：核心错误回调（onCoreError 触发，模拟将终止）。
+         * 引擎把它并入 lastErrorText / onPrematureExit 的错误信息，UI 弹窗展示。
+         * 默认空实现保持二进制兼容。
+         */
+        fun onCoreErrorReport(errorName: String, details: String) {}
     }
 
     object NesStationHost {
@@ -528,6 +557,15 @@ object NativeLibrary {
 
         @JvmStatic
         fun notifyEmulationExited(result: Int) = host?.onEmulationExited(result)
+
+        /**
+         * ★ 3DS 黑屏修复配套：核心致命错误上报（onCoreError 桥）。
+         * 宿主 UI 把它呈现为错误对话框 —— 黑屏变成可见的原因说明。
+         */
+        @JvmStatic
+        fun notifyCoreError(errorName: String, details: String) {
+            host?.onCoreErrorReport(errorName, details)
+        }
     }
 
     data class SaveStateInfo(val slot: Int, val time: Date)
