@@ -2717,22 +2717,31 @@ private data class CoverCandidateUi(
  * ★ 闪退根治：旧实现在**组合期间**（主线程）remember{} 内直接
  *   BitmapFactory.decodeFile —— 损坏/超大 PNG 可能触发 native SIGSEGV 或
  *   OOM（"选择封面按钮点击就闪退"），现在解码全部移到 IO 线程。
+ *
+ * ⚠ 编译修复（本次）：
+ *   旧写法是表达式函数体（`= try { ... }`），但函数体内使用了
+ *   `if (...) return null`，Kotlin 规定表达式函数体禁止使用 return。
+ *   编译报错：LibraryScreen.kt:2724:56
+ *   "Returns are not allowed for functions with expression body."
+ *   现改为块函数体（`{ return try { ... } }`），逻辑完全等价。
  */
-private fun decodeCoverBitmap(path: String, maxDim: Int = 512): android.graphics.Bitmap? = try {
-    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFile(path, bounds)
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-    var sample = 1
-    var w = bounds.outWidth
-    var h = bounds.outHeight
-    while (maxOf(w, h) / (sample * 2) >= maxDim) sample *= 2
-    val opts = android.graphics.BitmapFactory.Options().apply {
-        inSampleSize = sample
-        inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+private fun decodeCoverBitmap(path: String, maxDim: Int = 512): android.graphics.Bitmap? {
+    return try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        val w = bounds.outWidth
+        val h = bounds.outHeight
+        while (maxOf(w, h) / (sample * 2) >= maxDim) sample *= 2
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+        }
+        BitmapFactory.decodeFile(path, opts)
+    } catch (_: Throwable) {
+        null
     }
-    BitmapFactory.decodeFile(path, opts)
-} catch (_: Throwable) {
-    null
 }
 
 @androidx.compose.runtime.Composable
