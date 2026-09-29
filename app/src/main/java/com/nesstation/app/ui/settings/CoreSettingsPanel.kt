@@ -38,20 +38,31 @@ fun CoreSettingsPanel(
     ) {
         when (platform) {
             GamePlatform.NES -> item {
-                SettingsSection("FC / NES (FCEUmm)") {
+                SettingsSection("FC / NES (FCEUX)") {
+                    // ★ FC 设置生效修复：FC 核心已换成 fceux 引擎（非 fceumm），
+                    //   本页选项逐一映射到 fceux 原生 API（rom_loader.cpp
+                    //   setCoreOption）。NTSC 滤镜/调色板选项值 = fceux 真实
+                    //   能力：NTSC 色彩生成（FCEUI_SetNTSCTH）、灰度（黑白）、
+                    //   内嵌 FirebrandX 权威色表（nes_palettes.h）。
                     DropdownRow("NTSC 滤镜",
-                        listOf("disabled" to "关闭", "composite" to "复合", "svideo" to "S-Video",
-                               "rgb" to "RGB", "monochrome" to "黑白"),
+                        listOf("disabled" to "关闭", "ntsc" to "NTSC 色彩生成", "monochrome" to "黑白"),
                         padLayout.ntscFilter
                     ) { updateLayout(padLayout.copy {ntscFilter = it}) }
 
                     DropdownRow("调色板",
                         listOf(
-                            "default" to "默认", "asqrealc" to "AspiringSquire", "wii-vc" to "Wii VC",
-                            "rgb" to "Nintendo RGB", "yuv-v3" to "FBX YUV-V3", "unsaturated-final" to "Unsaturated",
-                            "sony-cxa2025as-us" to "Sony CXA", "pal" to "PAL", "bmf-final2" to "BMF Final 2",
-                            "smooth-fbx" to "FBX Smooth", "composite-direct-fbx" to "FBX Composite",
-                            "ntsc-hardware-fbx" to "FBX NTSC HW", "nes-classic-fbx" to "FBX NES Classic"
+                            "default" to "默认",
+                            "composite-direct-fbx" to "FBX 复合直通",
+                            "ntsc-hardware-fbx" to "FBX NTSC 硬件",
+                            "nes-classic-fbx" to "FBX NES Classic",
+                            "wii-vc" to "Wii VC",
+                            "restored-wii-vc" to "Wii VC (修复版)",
+                            "pal" to "PAL",
+                            "smooth-fbx" to "FBX 平滑",
+                            "digital-prime-fbx" to "FBX Digital Prime",
+                            "magnum-fbx" to "FBX Magnum",
+                            "pvm-style-d93-fbx" to "FBX PVM D93",
+                            "royaltea" to "Royal Tea"
                         ),
                         padLayout.palette
                     ) { updateLayout(padLayout.copy {palette = it}) }
@@ -1597,11 +1608,11 @@ fun CoreSettingsPanel(
                 // azahar-emu/azahar src/android jni/config.cpp（2125.x）。
                 SettingsSection("3DS (Azahar) · 画面 / 性能") {
                     DropdownRow("图形后端",
-                        listOf("opengl" to "OpenGL ES (兼容, 默认)", "vulkan" to "Vulkan (性能, 推荐)"),
+                        listOf("opengl" to "OpenGL (兼容)", "vulkan" to "Vulkan (性能, 推荐)", "software" to "软件渲染 (慢)"),
                         padLayout.azGraphicsApi
                     ) { updateLayout(padLayout.copy {azGraphicsApi = it}) }
                     DropdownRow("内部分辨率",
-                        listOf("0" to "跟随窗口 (推荐)", "1" to "1x (400x240 原生)", "2" to "2x", "3" to "3x", "4" to "4x"),
+                        listOf("0" to "1x (400x240 原生)", "1" to "2x", "2" to "3x", "3" to "4x", "4" to "5x"),
                         padLayout.azResolution
                     ) { updateLayout(padLayout.copy {azResolution = it}) }
                     DropdownRow("硬件着色器",
@@ -1707,7 +1718,7 @@ fun CoreSettingsPanel(
                         padLayout.azRegion
                     ) { updateLayout(padLayout.copy {azRegion = it}) }
                     DropdownRow("音频模拟",
-                        listOf("1" to "开启 (默认)", "0" to "关闭"),
+                        listOf("0" to "HLE (快, 推荐)", "1" to "LLE", "2" to "LLE 多线程"),
                         padLayout.azAudioEmulation
                     ) { updateLayout(padLayout.copy {azAudioEmulation = it}) }
                     DropdownRow("音量", (0..100 step 10).map { it.toString() to "$it%" },
@@ -1763,13 +1774,14 @@ fun CoreSettingsPanel(
                         padLayout.irOverclock
                     ) { updateLayout(padLayout.copy {irOverclock = it}) }
                     DropdownRow("渲染后端",
-                        listOf("OGL" to "OpenGL (兼容)", "Vulkan" to "Vulkan (性能)",
-                            "Software Renderer" to "软件渲染 (慢)"),
+                        listOf("OGL" to "OpenGL (兼容)", "Vulkan" to "Vulkan (性能)", "Software Renderer" to "软件渲染"),
                         padLayout.irBackend
                     ) { updateLayout(padLayout.copy {irBackend = it}) }
-                    DropdownRow("内部分辨率",
-                        listOf("100" to "1x 原生 (100%)", "150" to "1.5x (150%)", "200" to "2x (200%)",
-                            "300" to "3x (300%)", "400" to "4x (400%)"),
+                    // ★ 取值对齐参考 APK（InternalResolution = 百分比标度，
+                    //   资源数组 array0018/0019 实测 100/200/300/400）；
+                    //   旧值 2/4/6/7 由 normalizeIrResolution 自动迁移。
+                    DropdownRow("内部分辨率 (EFB)",
+                        listOf("100" to "1x 原生", "200" to "2x", "300" to "3x", "400" to "4x"),
                         padLayout.irResolution
                     ) { updateLayout(padLayout.copy {irResolution = it}) }
                     DropdownRow("多重采样 (MSAA)",

@@ -619,6 +619,23 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         }
     }
 
+    /**
+     * ★ 3DS 黑屏修复（启动看门狗配套）：把原始 PerfStats 暴露给 UI 层。
+     * getPerfStats() 返回 [system_fps, game_fps, emulation_speed, ...]；
+     * 看门狗用 system_fps（下标 0）判断核心是否真的在跑帧。
+     */
+    fun getPerfStats(): DoubleArray? = try {
+        AzaharNative.lib.getPerfStats()
+    } catch (_: Throwable) {
+        null
+    }
+
+    /** 看门狗用：当前 surface 是否有效（诊断启动时序问题）。 */
+    fun isSurfaceValid(): Boolean = surface?.isValid == true
+
+    /** 看门狗用：Azahar 用户目录绝对路径（aes_keys.txt / boot9.bin 所在）。 */
+    fun userDirectoryPath(): String = try { userDir() } catch (_: Throwable) { "" }
+
     override fun setVideoFilter(filter: Int) {
         // 前端滤镜不适用于直绘核心（核心自身有 texture_filter）——忽略
     }

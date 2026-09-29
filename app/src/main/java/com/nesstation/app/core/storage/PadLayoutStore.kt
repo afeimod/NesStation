@@ -739,8 +739,8 @@ class PadLayout {
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
     var irOverclockEnable: String = "disabled"      // enabled | disabled (OverclockEnable)
     var irOverclock: String = "100"                 // "100".."400" % (Overclock)
-    var irBackend: String = "OGL"                   // OGL | Vulkan | Software Renderer (GFXBackend，参考 APK 值域)
-    var irResolution: String = "100"                // InternalResolution 百分比：100=1x 原生，200=2x，300=3x，400=4x
+    var irBackend: String = "OGL"                   // OGL | Vulkan | Software Renderer | Null (GFXBackend + VideoBackendIndex)
+    var irResolution: String = "100"                // "100" 1x 原生 | "200" 2x | "300" 3x | "400" 4x (InternalResolution 百分比标度)
     var irMsaa: String = "1"                        // "1" 关 | "2" | "4" | "8" (MSAA)
     var irAnisotropy: String = "0"                  // "0".."4" (MaxAnisotropy 1x..16x)
     var irShowFps: String = "disabled"              // enabled | disabled (ShowFPS)
@@ -1589,6 +1589,21 @@ class PadLayout {
  * 全局设置（opacity / showPad / 核心选项 / 滤镜等）不分方向共享。
  */
 object PadLayoutStore {
+
+    /**
+     * ★ InternalResolution 取值迁移：参考版 Ishiruka 用百分比标度
+     *   （100/200/300/400，资源数组 array0018/0019 实测），旧版 NesStation
+     *   存的是 EFBScale 值（2/4/6/7）—— 读到旧值时映射成新标度，
+     *   非法值回退 1x 原生。
+     */
+    fun normalizeIrResolution(v: String): String = when (v) {
+        "2" -> "100"    // 旧 1x
+        "4" -> "200"    // 旧 2x
+        "6" -> "300"    // 旧 3x
+        "7" -> "400"    // 旧 4x
+        "100", "200", "300", "400" -> v
+        else -> "100"
+    }
     private const val PREFS_NAME = "pad_layout_v2"
 
     // === 横屏 Button keys (旧 key 兼容旧版本) ===
@@ -2481,19 +2496,13 @@ object PadLayoutStore {
             irDualCore = p.getString("ir_dual_core", "enabled") ?: "enabled"
             irOverclockEnable = p.getString("ir_overclock_enable", "disabled") ?: "disabled"
             irOverclock = p.getString("ir_overclock", "100") ?: "100"
-            irBackend = p.getString("ir_backend", "OGL")?.let {
-                // ★ 存档迁移：旧 "SW" 不是本核心的有效 GFXBackend 值（参考 APK
-                //   实测值域 OGL/Vulkan/Software Renderer/Null），改写为正式值。
-                if (it == "SW") "Software Renderer" else it
-            } ?: "OGL"
-            // ★ 存档迁移：旧值是 Dolphin 5.0 的 EFBScale 枚举（2/4/6/7），本核心
-            //   InternalResolution 语义为百分比（参考 APK 默认 100），一次性换算。
-            irResolution = p.getString("ir_resolution", "100")?.let {
-                when (it) {
-                    "2" -> "100"; "4" -> "200"; "6" -> "300"; "7" -> "400"
-                    else -> it.toIntOrNull()?.coerceIn(50, 800)?.toString() ?: "100"
-                }
-            } ?: "100"
+            irBackend = p.getString("ir_backend", "OGL") ?: "OGL"
+            // ★ 渲染后端失效根治修复：参考版 Ishiruka 的 InternalResolution
+            //   是**百分比标度**（100=1x / 200=2x / 300=3x / 400=4x，资源数组
+            //   array0018/0019 实测），旧实现写的 2/4/6/7（EFBScale 旧值）
+            //   对核心是非法值 → 渲染初始化异常 / 硬件加速失效。
+            //   兼容迁移：旧存量值 2/4/6/7 映射到 100/200/300/400。
+            irResolution = normalizeIrResolution(p.getString("ir_resolution", "100") ?: "100")
             irMsaa = p.getString("ir_msaa", "1") ?: "1"
             irAnisotropy = p.getString("ir_anisotropy", "0") ?: "0"
             irShowFps = p.getString("ir_show_fps", "disabled") ?: "disabled"

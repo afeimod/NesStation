@@ -48,6 +48,7 @@
 #include "fceux/file.h"
 #include "fceux/state.h"
 #include "fceux/emufile.h"
+#include "nes_palettes.h"
 
 #define TAG "nescore-rom"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
@@ -82,6 +83,101 @@ static std::string s_systemDir;
 static std::string s_saveDir;
 static std::string s_lastRomPath;
 static std::string s_saveName;
+
+// ★ FC 设置生效修复（旧实现仅 region 映射，其余 fceumm_* 键全部 no-op）。
+// fceux 引擎真正支持的四个用户设置：调色板 / NTSC 色彩生成 / 超频 / 过扫描裁剪。
+static std::string s_optPalette = "default";
+static std::string s_optNtscFilter = "disabled";
+static std::string s_optOverclock = "disabled";
+static bool s_optCropOverscan = false;
+
+// 黑白滤镜用的灰度调色板（由 kPaletteFceuxDefault 亮度推导，惰性构建）。
+static uint8_t s_monoPalette[64][3];
+static bool s_monoPaletteBuilt = false;
+
+static void buildMonoPalette() {
+    if (s_monoPaletteBuilt) return;
+    for (int i = 0; i < 64; ++i) {
+        // Rec.601 亮度（0.299/0.587/0.114）—— 色度归零，亮度保留
+        const uint8_t r = kPaletteFceuxDefault[i][0];
+        const uint8_t g = kPaletteFceuxDefault[i][1];
+        const uint8_t b = kPaletteFceuxDefault[i][2];
+        const uint8_t y = (uint8_t)((r * 299 + g * 587 + b * 114) / 1000);
+        s_monoPalette[i][0] = y;
+        s_monoPalette[i][1] = y;
+        s_monoPalette[i][2] = y;
+    }
+    s_monoPaletteBuilt = true;
+}
+
+// 查找命名调色板；未命中返回 nullptr（调用方回退引擎默认）。
+static const uint8_t* lookupPalette(const std::string& name) {
+    if (name == "composite-direct-fbx") return &kPaletteCompositeDirectFbx[0][0];
+    if (name == "ntsc-hardware-fbx")   return &kPaletteNtscHardwareFbx[0][0];
+    if (name == "nes-classic-fbx")     return &kPaletteNesClassicFbx[0][0];
+    if (name == "wii-vc")              return &kPaletteWiiVc[0][0];
+    if (name == "restored-wii-vc")     return &kPaletteRestoredWiiVc[0][0];
+    if (name == "pal")                 return &kPalettePal[0][0];
+    if (name == "smooth-fbx")          return &kPaletteSmoothFbx[0][0];
+    if (name == "digital-prime-fbx")   return &kPaletteDigitalPrimeFbx[0][0];
+    if (name == "magnum-fbx")          return &kPaletteMagnumFbx[0][0];
+    if (name == "pvm-style-d93-fbx")   return &kPalettePvmStyleD93Fbx[0][0];
+    if (name == "royaltea")            return &kPaletteRoyaltea[0][0];
+    return nullptr;
+}
+
+// 调色板 / NTSC 生成 / 黑白 三者的叠加语义（对齐 fceux ChoosePalette 优先级：
+// 用户调色板 > NTSC 生成 > 引擎默认）：
+//   monochrome → 灰度用户调色板（NTSC 生成关闭）
+//   ntsc       → FCEUI_SetNTSCTH 开启（用户调色板必须清空，否则被 ChoosePalette 屏蔽）
+//   其余       → 用户调色板（有命名选择时）或引擎默认
+static void applyPaletteAndFilter() {
+    if (s_optNtscFilter == "monochrome") {
+        FCEUI_SetNTSCTH(false, 56, 72);
+        buildMonoPalette();
+        FCEUI_SetUserPalette(&s_monoPalette[0][0], 64);
+        LOGI("FC option: palette mode = monochrome");
+        return;
+    }
+    if (s_optNtscFilter == "ntsc") {
+        FCEUI_SetUserPalette(nullptr, 0);   // 清除用户调色板，让 NTSC 生成生效
+        FCEUI_SetNTSCTH(true, 56, 72);      // tint/hue = 引擎默认值（palette.cpp）
+        LOGI("FC option: palette mode = ntsc generated");
+        return;
+    }
+    FCEUI_SetNTSCTH(false, 56, 72);
+    const uint8_t* pal = (s_optPalette == "default") ? nullptr : lookupPalette(s_optPalette);
+    if (pal) {
+        FCEUI_SetUserPalette(const_cast<uint8_t*>(pal), 64);
+        LOGI("FC option: user palette = %s", s_optPalette.c_str());
+    } else {
+        FCEUI_SetUserPalette(nullptr, 0);   // 回退引擎默认调色板
+        default_palette_selection = 0;
+        LOGI("FC option: engine default palette");
+    }
+}
+
+// 超频映射（fceux 原生机制：post-render 加扫描行 / vblank 加扫描行）：
+//   2x-Postrender → postrenderscanlines = normalscanlines（fceux "2x 后渲染"）
+//   2x-VBlank     → vblankscanlines = normalscanlines
+// totalscanlines 由 PPU 循环按 overclock_enabled 每帧重算，无需手动刷新。
+static void applyOverclock() {
+    if (s_optOverclock == "2x-Postrender") {
+        overclock_enabled = true;
+        postrenderscanlines = (normalscanlines > 0) ? normalscanlines : 240;
+        vblankscanlines = 0;
+    } else if (s_optOverclock == "2x-VBlank") {
+        overclock_enabled = true;
+        postrenderscanlines = 0;
+        vblankscanlines = (normalscanlines > 0) ? normalscanlines : 240;
+    } else {
+        overclock_enabled = false;
+        postrenderscanlines = 0;
+        vblankscanlines = 0;
+    }
+    LOGI("FC option: overclock = %s (postrender=%d vblank=%d)",
+         s_optOverclock.c_str(), postrenderscanlines, vblankscanlines);
+}
 
 // Controller state packed into ONE 32-bit word, exactly like the reference
 // engine: fceux UpdateGP reads the gamepad int32 as four packed pads —
@@ -313,6 +409,12 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
     // override it afterwards.
     FCEUI_SetVidSystem(s_vidSystem);
 
+    // ★ FC 设置生效修复：ROM 载入后应用用户设置（调色板/NTSC/超频/裁剪）。
+    // setCoreOption 在载入前到达时引擎尚未起立（FCEUI_SetUserPalette 等
+    // 需要 GameInfo），此处统一重放一次，保证首次启动即生效。
+    applyPaletteAndFilter();
+    applyOverclock();
+
     // Input: one shared 32-bit word, ports 0/1 (reference layout:
     // bits 0-7 = 1P, bits 8-15 = 2P). Fourscore attached like the reference.
     FCEUI_SetInputFourscore(true);
@@ -426,6 +528,23 @@ void stepFrame() {
             return;
     } else {
         s_ffFrameSkip.store(0, std::memory_order_relaxed);
+    }
+
+    // ★ 裁剪过扫描（fceumm crop_overscan 等价实现）：blit 时输出 (8,8)–(247,231)
+    //   子矩形（240x224），标准 NTSC 过扫描边界 —— 与 fceumm 的核心几何裁剪
+    //   行为一致（applyFilterAndBlit 支持独立 stride，子矩形零拷贝）。
+    if (s_optCropOverscan) {
+        constexpr int kCrop = 8;                       // 每边裁剪像素
+        constexpr int kCropW = kNesW - 2 * kCrop;      // 240
+        constexpr int kCropH = kNesH - 2 * kCrop;      // 224
+        coreshared::applyFilterAndBlit(
+            s_window, s_windowMtx,
+            s_frame + (size_t)kCrop * kNesW + kCrop, kCropW, kCropH, kNesW,
+            s_videoFilter.load(std::memory_order_relaxed),
+            s_xbrBuffer, s_hq4xBuffer, s_xbrMidBuffer,
+            kNesW, kNesH,
+            s_highQualityScaling.load(std::memory_order_relaxed));
+        return;
     }
 
     coreshared::applyFilterAndBlit(
@@ -550,20 +669,64 @@ void setSurface(void* nativeWindow) {
 }
 
 // ---------------------------------------------------------------------------
-// Core options — only the region setting maps to the fceux engine; the rest
-// (fceumm_* keys sent by the existing settings UI) are accepted and stored
-// for API compatibility but have no engine effect.
+// Core options —— ★ FC 设置全部生效修复。
+//
+// 旧实现只认 fceumm_region，其余 fceumm_* 键被静默吞掉（注释原话：
+// "have no engine effect"）—— 用户改调色板/超频/裁剪/NTSC 滤镜全部无效。
+// 现在 fceux 引擎真实支持的选项逐一映射：
+//   fceumm_region        → PAL: FCEUI_SetVidSystem(1)；Dendy: FCEUI_SetRegion(2)
+//                          （dendy=1 + NTSC 时序，290 行）；其余 → NTSC
+//   fceumm_palette       → FCEUI_SetUserPalette（nes_palettes.h 权威色表）
+//   fceumm_ntsc_filter   → ntsc: FCEUI_SetNTSCTH(true) 生成 NTSC 调色板；
+//                          monochrome: 灰度用户调色板
+//   fceumm_overclocking  → fceux 原生超频全局量（postrender / vblank 扫描行）
+//   fceumm_overscan_*    → 裁剪过扫描（blit 时输出 240x224 子矩形）
 // ---------------------------------------------------------------------------
 void setCoreOption(const std::string& key, const std::string& value) {
     if (key == "fceumm_region") {
         if (value == "PAL") {
-            applyRegion(1);
+            s_vidSystem = 1;
+            if (s_loaded) FCEUI_SetVidSystem(1);
+        } else if (value == "Dendy") {
+            // Dendy = NTSC 时序 + 290 扫描行（FCEUI_SetRegion(2) 内部置 dendy=1）
+            s_vidSystem = 0;
+            if (s_loaded) {
+                FCEUI_SetVidSystem(0);
+                FCEUI_SetRegion(2);
+            }
         } else {
-            // "Auto" / "NTSC" / "Dendy" → NTSC (reference behavior)
-            applyRegion(0);
+            // "Auto" / "NTSC" → NTSC
+            s_vidSystem = 0;
+            if (s_loaded) FCEUI_SetVidSystem(0);
         }
         LOGI("Core option %s = %s (vidSystem=%d)",
              key.c_str(), value.c_str(), s_vidSystem);
+        return;
+    }
+    if (key == "fceumm_palette") {
+        s_optPalette = value;
+        if (s_loaded) applyPaletteAndFilter();
+        return;
+    }
+    if (key == "fceumm_ntsc_filter") {
+        // "ntsc" = NTSC 生成（新选项）；"composite"/"svideo"/"rgb" 旧值按
+        // NTSC 生成处理（fceux 无 blargg 分级，近似语义）；monochrome = 黑白。
+        s_optNtscFilter = (value == "disabled") ? "disabled"
+                        : (value == "monochrome") ? "monochrome"
+                        : "ntsc";
+        if (s_loaded) applyPaletteAndFilter();
+        return;
+    }
+    if (key == "fceumm_overclocking") {
+        s_optOverclock = value;
+        applyOverclock();
+        return;
+    }
+    if (key.rfind("fceumm_overscan_", 0) == 0) {
+        // cropVal 由 Kotlin 层下发："8" = 裁剪开启，"0"/"disabled" = 关闭
+        s_optCropOverscan = (value != "0" && value != "disabled");
+        LOGI("Core option %s = %s (crop %s)", key.c_str(), value.c_str(),
+             s_optCropOverscan ? "ON" : "OFF");
         return;
     }
     LOGI("Core option (no-op on fceux engine): %s = %s",

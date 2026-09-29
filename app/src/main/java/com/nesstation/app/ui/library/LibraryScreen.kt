@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 
@@ -217,6 +218,8 @@ fun LibraryScreen(
     var pendingIconGame by remember { mutableStateOf<GameEntry?>(null) }
     var pendingDeleteGame by remember { mutableStateOf<GameEntry?>(null) }
     var pendingRenameGame by remember { mutableStateOf<GameEntry?>(null) }
+    // ★ 封面候选选择：长按菜单「选择封面」→ 拉取候选图列表弹窗
+    var pendingCoverGame by remember { mutableStateOf<GameEntry?>(null) }
 
     // 刷新/重扫协程作用域。refreshList() 的文件夹重扫涉及 SAF 逐层 query +
     // 每个新文件的标题读取（含大量 CHD 镜像的目录尤其明显），整体搬到 IO
@@ -1611,6 +1614,12 @@ fun LibraryScreen(
                             pendingIconGame = game
                             iconPickerLauncher.launch(arrayOf("image/*"))
                         }
+                        // ★ 封面候选选择：中文名/模糊命名搜不到满意封面时，
+                        //   拉取多张候选让玩家手动指定（CoverFetcher.fetchCandidates）
+                        MenuOption("选择封面") {
+                            longPressGame = null
+                            pendingCoverGame = game
+                        }
                         MenuOption(if (game.isFavorite) "取消收藏" else "收藏") {
                             longPressGame = null
                             RomStore.toggleFavorite(context, game.id)
@@ -1645,6 +1654,21 @@ fun LibraryScreen(
         JavaGameSettingsDialog(
             game = game,
             onDismiss = { pendingJavaSettingsGame = null }
+        )
+    }
+
+    // ★ 封面候选选择弹窗（长按卡片「选择封面」）：
+    //   后台拉取候选封面（精确候选 + 模糊命中名，最多 8 张），
+    //   网格展示，点选即设为该游戏的正式封面。
+    pendingCoverGame?.let { game ->
+        CoverCandidateDialog(
+            game = game,
+            onDismiss = { pendingCoverGame = null },
+            onPicked = {
+                pendingCoverGame = null
+                refreshList(postMessage = "封面已更新")
+            },
+            onError = { pendingCoverGame = null }
         )
     }
 
@@ -2660,5 +2684,158 @@ private fun JavaSettingsSwitchRow(
                 checkedTrackColor = Color(0xFF5A4A1F)
             )
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ★ 封面候选选择弹窗（中文名/模糊匹配封面让玩家挑选）
+// ---------------------------------------------------------------------------
+/**
+ * 「选择封面」弹窗：后台调用 CoverFetcher.fetchCandidates 拉取候选封面
+ * （精确候选名 + libretro 系统索引模糊命中，最多 8 张），网格展示。
+ *
+ * 数据来源与主流程一致（thumbnails.libretro.com），搜索名走
+ * coverSearchName（街机/DC 用实际 zip 文件名，中文标题先经
+ * CnGameNameMapper 翻译成英文）—— 解决"中文名下载不到封面/候选"
+ * 后让玩家最终定夺的交互闭环。
+ *
+ * 点选任意候选 → CoverFetcher.pickCandidate 复制为正式封面并写回
+ * RomStore（coverPath 持久化），DC 平台同时同步 flycast boxart 目录。
+ */
+@androidx.compose.runtime.Composable
+private fun CoverCandidateDialog(
+    game: com.nesstation.app.core.model.GameEntry,
+    onDismiss: () -> Unit,
+    onPicked: () -> Unit,
+    onError: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var candidates by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf<List<Pair<java.io.File, String>>>(emptyList())
+    }
+    var loading by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
+    var picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var progress by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
+
+    // 弹出即后台拉取（IO 线程；逐张下载约 250ms 间隔限速）
+    androidx.compose.runtime.LaunchedEffect(game.id) {
+        loading = true
+        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.nesstation.app.core.storage.CoverFetcher.fetchCandidates(
+                context, game, max = 8,
+                onProgress = { done, _ -> progress = done }
+            )
+        }
+        candidates = result
+        loading = false
+        if (result.isEmpty()) onError()
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = Color.White,
+            tonalElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth(0.92f)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    text = "选择封面",
+                    fontWeight = FontWeight.SemiBold, fontSize = 16.sp,
+                    color = Color(0xFF1E2A3A)
+                )
+                Text(
+                    text = (game.customTitle?.takeIf { it.isNotBlank() } ?: game.title) +
+                        " · 候选来自 libretro 封面库（模糊匹配）",
+                    fontSize = 11.sp, color = Color(0xFF8899AA),
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                )
+                if (loading) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 36.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator(
+                            color = Color(0xFFE74C3C)
+                        )
+                        Spacer(Modifier.size(10.dp))
+                        Text(
+                            "正在搜索候选封面…（已找到 $progress 张）",
+                            fontSize = 12.sp, color = Color(0xFF667788)
+                        )
+                    }
+                } else if (candidates.isEmpty()) {
+                    Text(
+                        "未找到候选封面。可尝试「重命名」为英文官方名后再试。",
+                        fontSize = 12.sp, color = Color(0xFF667788),
+                        modifier = Modifier.padding(vertical = 24.dp)
+                    )
+                } else {
+                    androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                        columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(3),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 380.dp)
+                    ) {
+                        items(candidates.size) { idx ->
+                            val (file, name) = candidates[idx]
+                            val bmp = androidx.compose.runtime.remember(file.absolutePath) {
+                                BitmapFactory.decodeFile(file.absolutePath)
+                            }
+                            Column(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        if (!picked) {
+                                            picked = true
+                                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                                                val ok = com.nesstation.app.core.storage.CoverFetcher
+                                                    .pickCandidate(context, game, file)
+                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                    if (ok) onPicked() else onError()
+                                                }
+                                            }
+                                        }
+                                    }
+                            ) {
+                                if (bmp != null) {
+                                    Image(
+                                        bitmap = bmp.asImageBitmap(),
+                                        contentDescription = name,
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .aspectRatio(0.72f)
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .aspectRatio(0.72f)
+                                            .background(Color(0xFFE8EEF4))
+                                    )
+                                }
+                                Text(
+                                    name,
+                                    fontSize = 9.sp, lineHeight = 11.sp,
+                                    color = Color(0xFF334455),
+                                    maxLines = 2,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFFF2F5F8))
+                                        .padding(horizontal = 4.dp, vertical = 3.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.size(10.dp))
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                    TextButton(onClick = onDismiss) { Text("关闭") }
+                }
+            }
+        }
     }
 }

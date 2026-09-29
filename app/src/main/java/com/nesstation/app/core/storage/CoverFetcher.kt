@@ -138,18 +138,7 @@ object CoverFetcher {
         return when (platform) {
             GamePlatform.NES -> listOf("Nintendo - Nintendo Entertainment System")
             GamePlatform.SFC -> listOf("Nintendo - Super Nintendo Entertainment System")
-            // ★ GBC 封面目录修复：libretro 缩略图库把 Game Boy Color 游戏
-            //   （口袋妖怪 金/银/水晶 等）放在 "Nintendo - Game Boy Color"
-            //   目录下，纯 GB 目录里没有 → .gbc ROM 全部 404。按扩展名
-            //   优先猜一个、两个都试（与 NGCWII 双目录策略一致）。
-            GamePlatform.GB -> {
-                val ext = romFileName?.substringAfterLast('.', "")?.lowercase() ?: ""
-                if (ext == "gbc") {
-                    listOf("Nintendo - Game Boy Color", "Nintendo - Game Boy")
-                } else {
-                    listOf("Nintendo - Game Boy", "Nintendo - Game Boy Color")
-                }
-            }
+            GamePlatform.GB -> listOf("Nintendo - Game Boy")
             GamePlatform.GBA -> listOf("Nintendo - Game Boy Advance")
             GamePlatform.MD -> listOf("Sega - Mega Drive - Genesis")
             GamePlatform.PCE -> listOf("NEC - PC Engine - TurboGrafx-16")
@@ -297,26 +286,26 @@ object CoverFetcher {
         }
         val romFile = game.romPath?.substringAfterLast('/') ?: ""
         val systemDirs = libretroSystemDir(game.platform, romFile)
+        // ★ Java 游戏：JAR 内嵌图标/封面直接提取（J2ME 游戏自带 icon，
+        //   上游模拟器均直接读 JAR 内资源）—— 无需联网。
+        if (game.platform == GamePlatform.JAVA) {
+            extractJarCover(context, game)?.let { return it }
+            // JAR 无内嵌图 → 继续走后续缩略图库路径（用游戏名）
+        }
         if (systemDirs.isEmpty()) return null
         // ★ SAF URI 双重编码修复：game.romPath 在 SAF 导入时是 content:// URI，
         //   最后一段是 URL 编码的 documentId（含 %20 %28 %5B 等编码字符）。
         //   旧实现对它直接 substringAfterLast + substringBeforeLast('.'),
         //   再经 urlSeg 二次编码 → 永远 404。
         //   game.title 在导入时由 queryDisplayName 解码后写入，是干净的可读名。
-        //   优先用 game.title；只有 title 为空时才退回 romPath 解析。
-        val rawName = game.title.takeIf { it.isNotBlank() }
-            ?: romFile.substringBeforeLast('.').takeIf { it.isNotBlank() }
-            ?: return null
-        // ★★ 中文 ROM 名 → 英文匹配修复 ★★
-        //   中文命名 ROM（"超级玛丽 (汉化)"、"魂斗罗2"、"口袋妖怪金"）对
-        //   No-Intro/libretro 的英文封面库，精确与模糊（英文词集）都打不中。
-        //   现在先用内置词典把中文名直译成英文候选（剥汉化/中文标签 +
-        //   长词优先短语翻译 + 序号保留），放在候选最前；纯英文名完全
-        //   不受影响（zhToEnCandidates 对无 CJK 输入返回空）。
-        val zhCandidates = zhToEnCandidates(rawName)
-        val candidates = (zhCandidates + nameCandidates(rawName))
-            .distinct()
-            .take(MAX_CANDIDATES)
+        // ★★★ 封面搜索名（平台感知 + 中文翻译，本轮升级）★★★
+        //   1. 街机：用**扫描文件夹的实际 zip 名**（kof97）而非自定义显示名
+        //      —— libretro 街机目录按驱动名组织，用中文名永远搜不到；
+        //   2. DC：flycast boxart 上游约定按内容文件名取图，同样用实际名；
+        //   3. 全平台：标题含中文时先经 CnGameNameMapper 翻译成英文
+        //      （"魂斗罗"→"Contra"）再走模糊匹配 —— 中文模糊转英文下载。
+        val rawName = coverSearchName(game) ?: return null
+        val candidates = nameCandidates(rawName)
         if (candidates.isEmpty()) return null
 
         val dest = File(coversDir(context), "${game.id}.png")
@@ -324,12 +313,18 @@ object CoverFetcher {
             // 1) 盒装封面（Named_Boxarts）
             for (name in candidates) {
                 val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
-                if (downloadCached(url, dest, cache)) return dest
+                if (downloadCached(url, dest, cache)) {
+                    syncDcBoxart(context, game, dest)
+                    return dest
+                }
             }
             // 2) 游戏截图兜底（Named_Snaps —— 有图总比占位色块好）
             for (name in candidates) {
                 val url = "$BASE/${urlSeg(sys)}/Named_Snaps/${urlSeg(name)}.png"
-                if (downloadCached(url, dest, cache)) return dest
+                if (downloadCached(url, dest, cache)) {
+                    syncDcBoxart(context, game, dest)
+                    return dest
+                }
             }
         }
         // ★★ 封面模糊匹配（第二轮）：所有精确候选都 404 后，用系统索引
@@ -339,23 +334,245 @@ object CoverFetcher {
         //   （"模糊读取 ROM 名而不是绝对名字"的需求）。
         for (sys in systemDirs) {
             val index = fetchSystemIndex(context, sys) ?: continue
-            // ★ 中文直译名同样参与模糊匹配（"超级玛丽" → "Super Mario"）
-            val fuzzyNames = LinkedHashSet<String>()
-            for (t in listOf(rawName) + zhCandidates) {
-                fuzzyNames.addAll(fuzzyMatch(t, index))
-            }
-            val fuzzy = fuzzyNames.toList().take(MAX_FUZZY_TRIES)
+            val fuzzy = fuzzyMatch(rawName, index)
             for (name in fuzzy) {
                 // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
                 if (candidates.any { it.equals(name, ignoreCase = true) }) continue
                 val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
                 if (downloadImage(url, dest)) {
                     Log.i(TAG, "fuzzy cover hit: '$rawName' -> '$name' ($sys)")
+                    syncDcBoxart(context, game, dest)
                     return dest
                 }
             }
         }
         return null
+    }
+
+    /**
+     * ★ 封面搜索名（平台感知 + 中文翻译）：
+     *   - ARCADE → 扫描文件夹的实际 zip/7z 文件名（libretro 街机目录按
+     *     驱动名组织；显示名/中文名搜不到）——"读取实际 zip 名"的需求；
+     *   - DC → 实际 ROM 文件名（flycast boxart 上游按内容文件名约定）；
+     *   - 其它 → game.title；含 CJK 时先过 CnGameNameMapper 中→英翻译。
+     */
+    fun coverSearchName(game: GameEntry): String? {
+        val romFile = game.romPath?.substringAfterLast('/') ?: ""
+        return when (game.platform) {
+            GamePlatform.ARCADE, GamePlatform.DC -> {
+                val stem = romFile.substringBeforeLast('.')
+                val base = stem.takeIf { it.isNotBlank() }
+                    ?: game.title.takeIf { it.isNotBlank() }
+                    ?: return null
+                translateIfCjk(base)
+            }
+            else -> {
+                val base = game.title.takeIf { it.isNotBlank() }
+                    ?: romFile.substringBeforeLast('.').takeIf { it.isNotBlank() }
+                    ?: return null
+                translateIfCjk(base)
+            }
+        }
+    }
+
+    /** 含 CJK 的名字先过中文→英文映射；未命中原样返回（继续走模糊匹配）。 */
+    private fun translateIfCjk(name: String): String {
+        if (!CnGameNameMapper.containsCjk(name)) return name
+        CnGameNameMapper.resolve(name)?.let {
+            Log.i(TAG, "cn name mapped: '$name' -> '$it'")
+            return it
+        }
+        return name
+    }
+
+    /**
+     * ★ Java (J2ME) 游戏内嵌封面提取 —— 直接从 JAR 取图，无需联网。
+     *   来源优先级（与上游 J2ME 模拟器一致）：
+     *     1. META-INF/MANIFEST.MF 的 MIDlet-Icon 字段；
+     *     2. META-INF/MANIFEST.MF 的 MIDlet-n 三元组中第 2 个字段（图标路径）；
+     *     3. 同目录 .jad 描述文件的 MIDlet-Icon（若与 jar 同在）；
+     *     4. JAR 根目录下最大的 .png/.jpg（多数 J2ME 游戏首页图标即封面）。
+     *   提取失败返回 null（调用方继续走缩略图库路径）。
+     */
+    fun extractJarCover(context: Context, game: GameEntry): File? {
+        val romPath = game.romPath ?: return null
+        val dest = File(coversDir(context), "${game.id}.png")
+        if (dest.exists() && dest.length() > 0) return dest
+        try {
+            val file = if (romPath.startsWith("content://")) {
+                // SAF 导入的 jar：拷到缓存再解（JavaGameStore 已物化到本地，
+                // romPath 一般是真实路径；此处仅兑底）
+                null
+            } else {
+                java.io.File(romPath)
+            }
+            if (file == null || !file.exists()) return null
+            var iconPath: String? = null
+            var largest: Pair<Long, java.util.zip.ZipEntry>? = null
+            java.util.zip.ZipFile(file).use { zf ->
+                // 1/2) MANIFEST 声明的图标
+                val mf = zf.getEntry("META-INF/MANIFEST.MF")
+                if (mf != null) {
+                    val text = zf.getInputStream(mf).bufferedReader().readText()
+                    // MIDlet-Icon: icon.png
+                    Regex("(?im)^MIDlet-Icon\\s*:\\ *(.+)$").find(text)?.let {
+                        iconPath = it.groupValues[1].trim()
+                    }
+                    if (iconPath.isNullOrBlank()) {
+                        // MIDlet-1: 名称, 图标, 类（第 2 字段）
+                        Regex("(?im)^MIDlet-1\\s*:\\ *([^,]*),\\s*([^,]*),").find(text)?.let {
+                            val p = it.groupValues[2].trim()
+                            if (p.isNotBlank()) iconPath = p
+                        }
+                    }
+                }
+                iconPath?.takeIf { it.isNotBlank() }?.let { declared ->
+                    // 大小写不敏感 + 去前缀 '/' 查找
+                    val want = declared.removePrefix("/").lowercase()
+                    val entries = zf.entries()
+                    while (entries.hasMoreElements()) {
+                        val e = entries.nextElement()
+                        if (!e.isDirectory && e.name.lowercase() == want) {
+                            saveEntryIfImage(zf, e, dest)?.let { return it }
+                        }
+                    }
+                }
+                // 4) 根目录最大图片兑底
+                val entries = zf.entries()
+                while (entries.hasMoreElements()) {
+                    val e = entries.nextElement()
+                    if (e.isDirectory) continue
+                    val n = e.name
+                    if ('/' in n) continue  // 只看根目录
+                    val lower = n.lowercase()
+                    if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
+                        val cur = largest
+                        if (cur == null || e.size > cur.first) largest = e.size to e
+                    }
+                }
+                largest?.second?.let { e ->
+                    saveEntryIfImage(zf, e, dest)?.let { return it }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "jar cover extract failed: ${t.message}")
+        }
+        return null
+    }
+
+    /** 解压 JAR 条目到 dest（校验图片魔数）；非图片/损坏返回 null。 */
+    private fun saveEntryIfImage(
+        zf: java.util.zip.ZipFile,
+        e: java.util.zip.ZipEntry,
+        dest: File
+    ): File? {
+        try {
+            val data = zf.getInputStream(e).use { it.readBytes() }
+            if (data.size > MAX_IMAGE_BYTES || data.size < 32) return null
+            if (!looksLikeImage(data.copyOfRange(0, 8.coerceAtMost(data.size)))) return null
+            dest.parentFile?.mkdirs()
+            dest.writeBytes(data)
+            Log.i(TAG, "jar cover extracted: ${e.name} (${data.size}B)")
+            return dest
+        } catch (_: Throwable) {
+            return null
+        }
+    }
+
+    /**
+     * ★ DC 专用：下载成功的封面同步落一份到 flycast 上游约定的
+     *   boxart 目录（<filesDir>/dc/boxart/<ROM 文件名>.png）。flycast 核心按
+     *   "Home Folder/boxart/<内容文件名>" 查找封面（lib 内字符串实测：
+     *   "If empty, Flycast will use the default Home Folder/boxart for
+     *   downloads and generated art"），NesStation 的 flycast home = dc/。
+     */
+    private fun syncDcBoxart(context: Context, game: GameEntry, cover: File) {
+        if (game.platform != GamePlatform.DC) return
+        try {
+            val romFile = game.romPath?.substringAfterLast('/') ?: return
+            val stem = romFile.substringBeforeLast('.').takeIf { it.isNotBlank() } ?: return
+            val dir = File(File(context.filesDir, "dc"), "boxart")
+            dir.mkdirs()
+            java.io.File(dir, "$stem.png").takeIf { !it.exists() }?.let {
+                it.writeBytes(cover.readBytes())
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "dc boxart sync failed: ${t.message}")
+        }
+    }
+
+    /**
+     * ★★★ 封面候选列表（让玩家选择）★★★
+     * 对单游戏下载最多 [max] 张候选封面（精确候选 + 模糊命中名），
+     * 每张独立落盘 covers/<gameId>_cand<i>.png，配合库页面长按菜单的
+     * "选择封面"弹窗展示 —— 玩家点选哪张就用哪张（[pickCandidate]）。
+     * @return (文件, 候选名) 列表；全部失败返回空表。
+     */
+    fun fetchCandidates(
+        context: Context,
+        game: GameEntry,
+        max: Int = 8,
+        onProgress: ((Int, Int) -> Unit)? = null
+    ): List<Pair<File, String>> {
+        val rawName = coverSearchName(game) ?: return emptyList()
+        val romFile = game.romPath?.substringAfterLast('/') ?: ""
+        val systemDirs = libretroSystemDir(game.platform, romFile)
+        if (systemDirs.isEmpty()) return emptyList()
+        val results = LinkedHashMap<String, File>() // name -> file（去重）
+        val out = ArrayList<Pair<File, String>>()
+        try {
+            val exact = nameCandidates(rawName)
+            // 组装完整候选名序列：精确优先，然后模糊命中
+            val names = ArrayList(exact)
+            for (sys in systemDirs) {
+                val index = fetchSystemIndex(context, sys) ?: continue
+                for (n in fuzzyMatch(rawName, index)) {
+                    if (names.none { it.equals(n, ignoreCase = true) }) names.add(n)
+                    if (names.size >= max * 3) break  // 候选池上限（避免拉全表）
+                }
+                if (names.size >= max * 3) break
+            }
+            for (sys in systemDirs) {
+                for (name in names) {
+                    if (out.size >= max) break
+                    if (results.containsKey(name.lowercase())) continue
+                    val i = out.size
+                    val f = File(coversDir(context), "${game.id}_cand$i.png")
+                    val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
+                    if (downloadImage(url, f)) {
+                        results[name.lowercase()] = f
+                        out.add(f to name)
+                        onProgress?.invoke(out.size, max)
+                        try { Thread.sleep(FETCH_INTERVAL_MS) } catch (_: InterruptedException) {}
+                    }
+                }
+                if (out.size >= max) break
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "fetchCandidates failed: ${t.message}")
+        }
+        return out
+    }
+
+    /**
+     * 玩家选定候选封面 → 复制为正式封面并写回 RomStore。
+     * @return true 写回成功（UI 刷新列表即可看到新封面）。
+     */
+    fun pickCandidate(context: Context, game: GameEntry, candidate: File): Boolean {
+        return try {
+            val dest = File(coversDir(context), "${game.id}.png")
+            dest.parentFile?.mkdirs()
+            java.io.FileInputStream(candidate).use { input ->
+                dest.outputStream().use { input.copyTo(it) }
+            }
+            RomStore.setCoverPath(context, game.id, dest.absolutePath)
+            // DC：玩家选定后同样同步 flycast boxart 目录
+            syncDcBoxart(context, game, dest)
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "pickCandidate failed: ${t.message}")
+            false
+        }
     }
 
     // ------------------------------------------------------------------
@@ -474,12 +691,6 @@ object CoverFetcher {
                 var s = 0.55 * jaccard + 0.45 * lev
                 // 前缀包含加分："zelda" vs "the legend of zelda" 类标题差异
                 if (target.length >= 4 && (cand.startsWith(target) || target.startsWith(cand))) s += 0.08
-                // ★ 词集包含加分：中文直译名常是"系列名+序号"（"魂斗罗2" →
-                //   "contra 2"），而官方名是全称（"Contra II" 归一化后同为
-                //   "contra 2" 命中；"Super Mario Bros. 3" 等全称更长）。
-                //   目标词集是候选词集的子集且 ≥2 词时视为强相关
-                //   （"castlevania 2" ⊆ "castlevania 2 simon s quest"）。
-                if (targetTokens.size >= 2 && candTokens.containsAll(targetTokens)) s += 0.15
                 s
             }
             if (score > 1.0) score = 1.0
@@ -528,230 +739,6 @@ object CoverFetcher {
             val tmp = prev; prev = cur; cur = tmp
         }
         return 1.0 - prev[b.length] / maxLen
-    }
-
-    // ------------------------------------------------------------------
-    // ★★ 中文 ROM 名 → 英文直译（中文模糊转英文下载封面）
-    // ------------------------------------------------------------------
-
-    /** 判断字符串是否含汉字（CJK 统一表意文字区）。 */
-    private fun hasCJK(s: String): Boolean = s.any { it.code in 0x4E00..0x9FFF }
-
-    /**
-     * 中文→英文词典（常见游戏系列 / 作品名，FC/SFC/GB/GBC/GBA/MD/DC/街机）。
-     * 匹配按 **键长降序** 进行（"超级魂斗罗" 先于 "魂斗罗"，"超级马里奥世界"
-     * 先于 "超级马里奥"），序号（阿拉伯数字 / 罗马数字）由后续流程保留，
-     * 因此 "魂斗罗2" → "Contra 2"、"超级马里奥兄弟3" → "Super Mario Bros 3"。
-     */
-    private val ZH_EN: List<Pair<String, String>> = listOf(
-        // --- 马里奥家族（长词优先） ---
-        "超级马里奥兄弟" to "Super Mario Bros",
-        "超级马力欧兄弟" to "Super Mario Bros",
-        "超级玛丽兄弟" to "Super Mario Bros",
-        "超级玛丽世界" to "Super Mario World",
-        "超级马里奥世界" to "Super Mario World",
-        "超级马力欧世界" to "Super Mario World",
-        "超级马里奥赛车" to "Mario Kart",
-        "超级马里奥" to "Super Mario",
-        // ★ "超级玛丽" 译为全称 Super Mario Bros —— FC 版官方名。译成短名
-        //   "Super Mario" 时精确候选与官方库全不匹配，模糊轮还会命中
-        //   盗版卡带（"Super Mario 9" 等黑客版）的封面。
-        "超级玛丽" to "Super Mario Bros",
-        "超级玛莉" to "Super Mario Bros",
-        "超级马力欧" to "Super Mario",
-        "马里奥赛车" to "Mario Kart",
-        "马力欧卡丁车" to "Mario Kart",
-        "马里奥医生" to "Dr. Mario",
-        "马力欧医生" to "Dr. Mario",
-        "马里奥派对" to "Mario Party",
-        "路易吉洋馆" to "Luigi's Mansion",
-        "马里奥" to "Mario",
-        "马力欧" to "Mario",
-        "玛丽奥" to "Mario",
-        "玛莉奥" to "Mario",
-        "大金刚国度" to "Donkey Kong Country",
-        "森喜刚" to "Donkey Kong",
-        "大金刚" to "Donkey Kong",
-        "耀西岛" to "Yoshi's Island",
-        "耀西" to "Yoshi",
-        // --- 塞尔达 ---
-        "塞尔达传说 众神的三角力量" to "The Legend of Zelda A Link to the Past",
-        "塞尔达传说众神的三角力量" to "The Legend of Zelda A Link to the Past",
-        "众神的三角力量" to "A Link to the Past",
-        "三角力量" to "A Link to the Past",
-        "塞尔达传说 织梦岛" to "The Legend of Zelda Link's Awakening",
-        "织梦岛" to "Link's Awakening",
-        "塞尔达传说" to "The Legend of Zelda",
-        "塞尔达" to "The Legend of Zelda",
-        "梦见岛" to "Link's Awakening",
-        "姆吉拉的假面" to "Majora's Mask",
-        "时之笛" to "Ocarina of Time",
-        // --- 科乐美系 ---
-        "超级魂斗罗" to "Super Contra",
-        "魂斗罗力量" to "Contra Force",
-        "魂斗罗" to "Contra",
-        "赤色要塞" to "Jackal",
-        "沙罗曼蛇" to "Life Force",
-        "恶魔城传说" to "Castlevania III Dracula's Curse",
-        "恶魔城" to "Castlevania",
-        "忍者龙剑传" to "Ninja Gaiden",
-        "赤影战士" to "Shadow Warriors",
-        "影子传说" to "The Legend of Kage",
-        "热血硬派" to "River City Ransom",
-        "热血物语" to "River City Ransom",
-        // --- 卡普空系 ---
-        "洛克人" to "Mega Man",
-        "街头霸王" to "Street Fighter",
-        "街霸" to "Street Fighter",
-        "快打旋风" to "Final Fight",
-        "恐龙快打" to "Cadillacs and Dinosaurs",
-        "名将" to "Captain Commando",
-        "三国志Ⅱ" to "Dynasty Wars 2",
-        "圆桌骑士" to "Knights of the Round",
-        "吞食天地" to "Destiny of an Emperor",
-        "大战鲨鱼帮" to "Yo! Noid",
-        // --- 世嘉系 ---
-        "战斧" to "Golden Axe",
-        "怒之铁拳" to "Streets of Rage",
-        "索尼克" to "Sonic",
-        "刺猬索尼克" to "Sonic the Hedgehog",
-        // --- SNK 系 ---
-        "拳皇" to "The King of Fighters",
-        "格斗之王" to "The King of Fighters",
-        "饿狼传说" to "Fatal Fury",
-        "龙虎之拳" to "Art of Fighting",
-        "侍魂" to "Samurai Shodown",
-        "合金弹头" to "Metal Slug",
-        "三国战记" to "Knights of Valour",
-        "西游释厄传" to "Oriental Legend",
-        // --- 谜题 / 休闲 ---
-        "雪人兄弟" to "Snow Bros",
-        "泡泡龙" to "Bubble Bobble",
-        "松鼠大战" to "Chip n Dale Rescue Rangers",
-        "俄罗斯方块" to "Tetris",
-        "打砖块" to "Arkanoid",
-        "吃豆人" to "Pac-Man",
-        "挖金子" to "Lode Runner",
-        // --- 平台 / 冒险 ---
-        "冒险岛" to "Adventure Island",
-        "忍者神龟" to "Teenage Mutant Ninja Turtles",
-        "忍者龟" to "Teenage Mutant Ninja Turtles",
-        "蝙蝠侠" to "Batman",
-        "星之卡比" to "Kirby",
-        "卡比" to "Kirby",
-        "银河战士" to "Metroid",
-        "星际火狐" to "Star Fox",
-        // --- RPG / 模拟 ---
-        "牧场物语" to "Harvest Moon",
-        "火焰之纹章" to "Fire Emblem",
-        "火焰纹章" to "Fire Emblem",
-        "高级战争" to "Advance Wars",
-        "黄金太阳" to "Golden Sun",
-        "勇者斗恶龙" to "Dragon Quest",
-        "最终幻想" to "Final Fantasy",
-        "太空战士" to "Final Fantasy",
-        "重装机兵" to "Metal Max",
-        "超级机器人大战" to "Super Robot Wars",
-        "三国演义" to "Romance of the Three Kingdoms",
-        "三国志" to "Romance of the Three Kingdoms",
-        "信长的野望" to "Nobunaga's Ambition",
-        // --- 漫画改编 ---
-        "圣斗士星矢" to "Saint Seiya",
-        "龙珠" to "Dragon Ball",
-        "幽游白书" to "Yu Yu Hakusho",
-        "火影忍者" to "Naruto",
-        "数码宝贝" to "Digimon",
-        "口袋妖怪" to "Pokemon",
-        "宠物小精灵" to "Pokemon",
-        "神奇宝贝" to "Pokemon",
-        "宝可梦" to "Pokemon",
-        // ★ 带空格分隔的版本词（"口袋妖怪 金"）：合成短语整段翻译，避免
-        //   版本单字（金/银/红/蓝…）残留汉字导致译文被丢弃，也避免把
-        //   单字误替换进无关名（如"大金刚"）。
-        "口袋妖怪 红宝石" to "Pokemon Ruby",
-        "口袋妖怪 蓝宝石" to "Pokemon Sapphire",
-        "口袋妖怪 绿宝石" to "Pokemon Emerald",
-        "口袋妖怪 白金" to "Pokemon Platinum",
-        "口袋妖怪 钻石" to "Pokemon Diamond",
-        "口袋妖怪 珍珠" to "Pokemon Pearl",
-        "口袋妖怪 水晶" to "Pokemon Crystal",
-        "口袋妖怪 金" to "Pokemon Gold",
-        "口袋妖怪 银" to "Pokemon Silver",
-        "口袋妖怪 红" to "Pokemon Red",
-        "口袋妖怪 蓝" to "Pokemon Blue",
-        "口袋妖怪 黄" to "Pokemon Yellow",
-        "口袋妖怪 皮卡丘" to "Pokemon Yellow",
-        "宝可梦 红宝石" to "Pokemon Ruby",
-        "宝可梦 蓝宝石" to "Pokemon Sapphire",
-        "宝可梦 绿宝石" to "Pokemon Emerald",
-        "宝可梦 金" to "Pokemon Gold",
-        "宝可梦 银" to "Pokemon Silver",
-        "宠物小精灵 金" to "Pokemon Gold",
-        "宠物小精灵 银" to "Pokemon Silver",
-        "神奇宝贝 金" to "Pokemon Gold",
-        "神奇宝贝 银" to "Pokemon Silver",
-        "口袋妖怪黑" to "Pokemon Black",
-        "口袋妖怪白" to "Pokemon White",
-        "口袋妖怪红宝石" to "Pokemon Ruby",
-        "口袋妖怪蓝宝石" to "Pokemon Sapphire",
-        "口袋妖怪绿宝石" to "Pokemon Emerald",
-        // --- 其他名作 ---
-        "生化危机" to "Resident Evil",
-        "合金装备" to "Metal Gear Solid",
-        "皇牌空战" to "Ace Combat",
-        "实况足球" to "Pro Evolution Soccer",
-        "恶魔城白夜" to "Castlevania Harmony of Dissonance",
-        "晓月圆舞曲" to "Castlevania Aria of Sorrow",
-        "月下夜想曲" to "Castlevania Symphony of the Night"
-    )
-
-    /** 键长降序的词典视图（首次访问时排序，进程内复用）。 */
-    private val ZH_EN_SORTED: List<Pair<String, String>> by lazy {
-        ZH_EN.sortedByDescending { it.first.length }
-    }
-
-    /**
-     * 中文名 → 英文候选名列表（0..2 个）。
-     *
-     * 处理链：
-     *   1. 去 ()/[] 段 —— "(汉化)(中文)[简体]" 等标签随括号去除；
-     *   2. 去无括号的中文限定词 —— "汉化版/中文版/简体/繁体/官方中文" 与
-     *      数量词 "第N代/N代/第N部/第N集"（"吞食天地2代" → "吞食天地2"）；
-     *   3. 词典长词优先直译，序号/字母数字原样保留；
-     *   4. 仍残留汉字的翻译结果丢弃（词典未收录 → 交给模糊轮兜底）；
-     *   5. 混合名（中英并存，如 "超级玛丽 Super Mario Bros"）额外给出
-     *      纯 ASCII 提取候选。
-     */
-    fun zhToEnCandidates(rawName: String): List<String> {
-        if (!hasCJK(rawName)) return emptyList()
-        var s = rawName
-            .replace(Regex("\\([^)]*\\)"), " ")
-            .replace(Regex("\\[[^]]*]"), " ")
-        s = s.replace(Regex("汉化版|汉化|中文版|官方中文|简体中文|繁体中文|简体|繁体|机翻|中文"), " ")
-        s = s.replace(Regex("第[一二三四五六七八九十0-9]+代|第[一二三四五六七八九十0-9]+[部集]|[一二三四五六七八九十0-9]+[部集]"), " ")
-        s = s.replace('_', ' ').replace(Regex("\\s+"), " ").trim()
-        if (s.isEmpty()) return emptyList()
-        val out = LinkedHashSet<String>()
-        // 词典直译（长词优先）
-        val translated = translatePhrases(s)
-        if (translated.isNotBlank() && !hasCJK(translated)) out.add(translated)
-        // 混合名：提取纯 ASCII 段（中英并存时英文段往往就是标题）
-        if (hasCJK(translated)) {
-            val ascii = s.replace(Regex("[^A-Za-z0-9&'!.\\-]+"), " ")
-                .replace(Regex("\\s+"), " ").trim()
-            if (ascii.length >= 3) out.add(ascii)
-        }
-        return out.filter { it.isNotBlank() }
-    }
-
-    /** 词典长词优先直译（只替换仍为中文的段落中的短语，字母数字段原样保留）。 */
-    private fun translatePhrases(s: String): String {
-        var result = s
-        for ((zh, en) in ZH_EN_SORTED) {
-            if (zh !in result) continue
-            result = result.replace(zh, " $en ")
-        }
-        return result.replace(Regex("\\s+"), " ").trim()
     }
 
     /**

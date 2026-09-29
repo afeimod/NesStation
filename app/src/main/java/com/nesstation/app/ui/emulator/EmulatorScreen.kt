@@ -1431,6 +1431,31 @@ fun EmulatorScreen(
             }
         }
     }
+
+    // ★ 3DS 黑屏修复（启动看门狗）：核心"活着但永远不出帧"时（boot 卡死、
+    //   渲染初始化静默失败等）没有任何回调可弹窗 —— 20 秒后系统帧率仍为 0
+    //   且无错误上报，主动给出诊断清单，把无声黑屏变成可行动的提示。
+    LaunchedEffect(platform, loaded) {
+        if (platform != GamePlatform.N3DS || !loaded) return@LaunchedEffect
+        kotlinx.coroutines.delay(20_000)
+        if (!loaded || errorMsg != null) return@LaunchedEffect
+        val azEngine = engine as? com.nesstation.app.core.engine.AzaharEngine ?: return@LaunchedEffect
+        val stats = try { azEngine.getPerfStats() } catch (_: Throwable) { null }
+        val systemFps = stats?.getOrNull(0) ?: 0.0
+        if (systemFps <= 0.5) {
+            val userDir = azEngine.userDirectoryPath()
+            val keys = java.io.File(userDir, "aes_keys.txt")
+            val boot9 = java.io.File(userDir, "boot9.bin")
+            errorMsg = buildString {
+                append("3DS 核心已加载但 20 秒内没有输出任何帧。\n\n")
+                append("启动时 surface 状态: ${if (azEngine.isSurfaceValid()) "有效" else "无效"}\n")
+                append("aes_keys.txt: ${if (keys.exists()) "已存在" else "缺失（加密卡带必需）"}\n")
+                append("boot9.bin: ${if (boot9.exists()) "已存在" else "缺失（系统引导必需）"}\n\n")
+                append("请把密钥/引导文件放入内置存储的 azahar 目录后重试；")
+                append("或确认 ROM 镜像完整未加密（.3ds/.cci/.cxi/.app）。")
+            }
+        }
+    }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
 
     var showMenu by remember { mutableStateOf(false) }
@@ -3438,6 +3463,41 @@ fun EmulatorScreen(
             )
         }
 
+        // ★ 3DS 黑屏修复（错误可见化 · 根治）：旧实现只在 loaded == false 时
+        //   渲染 errorMsg（加载失败提示）。而 Azahar / Ishiiruka 这类推模型
+        //   核心的致命错误发生在 loadRom 返回 true **之后**（核心线程启动失败、
+        //   缺 aes_keys.txt、系统档案缺失、GPU 初始化失败、panic alert……），
+        //   此时 loaded 已为 true，错误文字没有任何 UI 载体 —— 用户永远只看到
+        //   黑屏。现在 loaded 状态下的错误以 AlertDialog 呈现，核心提前退出时
+        //   （onPrematureExit / onEmulationExited / onCoreError 上报）立即弹出。
+        if (loaded && errorMsg != null) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { errorMsg = null },
+                title = { Text("核心运行错误") },
+                text = {
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = errorMsg!!,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        errorMsg = null
+                        // 核心已提前退出 —— 继续留在黑屏界面没有意义，直接退出模拟器页
+                        onExit()
+                    }) { Text("退出游戏") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { errorMsg = null }) { Text("继续停留") }
+                }
+            )
+        }
+
         // Fast-forward speed picker dialog
         if (showFFSpeedPicker) {
             androidx.compose.material3.AlertDialog(
@@ -3480,6 +3540,14 @@ fun EmulatorScreen(
                 padLayout = padLayout,
                 platform = platform,
                 isPortrait = isPortrait,
+                // ★ NGC/WII 编辑器按键过滤：与 OnScreenController 同源的
+                //   控制器组合（ngc / wii+扩展 / 横竖持）—— 旧实现编辑器
+                //   不做过滤，GC/Wii/经典手柄按键全部同时出现。
+                ngcWiiEffectiveMode = if (platform == GamePlatform.NGCWII)
+                    (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)?.effectiveMode() ?: "wii"
+                else "wii",
+                ngcWiiExtension = if (platform == GamePlatform.NGCWII) padLayout.irWiiExtension else "nunchuk",
+                ngcWiiOrientation = if (platform == GamePlatform.NGCWII) padLayout.irWiiOrientation else "vertical",
                 onLayoutChange = { newLayout ->
                     // Just update in-memory state — the LaunchedEffect above
                     // will persist to disk 400ms after the last change.
@@ -4501,39 +4569,25 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
         // 3DS（Azahar）—— "段/键" 复合键直写用户目录 config/config.ini，
         // enabled/disabled 转为核心布尔 true/false，数字枚举原样透传。
         GamePlatform.N3DS -> {
-            // ★★ 配置值格式对齐核心内嵌模板（libazahar.so 默认 config.ini 模板
-            //   逐键核对）★★ 本核心全部布尔设置按 **0/1 整数** 读取
-            //   （模板注释："# 0: Off, 1 (default): On" 等）。旧实现写
-            //   "true"/"false" 字符串 —— 整数解析失败后全部静默回退默认值，
-            //   所有设置形同虚设（3DS 侧"改了不生效/黑屏异常"的来源之一）。
-            //   ⚠ 唯一例外：async_presentation 是**反逻辑**键 —— 模板原文
-            //   "# 0: Enable async presentation, 1 (default): Disable"，即
-            //   0=开启异步呈现、1=禁用（默认禁用：异步呈现线程与前端
-            //   Choreographer 呈现并存时存在同帧竞争风险）。UI"开启"→"0"，
-            //   UI"关闭"→"1"。
-            val b = { v: String -> if (v == "enabled") "1" else "0" }
-            val binv = { v: String -> if (v == "enabled") "0" else "1" }
-            // graphics_api 值域（模板原文 "# 1: OpenGL ES (default), 2: Vulkan"）：
-            // 本构建（Azahar 2125）无软件渲染器，0 为桌面 OpenGL（Android 上
-            // 无 EGL 支持必然黑屏）—— 旧 UI 的 "software" 选项映射为 GLES。
+            val b = { v: String -> if (v == "enabled") "true" else "false" }
             val api = when (layout.azGraphicsApi) {
-                "vulkan" -> "2"; else -> "1"
+                "software" -> "0"; "vulkan" -> "2"; else -> "1"
             }
             engine.setCoreOption("Renderer/graphics_api", api)
-            // （use_gles 键在本构建模板中不存在，已随 graphics_api 移除，不再写入）
+            engine.setCoreOption("Renderer/use_gles", "true")
             engine.setCoreOption("Renderer/resolution_factor", layout.azResolution)
             engine.setCoreOption("Renderer/use_hw_shader", b(layout.azUseHwShader))
             engine.setCoreOption("Renderer/use_shader_jit", b(layout.azUseShaderJit))
             engine.setCoreOption("Renderer/use_vsync", b(layout.azUseVsync))
             engine.setCoreOption("Renderer/use_disk_shader_cache", b(layout.azUseDiskShaderCache))
-            engine.setCoreOption("Renderer/async_presentation", binv(layout.azAsyncPresentation))
+            engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
             engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
             engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
             engine.setCoreOption("Renderer/use_skip_duplicate_frames", b(layout.azSkipDuplicateFrames))
             engine.setCoreOption("Renderer/texture_filter", layout.azTextureFilter)
             engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
             engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
-            engine.setCoreOption("Renderer/use_frame_limit", "1")
+            engine.setCoreOption("Renderer/use_frame_limit", "true")
             engine.setCoreOption("Renderer/frame_limit", layout.azFrameLimit)
             engine.setCoreOption("Renderer/render_3d", layout.azRender3d)
             engine.setCoreOption("Renderer/factor_3d", layout.azFactor3d)
@@ -4552,14 +4606,7 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("Core/use_fastinterp", b(layout.azUseFastInterp))
             engine.setCoreOption("System/is_new_3ds", b(layout.azIsNew3ds))
             engine.setCoreOption("System/region_value", layout.azRegion)
-            // audio_emulation 在本模板中的语义是 0=禁用 / 1=启用（不是 HLE/LLE
-            // 枚举 —— 旧 UI 的 "0=HLE/1=LLE/2=LLE多线程" 写入会把选 HLE 的
-            // 用户音频直接关掉）。音频模拟方式由核心自选，这里只透传开/关。
-            val audioEmu = when (layout.azAudioEmulation) {
-                "0", "disabled" -> "0"
-                else -> "1"
-            }
-            engine.setCoreOption("Audio/audio_emulation", audioEmu)
+            engine.setCoreOption("Audio/audio_emulation", layout.azAudioEmulation)
             // 原生侧 volume 为 0..1 浮点（GetReal）
             val vol = (layout.azVolume.toIntOrNull() ?: 100).coerceIn(0, 100)
             engine.setCoreOption("Audio/volume", (vol / 100.0).toString())
@@ -4578,38 +4625,48 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("Dolphin.ini/Core/CPUThread", b(layout.irDualCore))
             engine.setCoreOption("Dolphin.ini/Core/OverclockEnable", b(layout.irOverclockEnable))
             engine.setCoreOption("Dolphin.ini/Core/Overclock", layout.irOverclock)
-            // ★ GFXBackend 值域修复（参考 APK 设置界面 e.java 实测值域）：
-            //   本核心只认 "OGL" / "Vulkan" / "Software Renderer" / "Null" 四个
-            //   字符串；旧 UI 提供 "SW" —— 核心无法识别，选择"软件渲染"后仍按
-            //   上次有效后端（或默认 OGL）启动。
-            engine.setCoreOption("Dolphin.ini/Core/GFXBackend",
-                if (layout.irBackend == "SW") "Software Renderer" else layout.irBackend)
+            // ★ 渲染后端选择对齐参考 APK：参考版设置 UI 把后端下发给
+            //   Dolphin.ini [Core] 的 **两个键** —— GFXBackend（字符串：
+            //   OGL / Vulkan / Software Renderer / Null，e.java:64 实测）
+            //   与 VideoBackendIndex（整数 0..3，i.java:645 实测）。旧实现
+            //   只写 GFXBackend 且"软件渲染"用非法值 "SW"（参考值应为
+            //   全名 "Software Renderer"）→ 后端选择可能被核心拒绝。
+            //   本地标准化旧值 "SW" 后双键同写，与参考 APK 逐字一致。
+            val backend = when (layout.irBackend) {
+                "SW", "Software" -> "Software Renderer"
+                "Vulkan" -> "Vulkan"
+                "Null" -> "Null"
+                else -> "OGL"
+            }
+            val backendIndex = when (backend) {
+                "Vulkan" -> "1"
+                "Software Renderer" -> "2"
+                "Null" -> "3"
+                else -> "0"
+            }
+            engine.setCoreOption("Dolphin.ini/Core/GFXBackend", backend)
+            engine.setCoreOption("Dolphin.ini/Core/VideoBackendIndex", backendIndex)
             engine.setCoreOption("Dolphin.ini/Core/WiimoteEnableSpeaker", b(layout.irWiimoteSpeaker))
             engine.setCoreOption("Dolphin.ini/Core/WiimoteContinuousScanning", b(layout.irWiimoteScan))
             engine.setCoreOption("Dolphin.ini/Core/AudioStretch", b(layout.irAudioStretch))
             engine.setCoreOption("Dolphin.ini/Core/DSPHLE", b(layout.irDspHle))
-            // ★★ 分辨率倍数无效根治修复 v3（键值语义以核心库 + 参考 APK 为准）★★
-            //   本核心（Ishiiruka 4.0 系）的分辨率键是 **InternalResolution**，
-            //   值语义为**百分比**（参考 APK 设置 UI 默认值 100；100=1x 原生，
-            //   200=2x，300=3x，400=4x）。旧 UI 沿用 Dolphin 5.0 的 EFBScale
-            //   枚举（2=1x/4=2x/6=3x/7=4x）→ 核心把 2 当成 2% 内部分辨率，
-            //   画面糊成马赛克 + 性能崩坏（"硬件加速全失效"的根因之一）。
-            //   这里把旧存档值迁移为百分比，再原样下发。
-            //   段名保持 Video_*（本库 INI 层唯一认识的段名，strings 实测；
-            //   参考 APK 的 per-game 设置同样经 SetUserSetting 映射到 Video_*）。
-            val irRes = when (layout.irResolution) {
-                "2" -> "100"; "4" -> "200"; "6" -> "300"; "7" -> "400"
-                else -> layout.irResolution.toIntOrNull()?.coerceIn(50, 800)?.toString() ?: "100"
-            }
-            engine.setCoreOption("GFX.ini/Video_Settings/InternalResolution", irRes)
-            engine.setCoreOption("GFX.ini/Video_Settings/MSAA", layout.irMsaa)
-            engine.setCoreOption("GFX.ini/Video_Settings/ShowFPS", b(layout.irShowFps))
-            engine.setCoreOption("GFX.ini/Video_Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
-            engine.setCoreOption("GFX.ini/Video_Settings/AspectRatio", layout.irAspect)
-            engine.setCoreOption("GFX.ini/Video_Enhancements/MaxAnisotropy", layout.irAnisotropy)
-            engine.setCoreOption("GFX.ini/Video_Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
-            engine.setCoreOption("GFX.ini/Video_Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
-            engine.setCoreOption("GFX.ini/Video_Hacks/EFBAccessEnable", b(layout.irEfbAccess))
+            // ★★ 内部分辨率取值对齐参考 APK（第二次根治修复）★★
+            //   段名 Settings / Enhancements / Hacks 上一轮已对齐；本轮
+            //   修正取值标度：参考版 InternalResolution 是**百分比标度**
+            //   100/200/300/400（参考 APK 资源数组 array0018/0019 实测，
+            //   显示标签 "1x/2x/3x/4x"）。旧实现写 EFBScale 风格的
+            //   2/4/6/7 → 核心读到非法标度值，渲染初始化异常 =
+            //   "硬件加速全失效/非常卡"的直接根因。旧存量值由
+            //   PadLayoutStore.normalizeIrResolution 自动迁移。
+            engine.setCoreOption("GFX.ini/Settings/InternalResolution", layout.irResolution)
+            engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
+            engine.setCoreOption("GFX.ini/Settings/ShowFPS", b(layout.irShowFps))
+            engine.setCoreOption("GFX.ini/Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
+            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.irAspect)
+            engine.setCoreOption("GFX.ini/Enhancements/MaxAnisotropy", layout.irAnisotropy)
+            engine.setCoreOption("GFX.ini/Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
+            engine.setCoreOption("GFX.ini/Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
+            engine.setCoreOption("GFX.ini/Hacks/EFBAccessEnable", b(layout.irEfbAccess))
         }
     }
 }
@@ -9103,6 +9160,12 @@ private fun PadLayoutEditor(
     padLayout: PadLayout,
     platform: GamePlatform = GamePlatform.NES,
     isPortrait: Boolean = false,
+    // ★ NGC/WII 专属：当前生效控制器组合（与 OnScreenController 同源语义）。
+    //   编辑器按此过滤可拖动按键 —— ngc 只显示 GC 键组；wii 按扩展手柄显示
+    //   Wiimote/Nunchuk/Classic 键组；避免 GC+Wii+Classic 全部同时出现。
+    ngcWiiEffectiveMode: String = "wii",
+    ngcWiiExtension: String = "nunchuk",
+    ngcWiiOrientation: String = "vertical",
     onLayoutChange: (PadLayout) -> Unit,
     surfaceSize: IntSize,
     onClose: () -> Unit
@@ -9170,22 +9233,35 @@ private fun PadLayoutEditor(
     val showL3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
     val showR3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
     // 3DS / NGC-WII 专属键的可编辑开关（与 OnScreenController 一致）
+    // 3DS ZL/ZR 可编辑开关（NGC/WII 键组门控见下方独立块）
     val showZlBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
     val showZrBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zr")
-    val showNgcZ = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_z")
-    val showNgcStart = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_start")
-    val showWiiA = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_a")
-    val showWiiB = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_b")
-    val showWii1 = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_1")
-    val showWii2 = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_2")
-    val showWiiPlus = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_plus")
-    val showWiiMinus = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_minus")
-    val showWiiHome = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
-    val showWiiDpad = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_dpad")
-    val showWiiC = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_c")
-    val showWiiZ = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_z")
-    val showWiiIrNear = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_near")
-    val showWiiIrFar = isNgcWii && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_far")
+    // ★ 编辑器同步叠加"当前控制器组合"门控（与 OnScreenController 同源）：
+    //   ngcWiiGcSet / ngcWiiWiiSet / ngcWiiClassic / ngcWiiNunchuk / ngcWiiHoriz
+    //   旧实现只检查 isButtonHidden，导致编辑器里 GC/Wii/经典手柄全出现。
+    val ngcWiiMode = ngcWiiEffectiveMode
+    val ngcWiiGcSet = isNgcWii && ngcWiiMode == "ngc"
+    val ngcWiiWiiSet = isNgcWii && ngcWiiMode == "wii"
+    val ngcWiiClassic = ngcWiiWiiSet && ngcWiiExtension == "classic"
+    val ngcWiiNunchuk = ngcWiiWiiSet && ngcWiiExtension == "nunchuk"
+    val ngcWiiHoriz = ngcWiiWiiSet && ngcWiiOrientation == "horizontal"
+    val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || (ngcWiiWiiSet && !ngcWiiHoriz))
+    val showNgcZ = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_z")
+    val showNgcStart = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_start")
+    val showWiiA = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_a")
+    val showWiiB = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_b")
+    val showWii1 = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_1")
+    val showWii2 = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_2")
+    val showWiiPlus = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_plus")
+    val showWiiMinus = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_minus")
+    val showWiiHome = ngcWiiWiiSet && !ngcWiiHoriz && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
+    val showWiiDpad = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_dpad")
+    val showWiiC = ngcWiiNunchuk && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_c")
+    val showWiiZ = ngcWiiNunchuk && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_z")
+    val showWiiIrNear = ngcWiiWiiSet && !ngcWiiClassic && !ngcWiiHoriz &&
+        !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_near")
+    val showWiiIrFar = ngcWiiWiiSet && !ngcWiiClassic && !ngcWiiHoriz &&
+        !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_far")
 
     // === Per-button visibility for ALL platforms ===
     // Each platform can independently hide/show individual buttons via the
