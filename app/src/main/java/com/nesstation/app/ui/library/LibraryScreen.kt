@@ -2702,6 +2702,39 @@ private fun JavaSettingsSwitchRow(
  * 点选任意候选 → CoverFetcher.pickCandidate 复制为正式封面并写回
  * RomStore（coverPath 持久化），DC 平台同时同步 flycast boxart 目录。
  */
+/**
+ * 候选封面 UI 模型 —— 位图已在 IO 线程解码完成（[bitmap] 可为 null，
+ * 届时渲染占位色块）。
+ */
+private data class CoverCandidateUi(
+    val file: java.io.File,
+    val name: String,
+    val bitmap: androidx.compose.ui.graphics.ImageBitmap?
+)
+
+/**
+ * 按最长边降采样解码（IO 线程调用）。位图解码失败/损坏 → null（绝不抛出）。
+ * ★ 闪退根治：旧实现在**组合期间**（主线程）remember{} 内直接
+ *   BitmapFactory.decodeFile —— 损坏/超大 PNG 可能触发 native SIGSEGV 或
+ *   OOM（"选择封面按钮点击就闪退"），现在解码全部移到 IO 线程。
+ */
+private fun decodeCoverBitmap(path: String, maxDim: Int = 512): android.graphics.Bitmap? = try {
+    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    var w = bounds.outWidth
+    var h = bounds.outHeight
+    while (maxOf(w, h) / (sample * 2) >= maxDim) sample *= 2
+    val opts = android.graphics.BitmapFactory.Options().apply {
+        inSampleSize = sample
+        inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+    }
+    BitmapFactory.decodeFile(path, opts)
+} catch (_: Throwable) {
+    null
+}
+
 @androidx.compose.runtime.Composable
 private fun CoverCandidateDialog(
     game: com.nesstation.app.core.model.GameEntry,
@@ -2711,24 +2744,35 @@ private fun CoverCandidateDialog(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var candidates by androidx.compose.runtime.remember {
-        androidx.compose.runtime.mutableStateOf<List<Pair<java.io.File, String>>>(emptyList())
+        androidx.compose.runtime.mutableStateOf<List<CoverCandidateUi>>(emptyList())
     }
     var loading by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
     var picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     var progress by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
 
-    // 弹出即后台拉取（IO 线程；逐张下载约 250ms 间隔限速）
+    // 弹出即后台拉取（IO 线程；逐张下载约 250ms 间隔限速）。
+    // ★ 闪退根治：整段 runCatching —— 任何异常（网络/IO/解码/配置）都
+    //   收敛为 onError()，绝不让协程带未捕获异常冲垮进程。
     androidx.compose.runtime.LaunchedEffect(game.id) {
         loading = true
-        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            com.nesstation.app.core.storage.CoverFetcher.fetchCandidates(
-                context, game, max = 8,
-                onProgress = { done, _ -> progress = done }
-            )
+        runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val raw = com.nesstation.app.core.storage.CoverFetcher.fetchCandidates(
+                    context, game, max = 8,
+                    onProgress = { done, _ -> progress = done }
+                )
+                raw.map { (file, name) ->
+                    CoverCandidateUi(file, name, decodeCoverBitmap(file.absolutePath)?.asImageBitmap())
+                }
+            }
+        }.onSuccess { result ->
+            candidates = result
+            loading = false
+            if (result.isEmpty()) onError()
+        }.onFailure {
+            loading = false
+            onError()
         }
-        candidates = result
-        loading = false
-        if (result.isEmpty()) onError()
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -2780,10 +2824,9 @@ private fun CoverCandidateDialog(
                             .heightIn(max = 380.dp)
                     ) {
                         items(candidates.size) { idx ->
-                            val (file, name) = candidates[idx]
-                            val bmp = androidx.compose.runtime.remember(file.absolutePath) {
-                                BitmapFactory.decodeFile(file.absolutePath)
-                            }
+                            val cand = candidates[idx]
+                            val file = cand.file
+                            val name = cand.name
                             Column(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(10.dp))
@@ -2791,8 +2834,10 @@ private fun CoverCandidateDialog(
                                         if (!picked) {
                                             picked = true
                                             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                                                val ok = com.nesstation.app.core.storage.CoverFetcher
-                                                    .pickCandidate(context, game, file)
+                                                val ok = runCatching {
+                                                    com.nesstation.app.core.storage.CoverFetcher
+                                                        .pickCandidate(context, game, file)
+                                                }.getOrDefault(false)
                                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                                     if (ok) onPicked() else onError()
                                                 }
@@ -2800,9 +2845,9 @@ private fun CoverCandidateDialog(
                                         }
                                     }
                             ) {
-                                if (bmp != null) {
+                                if (cand.bitmap != null) {
                                     Image(
-                                        bitmap = bmp.asImageBitmap(),
+                                        bitmap = cand.bitmap,
                                         contentDescription = name,
                                         contentScale = ContentScale.Fit,
                                         modifier = Modifier

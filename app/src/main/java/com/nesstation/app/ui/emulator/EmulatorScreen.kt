@@ -1443,16 +1443,28 @@ fun EmulatorScreen(
         val stats = try { azEngine.getPerfStats() } catch (_: Throwable) { null }
         val systemFps = stats?.getOrNull(0) ?: 0.0
         if (systemFps <= 0.5) {
-            val userDir = azEngine.userDirectoryPath()
-            val keys = java.io.File(userDir, "aes_keys.txt")
-            val boot9 = java.io.File(userDir, "boot9.bin")
+            // ★ 看门狗诊断对齐核心真实读取路径：<userDir>/sysdata/（KeyManager
+            //   ::LoadKeys 从 sysdata 读 aes_keys.txt）。应用已把常见位置
+            //   （azahar 根目录 / filesDir / 应用外置 files）的密钥自动归位。
             errorMsg = buildString {
                 append("3DS 核心已加载但 20 秒内没有输出任何帧。\n\n")
-                append("启动时 surface 状态: ${if (azEngine.isSurfaceValid()) "有效" else "无效"}\n")
-                append("aes_keys.txt: ${if (keys.exists()) "已存在" else "缺失（加密卡带必需）"}\n")
-                append("boot9.bin: ${if (boot9.exists()) "已存在" else "缺失（系统引导必需）"}\n\n")
-                append("请把密钥/引导文件放入内置存储的 azahar 目录后重试；")
+                append("启动时 surface 状态: ${if (azEngine.isSurfaceValid()) "有效" else "无效"}\n\n")
+                // 密钥/引导文件状态（sysdata 目录，含自动归位结果）
+                val userDir = azEngine.userDirectoryPath()
+                val sysdata = java.io.File(userDir, "sysdata")
+                val keys = java.io.File(sysdata, "aes_keys.txt")
+                val boot9 = java.io.File(sysdata, "boot9.bin")
+                append("aes_keys.txt（sysdata/）: ${if (keys.isFile && keys.length() > 0) "已存在" else "缺失（加密卡带必需）"}\n")
+                append("boot9.bin（sysdata/）: ${if (boot9.isFile && boot9.length() > 0) "已存在" else "缺失（部分加密 ROM 需要）"}\n")
+                if (!keys.isFile) {
+                    append("放置位置（任选其一，应用会自动归位）:\n")
+                    append("  1. ${sysdata.absolutePath}/\n")
+                    append("  2. 内置存储 ${userDir}/\n")
+                    append("  3. 应用外置 files 目录（/sdcard/Android/data/com.nesstation.app/files/）\n\n")
+                }
                 append("或确认 ROM 镜像完整未加密（.3ds/.cci/.cxi/.app）。")
+                // 原生日志尾部 —— 真实失败原因，截图即可进一步定位
+                azEngine.nativeLogTail()?.let { append("\n\n—— 核心日志尾部 ——\n$it") }
             }
         }
     }

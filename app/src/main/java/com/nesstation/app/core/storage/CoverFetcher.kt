@@ -298,14 +298,16 @@ object CoverFetcher {
         //   旧实现对它直接 substringAfterLast + substringBeforeLast('.'),
         //   再经 urlSeg 二次编码 → 永远 404。
         //   game.title 在导入时由 queryDisplayName 解码后写入，是干净的可读名。
-        // ★★★ 封面搜索名（平台感知 + 中文翻译，本轮升级）★★★
-        //   1. 街机：用**扫描文件夹的实际 zip 名**（kof97）而非自定义显示名
-        //      —— libretro 街机目录按驱动名组织，用中文名永远搜不到；
+        // ★★★ 封面搜索名（平台感知 + 中文翻译 + 多名序列）★★★
+        //   1. 街机：用**扫描文件夹的实际 zip 名**（SAF URI 解码后的真实文件名）
+        //      经 [ArcadeCoverNames] 转换为 libretro 收录的英文标题，驱动名主干
+        //      作为兜底搜索名 —— "读取实际 zip 名"的需求；
         //   2. DC：flycast boxart 上游约定按内容文件名取图，同样用实际名；
         //   3. 全平台：标题含中文时先经 CnGameNameMapper 翻译成英文
         //      （"魂斗罗"→"Contra"）再走模糊匹配 —— 中文模糊转英文下载。
-        val rawName = coverSearchName(game) ?: return null
-        val candidates = nameCandidates(rawName)
+        val searchNames = searchNamesFor(game)
+        if (searchNames.isEmpty()) return null
+        val candidates = searchNames.flatMap { nameCandidates(it) }.distinct()
         if (candidates.isEmpty()) return null
 
         val dest = File(coversDir(context), "${game.id}.png")
@@ -334,13 +336,16 @@ object CoverFetcher {
         //   （"模糊读取 ROM 名而不是绝对名字"的需求）。
         for (sys in systemDirs) {
             val index = fetchSystemIndex(context, sys) ?: continue
-            val fuzzy = fuzzyMatch(rawName, index)
+            // 每个搜索名（街机 = 英文标题 + 驱动名主干）各自模糊一遍
+            val fuzzy = searchNames.flatMap { searchName ->
+                fuzzyMatch(searchName, index)
+            }.distinct()
             for (name in fuzzy) {
                 // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
                 if (candidates.any { it.equals(name, ignoreCase = true) }) continue
                 val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
                 if (downloadImage(url, dest)) {
-                    Log.i(TAG, "fuzzy cover hit: '$rawName' -> '$name' ($sys)")
+                    Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
                     syncDcBoxart(context, game, dest)
                     return dest
                 }
@@ -352,27 +357,85 @@ object CoverFetcher {
     /**
      * ★ 封面搜索名（平台感知 + 中文翻译）：
      *   - ARCADE → 扫描文件夹的实际 zip/7z 文件名（libretro 街机目录按
-     *     驱动名组织；显示名/中文名搜不到）——"读取实际 zip 名"的需求；
+     *     完整游戏标题组织；显示名/中文名搜不到）——"读取实际 zip 名"的需求；
+     *     命中 [ArcadeCoverNames] 后转换为 libretro 收录的英文标题；
      *   - DC → 实际 ROM 文件名（flycast boxart 上游按内容文件名约定）；
      *   - 其它 → game.title；含 CJK 时先过 CnGameNameMapper 中→英翻译。
      */
-    fun coverSearchName(game: GameEntry): String? {
-        val romFile = game.romPath?.substringAfterLast('/') ?: ""
-        return when (game.platform) {
+    fun coverSearchName(game: GameEntry): String? = searchNamesFor(game).firstOrNull()
+
+    /**
+     * ★★ 完整搜索名序列（按优先级，第一个为首选）。
+     *
+     * ★ 街机/DC 真实文件名修复（SAF URI 解码）：romPath 在 SAF 导入时是
+     *   content:// URI（documentId URL 编码，"primary%3AROMs%2Farcade%2F
+     *   kof97.zip"），旧实现 substringAfterLast('/') 拿到的是**整段编码
+     *   documentId** → "街机不用真实文件名"的直接根因。现在统一经
+     *   [romFileStem] 解码：URL 解码 → 取 documentId 冒号后路径 → 取文件段。
+     *
+     * 街机返回 [英文标题（映射命中）, 驱动名主干] 两个搜索名 —— 先试
+     * libretro 收录标题（精确命中），全部 404 再用驱动名走模糊匹配。
+     */
+    fun searchNamesFor(game: GameEntry): List<String> {
+        val out = LinkedHashMap<String, Boolean>()
+        when (game.platform) {
             GamePlatform.ARCADE, GamePlatform.DC -> {
-                val stem = romFile.substringBeforeLast('.')
-                val base = stem.takeIf { it.isNotBlank() }
+                val stem = romFileStem(game)
+                val base = stem
                     ?: game.title.takeIf { it.isNotBlank() }
-                    ?: return null
-                translateIfCjk(base)
+                    ?: return emptyList()
+                if (game.platform == GamePlatform.ARCADE) {
+                    // 1) 驱动名 → libretro 英文标题（"kof97" → "The King of Fighters '97"）
+                    ArcadeCoverNames.lookup(base)?.let { out[it] = true }
+                    // 2) 驱动名主干原样兜底（模糊匹配路径）
+                    out[base] = true
+                    // 3) 标题若为中文（自定义名）也尝试翻译
+                    game.title.takeIf { !it.equals(base, ignoreCase = true) }
+                        ?.let { translateIfCjk(it)?.let { t -> out[t] = true } }
+                } else {
+                    out[translateIfCjk(base)] = true
+                }
             }
             else -> {
                 val base = game.title.takeIf { it.isNotBlank() }
-                    ?: romFile.substringBeforeLast('.').takeIf { it.isNotBlank() }
-                    ?: return null
-                translateIfCjk(base)
+                    ?: romFileStem(game)?.takeIf { it.isNotBlank() }
+                    ?: return emptyList()
+                out[translateIfCjk(base)] = true
             }
         }
+        return out.keys.filter { it.isNotBlank() }
+    }
+
+    /**
+     * 从 romPath 提取"实际 ROM 文件名主干"（无扩展名）。
+     *
+     *   content://.../document/primary%3AROMs%2Farcade%2Fkof97.zip
+     *     → URL 解码 "primary:ROMs/arcade/kof97.zip"
+     *     → 去设备前缀/目录 → "kof97"
+     *   /sdcard/ROMs/kof97.zip → "kof97"
+     *
+     * 纯数字段（MediaProvider 的 /file/<id> 形式 URI 无文件名）返回 null，
+     * 由调用方回退到 game.title。
+     */
+    private fun romFileStem(game: GameEntry): String? {
+        val raw = game.romPath?.takeIf { it.isNotBlank() } ?: return null
+        val fileName = if (raw.startsWith("content://")) {
+            val lastSeg = raw.substringAfterLast('/')
+            val decoded = try {
+                java.net.URLDecoder.decode(lastSeg, "UTF-8")
+            } catch (_: Throwable) {
+                lastSeg
+            }
+            // documentId 形如 "primary:ROMs/arcade/kof97.zip"（冒号后为路径）
+            decoded.substringAfterLast(':').substringAfterLast('/')
+        } else {
+            raw.substringAfterLast('/').substringAfterLast('\\')
+        }
+        val stem = fileName.substringBeforeLast('.').trim()
+        if (stem.isEmpty()) return null
+        // 纯数字（MediaStore 数字 id）不是可用名
+        if (stem.all { it.isDigit() }) return null
+        return stem
     }
 
     /** 含 CJK 的名字先过中文→英文映射；未命中原样返回（继续走模糊匹配）。 */
@@ -514,21 +577,42 @@ object CoverFetcher {
         max: Int = 8,
         onProgress: ((Int, Int) -> Unit)? = null
     ): List<Pair<File, String>> {
-        val rawName = coverSearchName(game) ?: return emptyList()
+        // ★ 整体防御：任何一步失败都返回空列表而非抛出（调用方为 UI 协程，
+        //   未捕获异常会直接闪退 —— "选择封面按钮点击就闪退"的根治措施之一）
+        return try {
+            fetchCandidatesInner(context, game, max, onProgress)
+        } catch (t: Throwable) {
+            Log.w(TAG, "fetchCandidates failed: ${t.message}")
+            emptyList()
+        }
+    }
+
+    private fun fetchCandidatesInner(
+        context: Context,
+        game: GameEntry,
+        max: Int,
+        onProgress: ((Int, Int) -> Unit)?
+    ): List<Pair<File, String>> {
+        // ★ 多搜索名序列（街机 = 英文标题 + 驱动名主干；中文已翻译）
+        val searchNames = searchNamesFor(game)
+        if (searchNames.isEmpty()) return emptyList()
         val romFile = game.romPath?.substringAfterLast('/') ?: ""
         val systemDirs = libretroSystemDir(game.platform, romFile)
         if (systemDirs.isEmpty()) return emptyList()
         val results = LinkedHashMap<String, File>() // name -> file（去重）
         val out = ArrayList<Pair<File, String>>()
         try {
-            val exact = nameCandidates(rawName)
-            // 组装完整候选名序列：精确优先，然后模糊命中
+            val exact = searchNames.flatMap { nameCandidates(it) }.distinct()
+            // 组装完整候选名序列：精确优先，然后模糊命中（每个搜索名各模糊一遍）
             val names = ArrayList(exact)
             for (sys in systemDirs) {
                 val index = fetchSystemIndex(context, sys) ?: continue
-                for (n in fuzzyMatch(rawName, index)) {
-                    if (names.none { it.equals(n, ignoreCase = true) }) names.add(n)
-                    if (names.size >= max * 3) break  // 候选池上限（避免拉全表）
+                for (searchName in searchNames) {
+                    for (n in fuzzyMatch(searchName, index)) {
+                        if (names.none { it.equals(n, ignoreCase = true) }) names.add(n)
+                        if (names.size >= max * 3) break  // 候选池上限（避免拉全表）
+                    }
+                    if (names.size >= max * 3) break
                 }
                 if (names.size >= max * 3) break
             }
@@ -620,8 +704,8 @@ object CoverFetcher {
             val url = "$BASE/${urlSeg(system)}/Named_Boxarts/"
             val c = URL(url).openConnection() as HttpURLConnection
             conn = c
-            c.connectTimeout = 10000
-            c.readTimeout = 20000
+            c.connectTimeout = 15000
+            c.readTimeout = 60000
             c.instanceFollowRedirects = true
             c.setRequestProperty("User-Agent", USER_AGENT)
             if (c.responseCode != HttpURLConnection.HTTP_OK) return null
@@ -662,16 +746,28 @@ object CoverFetcher {
     }
 
     /**
-     * 本地模糊匹配：把 ROM 名与官方 No-Intro 名列表比对，返回最接近的
+     * 本地模糊匹配：把 ROM 名与官方名列表比对，返回最接近的
      * 前几个官方名（按相似度降序，低于阈值的不返回）。
      *
-     * 归一化策略（对双方一致应用）：
-     *   - 全小写；
-     *   - 去掉所有括号段（()/[]，区域/版本/标签差异不参与匹配）；
-     *   - "&" → "and"、罗马数字 → 阿拉伯数字（II→2）、去标点、压缩空格；
-     *   - "the" 等冠词丢弃。
-     * 相似度 = 词集合 Jaccard 相似度 + 编辑距离比加权；完全相等直接 1.0，
-     * 前缀包含有加分。
+     * ★★ 命中率根治升级（TOSEC 兼容 + 双键匹配 + 包含加分）★★
+     *   实测 thumbnails.libretro.com 各系统目录命名**不统一**：
+     *     - SFC/GB/MD/NDS/PSX/3DS 等 → No-Intro（"Contra III - The Alien Wars (USA)"）；
+     *     - NES → **TOSEC**（"Contra (1988-02)(Konami)(US)[!]"）—— 旧实现的
+     *       候选名（"Contra (USA)"）与 TOSEC 名完全对不上，且旧相似度对
+     *       "contra" vs "contra 1988 02 konami us" 打分 ~0.2 → 永远低于
+     *       阈值 → "魂斗罗三个字都下载不到封面"的直接根因。
+     *
+     *   每个候选官方名生成两个归一化键，取两键最高分：
+     *     key_full = 全名归一化（去区域/版本括号后保序）；
+     *     key_bare = **剥掉全部 (...)与[...] 段后的裸标题**（"Contra
+     *       (1988-02)(Konami)(US)" → "contra"；No-Intro 的 "(USA)" 类
+     *       区域段同样被剥 —— 与无区域 ROM 名的匹配完全对齐）。
+     *
+     *   相似度 = 0.5·Jaccard + 0.35·编辑距离 + 0.15·token 包含率，另有：
+     *     - 完全相等直接 1.0；
+     *     - **包含加分**：搜索名整体作为连续词序列出现在候选中（或反向）
+     *       —— "the king of fighters 97" ⊆ "king of fighters 97 ngm 232
+     *       ngh 232" 类街机序号后缀差异 → 0.95。
      */
     fun fuzzyMatch(rawName: String, officialNames: List<String>): List<String> {
         val target = normalizeForFuzzy(rawName)
@@ -680,19 +776,33 @@ object CoverFetcher {
         data class Scored(val name: String, val score: Double)
         val scored = ArrayList<Scored>(officialNames.size)
         for (official in officialNames) {
-            val cand = normalizeForFuzzy(official)
-            if (cand.isBlank()) continue
-            var score = if (cand == target) 1.0 else {
+            val candFull = normalizeForFuzzy(official)
+            if (candFull.isBlank()) continue
+            val candBare = bareTitleForFuzzy(official)
+            fun scoreAgainst(cand: String): Double {
+                if (cand.isBlank()) return 0.0
+                if (cand == target) return 1.0
                 val candTokens = cand.split(' ').filter { it.isNotBlank() }.toSet()
                 val inter = targetTokens.intersect(candTokens).size.toDouble()
                 val union = targetTokens.union(candTokens).size.toDouble()
                 val jaccard = if (union > 0) inter / union else 0.0
                 val lev = levenshteinRatio(target, cand)
-                var s = 0.55 * jaccard + 0.45 * lev
-                // 前缀包含加分："zelda" vs "the legend of zelda" 类标题差异
+                val containRate = if (targetTokens.isEmpty()) 0.0
+                else inter / targetTokens.size
+                var s = 0.5 * jaccard + 0.35 * lev + 0.15 * containRate
+                // 前缀包含加分（短候选名长目标）
                 if (target.length >= 4 && (cand.startsWith(target) || target.startsWith(cand))) s += 0.08
-                s
+                // ★ 整体词序列包含：目标所有词按原顺序连续出现在候选中
+                //   （或候选所有词连续出现在目标中）→ 序号/区域后缀差异全兼容
+                if (targetTokens.isNotEmpty() && candTokens.isNotEmpty()) {
+                    val t = target.split(' ').filter { it.isNotBlank() }
+                    val c = cand.split(' ').filter { it.isNotBlank() }
+                    val contains = if (t.size <= c.size) containsRun(c, t) else containsRun(t, c)
+                    if (contains) s = maxOf(s, 0.95)
+                }
+                return s
             }
+            var score = maxOf(scoreAgainst(candFull), scoreAgainst(candBare))
             if (score > 1.0) score = 1.0
             if (score >= FUZZY_MIN_SCORE) scored.add(Scored(official, score))
         }
@@ -700,6 +810,29 @@ object CoverFetcher {
             .take(MAX_FUZZY_TRIES)
             .map { it.name }
     }
+
+    /** 词序列包含判定：small 的全部词是否按原顺序连续出现在 big 中。 */
+    private fun containsRun(big: List<String>, small: List<String>): Boolean {
+        if (small.isEmpty() || big.size < small.size) return false
+        outer@ for (start in 0..big.size - small.size) {
+            for (j in small.indices) {
+                if (big[start + j] != small[j]) continue@outer
+            }
+            return true
+        }
+        return false
+    }
+
+    /**
+     * 裸标题键：剥掉全部 (...) 与 [...] 段后归一化。
+     * "Contra (1988-02)(Konami)(US)[!]" → "contra"；
+     * "Super Mario Bros. (USA)" → "super mario bros"。
+     */
+    private fun bareTitleForFuzzy(name: String): String =
+        normalizeForFuzzy(
+            name.replace(Regex("\\s*\\([^)]*\\)"), " ")
+                .replace(Regex("\\s*\\[[^]]*]"), " ")
+        )
 
     /** 模糊匹配归一化（双方一致应用，见 [fuzzyMatch] 注释）。 */
     private fun normalizeForFuzzy(name: String): String {

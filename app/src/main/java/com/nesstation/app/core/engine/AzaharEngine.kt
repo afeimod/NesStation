@@ -145,6 +145,88 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         return File(ctx.filesDir, "azahar").apply { mkdirs() }.absolutePath
     }
 
+    // ------------------------------------------------------------------
+    // ★ 3DS 报错根治（密钥/引导文件自动归位）：
+    //   核心 KeyManager::LoadKeys 从 **<userDir>/sysdata/** 读 aes_keys.txt
+    //   （libazahar.so 字符串 "sysdata"+"aes_keys.txt" 实测；boot9.bin /
+    //   seeddb.bin 同目录）。旧诊断让用户把文件放 azahar 根目录 —— 位置错了，
+    //   核心永远读不到 → 加密 ROM 必然黑屏/报错。
+    //   本方法在每次 loadRom 前把用户可能放置位置（azahar 根目录 / filesDir 根 /
+    //   应用外置 files 目录 / 外置 azahar 目录）的密钥文件**自动拷贝归位**到
+    //   sysdata/，已存在同名校验大小防止反复覆盖。
+    // ------------------------------------------------------------------
+
+    /** 3DS 密钥/引导文件名 → sysdata/ 自动归位。 */
+    private fun ensureSysDataFiles() {
+        val ctx = appContext ?: return
+        val sysdata = File(userDir(), "sysdata").apply { mkdirs() }
+        val sourcesRoots = buildList {
+            add(File(userDir()))                       // 历史诊断提示的 azahar 根目录
+            add(ctx.filesDir)                          // filesDir 根目录
+            try {
+                ctx.getExternalFilesDir(null)?.let {
+                    add(it)                            // /sdcard/Android/data/<pkg>/files/
+                    add(File(it, "azahar"))
+                    add(File(it, "sysdata"))
+                }
+            } catch (_: Throwable) {}
+        }
+        val names = listOf("aes_keys.txt", "boot9.bin", "seeddb.bin")
+        for (name in names) {
+            val dest = File(sysdata, name)
+            if (dest.exists() && dest.length() > 0) continue
+            val src = sourcesRoots.asSequence()
+                .map { File(it, name) }
+                .firstOrNull { it.isFile && it.length() > 0 } ?: continue
+            try {
+                src.copyTo(dest, overwrite = true)
+                android.util.Log.i("AzaharEngine", "sysdata auto-import: $name <- ${src.absolutePath}")
+            } catch (t: Throwable) {
+                android.util.Log.w("AzaharEngine", "sysdata import failed: $name (${t.message})")
+            }
+        }
+    }
+
+    /**
+     * 读取原生日志尾部（azahar_log.txt）—— 错误弹窗附带真实失败原因，
+     * 用户截图即可定位（不用再猜"黑屏"是密钥/系统档案/驱动哪一环）。
+     * 核心把日志写在 <userDir>/azahar_log.txt（部分版本在 <userDir>/log/ 下）。
+     */
+    fun nativeLogTail(maxLines: Int = 24): String? {
+        val userDir = try { userDir() } catch (_: Throwable) { return null }
+        val candidates = listOf(
+            File(userDir, "azahar_log.txt"),
+            File(File(userDir, "log"), "azahar_log.txt")
+        )
+        for (f in candidates) {
+            if (!f.isFile || f.length() == 0L) continue
+            try {
+                val lines = f.readLines().let { if (it.size > maxLines) it.takeLast(maxLines) else it }
+                val text = lines.joinToString("\n")
+                if (text.isNotBlank()) return text
+            } catch (_: Throwable) {}
+        }
+        return null
+    }
+
+    /** 3DS 环境自检摘要（密钥/引导文件状态，用于错误诊断文本）。 */
+    private fun sysDataDiag(): String {
+        val userDir = try { userDir() } catch (_: Throwable) { "<unknown>" }
+        val sysdata = File(userDir, "sysdata")
+        fun st(name: String): String {
+            val f = File(sysdata, name)
+            return if (f.isFile && f.length() > 0) "已存在" else "缺失"
+        }
+        return buildString {
+            append("aes_keys.txt: ").append(st("aes_keys.txt"))
+            append("（加密卡带必需 → 放入 ")
+            append(sysdata.absolutePath)
+            append("/，或放 azahar 目录由应用自动归位）")
+            append("\nboot9.bin: ").append(st("boot9.bin")).append("（部分加密 ROM 需要）")
+            append("\nseeddb.bin: ").append(st("seeddb.bin")).append("（区域种子，可选）")
+        }
+    }
+
     private fun configFile(userDirPath: String): File =
         File(File(userDirPath, "config").apply { mkdirs() }, "config.ini")
 
@@ -260,6 +342,9 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         this.saveDir = saveDir
         this.romPath = rom.absolutePath
 
+        // ★ 密钥/引导文件自动归位（必须在核心读配置前完成）
+        ensureSysDataFiles()
+
         val lib = AzaharNative.lib
         try {
             NativeLibrary.NesStationHost.register(object : NativeLibrary.Host {
@@ -270,8 +355,10 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     if (!userRequestedStop && isLoaded) {
                         val msg = "Azahar 核心提前退出（status=$result）" +
                             (lastErrorText.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: "") +
-                            "\n常见原因：加密卡带需 aes_keys.txt（放入 azahar 目录）；" +
-                            "镜像损坏或不完整；系统文件缺失。"
+                            "\n常见原因：加密卡带需 aes_keys.txt（放入 azahar/sysdata/ 目录，" +
+                            "或放 azahar 目录由应用自动归位）；镜像损坏或不完整；系统文件缺失。" +
+                            (sysDataDiag().let { "\n\n$it" }) +
+                            (nativeLogTail()?.let { "\n\n—— 核心日志尾部 ——\n$it" } ?: "")
                         onPrematureExit?.invoke(msg)
                     } else {
                         lastErrorText = "Azahar 退出（status=$result）"
@@ -410,18 +497,13 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     if (attempted == null) append("null")
                     else if (!attempted.isValid) append("invalid")
                     else append("valid")
-                    // 检查 3DS 必需文件
-                    val userDir = try { userDir() } catch (_: Throwable) { "<unknown>" }
-                    val keysFile = java.io.File(userDir, "aes_keys.txt")
-                    append("\naes_keys.txt: ")
-                    if (keysFile.exists()) append("已存在 (${keysFile.length()} 字节)")
-                    else append("缺失（请放入 <filesDir>/azahar/aes_keys.txt）")
-                    val boot9 = java.io.File(userDir, "boot9.bin")
-                    append("\nboot9.bin: ")
-                    if (boot9.exists()) append("已存在")
-                    else append("缺失（部分加密 ROM 需要）")
+                    // ★ 3DS 必需文件（正确位置 <userDir>/sysdata/，与核心
+                    //   KeyManager::LoadKeys 的读取路径一致）
+                    append("\n\n")
+                    append(sysDataDiag())
                     append("\n\n若非预期退出，常见原因：")
-                    append("\n1) 加密卡带需 aes_keys.txt + boot9.bin + seeddb.bin（放入 azahar 目录）")
+                    append("\n1) 加密卡带需 aes_keys.txt + boot9.bin + seeddb.bin（放入 azahar/sysdata/，")
+                    append("或放 azahar 目录 / 应用外置 files 目录由应用自动归位）")
                     append("\n2) ROM 文件损坏或不完整")
                     append("\n3) Surface 在核心启动期间被销毁（已被本修复加固）")
                 }

@@ -842,9 +842,17 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             )
             rids = null
         }
-        // up/down/left/right 值 = max(0, ±axis)
+        // ★★ 摇杆"只有下右生效"根治修复（值语义对齐参考 APK 反编译实测）★★
+        //   参考 Ishiruka APK overlay 控件（c;->a(FF) 模拟分支）对四方向轴事件
+        //   的取值：UP/LEFT 两个 ID 发送**负值**（dy/dx 被 min(v,0) 截取负半轴），
+        //   DOWN/RIGHT 两个 ID 发送正值（min(v,1) 截取正半轴）—— 原生 Touchscreen
+        //   设备的 "Axis N" 输入是**原始带符号轴**，绑定表达式 `Axis 11` 按带符号
+        //   值参与方向合成（向上 = 负值贡献）。旧实现把 UP/LEFT 发成正的幅值
+        //   （max(0,-ly)），原生方向合成把同号值当成同向 → 上/左永远无效。
+        //   修正后：UP = min(0, ly)，DOWN = max(0, ly)，LEFT = min(0, lx)，
+        //   RIGHT = max(0, lx)（ly/lx 以屏幕坐标系为基准：上/左为负）。
         val lv = floatArrayOf(
-            maxOf(0f, -ly), maxOf(0f, ly), maxOf(0f, -lx), maxOf(0f, lx)
+            minOf(0f, ly), maxOf(0f, ly), minOf(0f, lx), maxOf(0f, lx)
         )
         for (i in 0 until 4) {
             if (lv[i] != stickLast[i]) {
@@ -853,8 +861,9 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             }
         }
         if (rids != null) {
+            // 右摇杆（C-Stick / 经典手柄右摇杆）与主摇杆同语义：上/左负值、下/右正值
             val rv = floatArrayOf(
-                maxOf(0f, -ry), maxOf(0f, ry), maxOf(0f, -rx), maxOf(0f, rx)
+                minOf(0f, ry), maxOf(0f, ry), minOf(0f, rx), maxOf(0f, rx)
             )
             for (i in 0 until 4) {
                 if (rv[i] != stickLast[4 + i]) {
