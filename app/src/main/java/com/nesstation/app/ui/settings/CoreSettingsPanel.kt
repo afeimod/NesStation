@@ -1597,11 +1597,11 @@ fun CoreSettingsPanel(
                 // azahar-emu/azahar src/android jni/config.cpp（2125.x）。
                 SettingsSection("3DS (Azahar) · 画面 / 性能") {
                     DropdownRow("图形后端",
-                        listOf("opengl" to "OpenGL (兼容)", "vulkan" to "Vulkan (性能, 推荐)", "software" to "软件渲染 (慢)"),
+                        listOf("opengl" to "OpenGL ES (兼容, 默认)", "vulkan" to "Vulkan (性能, 推荐)"),
                         padLayout.azGraphicsApi
                     ) { updateLayout(padLayout.copy {azGraphicsApi = it}) }
                     DropdownRow("内部分辨率",
-                        listOf("0" to "1x (400x240 原生)", "1" to "2x", "2" to "3x", "3" to "4x", "4" to "5x"),
+                        listOf("0" to "跟随窗口 (推荐)", "1" to "1x (400x240 原生)", "2" to "2x", "3" to "3x", "4" to "4x"),
                         padLayout.azResolution
                     ) { updateLayout(padLayout.copy {azResolution = it}) }
                     DropdownRow("硬件着色器",
@@ -1707,7 +1707,7 @@ fun CoreSettingsPanel(
                         padLayout.azRegion
                     ) { updateLayout(padLayout.copy {azRegion = it}) }
                     DropdownRow("音频模拟",
-                        listOf("0" to "HLE (快, 推荐)", "1" to "LLE", "2" to "LLE 多线程"),
+                        listOf("1" to "开启 (默认)", "0" to "关闭"),
                         padLayout.azAudioEmulation
                     ) { updateLayout(padLayout.copy {azAudioEmulation = it}) }
                     DropdownRow("音量", (0..100 step 10).map { it.toString() to "$it%" },
@@ -1763,11 +1763,13 @@ fun CoreSettingsPanel(
                         padLayout.irOverclock
                     ) { updateLayout(padLayout.copy {irOverclock = it}) }
                     DropdownRow("渲染后端",
-                        listOf("OGL" to "OpenGL (兼容)", "Vulkan" to "Vulkan (性能)", "SW" to "软件渲染"),
+                        listOf("OGL" to "OpenGL (兼容)", "Vulkan" to "Vulkan (性能)",
+                            "Software Renderer" to "软件渲染 (慢)"),
                         padLayout.irBackend
                     ) { updateLayout(padLayout.copy {irBackend = it}) }
-                    DropdownRow("内部分辨率 (EFB)",
-                        listOf("2" to "1x 原生", "4" to "2x", "6" to "3x", "7" to "4x"),
+                    DropdownRow("内部分辨率",
+                        listOf("100" to "1x 原生 (100%)", "150" to "1.5x (150%)", "200" to "2x (200%)",
+                            "300" to "3x (300%)", "400" to "4x (400%)"),
                         padLayout.irResolution
                     ) { updateLayout(padLayout.copy {irResolution = it}) }
                     DropdownRow("多重采样 (MSAA)",

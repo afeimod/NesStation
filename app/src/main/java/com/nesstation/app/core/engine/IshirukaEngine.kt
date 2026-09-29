@@ -842,10 +842,16 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             )
             rids = null
         }
-        // up/down/left/right 值 = max(0, ±axis)
-        val lv = floatArrayOf(
-            maxOf(0f, -ly), maxOf(0f, ly), maxOf(0f, -lx), maxOf(0f, lx)
-        )
+        // ★★ 摇杆失效根治修复（值语义逐字节对齐参考 APK 的 InputOverlay）★★
+        //   参考包 overlay/c.java 的 a() 组装：`new float[]{y, y, x, x}` ——
+        //   **UP 与 DOWN 两个轴 ID 收到的是同一个带符号 y 值**（上半屏为负），
+        //   LEFT 与 RIGHT 收同一个带符号 x 值（左半屏为负）；native 侧按轴 ID
+        //   的极性做符号分裂（N+1/N+3 = 负半轴，N+2/N+4 = 正半轴）。
+        //   旧实现按"每方向独立正值"发送：UP/LEFT 的负半轴控制收到 +1 后
+        //   max(0,-1)=0 → 永远不激活 —— 这正是"NGC 摇杆失效、WII 摇杆只有
+        //   下/右起作用"的根因（下/右是正半轴，碰巧能收到正值）。
+        //   屏幕/摇杆坐标约定与参考一致：y 向下为正（上推为负），x 向右为正。
+        val lv = floatArrayOf(ly, ly, lx, lx)
         for (i in 0 until 4) {
             if (lv[i] != stickLast[i]) {
                 stickLast[i] = lv[i]
@@ -853,9 +859,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             }
         }
         if (rids != null) {
-            val rv = floatArrayOf(
-                maxOf(0f, -ry), maxOf(0f, ry), maxOf(0f, -rx), maxOf(0f, rx)
-            )
+            val rv = floatArrayOf(ry, ry, rx, rx)
             for (i in 0 until 4) {
                 if (rv[i] != stickLast[4 + i]) {
                     stickLast[4 + i] = rv[i]
@@ -866,27 +870,26 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     }
 
     /**
-     * Wii IR 指针：把视图归一化坐标 (nx, ny ∈ [0,1]) 转换为 WIIMOTE_IR 六轴
-     * 绝对输入（左/右/上/下决定位置，前/后由 IR+ 按钮提供）。
+     * Wii IR 指针：把视图归一化坐标 (nx, ny ∈ [0,1]) 转换为 WIIMOTE_IR 轴输入。
+     *
+     * ★★ IR 值语义修复（逐字节对齐参考 APK 的 overlay/d.java）★★
+     *   参考实现 a(float,float)：`fArr[1]=f6; fArr[0]=f6; fArr[3]=f9; fArr[2]=f9`
+     *   —— IR_UP(112) 与 IR_DOWN(113) 收到**同一个带符号 y 值**（触上半屏为负），
+     *   IR_LEFT(114) 与 IR_RIGHT(115) 收**同一个带符号 x 值**（触左半屏为负），
+     *   幅度 = 2*(v-0.5) ∈ [-1,1]；抬手时参考 b() 向四个 ID 全部发送 0.0f。
+     *   旧实现按"每方向独立正值"发送 —— 负半轴（112/114）永远不激活，指针
+     *   只能向下/向右移动。
      */
     override fun setPointer(nx: Float, ny: Float, pressed: Boolean) {
         if (!isLoaded || effectiveMode() == "ngc") return
         val dev = NativeLibrary.TouchScreenDevice
         val x = nx.coerceIn(0f, 1f)
         val y = ny.coerceIn(0f, 1f)
-        // ★ IR 方向值约定修复（与绑定格式修复配套）：
-        //   WiimoteNew.ini 现在与参考 APK 一致使用裸轴绑定（IR/Up = `Axis 112`），
-        //   裸轴绑定的语义是"原始值"（可正可负），WiimoteEmu 内部按
-        //   up - down / left - right 合成 —— 因此每个方向控制必须发送**正值**：
-        //     触上半屏 → IR_UP 发正值；下半屏 → IR_DOWN 发正值；左右同理。
-        //   旧实现按 "Axis 112-"（负方向绑定）假设发负值 —— 在裸轴绑定下
-        //   up - down 合成为负 → IR 上下/左右反向漂移。
-        //   与参考 APK 的摇杆/IR overlay 约定一致：每方向正值，幅度 0..1。
         val values = if (!pressed) floatArrayOf(0f, 0f, 0f, 0f) else floatArrayOf(
-            (0.5f - y).coerceAtLeast(0f) * 2f,    // IR_UP   (Axis 112) → 触上半屏发正值
-            (y - 0.5f).coerceAtLeast(0f) * 2f,    // IR_DOWN (Axis 113) → 触下半屏发正值
-            (0.5f - x).coerceAtLeast(0f) * 2f,    // IR_LEFT (Axis 114) → 触左半屏发正值
-            (x - 0.5f).coerceAtLeast(0f) * 2f     // IR_RIGHT(Axis 115) → 触右半屏发正值
+            (y - 0.5f) * 2f,   // IR_UP(112) / IR_DOWN(113) 共用：上半屏为负
+            (y - 0.5f) * 2f,
+            (x - 0.5f) * 2f,   // IR_LEFT(114) / IR_RIGHT(115) 共用：左半屏为负
+            (x - 0.5f) * 2f
         )
         val ids = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_IR_UP,
@@ -900,7 +903,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 try { NativeLibrary.onGamePadMoveEvent(dev, ids[i], values[i]) } catch (_: Throwable) {}
             }
         }
-        // !pressed 时复位
+        // !pressed 时复位 IR 进深轴缓存（与参考 b() 的全零复位一致）
         if (!pressed) {
             for (i in 4 until 6) irLast[i] = 0f
         }
@@ -912,11 +915,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val dev = NativeLibrary.TouchScreenDevice
         val id = if (forward) NativeLibrary.ButtonType.WIIMOTE_IR_FORWARD
         else NativeLibrary.ButtonType.WIIMOTE_IR_BACKWARD
-        // ★ IR+/IR- 符号修复（与裸轴绑定配套）：IR/Forward = `Axis 116`、
-        //   IR/Backward = `Axis 117`（均为裸轴绑定），各自独立发送正值即可。
-        //   旧实现按 "Axis 116-" 假设对 Forward 发 -1f → 在裸轴绑定下
-        //   up 深度合成结果为负 → IR+ 永远把指针推向屏幕深处之外。
-        val value = if (pressed) 1f else 0f
+        // ★ IR+/IR- 符号修复（与方向轴极性约定一致）：116 = 负半轴（按下发
+        //   -1f 才能激活），117 = 正半轴（按下发 +1f）。旧实现发 +1f 给 116 →
+        //   max(0,-1)=0 永远不激活；IR-（117）此前发 -1f 同理不激活。
+        val value = if (pressed) (if (forward) -1f else 1f) else 0f
         val idx = if (forward) 4 else 5
         if (irLast[idx] != value) {
             irLast[idx] = value

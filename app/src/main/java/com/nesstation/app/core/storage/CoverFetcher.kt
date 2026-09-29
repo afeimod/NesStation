@@ -138,7 +138,18 @@ object CoverFetcher {
         return when (platform) {
             GamePlatform.NES -> listOf("Nintendo - Nintendo Entertainment System")
             GamePlatform.SFC -> listOf("Nintendo - Super Nintendo Entertainment System")
-            GamePlatform.GB -> listOf("Nintendo - Game Boy")
+            // ★ GBC 封面目录修复：libretro 缩略图库把 Game Boy Color 游戏
+            //   （口袋妖怪 金/银/水晶 等）放在 "Nintendo - Game Boy Color"
+            //   目录下，纯 GB 目录里没有 → .gbc ROM 全部 404。按扩展名
+            //   优先猜一个、两个都试（与 NGCWII 双目录策略一致）。
+            GamePlatform.GB -> {
+                val ext = romFileName?.substringAfterLast('.', "")?.lowercase() ?: ""
+                if (ext == "gbc") {
+                    listOf("Nintendo - Game Boy Color", "Nintendo - Game Boy")
+                } else {
+                    listOf("Nintendo - Game Boy", "Nintendo - Game Boy Color")
+                }
+            }
             GamePlatform.GBA -> listOf("Nintendo - Game Boy Advance")
             GamePlatform.MD -> listOf("Sega - Mega Drive - Genesis")
             GamePlatform.PCE -> listOf("NEC - PC Engine - TurboGrafx-16")
@@ -296,7 +307,16 @@ object CoverFetcher {
         val rawName = game.title.takeIf { it.isNotBlank() }
             ?: romFile.substringBeforeLast('.').takeIf { it.isNotBlank() }
             ?: return null
-        val candidates = nameCandidates(rawName)
+        // ★★ 中文 ROM 名 → 英文匹配修复 ★★
+        //   中文命名 ROM（"超级玛丽 (汉化)"、"魂斗罗2"、"口袋妖怪金"）对
+        //   No-Intro/libretro 的英文封面库，精确与模糊（英文词集）都打不中。
+        //   现在先用内置词典把中文名直译成英文候选（剥汉化/中文标签 +
+        //   长词优先短语翻译 + 序号保留），放在候选最前；纯英文名完全
+        //   不受影响（zhToEnCandidates 对无 CJK 输入返回空）。
+        val zhCandidates = zhToEnCandidates(rawName)
+        val candidates = (zhCandidates + nameCandidates(rawName))
+            .distinct()
+            .take(MAX_CANDIDATES)
         if (candidates.isEmpty()) return null
 
         val dest = File(coversDir(context), "${game.id}.png")
@@ -319,7 +339,12 @@ object CoverFetcher {
         //   （"模糊读取 ROM 名而不是绝对名字"的需求）。
         for (sys in systemDirs) {
             val index = fetchSystemIndex(context, sys) ?: continue
-            val fuzzy = fuzzyMatch(rawName, index)
+            // ★ 中文直译名同样参与模糊匹配（"超级玛丽" → "Super Mario"）
+            val fuzzyNames = LinkedHashSet<String>()
+            for (t in listOf(rawName) + zhCandidates) {
+                fuzzyNames.addAll(fuzzyMatch(t, index))
+            }
+            val fuzzy = fuzzyNames.toList().take(MAX_FUZZY_TRIES)
             for (name in fuzzy) {
                 // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
                 if (candidates.any { it.equals(name, ignoreCase = true) }) continue
@@ -449,6 +474,12 @@ object CoverFetcher {
                 var s = 0.55 * jaccard + 0.45 * lev
                 // 前缀包含加分："zelda" vs "the legend of zelda" 类标题差异
                 if (target.length >= 4 && (cand.startsWith(target) || target.startsWith(cand))) s += 0.08
+                // ★ 词集包含加分：中文直译名常是"系列名+序号"（"魂斗罗2" →
+                //   "contra 2"），而官方名是全称（"Contra II" 归一化后同为
+                //   "contra 2" 命中；"Super Mario Bros. 3" 等全称更长）。
+                //   目标词集是候选词集的子集且 ≥2 词时视为强相关
+                //   （"castlevania 2" ⊆ "castlevania 2 simon s quest"）。
+                if (targetTokens.size >= 2 && candTokens.containsAll(targetTokens)) s += 0.15
                 s
             }
             if (score > 1.0) score = 1.0
@@ -497,6 +528,230 @@ object CoverFetcher {
             val tmp = prev; prev = cur; cur = tmp
         }
         return 1.0 - prev[b.length] / maxLen
+    }
+
+    // ------------------------------------------------------------------
+    // ★★ 中文 ROM 名 → 英文直译（中文模糊转英文下载封面）
+    // ------------------------------------------------------------------
+
+    /** 判断字符串是否含汉字（CJK 统一表意文字区）。 */
+    private fun hasCJK(s: String): Boolean = s.any { it.code in 0x4E00..0x9FFF }
+
+    /**
+     * 中文→英文词典（常见游戏系列 / 作品名，FC/SFC/GB/GBC/GBA/MD/DC/街机）。
+     * 匹配按 **键长降序** 进行（"超级魂斗罗" 先于 "魂斗罗"，"超级马里奥世界"
+     * 先于 "超级马里奥"），序号（阿拉伯数字 / 罗马数字）由后续流程保留，
+     * 因此 "魂斗罗2" → "Contra 2"、"超级马里奥兄弟3" → "Super Mario Bros 3"。
+     */
+    private val ZH_EN: List<Pair<String, String>> = listOf(
+        // --- 马里奥家族（长词优先） ---
+        "超级马里奥兄弟" to "Super Mario Bros",
+        "超级马力欧兄弟" to "Super Mario Bros",
+        "超级玛丽兄弟" to "Super Mario Bros",
+        "超级玛丽世界" to "Super Mario World",
+        "超级马里奥世界" to "Super Mario World",
+        "超级马力欧世界" to "Super Mario World",
+        "超级马里奥赛车" to "Mario Kart",
+        "超级马里奥" to "Super Mario",
+        // ★ "超级玛丽" 译为全称 Super Mario Bros —— FC 版官方名。译成短名
+        //   "Super Mario" 时精确候选与官方库全不匹配，模糊轮还会命中
+        //   盗版卡带（"Super Mario 9" 等黑客版）的封面。
+        "超级玛丽" to "Super Mario Bros",
+        "超级玛莉" to "Super Mario Bros",
+        "超级马力欧" to "Super Mario",
+        "马里奥赛车" to "Mario Kart",
+        "马力欧卡丁车" to "Mario Kart",
+        "马里奥医生" to "Dr. Mario",
+        "马力欧医生" to "Dr. Mario",
+        "马里奥派对" to "Mario Party",
+        "路易吉洋馆" to "Luigi's Mansion",
+        "马里奥" to "Mario",
+        "马力欧" to "Mario",
+        "玛丽奥" to "Mario",
+        "玛莉奥" to "Mario",
+        "大金刚国度" to "Donkey Kong Country",
+        "森喜刚" to "Donkey Kong",
+        "大金刚" to "Donkey Kong",
+        "耀西岛" to "Yoshi's Island",
+        "耀西" to "Yoshi",
+        // --- 塞尔达 ---
+        "塞尔达传说 众神的三角力量" to "The Legend of Zelda A Link to the Past",
+        "塞尔达传说众神的三角力量" to "The Legend of Zelda A Link to the Past",
+        "众神的三角力量" to "A Link to the Past",
+        "三角力量" to "A Link to the Past",
+        "塞尔达传说 织梦岛" to "The Legend of Zelda Link's Awakening",
+        "织梦岛" to "Link's Awakening",
+        "塞尔达传说" to "The Legend of Zelda",
+        "塞尔达" to "The Legend of Zelda",
+        "梦见岛" to "Link's Awakening",
+        "姆吉拉的假面" to "Majora's Mask",
+        "时之笛" to "Ocarina of Time",
+        // --- 科乐美系 ---
+        "超级魂斗罗" to "Super Contra",
+        "魂斗罗力量" to "Contra Force",
+        "魂斗罗" to "Contra",
+        "赤色要塞" to "Jackal",
+        "沙罗曼蛇" to "Life Force",
+        "恶魔城传说" to "Castlevania III Dracula's Curse",
+        "恶魔城" to "Castlevania",
+        "忍者龙剑传" to "Ninja Gaiden",
+        "赤影战士" to "Shadow Warriors",
+        "影子传说" to "The Legend of Kage",
+        "热血硬派" to "River City Ransom",
+        "热血物语" to "River City Ransom",
+        // --- 卡普空系 ---
+        "洛克人" to "Mega Man",
+        "街头霸王" to "Street Fighter",
+        "街霸" to "Street Fighter",
+        "快打旋风" to "Final Fight",
+        "恐龙快打" to "Cadillacs and Dinosaurs",
+        "名将" to "Captain Commando",
+        "三国志Ⅱ" to "Dynasty Wars 2",
+        "圆桌骑士" to "Knights of the Round",
+        "吞食天地" to "Destiny of an Emperor",
+        "大战鲨鱼帮" to "Yo! Noid",
+        // --- 世嘉系 ---
+        "战斧" to "Golden Axe",
+        "怒之铁拳" to "Streets of Rage",
+        "索尼克" to "Sonic",
+        "刺猬索尼克" to "Sonic the Hedgehog",
+        // --- SNK 系 ---
+        "拳皇" to "The King of Fighters",
+        "格斗之王" to "The King of Fighters",
+        "饿狼传说" to "Fatal Fury",
+        "龙虎之拳" to "Art of Fighting",
+        "侍魂" to "Samurai Shodown",
+        "合金弹头" to "Metal Slug",
+        "三国战记" to "Knights of Valour",
+        "西游释厄传" to "Oriental Legend",
+        // --- 谜题 / 休闲 ---
+        "雪人兄弟" to "Snow Bros",
+        "泡泡龙" to "Bubble Bobble",
+        "松鼠大战" to "Chip n Dale Rescue Rangers",
+        "俄罗斯方块" to "Tetris",
+        "打砖块" to "Arkanoid",
+        "吃豆人" to "Pac-Man",
+        "挖金子" to "Lode Runner",
+        // --- 平台 / 冒险 ---
+        "冒险岛" to "Adventure Island",
+        "忍者神龟" to "Teenage Mutant Ninja Turtles",
+        "忍者龟" to "Teenage Mutant Ninja Turtles",
+        "蝙蝠侠" to "Batman",
+        "星之卡比" to "Kirby",
+        "卡比" to "Kirby",
+        "银河战士" to "Metroid",
+        "星际火狐" to "Star Fox",
+        // --- RPG / 模拟 ---
+        "牧场物语" to "Harvest Moon",
+        "火焰之纹章" to "Fire Emblem",
+        "火焰纹章" to "Fire Emblem",
+        "高级战争" to "Advance Wars",
+        "黄金太阳" to "Golden Sun",
+        "勇者斗恶龙" to "Dragon Quest",
+        "最终幻想" to "Final Fantasy",
+        "太空战士" to "Final Fantasy",
+        "重装机兵" to "Metal Max",
+        "超级机器人大战" to "Super Robot Wars",
+        "三国演义" to "Romance of the Three Kingdoms",
+        "三国志" to "Romance of the Three Kingdoms",
+        "信长的野望" to "Nobunaga's Ambition",
+        // --- 漫画改编 ---
+        "圣斗士星矢" to "Saint Seiya",
+        "龙珠" to "Dragon Ball",
+        "幽游白书" to "Yu Yu Hakusho",
+        "火影忍者" to "Naruto",
+        "数码宝贝" to "Digimon",
+        "口袋妖怪" to "Pokemon",
+        "宠物小精灵" to "Pokemon",
+        "神奇宝贝" to "Pokemon",
+        "宝可梦" to "Pokemon",
+        // ★ 带空格分隔的版本词（"口袋妖怪 金"）：合成短语整段翻译，避免
+        //   版本单字（金/银/红/蓝…）残留汉字导致译文被丢弃，也避免把
+        //   单字误替换进无关名（如"大金刚"）。
+        "口袋妖怪 红宝石" to "Pokemon Ruby",
+        "口袋妖怪 蓝宝石" to "Pokemon Sapphire",
+        "口袋妖怪 绿宝石" to "Pokemon Emerald",
+        "口袋妖怪 白金" to "Pokemon Platinum",
+        "口袋妖怪 钻石" to "Pokemon Diamond",
+        "口袋妖怪 珍珠" to "Pokemon Pearl",
+        "口袋妖怪 水晶" to "Pokemon Crystal",
+        "口袋妖怪 金" to "Pokemon Gold",
+        "口袋妖怪 银" to "Pokemon Silver",
+        "口袋妖怪 红" to "Pokemon Red",
+        "口袋妖怪 蓝" to "Pokemon Blue",
+        "口袋妖怪 黄" to "Pokemon Yellow",
+        "口袋妖怪 皮卡丘" to "Pokemon Yellow",
+        "宝可梦 红宝石" to "Pokemon Ruby",
+        "宝可梦 蓝宝石" to "Pokemon Sapphire",
+        "宝可梦 绿宝石" to "Pokemon Emerald",
+        "宝可梦 金" to "Pokemon Gold",
+        "宝可梦 银" to "Pokemon Silver",
+        "宠物小精灵 金" to "Pokemon Gold",
+        "宠物小精灵 银" to "Pokemon Silver",
+        "神奇宝贝 金" to "Pokemon Gold",
+        "神奇宝贝 银" to "Pokemon Silver",
+        "口袋妖怪黑" to "Pokemon Black",
+        "口袋妖怪白" to "Pokemon White",
+        "口袋妖怪红宝石" to "Pokemon Ruby",
+        "口袋妖怪蓝宝石" to "Pokemon Sapphire",
+        "口袋妖怪绿宝石" to "Pokemon Emerald",
+        // --- 其他名作 ---
+        "生化危机" to "Resident Evil",
+        "合金装备" to "Metal Gear Solid",
+        "皇牌空战" to "Ace Combat",
+        "实况足球" to "Pro Evolution Soccer",
+        "恶魔城白夜" to "Castlevania Harmony of Dissonance",
+        "晓月圆舞曲" to "Castlevania Aria of Sorrow",
+        "月下夜想曲" to "Castlevania Symphony of the Night"
+    )
+
+    /** 键长降序的词典视图（首次访问时排序，进程内复用）。 */
+    private val ZH_EN_SORTED: List<Pair<String, String>> by lazy {
+        ZH_EN.sortedByDescending { it.first.length }
+    }
+
+    /**
+     * 中文名 → 英文候选名列表（0..2 个）。
+     *
+     * 处理链：
+     *   1. 去 ()/[] 段 —— "(汉化)(中文)[简体]" 等标签随括号去除；
+     *   2. 去无括号的中文限定词 —— "汉化版/中文版/简体/繁体/官方中文" 与
+     *      数量词 "第N代/N代/第N部/第N集"（"吞食天地2代" → "吞食天地2"）；
+     *   3. 词典长词优先直译，序号/字母数字原样保留；
+     *   4. 仍残留汉字的翻译结果丢弃（词典未收录 → 交给模糊轮兜底）；
+     *   5. 混合名（中英并存，如 "超级玛丽 Super Mario Bros"）额外给出
+     *      纯 ASCII 提取候选。
+     */
+    fun zhToEnCandidates(rawName: String): List<String> {
+        if (!hasCJK(rawName)) return emptyList()
+        var s = rawName
+            .replace(Regex("\\([^)]*\\)"), " ")
+            .replace(Regex("\\[[^]]*]"), " ")
+        s = s.replace(Regex("汉化版|汉化|中文版|官方中文|简体中文|繁体中文|简体|繁体|机翻|中文"), " ")
+        s = s.replace(Regex("第[一二三四五六七八九十0-9]+代|第[一二三四五六七八九十0-9]+[部集]|[一二三四五六七八九十0-9]+[部集]"), " ")
+        s = s.replace('_', ' ').replace(Regex("\\s+"), " ").trim()
+        if (s.isEmpty()) return emptyList()
+        val out = LinkedHashSet<String>()
+        // 词典直译（长词优先）
+        val translated = translatePhrases(s)
+        if (translated.isNotBlank() && !hasCJK(translated)) out.add(translated)
+        // 混合名：提取纯 ASCII 段（中英并存时英文段往往就是标题）
+        if (hasCJK(translated)) {
+            val ascii = s.replace(Regex("[^A-Za-z0-9&'!.\\-]+"), " ")
+                .replace(Regex("\\s+"), " ").trim()
+            if (ascii.length >= 3) out.add(ascii)
+        }
+        return out.filter { it.isNotBlank() }
+    }
+
+    /** 词典长词优先直译（只替换仍为中文的段落中的短语，字母数字段原样保留）。 */
+    private fun translatePhrases(s: String): String {
+        var result = s
+        for ((zh, en) in ZH_EN_SORTED) {
+            if (zh !in result) continue
+            result = result.replace(zh, " $en ")
+        }
+        return result.replace(Regex("\\s+"), " ").trim()
     }
 
     /**

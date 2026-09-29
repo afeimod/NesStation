@@ -739,8 +739,8 @@ class PadLayout {
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
     var irOverclockEnable: String = "disabled"      // enabled | disabled (OverclockEnable)
     var irOverclock: String = "100"                 // "100".."400" % (Overclock)
-    var irBackend: String = "OGL"                   // OGL | Vulkan | SW (GFXBackend)
-    var irResolution: String = "2"                  // "2" 原生 | "4" 2x | "6" 3x | "7" 4x (EFBScale)
+    var irBackend: String = "OGL"                   // OGL | Vulkan | Software Renderer (GFXBackend，参考 APK 值域)
+    var irResolution: String = "100"                // InternalResolution 百分比：100=1x 原生，200=2x，300=3x，400=4x
     var irMsaa: String = "1"                        // "1" 关 | "2" | "4" | "8" (MSAA)
     var irAnisotropy: String = "0"                  // "0".."4" (MaxAnisotropy 1x..16x)
     var irShowFps: String = "disabled"              // enabled | disabled (ShowFPS)
@@ -2481,8 +2481,19 @@ object PadLayoutStore {
             irDualCore = p.getString("ir_dual_core", "enabled") ?: "enabled"
             irOverclockEnable = p.getString("ir_overclock_enable", "disabled") ?: "disabled"
             irOverclock = p.getString("ir_overclock", "100") ?: "100"
-            irBackend = p.getString("ir_backend", "OGL") ?: "OGL"
-            irResolution = p.getString("ir_resolution", "2") ?: "2"
+            irBackend = p.getString("ir_backend", "OGL")?.let {
+                // ★ 存档迁移：旧 "SW" 不是本核心的有效 GFXBackend 值（参考 APK
+                //   实测值域 OGL/Vulkan/Software Renderer/Null），改写为正式值。
+                if (it == "SW") "Software Renderer" else it
+            } ?: "OGL"
+            // ★ 存档迁移：旧值是 Dolphin 5.0 的 EFBScale 枚举（2/4/6/7），本核心
+            //   InternalResolution 语义为百分比（参考 APK 默认 100），一次性换算。
+            irResolution = p.getString("ir_resolution", "100")?.let {
+                when (it) {
+                    "2" -> "100"; "4" -> "200"; "6" -> "300"; "7" -> "400"
+                    else -> it.toIntOrNull()?.coerceIn(50, 800)?.toString() ?: "100"
+                }
+            } ?: "100"
             irMsaa = p.getString("ir_msaa", "1") ?: "1"
             irAnisotropy = p.getString("ir_anisotropy", "0") ?: "0"
             irShowFps = p.getString("ir_show_fps", "disabled") ?: "disabled"

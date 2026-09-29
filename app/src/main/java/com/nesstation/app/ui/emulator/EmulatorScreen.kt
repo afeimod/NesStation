@@ -4501,25 +4501,39 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
         // 3DS（Azahar）—— "段/键" 复合键直写用户目录 config/config.ini，
         // enabled/disabled 转为核心布尔 true/false，数字枚举原样透传。
         GamePlatform.N3DS -> {
-            val b = { v: String -> if (v == "enabled") "true" else "false" }
+            // ★★ 配置值格式对齐核心内嵌模板（libazahar.so 默认 config.ini 模板
+            //   逐键核对）★★ 本核心全部布尔设置按 **0/1 整数** 读取
+            //   （模板注释："# 0: Off, 1 (default): On" 等）。旧实现写
+            //   "true"/"false" 字符串 —— 整数解析失败后全部静默回退默认值，
+            //   所有设置形同虚设（3DS 侧"改了不生效/黑屏异常"的来源之一）。
+            //   ⚠ 唯一例外：async_presentation 是**反逻辑**键 —— 模板原文
+            //   "# 0: Enable async presentation, 1 (default): Disable"，即
+            //   0=开启异步呈现、1=禁用（默认禁用：异步呈现线程与前端
+            //   Choreographer 呈现并存时存在同帧竞争风险）。UI"开启"→"0"，
+            //   UI"关闭"→"1"。
+            val b = { v: String -> if (v == "enabled") "1" else "0" }
+            val binv = { v: String -> if (v == "enabled") "0" else "1" }
+            // graphics_api 值域（模板原文 "# 1: OpenGL ES (default), 2: Vulkan"）：
+            // 本构建（Azahar 2125）无软件渲染器，0 为桌面 OpenGL（Android 上
+            // 无 EGL 支持必然黑屏）—— 旧 UI 的 "software" 选项映射为 GLES。
             val api = when (layout.azGraphicsApi) {
-                "software" -> "0"; "vulkan" -> "2"; else -> "1"
+                "vulkan" -> "2"; else -> "1"
             }
             engine.setCoreOption("Renderer/graphics_api", api)
-            engine.setCoreOption("Renderer/use_gles", "true")
+            // （use_gles 键在本构建模板中不存在，已随 graphics_api 移除，不再写入）
             engine.setCoreOption("Renderer/resolution_factor", layout.azResolution)
             engine.setCoreOption("Renderer/use_hw_shader", b(layout.azUseHwShader))
             engine.setCoreOption("Renderer/use_shader_jit", b(layout.azUseShaderJit))
             engine.setCoreOption("Renderer/use_vsync", b(layout.azUseVsync))
             engine.setCoreOption("Renderer/use_disk_shader_cache", b(layout.azUseDiskShaderCache))
-            engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
+            engine.setCoreOption("Renderer/async_presentation", binv(layout.azAsyncPresentation))
             engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
             engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
             engine.setCoreOption("Renderer/use_skip_duplicate_frames", b(layout.azSkipDuplicateFrames))
             engine.setCoreOption("Renderer/texture_filter", layout.azTextureFilter)
             engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
             engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
-            engine.setCoreOption("Renderer/use_frame_limit", "true")
+            engine.setCoreOption("Renderer/use_frame_limit", "1")
             engine.setCoreOption("Renderer/frame_limit", layout.azFrameLimit)
             engine.setCoreOption("Renderer/render_3d", layout.azRender3d)
             engine.setCoreOption("Renderer/factor_3d", layout.azFactor3d)
@@ -4538,7 +4552,14 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("Core/use_fastinterp", b(layout.azUseFastInterp))
             engine.setCoreOption("System/is_new_3ds", b(layout.azIsNew3ds))
             engine.setCoreOption("System/region_value", layout.azRegion)
-            engine.setCoreOption("Audio/audio_emulation", layout.azAudioEmulation)
+            // audio_emulation 在本模板中的语义是 0=禁用 / 1=启用（不是 HLE/LLE
+            // 枚举 —— 旧 UI 的 "0=HLE/1=LLE/2=LLE多线程" 写入会把选 HLE 的
+            // 用户音频直接关掉）。音频模拟方式由核心自选，这里只透传开/关。
+            val audioEmu = when (layout.azAudioEmulation) {
+                "0", "disabled" -> "0"
+                else -> "1"
+            }
+            engine.setCoreOption("Audio/audio_emulation", audioEmu)
             // 原生侧 volume 为 0..1 浮点（GetReal）
             val vol = (layout.azVolume.toIntOrNull() ?: 100).coerceIn(0, 100)
             engine.setCoreOption("Audio/volume", (vol / 100.0).toString())
@@ -4557,30 +4578,38 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("Dolphin.ini/Core/CPUThread", b(layout.irDualCore))
             engine.setCoreOption("Dolphin.ini/Core/OverclockEnable", b(layout.irOverclockEnable))
             engine.setCoreOption("Dolphin.ini/Core/Overclock", layout.irOverclock)
-            engine.setCoreOption("Dolphin.ini/Core/GFXBackend", layout.irBackend)
+            // ★ GFXBackend 值域修复（参考 APK 设置界面 e.java 实测值域）：
+            //   本核心只认 "OGL" / "Vulkan" / "Software Renderer" / "Null" 四个
+            //   字符串；旧 UI 提供 "SW" —— 核心无法识别，选择"软件渲染"后仍按
+            //   上次有效后端（或默认 OGL）启动。
+            engine.setCoreOption("Dolphin.ini/Core/GFXBackend",
+                if (layout.irBackend == "SW") "Software Renderer" else layout.irBackend)
             engine.setCoreOption("Dolphin.ini/Core/WiimoteEnableSpeaker", b(layout.irWiimoteSpeaker))
             engine.setCoreOption("Dolphin.ini/Core/WiimoteContinuousScanning", b(layout.irWiimoteScan))
             engine.setCoreOption("Dolphin.ini/Core/AudioStretch", b(layout.irAudioStretch))
             engine.setCoreOption("Dolphin.ini/Core/DSPHLE", b(layout.irDspHle))
-            // ★★ 分辨率倍数设置无效根治修复（段名对齐参考 APK）★★
-            //   参考版 Ishiruka APK 的设置界面把 GFX.ini 的段名定为
-            //   Settings / Enhancements / Hacks（与其 Java 设置模型一致，
-            //   反编译 features/settings/ui/i::c/g 实测），本 libmain.so 的
-            //   主 GFX.ini 加载器同样按新段名读取；"Video_Settings" 等
-            //   旧段名只存在于游戏配置加载器（GameSettings/*.ini 兼容），
-            //   写进 User/Config/GFX.ini 的 [Video_Settings] 段核心根本
-            //   不读 —— 这就是"分辨率倍数设置一直无效"的根因。
-            //   irResolution 的 UI 值 1/2/3/4 恰为 InternalResolution 枚举
-            //   原值（1x/2x/3x/4x），直接透传。
-            engine.setCoreOption("GFX.ini/Settings/InternalResolution", layout.irResolution)
-            engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
-            engine.setCoreOption("GFX.ini/Settings/ShowFPS", b(layout.irShowFps))
-            engine.setCoreOption("GFX.ini/Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
-            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.irAspect)
-            engine.setCoreOption("GFX.ini/Enhancements/MaxAnisotropy", layout.irAnisotropy)
-            engine.setCoreOption("GFX.ini/Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
-            engine.setCoreOption("GFX.ini/Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
-            engine.setCoreOption("GFX.ini/Hacks/EFBAccessEnable", b(layout.irEfbAccess))
+            // ★★ 分辨率倍数无效根治修复 v3（键值语义以核心库 + 参考 APK 为准）★★
+            //   本核心（Ishiiruka 4.0 系）的分辨率键是 **InternalResolution**，
+            //   值语义为**百分比**（参考 APK 设置 UI 默认值 100；100=1x 原生，
+            //   200=2x，300=3x，400=4x）。旧 UI 沿用 Dolphin 5.0 的 EFBScale
+            //   枚举（2=1x/4=2x/6=3x/7=4x）→ 核心把 2 当成 2% 内部分辨率，
+            //   画面糊成马赛克 + 性能崩坏（"硬件加速全失效"的根因之一）。
+            //   这里把旧存档值迁移为百分比，再原样下发。
+            //   段名保持 Video_*（本库 INI 层唯一认识的段名，strings 实测；
+            //   参考 APK 的 per-game 设置同样经 SetUserSetting 映射到 Video_*）。
+            val irRes = when (layout.irResolution) {
+                "2" -> "100"; "4" -> "200"; "6" -> "300"; "7" -> "400"
+                else -> layout.irResolution.toIntOrNull()?.coerceIn(50, 800)?.toString() ?: "100"
+            }
+            engine.setCoreOption("GFX.ini/Video_Settings/InternalResolution", irRes)
+            engine.setCoreOption("GFX.ini/Video_Settings/MSAA", layout.irMsaa)
+            engine.setCoreOption("GFX.ini/Video_Settings/ShowFPS", b(layout.irShowFps))
+            engine.setCoreOption("GFX.ini/Video_Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
+            engine.setCoreOption("GFX.ini/Video_Settings/AspectRatio", layout.irAspect)
+            engine.setCoreOption("GFX.ini/Video_Enhancements/MaxAnisotropy", layout.irAnisotropy)
+            engine.setCoreOption("GFX.ini/Video_Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
+            engine.setCoreOption("GFX.ini/Video_Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
+            engine.setCoreOption("GFX.ini/Video_Hacks/EFBAccessEnable", b(layout.irEfbAccess))
         }
     }
 }
