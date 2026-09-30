@@ -701,6 +701,53 @@ private fun arcadeToLibretroLayout(bits: Int): Int {
 // ★ 3DS/NGC-WII 黑屏修复：加载前可读性预检 + MediaStore 救援拷贝
 // ---------------------------------------------------------------------------
 /**
+ * ★ ROM 真实路径解析（对齐参考 APK NativeLibrary.getNativePath 反编译语义）：
+ *
+ *   "file:///data/.../title/xxx.app" → "/data/.../title/xxx.app"（URL 解码）
+ *   "content://.../document/primary%3AROMs%2F3ds%2Fa.3ds"
+ *       → URL 解码 documentId "primary:ROMs/3ds/a.3ds"
+ *       → /storage/emulated/0/ROMs/3ds/a.3ds（主存储挂载点直接还原）
+ *   纯路径 → File(romPath)
+ *   非主存储挂载（sdcardR 等）或文件不存在/不可读 → null（调用方回退原路径）。
+ *
+ *   依据：参考 APK 从不把 ROM 拷进应用私有目录 —— getNativePath 把 SAF URI
+ *   还原成真实路径后直读（应用持有 MANAGE_EXTERNAL_STORAGE 时必然可读）。
+ *   本 app 已声明并引导授权 MANAGE_EXTERNAL_STORAGE，行为可对齐。
+ *   3DS(.3ds/.app 可达 4GB)/NGC-WII(.rvz/.wbfs) 的 SAF 全量拷贝到内部
+ *   cacheDir 既慢又常因配额/空间不足而失败 → ".app 打不开"的直接根因。
+ */
+internal fun resolveNativeRomFile(romPath: String): java.io.File? {
+    return try {
+        val f: java.io.File? = when {
+            romPath.startsWith("file://", ignoreCase = true) -> {
+                val path = try {
+                    java.net.URI(romPath).path
+                } catch (_: Throwable) {
+                    null
+                } ?: android.net.Uri.decode(romPath.removePrefix("file://").removePrefix("FILE://"))
+                java.io.File(path)
+            }
+            romPath.startsWith("content://") -> {
+                val uri = android.net.Uri.parse(romPath)
+                val lastSeg = uri.lastPathSegment ?: return null
+                val decoded = android.net.Uri.decode(lastSeg)
+                // documentId 形如 "primary:ROMs/3ds/game.3ds"（冒号前为挂载点名）
+                val colon = decoded.indexOf(':')
+                if (colon <= 0) return null
+                val mount = decoded.substring(0, colon)
+                if (!mount.equals("primary", ignoreCase = true)) return null
+                val base = android.os.Environment.getExternalStorageDirectory().absolutePath
+                java.io.File(base, decoded.substring(colon + 1))
+            }
+            else -> java.io.File(romPath)
+        }
+        if (f != null && f.exists() && f.canRead()) f else null
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+/**
  * 直接读取探测：尝试以流方式打开 [file] 并读 1 字节。
  *
  * `File.exists()` 为 true 不代表核心的 fopen 能成功 —— Android 11+ 的
@@ -1450,19 +1497,23 @@ fun EmulatorScreen(
                 append("3DS 核心已加载但 20 秒内没有输出任何帧。\n\n")
                 append("启动时 surface 状态: ${if (azEngine.isSurfaceValid()) "有效" else "无效"}\n\n")
                 // 密钥/引导文件状态（sysdata 目录，含自动归位结果）
+                // ★ 文案纠偏：未加密 ROM（.app/.3ds/.cci 大多数）无需任何
+                //   密钥/引导文件 —— 参考 APK 没有 boot9.bin 也正常运行；
+                //   仅**已加密**卡带需要 aes_keys.txt。
                 val userDir = azEngine.userDirectoryPath()
                 val sysdata = java.io.File(userDir, "sysdata")
                 val keys = java.io.File(sysdata, "aes_keys.txt")
                 val boot9 = java.io.File(sysdata, "boot9.bin")
-                append("aes_keys.txt（sysdata/）: ${if (keys.isFile && keys.length() > 0) "已存在" else "缺失（加密卡带必需）"}\n")
-                append("boot9.bin（sysdata/）: ${if (boot9.isFile && boot9.length() > 0) "已存在" else "缺失（部分加密 ROM 需要）"}\n")
+                append("未加密 ROM：无需任何密钥/引导文件（打不开与下列文件无关）\n")
+                append("aes_keys.txt（sysdata/）: ${if (keys.isFile && keys.length() > 0) "已存在" else "缺失（仅已加密卡带需要）"}\n")
+                append("boot9.bin（sysdata/）: ${if (boot9.isFile && boot9.length() > 0) "已存在" else "缺失（通常不需要）"}\n")
                 if (!keys.isFile) {
-                    append("放置位置（任选其一，应用会自动归位）:\n")
+                    append("已加密卡带的密钥放置位置（任选其一，应用会自动归位）:\n")
                     append("  1. ${sysdata.absolutePath}/\n")
                     append("  2. 内置存储 ${userDir}/\n")
                     append("  3. 应用外置 files 目录（/sdcard/Android/data/com.nesstation.app/files/）\n\n")
                 }
-                append("或确认 ROM 镜像完整未加密（.3ds/.cci/.cxi/.app）。")
+                append("其它可能：ROM 镜像损坏；存储空间不足；核心日志尾部可见具体原因。")
                 // 原生日志尾部 —— 真实失败原因，截图即可进一步定位
                 azEngine.nativeLogTail()?.let { append("\n\n—— 核心日志尾部 ——\n$it") }
             }
@@ -2206,7 +2257,19 @@ fun EmulatorScreen(
             }
         }
 
-        val romFile = java.io.File(romPath)
+        // ★★ 3DS/NGC-WII 大文件直读修复（对齐参考 APK getNativePath 语义）★★
+        //   旧实现 content:// ROM 全部落入下方的 SAF 全量拷贝分支：3DS
+        //   .3ds/.app 可达 4GB，拷进内部 cacheDir 常因配额/空间失败或
+        //   耗时数分钟 → ".app 等不需要密钥的也打不开/黑屏"。
+        //   CIA 安装产物 romPath = "file://<nand>/xxx.app"，旧代码直接
+        //   File("file://...").exists() 永远 false → 已安装标题必报
+        //   "游戏文件不存在"。resolveNativeRomFile 统一还原真实路径，
+        //   两类文件都直接命中下方 romFile.exists() 直读分支。
+        val romFile = if (platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII) {
+            resolveNativeRomFile(romPath) ?: java.io.File(romPath)
+        } else {
+            java.io.File(romPath)
+        }
         if (platform == GamePlatform.DOS) {
             // === DOS-specific loading ===
             // DOSBox-Pure needs the FULL game folder (the .bat launcher usually
@@ -2428,10 +2491,12 @@ fun EmulatorScreen(
             }
         } else if ((platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII) &&
                    !romPath.startsWith("content://") &&
-                   !java.io.File(romPath).exists()) {
+                   !romFile.exists()) {
             // ★ 3DS/NGC-WII 文件缺失兜底：本地路径不存在时给出明确提示，
             //   避免落入 content:// 兜底分支后得到难以理解的报错或黑屏。
             //   常见原因：文件被移动/重命名、SD 卡未挂载、导入后未刷新游戏库。
+            //   ★ 注意用解析后的 romFile 判断：CIA 安装产物 romPath 带
+            //   "file://" 前缀，File(romPath).exists() 永远 false。
             errorMsg = "游戏文件不存在：\n$romPath\n\n" +
                 "常见原因：文件已被移动/重命名，或存储卡未挂载。\n" +
                 "请回到游戏库点击『刷新』重新扫描，或删除该游戏后重新导入。"

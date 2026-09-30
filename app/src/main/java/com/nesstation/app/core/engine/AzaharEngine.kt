@@ -217,13 +217,20 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             val f = File(sysdata, name)
             return if (f.isFile && f.length() > 0) "已存在" else "缺失"
         }
+        // ★ 文案纠偏（用户实测 + 参考 APK 行为）：
+        //   参考 APK 无 boot9.bin 也可正常运行绝大多数游戏（Azahar 对
+        //   未加密 ROM 是 HLE 引导，不需要引导 ROM）；boot9/seeddb 仅
+        //   少数场景（LLE 引导/系统应用/区域种子）才用。未加密的
+        //   .app/.3ds/.cci 一切依赖都不需要 —— 打不开与这些文件无关。
         return buildString {
-            append("aes_keys.txt: ").append(st("aes_keys.txt"))
-            append("（加密卡带必需 → 放入 ")
+            append("未加密 ROM（.app/.3ds/.cci 大多数）：无需任何密钥/引导文件")
+            append("\naes_keys.txt: ").append(st("aes_keys.txt"))
+            append("（仅**已加密** ROM 需要 → 放入 ")
             append(sysdata.absolutePath)
             append("/，或放 azahar 目录由应用自动归位）")
-            append("\nboot9.bin: ").append(st("boot9.bin")).append("（部分加密 ROM 需要）")
-            append("\nseeddb.bin: ").append(st("seeddb.bin")).append("（区域种子，可选）")
+            append("\nboot9.bin: ").append(st("boot9.bin"))
+            append("（**通常不需要**，仅 LLE/系统应用场景用）")
+            append("\nseeddb.bin: ").append(st("seeddb.bin")).append("（可选，区域种子）")
         }
     }
 
@@ -355,8 +362,9 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     if (!userRequestedStop && isLoaded) {
                         val msg = "Azahar 核心提前退出（status=$result）" +
                             (lastErrorText.takeIf { it.isNotBlank() }?.let { "\n$it" } ?: "") +
-                            "\n常见原因：加密卡带需 aes_keys.txt（放入 azahar/sysdata/ 目录，" +
-                            "或放 azahar 目录由应用自动归位）；镜像损坏或不完整；系统文件缺失。" +
+                            "\n常见原因：未加密 ROM 无需任何密钥/引导文件；仅**已加密**卡带需 " +
+                            "aes_keys.txt（放入 azahar/sysdata/ 目录，或放 azahar 目录由应用" +
+                            "自动归位）；镜像损坏或不完整；存储空间不足。" +
                             (sysDataDiag().let { "\n\n$it" }) +
                             (nativeLogTail()?.let { "\n\n—— 核心日志尾部 ——\n$it" } ?: "")
                         onPrematureExit?.invoke(msg)

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import com.nesstation.app.ui.emulator.resolveNativeRomFile
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
@@ -886,7 +887,12 @@ fun LibraryScreen(
                         refreshList(postMessage = "已获取 $fetched 个游戏封面")
                     }
                 } else {
-                    dialogMsg = "未下载到新封面\n（可能：已有封面 / 无网络 / 该平台暂无匹配源）"
+                    // ★ 诊断提示（附批量统计，用户/日志可直接看到卡在哪一环）
+                    val s = com.nesstation.app.core.storage.CoverFetcher.lastBatchStats
+                    dialogMsg = "未下载到新封面\n\n" + s.summary() +
+                        "\n\n可能原因：已有封面 / 无网络 / 封面索引被网络拦截 / 该平台无匹配源。" +
+                        "\n若显示\"封面索引不可用\"，多为当前网络无法访问 " +
+                        "thumbnails.libretro.com 与 GitHub，请更换网络后重试。"
                 }
             } catch (t: Throwable) {
                 dialogMsg = "封面获取失败：${t.message}"
@@ -982,19 +988,27 @@ fun LibraryScreen(
                 failures += "$name：不是 .cia 文件"
                 return@forEach
             }
-            // SAF → 本地临时文件（原生侧按真实路径读取）
-            val tmp = java.io.File(
-                context.cacheDir,
-                "cia_install_${System.currentTimeMillis()}_" +
-                    name.replace(Regex("[^\\w.-]"), "_")
-            )
+            // ★ CIA 大文件安装修复：优先用真实路径直读安装（对齐参考 APK
+            //   getNativePath 语义），避免把可达数 GB 的 CIA 全量拷进内部
+            //   cacheDir（配额/空间不足 → "CIA 安装失败"）。仅当真实路径
+            //   不可用（非主存储/权限未授予）时才回退 SAF 拷贝到缓存。
+            val direct = resolveNativeRomFile(uri.toString())
+            val tmp = if (direct == null) {
+                java.io.File(
+                    context.cacheDir,
+                    "cia_install_${System.currentTimeMillis()}_" +
+                        name.replace(Regex("[^\\w.-]"), "_")
+                )
+            } else null
             try {
-                val opened = context.contentResolver.openInputStream(uri)
-                if (opened == null) {
-                    failures += "$name：无法读取所选文件"
-                    return@forEach
+                if (tmp != null) {
+                    val opened = context.contentResolver.openInputStream(uri)
+                    if (opened == null) {
+                        failures += "$name：无法读取所选文件"
+                        return@forEach
+                    }
+                    opened.use { input -> tmp.outputStream().use { input.copyTo(it) } }
                 }
-                opened.use { input -> tmp.outputStream().use { input.copyTo(it) } }
                 // 安装进度观察（原生侧在调用线程同步回调；节流刷 UI）
                 var lastUi = 0L
                 org.citra.citra_emu.utils.CiaInstallWorker.listener = { max: Int, progress: Int ->
@@ -1004,8 +1018,9 @@ fun LibraryScreen(
                         ciaInstallMsg = "正在安装 $name…\n$progress / $max"
                     }
                 }
+                val installPath = direct?.absolutePath ?: tmp!!.absolutePath
                 val status = try {
-                    org.citra.citra_emu.utils.CiaInstallWorker().installCIA(tmp.absolutePath)
+                    org.citra.citra_emu.utils.CiaInstallWorker().installCIA(installPath)
                 } finally {
                     org.citra.citra_emu.utils.CiaInstallWorker.listener = null
                 }
@@ -1015,7 +1030,7 @@ fun LibraryScreen(
                     failures += "$name：${ciaStatusText(status)}"
                 }
             } finally {
-                tmp.delete()
+                tmp?.delete()
             }
         }
 

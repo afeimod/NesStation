@@ -425,6 +425,21 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         // 直写规范位置（核心启动唯一读取路径）
         writeIniMerged(File(configDir(), "Dolphin.ini"), dolphinUpdates)
         writeIniMerged(File(configDir(), "GFX.ini"), gfxUpdates)
+        // ★ 性能诊断日志：把本次实际生效的关键性能项打出来 —— 用户报
+        //   "性能有问题"时，logcat 过滤 IshirukaEngine 即可核对 JIT/后端/
+        //   双核/内部分辨率是否按设置页选择生效（下轮精确对症）。
+        try {
+            val perf = dolphinUpdates["Core"]?.let { core ->
+                listOf("CPUCore", "CPUThread", "Fastmem", "JITFollowBranch", "GFXBackend",
+                       "VideoBackendIndex", "OverclockEnable", "Overclock", "DSPHLE")
+                    .mapNotNull { k -> core[k]?.let { "$k=$it" } }
+            } ?: emptyList()
+            val gfx = gfxUpdates["Settings"]?.let { s ->
+                listOf("InternalResolution", "MSAA", "WaitForShadersBeforeStarting")
+                    .mapNotNull { k -> s[k]?.let { "$k=$it" } }
+            } ?: emptyList()
+            android.util.Log.i("IshirukaEngine", "perf config: ${perf + gfx}")
+        } catch (_: Throwable) {}
     }
 
     override fun setCoreOption(key: String, value: String) {
@@ -883,20 +898,19 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val dev = NativeLibrary.TouchScreenDevice
         val x = nx.coerceIn(0f, 1f)
         val y = ny.coerceIn(0f, 1f)
-        // ★ IR 方向值约定修复（与绑定格式修复配套）：
-        //   WiimoteNew.ini 现在与参考 APK 一致使用裸轴绑定（IR/Up = `Axis 112`），
-        //   裸轴绑定的语义是"原始值"（可正可负），WiimoteEmu 内部按
-        //   up - down / left - right 合成 —— 因此每个方向控制必须发送**正值**：
-        //     触上半屏 → IR_UP 发正值；下半屏 → IR_DOWN 发正值；左右同理。
-        //   旧实现按 "Axis 112-"（负方向绑定）假设发负值 —— 在裸轴绑定下
-        //   up - down 合成为负 → IR 上下/左右反向漂移。
-        //   与参考 APK 的摇杆/IR overlay 约定一致：每方向正值，幅度 0..1。
-        val values = if (!pressed) floatArrayOf(0f, 0f, 0f, 0f) else floatArrayOf(
-            (0.5f - y).coerceAtLeast(0f) * 2f,    // IR_UP   (Axis 112) → 触上半屏发正值
-            (y - 0.5f).coerceAtLeast(0f) * 2f,    // IR_DOWN (Axis 113) → 触下半屏发正值
-            (0.5f - x).coerceAtLeast(0f) * 2f,    // IR_LEFT (Axis 114) → 触左半屏发正值
-            (x - 0.5f).coerceAtLeast(0f) * 2f     // IR_RIGHT(Axis 115) → 触右半屏发正值
-        )
+        // ★★ IR"只能右半边"根治（逐行对齐参考 APK overlay d;->a(FF) 反编译实测）★★
+        //   参考 APK 把【同一个带符号值】发给方向对的两根轴：
+        //     Y 带符号值（上=-1 .. 下=+1）→ 同时发 Axis 112(Up) 与 Axis 113(Down)；
+        //     X 带符号值（左=-1 .. 右=+1）→ 同时发 Axis 114(Left) 与 Axis 115(Right)。
+        //   原生 Touchscreen 对每根方向轴按符号半波整流（负=上/左，正=下/右
+        //   —— 与本引擎摇杆 Axis 11/12 的成功修复完全同约定）。
+        //   旧实现只给单轴发 0..1 正向半轴值：触左半屏发到 Axis 114 的正值
+        //   会被原生当作 Right 半轴 → 指针永远只能往右/下跑，且上/左半区
+        //   发正值的轴被整流后归零 —— "红外无法往左边去只能右半边"的直接根因。
+        val xs = x * 2f - 1f          // 左=-1 .. 右=+1（参考 APK: (x*i - g)/g）
+        val ys = y * 2f - 1f          // 上=-1 .. 下=+1（参考 APK: (y*j - h)/h）
+        val values = if (!pressed) floatArrayOf(0f, 0f, 0f, 0f)
+                     else floatArrayOf(ys, ys, xs, xs)   // 112&113=Y带符号；114&115=X带符号
         val ids = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_IR_UP,
             NativeLibrary.ButtonType.WIIMOTE_IR_DOWN,
@@ -919,17 +933,27 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     fun setPointerDepth(forward: Boolean, pressed: Boolean) {
         if (!isLoaded || effectiveMode() == "ngc") return
         val dev = NativeLibrary.TouchScreenDevice
-        val id = if (forward) NativeLibrary.ButtonType.WIIMOTE_IR_FORWARD
-        else NativeLibrary.ButtonType.WIIMOTE_IR_BACKWARD
-        // ★ IR+/IR- 符号修复（与裸轴绑定配套）：IR/Forward = `Axis 116`、
-        //   IR/Backward = `Axis 117`（均为裸轴绑定），各自独立发送正值即可。
-        //   旧实现按 "Axis 116-" 假设对 Forward 发 -1f → 在裸轴绑定下
-        //   up 深度合成结果为负 → IR+ 永远把指针推向屏幕深处之外。
-        val value = if (pressed) 1f else 0f
-        val idx = if (forward) 4 else 5
-        if (irLast[idx] != value) {
-            irLast[idx] = value
-            try { NativeLibrary.onGamePadMoveEvent(dev, id, value) } catch (_: Throwable) {}
+        // ★★ IR+/IR− 符号修复（与方向轴同约定）★★
+        //   原生对 Axis 116(Forward)/117(Backward) 同样按符号半波整流：
+        //   负=Forward(推向屏幕深处/远离)，正=Backward(拉向玩家)。
+        //   参考 APK 的方向约定：上/左/前 = 负值，下/右/后 = 正值。
+        //   旧实现给 Forward 发 +1f → 被整流为 0 → "IR+ 失效"。
+        //   与方向对一致：把同一个带符号值同时发给 116 与 117 两根轴。
+        val z = when {
+            !pressed -> 0f
+            forward  -> -1f     // IR+（推远）→ Forward 半轴（负值）
+            else     -> 1f      // IR−（拉近）→ Backward 半轴（正值）
+        }
+        val ids = intArrayOf(
+            NativeLibrary.ButtonType.WIIMOTE_IR_FORWARD,
+            NativeLibrary.ButtonType.WIIMOTE_IR_BACKWARD
+        )
+        for (i in ids.indices) {
+            val idx = 4 + i
+            if (irLast[idx] != z) {
+                irLast[idx] = z
+                try { NativeLibrary.onGamePadMoveEvent(dev, ids[i], z) } catch (_: Throwable) {}
+            }
         }
     }
 

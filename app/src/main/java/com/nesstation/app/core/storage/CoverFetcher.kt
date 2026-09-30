@@ -41,6 +41,44 @@ object CoverFetcher {
     private const val MAX_IMAGE_BYTES = 4 * 1024 * 1024
     private const val FETCH_INTERVAL_MS = 250L
 
+    // ★★ 双通道下载（本轮新增）★★
+    //   thumbnails.libretro.com（Apache 直出）在部分网络环境下载缓慢/不稳，
+    //   而缩略图库在 GitHub 有官方镜像（libretro-thumbnails 组织，文件名
+    //   与站点完全一致），jsDelivr CDN 对其可达性/速度普遍更好。每个 URL
+    //   先走 libretro 直连，失败自动切换 jsDelivr 镜像。
+    private const val MIRROR_BASE = "https://cdn.jsdelivr.net/gh/libretro-thumbnails"
+
+    /** 批量抓取统计（fetchAllMissing 结束后 UI 可读取，用于诊断提示）。 */
+    data class BatchStats(
+        var attempted: Int = 0,
+        var succeeded: Int = 0,
+        var indexFailed: Int = 0,
+        var notFound: Int = 0
+    ) {
+        fun summary(): String =
+            "尝试 $attempted，成功 $succeeded；${
+                if (indexFailed > 0) "封面索引不可用 $indexFailed 次（网络受限）" else ""
+            }${
+                if (notFound > 0) "${if (indexFailed > 0) "；" else ""}未匹配到 $notFound 个" else ""
+            }"
+    }
+
+    /** 最近一次批量抓取统计（UI 线程读取）。 */
+    @Volatile
+    var lastBatchStats: BatchStats = BatchStats()
+        private set
+
+    /**
+     * 构建某系统目录下同一张封面图的多通道 URL 列表（按优先级）。
+     * 系统目录名中的空格在 GitHub 仓库名里是下划线
+     * ("Nintendo - NES" → "Nintendo_-_NES")。
+     */
+    private fun coverImageUrls(system: String, subDir: String, name: String): List<String> {
+        val primary = "$BASE/${urlSeg(system)}/$subDir/${urlSeg(name)}.png"
+        val mirror = "$MIRROR_BASE/${system.replace(' ', '_')}/$subDir/${urlSeg(name)}.png"
+        return listOf(primary, mirror)
+    }
+
     /** 单个游戏最多尝试的候选名数量（防止极端命名膨胀请求数）。 */
     private const val MAX_CANDIDATES = 16
 
@@ -312,20 +350,22 @@ object CoverFetcher {
 
         val dest = File(coversDir(context), "${game.id}.png")
         for (sys in systemDirs) {
-            // 1) 盒装封面（Named_Boxarts）
+            // 1) 盒装封面（Named_Boxarts）—— 双通道：libretro 直连 + jsDelivr 镜像
             for (name in candidates) {
-                val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
-                if (downloadCached(url, dest, cache)) {
-                    syncDcBoxart(context, game, dest)
-                    return dest
+                for (url in coverImageUrls(sys, "Named_Boxarts", name)) {
+                    if (downloadCached(url, dest, cache)) {
+                        syncDcBoxart(context, game, dest)
+                        return dest
+                    }
                 }
             }
             // 2) 游戏截图兜底（Named_Snaps —— 有图总比占位色块好）
             for (name in candidates) {
-                val url = "$BASE/${urlSeg(sys)}/Named_Snaps/${urlSeg(name)}.png"
-                if (downloadCached(url, dest, cache)) {
-                    syncDcBoxart(context, game, dest)
-                    return dest
+                for (url in coverImageUrls(sys, "Named_Snaps", name)) {
+                    if (downloadCached(url, dest, cache)) {
+                        syncDcBoxart(context, game, dest)
+                        return dest
+                    }
                 }
             }
         }
@@ -335,21 +375,29 @@ object CoverFetcher {
         //   副标题缺失/序号写法不同"等精确候选永远覆盖不到的命名差异
         //   （"模糊读取 ROM 名而不是绝对名字"的需求）。
         for (sys in systemDirs) {
-            val index = fetchSystemIndex(context, sys) ?: continue
+            val index = fetchSystemIndex(context, sys)
+            if (index == null) {
+                Log.w(TAG, "cover index unavailable: $sys")
+                lastBatchStats.indexFailed++
+                continue
+            }
             // 每个搜索名（街机 = 英文标题 + 驱动名主干）各自模糊一遍
             val fuzzy = searchNames.flatMap { searchName ->
                 fuzzyMatch(searchName, index)
             }.distinct()
+            Log.i(TAG, "fuzzy hits for '$searchNames' ($sys): $fuzzy")
             for (name in fuzzy) {
                 // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
                 if (candidates.any { it.equals(name, ignoreCase = true) }) continue
-                val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
-                if (downloadImage(url, dest)) {
-                    Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
-                    syncDcBoxart(context, game, dest)
-                    return dest
+                for (url in coverImageUrls(sys, "Named_Boxarts", name)) {
+                    if (downloadImage(url, dest)) {
+                        Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
+                        syncDcBoxart(context, game, dest)
+                        return dest
+                    }
                 }
             }
+            lastBatchStats.notFound++
         }
         return null
     }
@@ -622,8 +670,11 @@ object CoverFetcher {
                     if (results.containsKey(name.lowercase())) continue
                     val i = out.size
                     val f = File(coversDir(context), "${game.id}_cand$i.png")
-                    val url = "$BASE/${urlSeg(sys)}/Named_Boxarts/${urlSeg(name)}.png"
-                    if (downloadImage(url, f)) {
+                    var hit = false
+                    for (url in coverImageUrls(sys, "Named_Boxarts", name)) {
+                        if (downloadImage(url, f)) { hit = true; break }
+                    }
+                    if (hit) {
                         results[name.lowercase()] = f
                         out.add(f to name)
                         onProgress?.invoke(out.size, max)
@@ -681,6 +732,13 @@ object CoverFetcher {
      * thumbnails.libretro.com 对目录请求返回自动生成的 HTML 列表
      * （实测 HTTP 200，每系统约几百 KB ~ 数 MB）。解析出所有 .png
      * 链接名（= 官方 No-Intro 名），磁盘缓存 30 天。
+     *
+     * ★★ 索引可靠性加固（本轮）★★
+     *   中文 ROM 的精确候选几乎必然 404，命中全靠索引 → 模糊匹配，
+     *   索引拉取失败 = 该游戏封面彻底没戏。加固：
+     *   1) 直连失败自动重试一次（移动网络抖动常见）；
+     *   2) 仍失败 → GitHub 官方镜像 git/trees API 兜底（JSON，一系统
+     *      一请求，同样磁盘缓存 30 天）。
      */
     private fun fetchSystemIndex(context: Context, system: String): List<String>? {
         indexMemory[system]?.let { return it }
@@ -698,47 +756,109 @@ object CoverFetcher {
                 }
             } catch (_: Throwable) {}
         }
-        // 拉取目录列表（限 8MB，防异常大响应）
+        // 通道 1：libretro 直连 autoindex（失败重试一次）
+        val primary = fetchAutoindexIndex(system)
+        if (primary != null) {
+            indexMemory[system] = primary
+            try { cacheFile.writeText(primary.joinToString("\n")) } catch (_: Throwable) {}
+            return primary
+        }
+        // 通道 2：GitHub 官方镜像 trees API（libretro-thumbnails 组织）
+        Log.w(TAG, "cover index primary failed, trying GitHub mirror: $system")
+        val mirror = fetchGithubTreeIndex(system)
+        if (mirror != null) {
+            indexMemory[system] = mirror
+            try { cacheFile.writeText(mirror.joinToString("\n")) } catch (_: Throwable) {}
+            Log.i(TAG, "cover index loaded via GitHub: $system (${mirror.size} names)")
+            return mirror
+        }
+        Log.w(TAG, "cover index unavailable from all sources: $system")
+        return null
+    }
+
+    /** libretro 站点 autoindex 拉取（含一次重试）。 */
+    private fun fetchAutoindexIndex(system: String): List<String>? {
+        for (attempt in 1..2) {
+            var conn: HttpURLConnection? = null
+            try {
+                val url = "$BASE/${urlSeg(system)}/Named_Boxarts/"
+                val c = URL(url).openConnection() as HttpURLConnection
+                conn = c
+                c.connectTimeout = 20000
+                c.readTimeout = 90000
+                c.instanceFollowRedirects = true
+                c.setRequestProperty("User-Agent", USER_AGENT)
+                val code = c.responseCode
+                if (code != HttpURLConnection.HTTP_OK) {
+                    Log.w(TAG, "cover index HTTP $code (attempt $attempt): $system")
+                    continue
+                }
+                val html = c.inputStream.use { input ->
+                    val buf = java.io.ByteArrayOutputStream()
+                    val buf8k = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val n = input.read(buf8k)
+                        if (n < 0) break
+                        total += n
+                        if (total > 12 * 1024 * 1024) return null
+                        buf.write(buf8k, 0, n)
+                    }
+                    buf.toString("UTF-8")
+                }
+                // Apache autoindex 行形如 <a href="Contra%20%28USA%29.png">Contra (USA).png</a>
+                // 用显示名（已解码）比 href 更可靠。
+                val names = LinkedHashSet<String>()
+                for (m in Regex("<a\\s+href=\"([^\"]+)\">([^<]*)</a>", RegexOption.IGNORE_CASE).findAll(html)) {
+                    val text = m.groupValues[2].trim()
+                    if (!text.endsWith(".png", ignoreCase = true)) continue
+                    val name = text.removeSuffix(".png").removeSuffix(".PNG")
+                    if (name.isNotBlank()) names.add(name)
+                }
+                if (names.isNotEmpty()) {
+                    val list = names.toList()
+                    Log.i(TAG, "cover index loaded: $system (${list.size} names)")
+                    return list
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "cover index fetch failed (attempt $attempt): $system (${t.message})")
+            } finally {
+                try { conn?.disconnect() } catch (_: Throwable) {}
+            }
+        }
+        return null
+    }
+
+    /** GitHub 官方镜像兜底：git/trees?recursive=1 一请求拿全系统文件树。 */
+    private fun fetchGithubTreeIndex(system: String): List<String>? {
         var conn: HttpURLConnection? = null
         return try {
-            val url = "$BASE/${urlSeg(system)}/Named_Boxarts/"
+            val repo = system.replace(' ', '_')
+            val url = "https://api.github.com/repos/libretro-thumbnails/$repo/git/trees/master?recursive=1"
             val c = URL(url).openConnection() as HttpURLConnection
             conn = c
-            c.connectTimeout = 15000
-            c.readTimeout = 60000
+            c.connectTimeout = 20000
+            c.readTimeout = 90000
             c.instanceFollowRedirects = true
             c.setRequestProperty("User-Agent", USER_AGENT)
-            if (c.responseCode != HttpURLConnection.HTTP_OK) return null
-            val html = c.inputStream.use { input ->
-                val buf = java.io.ByteArrayOutputStream()
-                val buf8k = ByteArray(8192)
-                var total = 0
-                while (true) {
-                    val n = input.read(buf8k)
-                    if (n < 0) break
-                    total += n
-                    if (total > 8 * 1024 * 1024) return null
-                    buf.write(buf8k, 0, n)
-                }
-                buf.toString("UTF-8")
+            c.setRequestProperty("Accept", "application/vnd.github+json")
+            val code = c.responseCode
+            if (code != HttpURLConnection.HTTP_OK) {
+                Log.w(TAG, "GitHub trees HTTP $code: $system")
+                return null
             }
-            // Apache autoindex 行形如 <a href="Contra%20%28USA%29.png">Contra (USA).png</a>
-            // 用显示名（已解码）比 href 更可靠。
+            val json = c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            // 轻量解析 "path":"Named_Boxarts/<name>.png"（避免引 JSON 依赖）
             val names = LinkedHashSet<String>()
-            for (m in Regex("<a\\s+href=\"([^\"]+)\">([^<]*)</a>", RegexOption.IGNORE_CASE).findAll(html)) {
-                val text = m.groupValues[2].trim()
-                if (!text.endsWith(".png", ignoreCase = true)) continue
-                val name = text.removeSuffix(".png").removeSuffix(".PNG")
+            for (m in Regex("\"path\"\\s*:\\s*\"Named_Boxarts/([^\"]+)\\.png\"").findAll(json)) {
+                val raw = m.groupValues[1]
+                // JSON 字符串转义还原（文件名常见 \" \\ \uXXXX 极少；常规用例无转义）
+                val name = raw.replace("\\\"", "\"").replace("\\\\", "\\")
                 if (name.isNotBlank()) names.add(name)
             }
-            if (names.isEmpty()) return null
-            val list = names.toList()
-            indexMemory[system] = list
-            try { cacheFile.writeText(list.joinToString("\n")) } catch (_: Throwable) {}
-            Log.i(TAG, "cover index loaded: $system (${list.size} names)")
-            list
+            if (names.isEmpty()) null else names.toList()
         } catch (t: Throwable) {
-            Log.d(TAG, "cover index fetch failed: $system (${t.message})")
+            Log.w(TAG, "GitHub trees fetch failed: $system (${t.message})")
             null
         } finally {
             try { conn?.disconnect() } catch (_: Throwable) {}
@@ -806,7 +926,29 @@ object CoverFetcher {
             if (score > 1.0) score = 1.0
             if (score >= FUZZY_MIN_SCORE) scored.add(Scored(official, score))
         }
-        return scored.sortedByDescending { it.score }
+        // ★ 排序细化：同分时优先规范名 ——
+        //   1) 含 hack/bootleg/no title/翻译补丁 等标记的条目大幅降权
+        //      （"Super Mario Bros. (19xx)(-)[p][no title...]" 这类 dump
+        //      杂项不应排在标准版前面）；
+        //   2) 同分取更短名（标准版常比带序号/区域后缀的短）。
+        fun markerPenalty(name: String): Int {
+            val n = name.lowercase()
+            var p = 0
+            for (marker in listOf(
+                "no title", "hack", "bootleg", "aftermarket", "pirate",
+                "homebrew", "prototype", "proto ", "unl", "[b]", "[p]", "[h]", "[t]",
+                "[tr ", "(beta)", "(sample)", "(promo)", "(unknown)"
+            )) {
+                if (marker in n) p += 2
+            }
+            if ("tr " in n || "tr]" in n) p += 1
+            return p
+        }
+        return scored.sortedWith(
+            compareByDescending<Scored> { it.score }
+                .thenBy { markerPenalty(it.name) }
+                .thenBy { it.name.length }
+        )
             .take(MAX_FUZZY_TRIES)
             .map { it.name }
     }
@@ -917,6 +1059,8 @@ object CoverFetcher {
                 buffer.clear()
             }
         }
+        val stats = BatchStats(attempted = batch.size)
+        lastBatchStats = stats
         for (game in batch) {
             try {
                 val cover = fetchCover(context, game, urlCache)
@@ -937,7 +1081,9 @@ object CoverFetcher {
             }
         }
         flush()
-        Log.i(TAG, "Cover fetch batch done: $fetched/${batch.size} succeeded")
+        stats.succeeded = fetched
+        Log.i(TAG, "Cover fetch batch done: $fetched/${batch.size} succeeded; " +
+                "indexFailed=${stats.indexFailed}, notFound=${stats.notFound}")
         return fetched
     }
 
