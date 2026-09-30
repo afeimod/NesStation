@@ -1237,6 +1237,22 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         else -> if (isGameCubeGame()) "ngc" else "wii"
     }
 
+    /**
+     * ★★ Wii 横持十字键方向补偿开关（"横持 Wii 方向键还是原方向输出"修复）。
+     *
+     * 横持（NES 式）Wiimote 下，十字键随遥控器物理旋转 90°，横持游戏
+     * （VC NES / ReBirth 系列等）按旋转后的坐标系读方向 —— 前端必须在
+     * routePadBits 里把视觉方向旋转 90° 后再下发（详见该函数注释）。
+     *
+     * 生效条件：wii 模式 + 横持 + 非经典手柄。经典手柄是双手正常握持的
+     * 传统手柄（十字键不旋转）；GC 模式无 Wiimote 十字键参与。
+     * 旧实现该设置只改虚拟按键显隐（"核心按键绑定不变"），横持形同虚设。
+     */
+    fun needsHorizontalDpadRotation(): Boolean =
+        effectiveMode() != "ngc" &&
+            wiiOrientation == "horizontal" &&
+            effectiveWiiExtension() != "classic"
+
     // ------------------------------------------------------------------
     // 存档 / 截图 / 其它
     // ------------------------------------------------------------------

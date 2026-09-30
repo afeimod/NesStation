@@ -586,6 +586,30 @@ class PadLayout {
     var ndsBottomLayoutRightP: Float = 0.95f
     var ndsBottomLayoutBottomP: Float = 0.98f
 
+    // === 3DS 双屏独立布局（videoScale == "custom" 且 3DS 时生效） ===
+    // 与 NDS 同模型（参照 NDS 核心相关实现）：上屏 / 下屏各一个独立矩形，
+    // 经 Azahar 核心原生 CustomLayout 生效（config.ini [Layout] 段
+    // layout_option=5 + custom_top_x/y/width/height + custom_bottom_*，
+    // 像素坐标相对全屏 Surface；竖屏用 portrait_layout_option=1 +
+    // custom_portrait_*）。归一化 0..1，横竖屏分开保存。
+    // 默认值：上屏 0..0.48 / 下屏 0.52..1（上下堆叠，与默认布局观感一致）。
+    var n3dsTopLayoutLeft: Float = 0.05f
+    var n3dsTopLayoutTop: Float = 0.03f
+    var n3dsTopLayoutRight: Float = 0.95f
+    var n3dsTopLayoutBottom: Float = 0.48f
+    var n3dsBottomLayoutLeft: Float = 0.15f
+    var n3dsBottomLayoutTop: Float = 0.52f
+    var n3dsBottomLayoutRight: Float = 0.85f
+    var n3dsBottomLayoutBottom: Float = 0.97f
+    var n3dsTopLayoutLeftP: Float = 0.05f
+    var n3dsTopLayoutTopP: Float = 0.03f
+    var n3dsTopLayoutRightP: Float = 0.95f
+    var n3dsTopLayoutBottomP: Float = 0.48f
+    var n3dsBottomLayoutLeftP: Float = 0.15f
+    var n3dsBottomLayoutTopP: Float = 0.52f
+    var n3dsBottomLayoutRightP: Float = 0.85f
+    var n3dsBottomLayoutBottomP: Float = 0.97f
+
     // === PSX (PCSX-ReARMed) core options ===
     // Keys AND values verified against the shipped libpcsx_rearmed_libretro_android.so
     // and upstream notaz/pcsx_rearmed frontend/libretro_core_options.h.
@@ -693,8 +717,16 @@ class PadLayout {
     // === 3DS (Azahar / AzaharPlus) core options ===
     // 键名/取值对照 azahar-emu/azahar src/android jni/config.cpp（2125.x）：
     // 引擎以 "段/键" 复合键直写用户目录 config/config.ini 后 reloadSettings()。
+    // ★★ 配置文件名补丁（本轮根治）：核心库（AzaharPlus 提取）原生硬编码读
+    //   config-azahar-25game.ini —— NesStation 写的 config.ini 永远不被读取，
+    //   所有 3DS 设置全部无效。已对 jniLibs 的 libazahar.so 做等长二进制补丁
+    //   （scripts/patch_azahar_config.py），核心改读 config.ini，与 NesStation
+    //   写入位置一致；重新提取库后脚本会自动重打补丁。
     var azGraphicsApi: String = "opengl"            // software | opengl | vulkan (graphics_api 0/1/2)
-    var azResolution: String = "0"                  // "0".."4" (resolution_factor, 0=1x 原生)
+    // ★ 取值标度修复：Azahar resolution_factor 语义为 0=自动(适配窗口尺寸)、
+    //   1=原生 1x(400x240)、2..5=2x..5x。旧版 UI 用 0..4 表示 1x..5x，全部
+    //   错位一档（选 2x 实际渲染 1x）——即使配置读到了也“分辨率倍数无效”。
+    var azResolution: String = "1"                  // "0"=自动 "1".."5" (resolution_factor, 1=1x 原生)
     var azUseHwShader: String = "enabled"           // enabled | disabled (use_hw_shader)
     var azUseShaderJit: String = "enabled"          // enabled | disabled (use_shader_jit)
     var azUseVsync: String = "enabled"              // enabled | disabled (use_vsync)
@@ -715,8 +747,16 @@ class PadLayout {
     var azSwapScreens: String = "disabled"          // enabled | disabled (swap_screen 上下屏交换)
     var azCpuClock: String = "100"                  // "25".."400" (cpu_clock_percentage %)
     var azUseCpuJit: String = "enabled"             // enabled | disabled (use_cpu_jit)
-    var azUseFastInterp: String = "disabled"        // enabled | disabled (use_fastinterp 快速解释器)
+    // ★ 死键移除：use_fastinterp 不存在于 Azahar 2125.x（settings.h/
+    //   jni config.cpp 均无此键）——旧 UI 的“快速解释器”开关从未生效，已删除。
     var azIsNew3ds: String = "enabled"              // enabled | disabled (is_new_3ds New3DS 模式)
+    // ★ LLE 系统小程序开关（存档卡死修复）：Azahar(2125.x) 默认 lle_applets=true，
+    //   游戏触发系统小程序（存档/错误提示/软键盘等）时核心会尝试从 NAND 加载
+    //   真实小程序标题（00040030/*）；本集成没有真实 NAND 小程序 →
+    //   LaunchTitle 失败 → APT 永久等待 → 部分游戏存档时卡死（用户日志
+    //   azahar_log.txt 实证：Could not load title=0x000400300000d802）。
+    //   默认 disabled 走 HLE 小程序（核心内置 C++ 实现，无需系统文件）。
+    var azLleApplets: String = "disabled"           // enabled | disabled (lle_applets LLE 系统小程序)
     var azRegion: String = "-1"                     // "-1".."6" (region_value: 自动/日/美/欧/澳/中/韩/台)
     var azAudioEmulation: String = "0"              // "0"|"1"|"2" (audio_emulation: HLE/LLE/LLE多线程)
     var azVolume: String = "100"                    // "0".."100" (volume)
@@ -730,10 +770,12 @@ class PadLayout {
     // 引擎以 SetConfig(file, section, key, value) 热写 Dolphin.ini / GFX.ini。
     var irControlMode: String = "auto"              // auto | ngc | wii (控制模式, auto 按游戏判定)
     var irWiiExtension: String = "nunchuk"          // nunchuk | classic | none (Wii 扩展手柄)
-    // Wii Remote 握持方向（仅 wii 模式且无扩展/双节棍时影响虚拟按键布局）：
-    // vertical = 竖持（十字键在下、A/B/1/2 在上, 默认）；horizontal = 横持
-    // （十字键在左、A/B/1/2 在右, NES 式握法）。只影响前端按键布局与显隐,
-    // 核心按键绑定不变（游戏自己读取 wiimote 键值）。
+    // Wii Remote 握持方向：
+    // ★ 横持行为（本轮修复"方向键还是原方向输出"）：
+    //   1) 虚拟十字键随遥控器旋转 90° 绘制（顶部朝左 NES 式）；
+    //   2) 方向输出经 routePadBits 旋转补偿 —— 视觉"上"→WIIMOTE_RIGHT
+    //      （横持游戏按旋转坐标系读方向，视觉方向 = 游戏方向）；
+    //   3) 横持隐藏 L/R 摇晃、HOME、IR 进深键（真实横持用不到）。
     var irWiiOrientation: String = "vertical"       // vertical | horizontal (Wii 手柄横/竖持)
     var irCpuCore: String = "4"                     // "0" 解释器 | "4" JIT ARM64 (CPUCore)
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
@@ -1306,6 +1348,23 @@ class PadLayout {
         ndsBottomLayoutTopP = another.ndsBottomLayoutTopP
         ndsBottomLayoutRightP = another.ndsBottomLayoutRightP
         ndsBottomLayoutBottomP = another.ndsBottomLayoutBottomP
+        // 3DS 双屏独立布局（与 NDS 同模型）
+        n3dsTopLayoutLeft = another.n3dsTopLayoutLeft
+        n3dsTopLayoutTop = another.n3dsTopLayoutTop
+        n3dsTopLayoutRight = another.n3dsTopLayoutRight
+        n3dsTopLayoutBottom = another.n3dsTopLayoutBottom
+        n3dsBottomLayoutLeft = another.n3dsBottomLayoutLeft
+        n3dsBottomLayoutTop = another.n3dsBottomLayoutTop
+        n3dsBottomLayoutRight = another.n3dsBottomLayoutRight
+        n3dsBottomLayoutBottom = another.n3dsBottomLayoutBottom
+        n3dsTopLayoutLeftP = another.n3dsTopLayoutLeftP
+        n3dsTopLayoutTopP = another.n3dsTopLayoutTopP
+        n3dsTopLayoutRightP = another.n3dsTopLayoutRightP
+        n3dsTopLayoutBottomP = another.n3dsTopLayoutBottomP
+        n3dsBottomLayoutLeftP = another.n3dsBottomLayoutLeftP
+        n3dsBottomLayoutTopP = another.n3dsBottomLayoutTopP
+        n3dsBottomLayoutRightP = another.n3dsBottomLayoutRightP
+        n3dsBottomLayoutBottomP = another.n3dsBottomLayoutBottomP
         pscxBios = another.pscxBios
         pscxRegion = another.pscxRegion
         pscxFrameskipType = another.pscxFrameskipType
@@ -1439,6 +1498,7 @@ class PadLayout {
         azUseCpuJit = another.azUseCpuJit
         azUseFastInterp = another.azUseFastInterp
         azIsNew3ds = another.azIsNew3ds
+        azLleApplets = another.azLleApplets
         azRegion = another.azRegion
         azAudioEmulation = another.azAudioEmulation
         azVolume = another.azVolume
@@ -1767,6 +1827,23 @@ object PadLayoutStore {
     private const val KEY_NDS_BOTTOM_TOP_P = "nds_bottom_layout_top_p"
     private const val KEY_NDS_BOTTOM_RIGHT_P = "nds_bottom_layout_right_p"
     private const val KEY_NDS_BOTTOM_BOTTOM_P = "nds_bottom_layout_bottom_p"
+    // 3DS 双屏独立布局（与 NDS 同模型）
+    private const val KEY_N3DS_TOP_LEFT = "n3ds_top_layout_left"
+    private const val KEY_N3DS_TOP_TOP = "n3ds_top_layout_top"
+    private const val KEY_N3DS_TOP_RIGHT = "n3ds_top_layout_right"
+    private const val KEY_N3DS_TOP_BOTTOM = "n3ds_top_layout_bottom"
+    private const val KEY_N3DS_BOTTOM_LEFT = "n3ds_bottom_layout_left"
+    private const val KEY_N3DS_BOTTOM_TOP = "n3ds_bottom_layout_top"
+    private const val KEY_N3DS_BOTTOM_RIGHT = "n3ds_bottom_layout_right"
+    private const val KEY_N3DS_BOTTOM_BOTTOM = "n3ds_bottom_layout_bottom"
+    private const val KEY_N3DS_TOP_LEFT_P = "n3ds_top_layout_left_p"
+    private const val KEY_N3DS_TOP_TOP_P = "n3ds_top_layout_top_p"
+    private const val KEY_N3DS_TOP_RIGHT_P = "n3ds_top_layout_right_p"
+    private const val KEY_N3DS_TOP_BOTTOM_P = "n3ds_top_layout_bottom_p"
+    private const val KEY_N3DS_BOTTOM_LEFT_P = "n3ds_bottom_layout_left_p"
+    private const val KEY_N3DS_BOTTOM_TOP_P = "n3ds_bottom_layout_top_p"
+    private const val KEY_N3DS_BOTTOM_RIGHT_P = "n3ds_bottom_layout_right_p"
+    private const val KEY_N3DS_BOTTOM_BOTTOM_P = "n3ds_bottom_layout_bottom_p"
 
     private fun prefs(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -2302,6 +2379,23 @@ object PadLayoutStore {
             ndsBottomLayoutTopP = p.getFloat(KEY_NDS_BOTTOM_TOP_P, ndsBottomLayoutTopP)
             ndsBottomLayoutRightP = p.getFloat(KEY_NDS_BOTTOM_RIGHT_P, ndsBottomLayoutRightP)
             ndsBottomLayoutBottomP = p.getFloat(KEY_NDS_BOTTOM_BOTTOM_P, ndsBottomLayoutBottomP)
+            // 3DS 双屏独立布局（与 NDS 同模型）
+            n3dsTopLayoutLeft = p.getFloat(KEY_N3DS_TOP_LEFT, n3dsTopLayoutLeft)
+            n3dsTopLayoutTop = p.getFloat(KEY_N3DS_TOP_TOP, n3dsTopLayoutTop)
+            n3dsTopLayoutRight = p.getFloat(KEY_N3DS_TOP_RIGHT, n3dsTopLayoutRight)
+            n3dsTopLayoutBottom = p.getFloat(KEY_N3DS_TOP_BOTTOM, n3dsTopLayoutBottom)
+            n3dsBottomLayoutLeft = p.getFloat(KEY_N3DS_BOTTOM_LEFT, n3dsBottomLayoutLeft)
+            n3dsBottomLayoutTop = p.getFloat(KEY_N3DS_BOTTOM_TOP, n3dsBottomLayoutTop)
+            n3dsBottomLayoutRight = p.getFloat(KEY_N3DS_BOTTOM_RIGHT, n3dsBottomLayoutRight)
+            n3dsBottomLayoutBottom = p.getFloat(KEY_N3DS_BOTTOM_BOTTOM, n3dsBottomLayoutBottom)
+            n3dsTopLayoutLeftP = p.getFloat(KEY_N3DS_TOP_LEFT_P, n3dsTopLayoutLeftP)
+            n3dsTopLayoutTopP = p.getFloat(KEY_N3DS_TOP_TOP_P, n3dsTopLayoutTopP)
+            n3dsTopLayoutRightP = p.getFloat(KEY_N3DS_TOP_RIGHT_P, n3dsTopLayoutRightP)
+            n3dsTopLayoutBottomP = p.getFloat(KEY_N3DS_TOP_BOTTOM_P, n3dsTopLayoutBottomP)
+            n3dsBottomLayoutLeftP = p.getFloat(KEY_N3DS_BOTTOM_LEFT_P, n3dsBottomLayoutLeftP)
+            n3dsBottomLayoutTopP = p.getFloat(KEY_N3DS_BOTTOM_TOP_P, n3dsBottomLayoutTopP)
+            n3dsBottomLayoutRightP = p.getFloat(KEY_N3DS_BOTTOM_RIGHT_P, n3dsBottomLayoutRightP)
+            n3dsBottomLayoutBottomP = p.getFloat(KEY_N3DS_BOTTOM_BOTTOM_P, n3dsBottomLayoutBottomP)
             // PSX (PCSX-ReARMed) options
             pscxBios = p.getString("psx_bios", "auto") ?: "auto"
             pscxRegion = p.getString("psx_region", "auto") ?: "auto"
@@ -2471,6 +2565,7 @@ object PadLayoutStore {
             azUseCpuJit = p.getString("az_use_cpu_jit", "enabled") ?: "enabled"
             azUseFastInterp = p.getString("az_use_fast_interp", "disabled") ?: "disabled"
             azIsNew3ds = p.getString("az_is_new_3ds", "enabled") ?: "enabled"
+            azLleApplets = p.getString("az_lle_applets", "disabled") ?: "disabled"
             azRegion = p.getString("az_region", "-1") ?: "-1"
             azAudioEmulation = p.getString("az_audio_emulation", "0") ?: "0"
             azVolume = p.getString("az_volume", "100") ?: "100"
@@ -3009,6 +3104,23 @@ object PadLayoutStore {
             putFloat(KEY_NDS_BOTTOM_TOP_P, layout.ndsBottomLayoutTopP)
             putFloat(KEY_NDS_BOTTOM_RIGHT_P, layout.ndsBottomLayoutRightP)
             putFloat(KEY_NDS_BOTTOM_BOTTOM_P, layout.ndsBottomLayoutBottomP)
+            // 3DS 双屏独立布局（与 NDS 同模型）
+            putFloat(KEY_N3DS_TOP_LEFT, layout.n3dsTopLayoutLeft)
+            putFloat(KEY_N3DS_TOP_TOP, layout.n3dsTopLayoutTop)
+            putFloat(KEY_N3DS_TOP_RIGHT, layout.n3dsTopLayoutRight)
+            putFloat(KEY_N3DS_TOP_BOTTOM, layout.n3dsTopLayoutBottom)
+            putFloat(KEY_N3DS_BOTTOM_LEFT, layout.n3dsBottomLayoutLeft)
+            putFloat(KEY_N3DS_BOTTOM_TOP, layout.n3dsBottomLayoutTop)
+            putFloat(KEY_N3DS_BOTTOM_RIGHT, layout.n3dsBottomLayoutRight)
+            putFloat(KEY_N3DS_BOTTOM_BOTTOM, layout.n3dsBottomLayoutBottom)
+            putFloat(KEY_N3DS_TOP_LEFT_P, layout.n3dsTopLayoutLeftP)
+            putFloat(KEY_N3DS_TOP_TOP_P, layout.n3dsTopLayoutTopP)
+            putFloat(KEY_N3DS_TOP_RIGHT_P, layout.n3dsTopLayoutRightP)
+            putFloat(KEY_N3DS_TOP_BOTTOM_P, layout.n3dsTopLayoutBottomP)
+            putFloat(KEY_N3DS_BOTTOM_LEFT_P, layout.n3dsBottomLayoutLeftP)
+            putFloat(KEY_N3DS_BOTTOM_TOP_P, layout.n3dsBottomLayoutTopP)
+            putFloat(KEY_N3DS_BOTTOM_RIGHT_P, layout.n3dsBottomLayoutRightP)
+            putFloat(KEY_N3DS_BOTTOM_BOTTOM_P, layout.n3dsBottomLayoutBottomP)
             // === PSX (PCSX-ReARMed) ===
             putString("psx_bios", layout.pscxBios)
             putString("psx_region", layout.pscxRegion)
@@ -3145,6 +3257,7 @@ object PadLayoutStore {
             putString("az_use_cpu_jit", layout.azUseCpuJit)
             putString("az_use_fast_interp", layout.azUseFastInterp)
             putString("az_is_new_3ds", layout.azIsNew3ds)
+            putString("az_lle_applets", layout.azLleApplets)
             putString("az_region", layout.azRegion)
             putString("az_audio_emulation", layout.azAudioEmulation)
             putString("az_volume", layout.azVolume)

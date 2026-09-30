@@ -22,6 +22,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -1872,18 +1873,29 @@ fun EmulatorScreen(
                    padLayout.azUseHwShader, padLayout.azUseShaderJit,
                    padLayout.azUseVsync, padLayout.azUseDiskShaderCache,
                    padLayout.azAsyncPresentation, padLayout.azAsyncShaderCompilation,
-                   padLayout.azAccurateMultiplication, padLayout.azSkipDuplicateFrames,
+                   padLayout.azAccurateMultiplication, padLayout.azLleApplets,
                    padLayout.azTextureFilter, padLayout.azTextureSampling,
                    padLayout.azIntegerScaling, padLayout.azFrameLimit,
                    padLayout.azRender3d, padLayout.azFactor3d,
                    padLayout.azLayoutOption, padLayout.azScreenGap,
                    padLayout.azLargeScreenProportion, padLayout.azSwapScreens,
                    padLayout.azCpuClock, padLayout.azUseCpuJit,
-                   padLayout.azUseFastInterp, padLayout.azIsNew3ds,
+                   padLayout.azIsNew3ds,
                    padLayout.azRegion, padLayout.azAudioEmulation,
                    padLayout.azVolume, padLayout.azAudioStretching,
                    padLayout.azRealtimeAudio, padLayout.azCustomTextures,
                    padLayout.azPreloadTextures,
+                   // 3DS 双屏自定义布局矩形 + videoScale（进入/退出自定义布局、
+                   // 拖动双屏编辑器松手后即时下发核心 CustomLayout）
+                   padLayout.videoScale,
+                   padLayout.n3dsTopLayoutLeft, padLayout.n3dsTopLayoutTop,
+                   padLayout.n3dsTopLayoutRight, padLayout.n3dsTopLayoutBottom,
+                   padLayout.n3dsBottomLayoutLeft, padLayout.n3dsBottomLayoutTop,
+                   padLayout.n3dsBottomLayoutRight, padLayout.n3dsBottomLayoutBottom,
+                   padLayout.n3dsTopLayoutLeftP, padLayout.n3dsTopLayoutTopP,
+                   padLayout.n3dsTopLayoutRightP, padLayout.n3dsTopLayoutBottomP,
+                   padLayout.n3dsBottomLayoutLeftP, padLayout.n3dsBottomLayoutTopP,
+                   padLayout.n3dsBottomLayoutRightP, padLayout.n3dsBottomLayoutBottomP,
                    // NGC/WII / Ishiiruka options — 改动即时 SetConfig
                    padLayout.irControlMode, padLayout.irWiiExtension,
                    padLayout.irWiiOrientation,
@@ -1902,7 +1914,7 @@ fun EmulatorScreen(
                    padLayout.irJitFollowBranch, padLayout.irWidescreenHack,
                    padLayout.irGcLanguage, padLayout.irWiiLanguage
                    ) {
-        applyCoreOptions(engine, padLayout, platform)
+        applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         // Apply video filter (frontend post-processing, not a core option)
         //
         // 与 3.5.2 分支保持一致（用户实测该分支"滤镜生效"）：
@@ -1963,6 +1975,19 @@ fun EmulatorScreen(
                 else -> 0         // none (hq2x not supported in J2ME)
             }
             javax.microedition.lcdui.Canvas.setJ2meFilterMode(j2meMode)
+        }
+    }
+
+    // ★ 3DS 双屏自定义布局：Surface 尺寸就绪/变化时重下发核心设置。
+    //   归一化矩形 → 像素矩形（custom_top_*/custom_bottom_*）依赖全屏
+    //   Surface 尺寸 —— 首帧 surfaceSize 可能还是 Zero（此时 applyCoreOptions
+    //   按 0 写入），尺寸就绪后这里补一次；旋转/比例切换导致 Surface 尺寸
+    //   变化时同样重算，保证自定义布局始终贴合当前窗口。
+    if (platform == GamePlatform.N3DS) {
+        LaunchedEffect(loaded, surfaceSize, padLayout.videoScale, padLayout.azLayoutOption) {
+            if (surfaceSize != IntSize.Zero && loaded) {
+                applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
+            }
         }
     }
 
@@ -2780,7 +2805,7 @@ fun EmulatorScreen(
         // 覆盖掉）。加载成功后重新应用 GameBox 的 J2ME 设置，保证
         // “游戏内设置 / 全局 Java 设置”真正生效且优先级高于旧配置文件。
         if (loaded && platform == GamePlatform.JAVA) {
-            applyCoreOptions(engine, padLayout, platform)
+            applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         }
     }
 
@@ -3652,23 +3677,43 @@ fun EmulatorScreen(
                 platform = platform,
                 onLayoutChange = { newLayout ->
                     padLayout = newLayout
-                    applyCoreOptions(engine, newLayout, platform)
+                    applyCoreOptions(engine, newLayout, platform, n3dsSurfaceSize = surfaceSize)
                 },
                 onEnterCustomLayout = {
-                    val isNdsPlatform = platform == GamePlatform.NDS
-                    if (isNdsPlatform) {
-                        ndsTopRect = floatArrayOf(
-                            if (isPortrait) padLayout.ndsTopLayoutLeftP else padLayout.ndsTopLayoutLeft,
-                            if (isPortrait) padLayout.ndsTopLayoutTopP else padLayout.ndsTopLayoutTop,
-                            if (isPortrait) padLayout.ndsTopLayoutRightP else padLayout.ndsTopLayoutRight,
-                            if (isPortrait) padLayout.ndsTopLayoutBottomP else padLayout.ndsTopLayoutBottom
-                        )
-                        ndsBottomRect = floatArrayOf(
-                            if (isPortrait) padLayout.ndsBottomLayoutLeftP else padLayout.ndsBottomLayoutLeft,
-                            if (isPortrait) padLayout.ndsBottomLayoutTopP else padLayout.ndsBottomLayoutTop,
-                            if (isPortrait) padLayout.ndsBottomLayoutRightP else padLayout.ndsBottomLayoutRight,
-                            if (isPortrait) padLayout.ndsBottomLayoutBottomP else padLayout.ndsBottomLayoutBottom
-                        )
+                    // ★ 双屏平台（NDS / 3DS）走双屏独立编辑器（上/下屏各自
+                    //   矩形）；3DS 与 NDS 同模型 —— 参考 NDS 核心相关实现，
+                    //   3DS 的矩形经核心原生 CustomLayout 生效（applyCoreOptions
+                    //   N3DS 分支下发 custom_top_*/custom_bottom_* 像素矩形）。
+                    val isDualScreenPlatform =
+                        platform == GamePlatform.NDS || platform == GamePlatform.N3DS
+                    if (isDualScreenPlatform) {
+                        if (platform == GamePlatform.N3DS) {
+                            ndsTopRect = floatArrayOf(
+                                if (isPortrait) padLayout.n3dsTopLayoutLeftP else padLayout.n3dsTopLayoutLeft,
+                                if (isPortrait) padLayout.n3dsTopLayoutTopP else padLayout.n3dsTopLayoutTop,
+                                if (isPortrait) padLayout.n3dsTopLayoutRightP else padLayout.n3dsTopLayoutRight,
+                                if (isPortrait) padLayout.n3dsTopLayoutBottomP else padLayout.n3dsTopLayoutBottom
+                            )
+                            ndsBottomRect = floatArrayOf(
+                                if (isPortrait) padLayout.n3dsBottomLayoutLeftP else padLayout.n3dsBottomLayoutLeft,
+                                if (isPortrait) padLayout.n3dsBottomLayoutTopP else padLayout.n3dsBottomLayoutTop,
+                                if (isPortrait) padLayout.n3dsBottomLayoutRightP else padLayout.n3dsBottomLayoutRight,
+                                if (isPortrait) padLayout.n3dsBottomLayoutBottomP else padLayout.n3dsBottomLayoutBottom
+                            )
+                        } else {
+                            ndsTopRect = floatArrayOf(
+                                if (isPortrait) padLayout.ndsTopLayoutLeftP else padLayout.ndsTopLayoutLeft,
+                                if (isPortrait) padLayout.ndsTopLayoutTopP else padLayout.ndsTopLayoutTop,
+                                if (isPortrait) padLayout.ndsTopLayoutRightP else padLayout.ndsTopLayoutRight,
+                                if (isPortrait) padLayout.ndsTopLayoutBottomP else padLayout.ndsTopLayoutBottom
+                            )
+                            ndsBottomRect = floatArrayOf(
+                                if (isPortrait) padLayout.ndsBottomLayoutLeftP else padLayout.ndsBottomLayoutLeft,
+                                if (isPortrait) padLayout.ndsBottomLayoutTopP else padLayout.ndsBottomLayoutTop,
+                                if (isPortrait) padLayout.ndsBottomLayoutRightP else padLayout.ndsBottomLayoutRight,
+                                if (isPortrait) padLayout.ndsBottomLayoutBottomP else padLayout.ndsBottomLayoutBottom
+                            )
+                        }
                         showSettings = false
                         showNdsCustomLayoutEditor = true
                     } else {
@@ -3796,10 +3841,67 @@ fun EmulatorScreen(
             }
         }
 
-        // NDS 双屏自由布局编辑器 — 上屏/下屏各自独立矩形，可分别拖动调整。
+        // NDS / 3DS 双屏自由布局编辑器 — 上屏/下屏各自独立矩形，可分别拖动调整。
         // NdsScreenPositionEditor 同时管理两个矩形（上屏蓝色、下屏粉红），
         // 参照 melonDS 官方 Android 布局模型（TOP_SCREEN / BOTTOM_SCREEN）。
+        // ★ 3DS 复用同编辑器（“自定义屏幕布局也没有分开，参考 NDS”）：矩形写入
+        //   n3ds* 字段并即时下发给 Azahar 核心原生 CustomLayout（LaunchedEffect
+        //   监听 n3ds* 字段 → applyCoreOptions → reloadSettings + updateFramebuffer）。
         if (showNdsCustomLayoutEditor) {
+            // 按平台把双屏矩形写回 padLayout（NDS → nds*，3DS → n3ds*）。
+            // 3DS 时同步重新下发核心设置（config.ini + reloadSettings →
+            // updateFramebuffer 热重算布局）。
+            fun persistDualRects(top: FloatArray, bottom: FloatArray) {
+                if (platform == GamePlatform.N3DS) {
+                    padLayout = if (isPortrait) {
+                        padLayout.copy {
+                            n3dsTopLayoutLeftP = top[0]
+                            n3dsTopLayoutTopP = top[1]
+                            n3dsTopLayoutRightP = top[2]
+                            n3dsTopLayoutBottomP = top[3]
+                            n3dsBottomLayoutLeftP = bottom[0]
+                            n3dsBottomLayoutTopP = bottom[1]
+                            n3dsBottomLayoutRightP = bottom[2]
+                            n3dsBottomLayoutBottomP = bottom[3]
+                        }
+                    } else {
+                        padLayout.copy {
+                            n3dsTopLayoutLeft = top[0]
+                            n3dsTopLayoutTop = top[1]
+                            n3dsTopLayoutRight = top[2]
+                            n3dsTopLayoutBottom = top[3]
+                            n3dsBottomLayoutLeft = bottom[0]
+                            n3dsBottomLayoutTop = bottom[1]
+                            n3dsBottomLayoutRight = bottom[2]
+                            n3dsBottomLayoutBottom = bottom[3]
+                        }
+                    }
+                } else {
+                    padLayout = if (isPortrait) {
+                        padLayout.copy {
+                            ndsTopLayoutLeftP = top[0]
+                            ndsTopLayoutTopP = top[1]
+                            ndsTopLayoutRightP = top[2]
+                            ndsTopLayoutBottomP = top[3]
+                            ndsBottomLayoutLeftP = bottom[0]
+                            ndsBottomLayoutTopP = bottom[1]
+                            ndsBottomLayoutRightP = bottom[2]
+                            ndsBottomLayoutBottomP = bottom[3]
+                        }
+                    } else {
+                        padLayout.copy {
+                            ndsTopLayoutLeft = top[0]
+                            ndsTopLayoutTop = top[1]
+                            ndsTopLayoutRight = top[2]
+                            ndsTopLayoutBottom = top[3]
+                            ndsBottomLayoutLeft = bottom[0]
+                            ndsBottomLayoutTop = bottom[1]
+                            ndsBottomLayoutRight = bottom[2]
+                            ndsBottomLayoutBottom = bottom[3]
+                        }
+                    }
+                }
+            }
             AndroidView(
                 factory = { ctx ->
                     NdsScreenPositionEditor(ctx).apply {
@@ -3811,29 +3913,7 @@ fun EmulatorScreen(
                                 ndsBottomRect = bottom
                                 if (confirm) {
                                     // Touch-up — persist into padLayout
-                                    padLayout = if (isPortrait) {
-                                        padLayout.copy {
-                                            ndsTopLayoutLeftP = top[0]
-                                            ndsTopLayoutTopP = top[1]
-                                            ndsTopLayoutRightP = top[2]
-                                            ndsTopLayoutBottomP = top[3]
-                                            ndsBottomLayoutLeftP = bottom[0]
-                                            ndsBottomLayoutTopP = bottom[1]
-                                            ndsBottomLayoutRightP = bottom[2]
-                                            ndsBottomLayoutBottomP = bottom[3]
-                                        }
-                                    } else {
-                                        padLayout.copy {
-                                            ndsTopLayoutLeft = top[0]
-                                            ndsTopLayoutTop = top[1]
-                                            ndsTopLayoutRight = top[2]
-                                            ndsTopLayoutBottom = top[3]
-                                            ndsBottomLayoutLeft = bottom[0]
-                                            ndsBottomLayoutTop = bottom[1]
-                                            ndsBottomLayoutRight = bottom[2]
-                                            ndsBottomLayoutBottom = bottom[3]
-                                        }
-                                    }
+                                    persistDualRects(top, bottom)
                                 }
                             }
                         }
@@ -3852,7 +3932,10 @@ fun EmulatorScreen(
                     .padding(8.dp)
             ) {
                 Text(
-                    "NDS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部",
+                    if (platform == GamePlatform.N3DS)
+                        "3DS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部"
+                    else
+                        "NDS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部",
                     color = Color.White,
                     fontSize = 13.sp
                 )
@@ -3861,29 +3944,7 @@ fun EmulatorScreen(
             androidx.compose.material3.Button(
                 onClick = {
                     showNdsCustomLayoutEditor = false
-                    padLayout = if (isPortrait) {
-                        padLayout.copy {
-                            ndsTopLayoutLeftP = ndsTopRect[0]
-                            ndsTopLayoutTopP = ndsTopRect[1]
-                            ndsTopLayoutRightP = ndsTopRect[2]
-                            ndsTopLayoutBottomP = ndsTopRect[3]
-                            ndsBottomLayoutLeftP = ndsBottomRect[0]
-                            ndsBottomLayoutTopP = ndsBottomRect[1]
-                            ndsBottomLayoutRightP = ndsBottomRect[2]
-                            ndsBottomLayoutBottomP = ndsBottomRect[3]
-                        }
-                    } else {
-                        padLayout.copy {
-                            ndsTopLayoutLeft = ndsTopRect[0]
-                            ndsTopLayoutTop = ndsTopRect[1]
-                            ndsTopLayoutRight = ndsTopRect[2]
-                            ndsTopLayoutBottom = ndsTopRect[3]
-                            ndsBottomLayoutLeft = ndsBottomRect[0]
-                            ndsBottomLayoutTop = ndsBottomRect[1]
-                            ndsBottomLayoutRight = ndsBottomRect[2]
-                            ndsBottomLayoutBottom = ndsBottomRect[3]
-                        }
-                    }
+                    persistDualRects(ndsTopRect, ndsBottomRect)
                 },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
@@ -3894,41 +3955,20 @@ fun EmulatorScreen(
             // Bottom-left reset button (restore default stacked layout)
             androidx.compose.material3.OutlinedButton(
                 onClick = {
-                    val defaultTop = if (isPortrait) {
-                        floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f)
+                    // ★ 默认堆叠布局（与各平台字段默认值一致）
+                    val defaultTop = if (platform == GamePlatform.N3DS) {
+                        floatArrayOf(0.05f, 0.03f, 0.95f, 0.48f)
                     } else {
                         floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f)
                     }
-                    val defaultBottom = if (isPortrait) {
-                        floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
+                    val defaultBottom = if (platform == GamePlatform.N3DS) {
+                        floatArrayOf(0.15f, 0.52f, 0.85f, 0.97f)
                     } else {
                         floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
                     }
                     ndsTopRect = defaultTop
                     ndsBottomRect = defaultBottom
-                    padLayout = if (isPortrait) {
-                        padLayout.copy {
-                            ndsTopLayoutLeftP = defaultTop[0]
-                            ndsTopLayoutTopP = defaultTop[1]
-                            ndsTopLayoutRightP = defaultTop[2]
-                            ndsTopLayoutBottomP = defaultTop[3]
-                            ndsBottomLayoutLeftP = defaultBottom[0]
-                            ndsBottomLayoutTopP = defaultBottom[1]
-                            ndsBottomLayoutRightP = defaultBottom[2]
-                            ndsBottomLayoutBottomP = defaultBottom[3]
-                        }
-                    } else {
-                        padLayout.copy {
-                            ndsTopLayoutLeft = defaultTop[0]
-                            ndsTopLayoutTop = defaultTop[1]
-                            ndsTopLayoutRight = defaultTop[2]
-                            ndsTopLayoutBottom = defaultTop[3]
-                            ndsBottomLayoutLeft = defaultBottom[0]
-                            ndsBottomLayoutTop = defaultBottom[1]
-                            ndsBottomLayoutRight = defaultBottom[2]
-                            ndsBottomLayoutBottom = defaultBottom[3]
-                        }
-                    }
+                    persistDualRects(defaultTop, defaultBottom)
                 },
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -4198,29 +4238,68 @@ private fun routePadBits(
                   else if (platform == GamePlatform.ARCADE) arcadeToLibretroLayout(bits)
                   else if (platform == GamePlatform.DC) dcToLibretroLayout(bits)
                   else bits
+    // ★★★ Wii 横持方向补偿（“横持 Wii 方向键没有横过来，还是原方向输出”修复）★★★
+    //
+    // 横持（NES 式）Wiimote：遥控器逆时针转 90°（顶部朝左），十字键随遥控器
+    // 一起旋转 —— 视觉“上”的臂 = 遥控器本地方向 RIGHT，视觉“右” = 本地
+    // DOWN，以此类推。横持游戏（VC NES / ReBirth 系列等）按**旋转后的坐标
+    // 系**读十字键（遥控器 RIGHT = 游戏上）。
+    // 旧实现：虚拟/实体十字键的视觉方向直接透传给 WIIMOTE_UP/DOWN/LEFT/
+    // RIGHT → 横持游戏里按“上”游戏却往“左”走 —— “还是原方向输出”。
+    // 修复：wii 模式 + 横持 + 非经典手柄时，把 4 个方向位按 90° 顺时针
+    // 旋转后再发给引擎（视觉 up → WIIMOTE_RIGHT → 游戏“上”）。
+    // 本函数是虚拟按键 / 实体手柄 / 键盘映射的单一汇聚点，在这里旋转可
+    // 保证所有输入通道行为一致。
+    val routedBits = if (platform == GamePlatform.NGCWII) {
+        val ish = engine as? com.nesstation.app.core.engine.IshirukaEngine
+        if (ish != null && ish.needsHorizontalDpadRotation()) {
+            rotateWiiHorizontalDpad(ndsBits)
+        } else ndsBits
+    } else ndsBits
     if (netplayController != null) {
         // 联机对战：只接受本地 1P 输入；2P 由远端玩家控制
-        if (player == 0) netplayController.setLocalPad(ndsBits)
+        if (player == 0) netplayController.setLocalPad(routedBits)
         return
     }
     when (player) {
-        0 -> engine.setPad1(ndsBits)
-        1 -> engine.setPad2(ndsBits)
-        2 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad3(ndsBits)
-             ?: (engine as? com.nesstation.app.core.engine.DcEngine)?.setPad3(ndsBits)
-             ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad3(ndsBits)
+        0 -> engine.setPad1(routedBits)
+        1 -> engine.setPad2(routedBits)
+        2 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad3(routedBits)
+             ?: (engine as? com.nesstation.app.core.engine.DcEngine)?.setPad3(routedBits)
+             ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad3(routedBits)
              ?: Unit
-        3 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad4(ndsBits)
-             ?: (engine as? com.nesstation.app.core.engine.DcEngine)?.setPad4(ndsBits)
-             ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad4(ndsBits)
+        3 -> (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.setPad4(routedBits)
+             ?: (engine as? com.nesstation.app.core.engine.DcEngine)?.setPad4(routedBits)
+             ?: (engine as? com.nesstation.app.core.engine.PsxEngine)?.setPad4(routedBits)
              ?: Unit
     }
+}
+
+/**
+ * Wii 横持十字键位旋转（90° 顺时针）：视觉 up→RIGHT / right→DOWN /
+ * down→LEFT / left→UP，非方向位原样保留。
+ * 仅在 wii 模式 + 横持 + 非经典手柄时调用（见 routePadBits）。
+ */
+private fun rotateWiiHorizontalDpad(bits: Int): Int {
+    var r = bits and (BTN_UP or BTN_DOWN or BTN_LEFT or BTN_RIGHT).inv()
+    if (bits and BTN_UP != 0)    r = r or BTN_RIGHT
+    if (bits and BTN_RIGHT != 0) r = r or BTN_DOWN
+    if (bits and BTN_DOWN != 0)  r = r or BTN_LEFT
+    if (bits and BTN_LEFT != 0)  r = r or BTN_UP
+    return r
 }
 
 // ---------------------------------------------------------------------------
 // Apply core options to engine — platform-aware option mapping
 // ---------------------------------------------------------------------------
-private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform: GamePlatform = GamePlatform.NES) {
+private fun applyCoreOptions(
+    engine: EmulatorEngine,
+    layout: PadLayout,
+    platform: GamePlatform = GamePlatform.NES,
+    // ★ 3DS 双屏自定义布局：全屏 Surface 尺寸（归一化矩形 → 核心像素矩形
+    //   的换算基准；IntSize.Zero 时按 0 写入，Surface 尺寸就绪后重算会覆盖）。
+    n3dsSurfaceSize: androidx.compose.ui.unit.IntSize = androidx.compose.ui.unit.IntSize.Zero
+) {
     when (platform) {
         GamePlatform.NES -> {
             engine.setCoreOption("fceumm_ntsc_filter", layout.ntscFilter)
@@ -4654,6 +4733,12 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
         }
         // 3DS（Azahar）—— "段/键" 复合键直写用户目录 config/config.ini，
         // enabled/disabled 转为核心布尔 true/false，数字枚举原样透传。
+        // ★★ 全键审计（本轮）：逐键对照 libazahar.so 内嵌默认 ini +
+        //   Azahar 2125.1.2 src/android jni/config.cpp 的 ReadSetting 读取集：
+        //   移除死键（use_skip_duplicate_frames / use_fastinterp —— 上游
+        //   根本没有这两个设置，写了也会被忽略）；补上 lle_applets（存档
+        //   卡死修复）；补上双屏自定义布局（custom_top_* / custom_bottom_*，
+        //   与 NDS 双屏分离布局同体验，核心原生 CustomLayout 生效）。
         GamePlatform.N3DS -> {
             val b = { v: String -> if (v == "enabled") "true" else "false" }
             val api = when (layout.azGraphicsApi) {
@@ -4661,6 +4746,8 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             }
             engine.setCoreOption("Renderer/graphics_api", api)
             engine.setCoreOption("Renderer/use_gles", "true")
+            // ★ 取值即核心语义：0=自动(适配窗口) / 1=1x 原生 / 2..5=倍数
+            //   （旧实现 UI 用 0..4 表示 1x..5x，全部错位一档）。
             engine.setCoreOption("Renderer/resolution_factor", layout.azResolution)
             engine.setCoreOption("Renderer/use_hw_shader", b(layout.azUseHwShader))
             engine.setCoreOption("Renderer/use_shader_jit", b(layout.azUseShaderJit))
@@ -4669,7 +4756,6 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
             engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
             engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
-            engine.setCoreOption("Renderer/use_skip_duplicate_frames", b(layout.azSkipDuplicateFrames))
             engine.setCoreOption("Renderer/texture_filter", layout.azTextureFilter)
             engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
             engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
@@ -4682,15 +4768,54 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             // 旧实现误写 Renderer/ 段导致设置永远不生效。
             engine.setCoreOption("Utility/custom_textures", b(layout.azCustomTextures))
             engine.setCoreOption("Utility/preload_textures", b(layout.azPreloadTextures))
-            engine.setCoreOption("Layout/layout_option", layout.azLayoutOption)
+            // ★★ 3DS 双屏独立自定义布局（参考 NDS 双屏实现）★★
+            //   videoScale=="custom"（前端双屏编辑器）或 azLayoutOption=="5"
+            //   （核心设置里选"自定义"）都进入核心 CustomLayout（layout_option=5），
+            //   上/下屏矩形（像素，相对全屏 Surface）写 [Layout] 段 custom_top_*/
+            //   custom_bottom_*；竖屏走 portrait_layout_option=1 + custom_portrait_*。
+            //   3DS 自定义时 GameSurfaceView 铺满全屏（见 effectiveVideoScale），
+            //   核心直接按这些像素矩形排布两屏 —— 上/下屏可完全分开摆放。
+            val n3dsCustom = layout.videoScale == "custom" || layout.azLayoutOption == "5"
+            if (n3dsCustom) {
+                engine.setCoreOption("Layout/layout_option", "5")
+                engine.setCoreOption("Layout/portrait_layout_option", "1")
+                // 像素矩形（Surface 全屏尺寸 × 归一化矩形；surfaceSize 未知时
+                // 用 0 —— 编辑器/重算时会带真实尺寸重写）
+                val sw = n3dsSurfaceSize.width
+                val sh = n3dsSurfaceSize.height
+                fun px(v: Float, max: Int): String =
+                    (if (max > 0) (v * max).toInt().coerceIn(0, 65535) else 0).toString()
+                engine.setCoreOption("Layout/custom_top_x", px(layout.n3dsTopLayoutLeft, sw))
+                engine.setCoreOption("Layout/custom_top_y", px(layout.n3dsTopLayoutTop, sh))
+                engine.setCoreOption("Layout/custom_top_width", px((layout.n3dsTopLayoutRight - layout.n3dsTopLayoutLeft).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_top_height", px((layout.n3dsTopLayoutBottom - layout.n3dsTopLayoutTop).coerceAtLeast(0.01f), sh))
+                engine.setCoreOption("Layout/custom_bottom_x", px(layout.n3dsBottomLayoutLeft, sw))
+                engine.setCoreOption("Layout/custom_bottom_y", px(layout.n3dsBottomLayoutTop, sh))
+                engine.setCoreOption("Layout/custom_bottom_width", px((layout.n3dsBottomLayoutRight - layout.n3dsBottomLayoutLeft).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_bottom_height", px((layout.n3dsBottomLayoutBottom - layout.n3dsBottomLayoutTop).coerceAtLeast(0.01f), sh))
+                engine.setCoreOption("Layout/custom_portrait_top_x", px(layout.n3dsTopLayoutLeftP, sw))
+                engine.setCoreOption("Layout/custom_portrait_top_y", px(layout.n3dsTopLayoutTopP, sh))
+                engine.setCoreOption("Layout/custom_portrait_top_width", px((layout.n3dsTopLayoutRightP - layout.n3dsTopLayoutLeftP).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_portrait_top_height", px((layout.n3dsTopLayoutBottomP - layout.n3dsTopLayoutTopP).coerceAtLeast(0.01f), sh))
+                engine.setCoreOption("Layout/custom_portrait_bottom_x", px(layout.n3dsBottomLayoutLeftP, sw))
+                engine.setCoreOption("Layout/custom_portrait_bottom_y", px(layout.n3dsBottomLayoutTopP, sh))
+                engine.setCoreOption("Layout/custom_portrait_bottom_width", px((layout.n3dsBottomLayoutRightP - layout.n3dsBottomLayoutLeftP).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_portrait_bottom_height", px((layout.n3dsBottomLayoutBottomP - layout.n3dsBottomLayoutTopP).coerceAtLeast(0.01f), sh))
+            } else {
+                engine.setCoreOption("Layout/layout_option", layout.azLayoutOption)
+                engine.setCoreOption("Layout/portrait_layout_option", "0")
+            }
             engine.setCoreOption("Layout/screen_gap", layout.azScreenGap)
             engine.setCoreOption("Layout/large_screen_proportion", layout.azLargeScreenProportion)
             // 上/下屏交换：与上游 swapScreens() 相同语义（配置 + 热更）
             engine.setCoreOption("Layout/swap_screen", b(layout.azSwapScreens))
             engine.setCoreOption("Core/cpu_clock_percentage", layout.azCpuClock)
             engine.setCoreOption("Core/use_cpu_jit", b(layout.azUseCpuJit))
-            engine.setCoreOption("Core/use_fastinterp", b(layout.azUseFastInterp))
             engine.setCoreOption("System/is_new_3ds", b(layout.azIsNew3ds))
+            // ★ LLE 系统小程序（存档卡死修复）：Azahar 默认 true —— 无真实
+            //   NAND 小程序时游戏触发 applet（存档/错误框/软键盘）会卡死。
+            //   显式下发用户设置（默认 disabled 走 HLE 小程序）。
+            engine.setCoreOption("System/lle_applets", b(layout.azLleApplets))
             engine.setCoreOption("System/region_value", layout.azRegion)
             engine.setCoreOption("Audio/audio_emulation", layout.azAudioEmulation)
             // 原生侧 volume 为 0..1 浮点（GetReal）
@@ -4873,6 +4998,13 @@ private fun GameSurfaceView(
             "Top Only", "Bottom Only" -> "4:3"
             else -> "2:3" // Top/Bottom, Bottom/Top
         }
+    } else if (platform == GamePlatform.N3DS && videoScale == "custom") {
+        // ★ 3DS 自定义 = 核心内双屏分离布局（custom_top_*/custom_bottom_* 像素
+        //   矩形，参考 NDS 双屏模型）：Surface 必须**铺满全屏**（矩形相对全屏
+        //   归一化），绝不能再把 SurfaceView 缩到单矩形 customRect 里 ——
+        //   旧实现套单矩形 → 核心只拿到被裁小的窗口，“自定义屏幕布局
+        //   没有分开”的直接原因之一。
+        "stretch"
     } else {
         videoScale
     }
@@ -7276,15 +7408,24 @@ fun OnScreenController(
                 )
             }
             // Wii 十字键
+            // ★ 横持时视觉上随遥控器旋转 90°（顶部朝左 NES 式握持）：
+            //   - 绘制旋转 -90°（十字/箭头随物理方位"横过来"）；
+            //   - 高亮位同样旋转（用户触到屏上方 → 高亮画在屏上方的臂，
+            //     即遥控器本地方向 RIGHT 的臂）；
+            //   - 命中测试不旋转（仍按屏坐标四象限）；
+            //   - 输出方向由 routePadBits 统一旋转补偿（见其注释）。
             if (showWiiDpad) {
                 val (wdImg, wdImgPressed) = rememberThemeButtonImages(overlayTheme, "wii_dpad")
+                val wiiDpadHoriz = ngcWiiHoriz && ngcWiiExtension != "classic"
                 DpadCanvas(
                     layout = wiiDpad, surfaceSize = surfaceSize, opacity = opacity,
-                    pressedDirs = visualState and 0xF0,
+                    pressedDirs = if (wiiDpadHoriz) rotateWiiHorizontalDpad(visualState and 0xF0)
+                                  else visualState and 0xF0,
                     armColor = themeButtonColor(overlayTheme, "wii_dpad", Color(0xFF2C2C38)),
                     pressedTipColor = themePressedButtonColor(overlayTheme, "wii_dpad") ?: Color(0xFFFFD66B),
                     image = wdImg,
-                    pressedImage = wdImgPressed
+                    pressedImage = wdImgPressed,
+                    rotationDeg = if (wiiDpadHoriz) -90f else 0f
                 )
             }
             // Wii A/B
@@ -7550,7 +7691,11 @@ private fun DpadCanvas(
     armColor: Color = Color(0xFF2C2C38),
     pressedTipColor: Color = Color(0xFFFFD66B),
     image: androidx.compose.ui.graphics.ImageBitmap? = null,
-    pressedImage: androidx.compose.ui.graphics.ImageBitmap? = null
+    pressedImage: androidx.compose.ui.graphics.ImageBitmap? = null,
+    // ★ 绘制旋转（度）：Wii 横持时 -90f —— 十字/箭头随遥控器物理旋转
+    //   方向（顶部朝左 NES 式握持），命中测试不变（视觉方向仍按屏坐标），
+    //   输出方向由 routePadBits 统一旋转补偿。
+    rotationDeg: Float = 0f
 ) {
     val density = LocalDensity.current
     val sizeDp = layout.sizeDp.dp
@@ -7560,7 +7705,8 @@ private fun DpadCanvas(
     Box(
         modifier = Modifier
             .offset { IntOffset(px.toInt(), py.toInt()) }
-            .size(sizeDp),
+            .size(sizeDp)
+            .rotate(rotationDeg),
         contentAlignment = Alignment.Center
     ) {
         if (activeImage != null) {
@@ -9849,22 +9995,37 @@ private fun PadLayoutEditor(
                         onSelect = { selectedBtn = BtnType.Z }
                     )
                 }
-                EditableRoundBtn("主摇杆", Color(0xFFFFD66B), ngcLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
-                    onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0f, 1f)
-                        val ny = targetY.coerceIn(0f, 1f)
-                        updateBtn(BtnType.LSTICK, ngcLStick.copy(x = nx, y = ny))
-                    },
-                    onSelect = { selectedBtn = BtnType.LSTICK }
-                )
-                EditableRoundBtn("C摇杆", Color(0xFFFFD66B), ngcRStick, surfaceSize, selectedBtn == BtnType.RSTICK,
-                    onMove = { targetX, targetY ->
-                        val nx = targetX.coerceIn(0f, 1f)
-                        val ny = targetY.coerceIn(0f, 1f)
-                        updateBtn(BtnType.RSTICK, ngcRStick.copy(x = nx, y = ny))
-                    },
-                    onSelect = { selectedBtn = BtnType.RSTICK }
-                )
+                // ★★★ 摇杆门控修复（“NGC 编辑器多了双节棍摇杆 / Wii 编辑器
+                //   多了 GC 主摇杆”）★★★
+                //   与运行时 OnScreenController 完全同源的门控：
+                //   - GC 主摇杆（ngcLStick）：仅 ngc 模式；
+                //   - GC C 摇杆（ngcRStick）：ngc 模式（C 摇杆）或经典手柄
+                //     （复用为经典右摇杆，标签相应变化）；
+                //   - 双节棍摇杆（wiiLStick）：双节棍或经典手柄（经典左摇杆）。
+                //   旧实现三个摇杆全部无条件渲染 → wii 模式下 GC 主/C 摇杆
+                //   一起出现，ngc 模式下双节棍摇杆一起出现（用户实测）。
+                if (ngcWiiGcSet) {
+                    EditableRoundBtn("主摇杆", Color(0xFFFFD66B), ngcLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
+                        onMove = { targetX, targetY ->
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
+                            updateBtn(BtnType.LSTICK, ngcLStick.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.LSTICK }
+                    )
+                }
+                if (ngcWiiGcSet || ngcWiiClassic) {
+                    EditableRoundBtn(
+                        if (ngcWiiClassic) "右摇杆" else "C摇杆",
+                        Color(0xFFFFD66B), ngcRStick, surfaceSize, selectedBtn == BtnType.RSTICK,
+                        onMove = { targetX, targetY ->
+                            val nx = targetX.coerceIn(0f, 1f)
+                            val ny = targetY.coerceIn(0f, 1f)
+                            updateBtn(BtnType.RSTICK, ngcRStick.copy(x = nx, y = ny))
+                        },
+                        onSelect = { selectedBtn = BtnType.RSTICK }
+                    )
+                }
                 if (showWiiDpad) {
                     EditableDpad(
                         wiiDpad, surfaceSize, selectedBtn == BtnType.DPAD,
@@ -9979,13 +10140,20 @@ private fun PadLayoutEditor(
                         onSelect = { selectedBtn = BtnType.IR_FAR }
                     )
                 }
-                EditableRoundBtn("双节棍摇杆", Color(0xFFFFD66B), wiiLStick, surfaceSize, false,
-                    onMove = { tx, ty ->
-                        onLayoutChange(
-                            if (isPortrait) padLayout.copy {this.wiiLStickP = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            else padLayout.copy {this.wiiLStick = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                        )
-                    }, onSelect = {})
+                // ★ 门控同运行时：双节棍摇杆仅双节棍/经典手柄组合出现
+                //   （经典手柄模式下它是经典左摇杆）—— ngc 模式绝不渲染
+                //   （旧实现无条件出现 = "NGC 编辑器多了个双节棍摇杆"）。
+                if (ngcWiiNunchuk || ngcWiiClassic) {
+                    EditableRoundBtn(
+                        if (ngcWiiClassic) "左摇杆" else "双节棍摇杆",
+                        Color(0xFFFFD66B), wiiLStick, surfaceSize, false,
+                        onMove = { tx, ty ->
+                            onLayoutChange(
+                                if (isPortrait) padLayout.copy {this.wiiLStickP = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                                else padLayout.copy {this.wiiLStick = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
+                            )
+                        }, onSelect = {})
+                }
             }
             // PS2 专属可编辑控件：双摇杆（常驻）+ L3/R3
             if (isPs2) {
@@ -12776,7 +12944,8 @@ private fun SettingsPanel(
                     padLayout.azGraphicsApi
                 ) { onLayoutChange(padLayout.copy {azGraphicsApi = it}) }
                 DropdownSetting("内部分辨率",
-                    listOf("0" to "1x (400x240 原生)", "1" to "2x", "2" to "3x", "3" to "4x", "4" to "5x"),
+                    listOf("0" to "自动 (适配窗口)", "1" to "1x (400x240 原生)", "2" to "2x (800x480)",
+                           "3" to "3x (1200x720)", "4" to "4x (1600x960)", "5" to "5x (2000x1200)"),
                     padLayout.azResolution
                 ) { onLayoutChange(padLayout.copy {azResolution = it}) }
                 SwitchSetting("硬件着色器 (use_hw_shader)",
@@ -12794,8 +12963,6 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {azAsyncShaderCompilation = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("精确乘法", "着色器精度修正 (个别游戏需要)", padLayout.azAccurateMultiplication == "enabled"
                 ) { onLayoutChange(padLayout.copy {azAccurateMultiplication = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("跳过重复帧", "跳过未变化的帧，降低 GPU 负载", padLayout.azSkipDuplicateFrames == "enabled"
-                ) { onLayoutChange(padLayout.copy {azSkipDuplicateFrames = if (it) "enabled" else "disabled"}) }
                 DropdownSetting("纹理过滤",
                     listOf("0" to "无", "1" to "Anime4K", "2" to "双三次", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
                     padLayout.azTextureFilter
@@ -12840,10 +13007,12 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {azCpuClock = it}) }
                 SwitchSetting("CPU JIT", "动态重编译，性能关键", padLayout.azUseCpuJit == "enabled"
                 ) { onLayoutChange(padLayout.copy {azUseCpuJit = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("快速解释器", "JIT 不可用时提速", padLayout.azUseFastInterp == "enabled"
-                ) { onLayoutChange(padLayout.copy {azUseFastInterp = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("New 3DS 模式", "更快的 CPU 与专属游戏", padLayout.azIsNew3ds == "enabled"
                 ) { onLayoutChange(padLayout.copy {azIsNew3ds = if (it) "enabled" else "disabled"}) }
+                // ★ LLE 系统小程序（存档卡死修复）：默认关闭。开启需真实
+                //   NAND 系统小程序（00040030/*），否则部分游戏存档时卡死。
+                SwitchSetting("LLE 系统小程序", "需完整 NAND 系统文件；无系统文件时存档可能卡死，默认关闭走内置 HLE", padLayout.azLleApplets == "enabled"
+                ) { onLayoutChange(padLayout.copy {azLleApplets = if (it) "enabled" else "disabled"}) }
                 DropdownSetting("主机区域",
                     listOf("-1" to "自动", "0" to "日本", "1" to "美国", "2" to "欧洲", "3" to "澳大利亚", "4" to "中国", "5" to "韩国", "6" to "台湾"),
                     padLayout.azRegion
@@ -12881,9 +13050,11 @@ private fun SettingsPanel(
                     listOf("nunchuk" to "双节棍 (推荐)", "classic" to "经典手柄", "none" to "无"),
                     padLayout.irWiiExtension
                 ) { onLayoutChange(padLayout.copy {irWiiExtension = it}) }
-                // Wii 手柄横/竖持：决定虚拟按键布局（横持 = NES 式精简键组）
+                // Wii 手柄横/竖持：横持 = NES 式 —— 虚拟十字键随遥控器旋转 90°
+                // 绘制，且**方向输出同步旋转补偿**（视觉上 = 游戏方向，横持
+                // 游戏按旋转坐标系读十字键）；竖持 = 原方向直出。
                 DropdownSetting("Wii 手柄方向",
-                    listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式)", ),
+                    listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式, 方向旋转补偿)", ),
                     padLayout.irWiiOrientation
                 ) { onLayoutChange(padLayout.copy {irWiiOrientation = it}) }
 

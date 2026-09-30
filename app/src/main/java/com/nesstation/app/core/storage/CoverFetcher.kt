@@ -41,12 +41,42 @@ object CoverFetcher {
     private const val MAX_IMAGE_BYTES = 4 * 1024 * 1024
     private const val FETCH_INTERVAL_MS = 250L
 
-    // ★★ 双通道下载（本轮新增）★★
+    // ★★ 多镜像加固（本轮）★★
     //   thumbnails.libretro.com（Apache 直出）在部分网络环境下载缓慢/不稳，
     //   而缩略图库在 GitHub 有官方镜像（libretro-thumbnails 组织，文件名
     //   与站点完全一致），jsDelivr CDN 对其可达性/速度普遍更好。每个 URL
-    //   先走 libretro 直连，失败自动切换 jsDelivr 镜像。
     private const val MIRROR_BASE = "https://cdn.jsdelivr.net/gh/libretro-thumbnails"
+
+    // ★★★ 本轮（第三次“封面全部跳过”根治）：gh 代理链 ★★★
+    //   用户实测（大陆网络）：libretro 直连 + 三个 jsDelivr 通道全部不可达
+    //   → 精确候选与索引全部失败 → “根本没有去搜索并下载封面”。
+    //   raw.githubusercontent.com 内容经公共 gh 代理转发在大陆可达性最好
+    //   （实测 gh-proxy.com / ghfast.top / ghproxy.net 均能 200 拿到同一张
+    //   封面），作为第二优先通道加入；文件路径与 GitHub 完全一致。
+    private const val RAW_PREFIX = "https://raw.githubusercontent.com/libretro-thumbnails"
+    private val GH_PROXIES = listOf(
+        "https://gh-proxy.com/",
+        "https://ghfast.top/",
+        "https://ghproxy.net/"
+    )
+
+    // ★ 通道健康记忆（会话级）：连续 3 次连接级失败（DNS/连接/超时，
+    //   404 不算）的通道在本次进程内禁用 —— 批量抓取时迅速收敛到可用
+    //   通道，避免每个候选名都把全部死通道超时一遍（旧实现 14 个游戏
+    //   每个候选 × 4 通道 × 8s 连接超时 = 分钟级卡死）。
+    private val CHANNEL_FAIL_THRESHOLD = 3
+    private val channelFailCount = HashMap<String, Int>()
+    private fun channelAlive(channel: String): Boolean =
+        (channelFailCount[channel] ?: 0) < CHANNEL_FAIL_THRESHOLD
+    private fun noteChannelConnFailed(channel: String) {
+        channelFailCount[channel] = (channelFailCount[channel] ?: 0) + 1
+    }
+    private fun noteChannelAlive(channel: String) {
+        channelFailCount.remove(channel)
+    }
+    /** 本会话内被禁用的通道列表（诊断用）。 */
+    fun deadChannels(): List<String> =
+        channelFailCount.filter { it.value >= CHANNEL_FAIL_THRESHOLD }.keys.toList()
 
     /** 批量抓取统计（fetchAllMissing 结束后 UI 可读取，用于诊断提示）。 */
     data class BatchStats(
@@ -73,27 +103,35 @@ object CoverFetcher {
      * 系统目录名中的空格在 GitHub 仓库名里是下划线
      * ("Nintendo - NES" → "Nintendo_-_NES")。
      *
-     * ★★ 多镜像加固（本轮）：★★
+     * ★★ 多镜像加固：★★
      *   用户网络环境（中国大陆）实测 thumbnails.libretro.com 直连与
      *   cdn.jsdelivr.net 均常不可达 → “封面全部跳过”的直接原因。
-     *   现按优先级依次尝试 4 个通道：
+     *   现按优先级依次尝试 7 个通道：
      *     1. libretro 官方直连；
-     *     2. fastly.jsdelivr.net（Fastly 边缘，大陆可达性最好）；
-     *     3. gcore.jsdelivr.net（Gcore 边缘）；
-     *     4. cdn.jsdelivr.net（主站）。
-     *   文件名与目录结构在四个通道完全一致（同一份 GitHub 仓库内容），
-     *   任一通道 200 即命中。
+     *     2. gh-proxy.com（raw.githubusercontent 内容，大陆可达性好）；
+     *     3. ghfast.top（同上）；
+     *     4. ghproxy.net（同上）；
+     *     5. fastly.jsdelivr.net（Fastly 边缘）；
+     *     6. gcore.jsdelivr.net（Gcore 边缘）；
+     *     7. cdn.jsdelivr.net（主站）。
+     *   文件名与目录结构在各通道完全一致（同一份 GitHub 仓库内容），
+     *   任一通道 200 即命中；通道健康记忆（channelFailCount）会让批量
+     *   抓取在 2-3 次失败后自动收敛到可用通道。
+     *
+     * @return (通道名, URL) 列表 —— 通道名用于健康记忆与诊断。
      */
-    fun coverImageUrls(system: String, subDir: String, name: String): List<String> {
+    fun coverImageUrls(system: String, subDir: String, name: String): List<Pair<String, String>> {
         val jsRepo = system.replace(' ', '_')
         val segName = urlSeg(name)
         val segDir = urlSeg(system)
-        return listOf(
-            "$BASE/$segDir/$subDir/$segName.png",
-            "https://fastly.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png",
-            "https://gcore.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png",
-            "$MIRROR_BASE/$jsRepo/$subDir/$segName.png"
-        )
+        val rawPath = "$jsRepo/master/$subDir/$segName.png"
+        return buildList {
+            add("libretro" to "$BASE/$segDir/$subDir/$segName.png")
+            for (p in GH_PROXIES) add("ghproxy:${p.removePrefix("https://")}" to "$p$RAW_PREFIX/$rawPath")
+            add("jsdelivr:fastly" to "https://fastly.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png")
+            add("jsdelivr:gcore" to "https://gcore.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png")
+            add("jsdelivr:cdn" to "$MIRROR_BASE/$jsRepo/$subDir/$segName.png")
+        }
     }
 
     /** 单个游戏最多尝试的候选名数量（防止极端命名膨胀请求数）。 */
@@ -196,7 +234,9 @@ object CoverFetcher {
             GamePlatform.GB -> listOf("Nintendo - Game Boy")
             GamePlatform.GBA -> listOf("Nintendo - Game Boy Advance")
             GamePlatform.MD -> listOf("Sega - Mega Drive - Genesis")
-            GamePlatform.PCE -> listOf("NEC - PC Engine - TurboGrafx-16")
+            // ★ PCE 目录名修正：libretro 站上实际目录是 "TurboGrafx 16"（空格，
+            //   站点目录列表实测），旧值 "TurboGrafx-16" 404 → PCE 封面全挂。
+            GamePlatform.PCE -> listOf("NEC - PC Engine - TurboGrafx 16")
             GamePlatform.NDS -> listOf("Nintendo - Nintendo DS")
             GamePlatform.PSX -> listOf("Sony - PlayStation")
             GamePlatform.PS2 -> listOf("Sony - PlayStation 2")
@@ -388,10 +428,10 @@ object CoverFetcher {
         //   原名），jsDelivr 镜像仅作为**同名第二通道**（直连失败时兜底），
         //   不改变 3.8 的尝试顺序与命中优先级。
         for (sys in systemDirs) {
-            // 1) 盒装封面（Named_Boxarts）—— 直连失败自动切 jsDelivr 镜像
+            // 1) 盒装封面（Named_Boxarts）—— 多通道：libretro 直连 → gh 代理链 → jsDelivr 链
             for (name in candidates) {
-                for (url in coverImageUrls(sys, "Named_Boxarts", name)) {
-                    if (downloadCached(url, dest, cache)) {
+                for ((ch, url) in coverImageUrls(sys, "Named_Boxarts", name)) {
+                    if (downloadCached(url, dest, cache, ch)) {
                         syncDcBoxart(context, game, dest)
                         return dest
                     }
@@ -399,8 +439,8 @@ object CoverFetcher {
             }
             // 2) 游戏截图兜底（Named_Snaps —— 有图总比占位色块好）
             for (name in candidates) {
-                for (url in coverImageUrls(sys, "Named_Snaps", name)) {
-                    if (downloadCached(url, dest, cache)) {
+                for ((ch, url) in coverImageUrls(sys, "Named_Snaps", name)) {
+                    if (downloadCached(url, dest, cache, ch)) {
                         syncDcBoxart(context, game, dest)
                         return dest
                     }
@@ -427,8 +467,8 @@ object CoverFetcher {
             for (name in fuzzy) {
                 // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
                 if (candidates.any { it.equals(name, ignoreCase = true) }) continue
-                for (url in coverImageUrls(sys, "Named_Boxarts", name)) {
-                    if (downloadImage(url, dest)) {
+                for ((ch, url) in coverImageUrls(sys, "Named_Boxarts", name)) {
+                    if (downloadImage(url, dest, ch)) {
                         Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
                         syncDcBoxart(context, game, dest)
                         return dest
@@ -735,8 +775,8 @@ object CoverFetcher {
                     val i = out.size
                     val f = File(coversDir(context), "${game.id}_cand$i.png")
                     var hit = false
-                    for (url in coverImageUrls(sys, "Named_Boxarts", name)) {
-                        if (downloadImage(url, f)) { hit = true; break }
+                    for ((ch, url) in coverImageUrls(sys, "Named_Boxarts", name)) {
+                        if (downloadImage(url, f, ch)) { hit = true; break }
                     }
                     if (hit) {
                         results[name.lowercase()] = f
@@ -820,6 +860,18 @@ object CoverFetcher {
                 }
             } catch (_: Throwable) {}
         }
+        // ★★ 通道 0：assets 内置索引（本轮新增 —— 离线模糊匹配兑底）。
+        //   各主平台封面名索引已随 APK 打包（assets/cover_index/<safe>.txt，
+        //   生成于 2026-10，共 14 平台 ≈ 2.9MB）。命中后种到磁盘缓存（30 天
+        //   TTL 从种子时刻起算，过期后自动走网络刷新）。彻底解决“索引拉不
+        //   下来 → 中文/异名 ROM 模糊匹配永久失效 → 封面全部跳过”。
+        val bundled = loadBundledIndex(context, system)
+        if (bundled != null) {
+            indexMemory[system] = bundled
+            try { cacheFile.writeText(bundled.joinToString("\n")) } catch (_: Throwable) {}
+            Log.i(TAG, "cover index loaded from bundled assets: $system (${bundled.size} names)")
+            return bundled
+        }
         // 通道 1：libretro 直连 autoindex（失败重试一次）
         val primary = fetchAutoindexIndex(system)
         if (primary != null) {
@@ -827,7 +879,7 @@ object CoverFetcher {
             try { cacheFile.writeText(primary.joinToString("\n")) } catch (_: Throwable) {}
             return primary
         }
-        // 通道 2：GitHub 官方镜像 trees API（libretro-thumbnails 组织）
+        // 通道 2：GitHub 镜像 trees API（api.github.com + gh 代理链）
         Log.w(TAG, "cover index primary failed, trying GitHub mirror: $system")
         val mirror = fetchGithubTreeIndex(system)
         if (mirror != null) {
@@ -840,9 +892,22 @@ object CoverFetcher {
         return null
     }
 
-    /** libretro 站点 autoindex 拉取（含一次重试）。 */
+    /** assets 内置索引：assets/cover_index/<safeName>.txt（每行一个官方名）。 */
+    private fun loadBundledIndex(context: Context, system: String): List<String>? {
+        val safeName = system.replace(Regex("[^A-Za-z0-9]+"), "_").trim('_')
+        return try {
+            context.assets.open("cover_index/$safeName.txt").bufferedReader().use { r ->
+                r.readLines().filter { it.isNotBlank() }
+            }.takeIf { it.isNotEmpty() }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** libretro 站点 autoindex 拉取（含一次重试；通道健康记忆参与）。 */
     private fun fetchAutoindexIndex(system: String): List<String>? {
         for (attempt in 1..2) {
+            if (!channelAlive("libretro")) return null  // 本会话已判死
             var conn: HttpURLConnection? = null
             try {
                 val url = "$BASE/${urlSeg(system)}/Named_Boxarts/"
@@ -852,7 +917,13 @@ object CoverFetcher {
                 c.readTimeout = 90000
                 c.instanceFollowRedirects = true
                 c.setRequestProperty("User-Agent", USER_AGENT)
-                val code = c.responseCode
+                val code = try {
+                    c.responseCode
+                } catch (t: Throwable) {
+                    noteChannelConnFailed("libretro")
+                    throw t
+                }
+                noteChannelAlive("libretro")
                 if (code != HttpURLConnection.HTTP_OK) {
                     Log.w(TAG, "cover index HTTP $code (attempt $attempt): $system")
                     continue
@@ -895,24 +966,30 @@ object CoverFetcher {
 
     /** GitHub 官方镜像兜底：git/trees?recursive=1 一请求拿全系统文件树。
      *
-     * ★★ 通道加固（本轮）：api.github.com 之后追加 gh-proxy.com 镜像兜底 ——
-     *   api.github.com 在大陆网络经常不可达/被限流，镜像通道命中后索引
-     *   照常落盘缓存（30 天），后续请求不再依赖任何单一通道。
+     * ★★ 通道加固（本轮）：api.github.com 之后按序追加 3 个 gh 代理
+     *   （gh-proxy.com / ghfast.top / ghproxy.net —— 同样能转发 api.github.com
+     *   的 JSON 响应，实测 200）。api.github.com 在大陆网络经常不可达/被
+     *   限流，代理通道命中后索引照常落盘缓存（30 天），后续请求不再依赖
+     *   任何单一通道。
      */
     private fun fetchGithubTreeIndex(system: String): List<String>? {
         val repo = system.replace(' ', '_')
-        val urls = listOf(
-            "https://api.github.com/repos/libretro-thumbnails/$repo/git/trees/master?recursive=1",
-            "https://gh-proxy.com/https://api.github.com/repos/libretro-thumbnails/$repo/git/trees/master?recursive=1"
-        )
-        for (url in urls) {
-            val result = tryFetchGithubTree(url)
+        val api = "https://api.github.com/repos/libretro-thumbnails/$repo/git/trees/master?recursive=1"
+        val urls = buildList {
+            add("github:api" to api)
+            for (p in GH_PROXIES) {
+                add("ghproxy:${p.removePrefix("https://")}" to "$p$api")
+            }
+        }
+        for ((ch, url) in urls) {
+            if (!channelAlive(ch)) continue  // 本会话已判死的通道直接跳过
+            val result = tryFetchGithubTree(url, ch)
             if (result != null) return result
         }
         return null
     }
 
-    private fun tryFetchGithubTree(url: String): List<String>? {
+    private fun tryFetchGithubTree(url: String, channel: String? = null): List<String>? {
         var conn: HttpURLConnection? = null
         return try {
             val c = URL(url).openConnection() as HttpURLConnection
@@ -922,7 +999,13 @@ object CoverFetcher {
             c.instanceFollowRedirects = true
             c.setRequestProperty("User-Agent", USER_AGENT)
             c.setRequestProperty("Accept", "application/vnd.github+json")
-            val code = c.responseCode
+            val code = try {
+                c.responseCode
+            } catch (t: Throwable) {
+                if (channel != null) noteChannelConnFailed(channel)
+                throw t
+            }
+            if (channel != null) noteChannelAlive(channel)
             if (code != HttpURLConnection.HTTP_OK) {
                 Log.w(TAG, "GitHub trees HTTP $code: $url")
                 return null
@@ -1217,7 +1300,8 @@ object CoverFetcher {
     private fun downloadCached(
         url: String,
         dest: File,
-        cache: MutableMap<String, File?>?
+        cache: MutableMap<String, File?>?,
+        channel: String? = null
     ): Boolean {
         if (cache != null && cache.containsKey(url)) {
             val cached = cache[url]
@@ -1234,13 +1318,23 @@ object CoverFetcher {
             }
             return false
         }
-        val ok = downloadImage(url, dest)
+        val ok = downloadImage(url, dest, channel)
         cache?.put(url, if (ok) dest else null)
         return ok
     }
 
-    /** 下载并校验图片魔数；成功落盘返回 true。 */
-    private fun downloadImage(urlStr: String, dest: File): Boolean {
+    /**
+     * 下载并校验图片魔数；成功落盘返回 true。
+     *
+     * ★ 通道健康记忆（本轮）：调用方传入 [channel]（通道名，null = 未知）。
+     * - 任何 HTTP 响应码（含 404）都证明通道活着 → 清零该通道失败计数；
+     * - 连接级异常（DNS 解析失败/连接被拒/超时）→ 计数 +1，连续 3 次
+     *   后本会话内该通道被 [coverImageUrlsChanneled] 消费方跳过。
+     * 404 不计入失败 —— 它只说明这个候选名不存在，与通道健康无关。
+     */
+    private fun downloadImage(urlStr: String, dest: File, channel: String? = null): Boolean {
+        // 通道已被本会话标记为死亡 → 直接跳过（不再吃连接超时）
+        if (channel != null && !channelAlive(channel)) return false
         var conn: HttpURLConnection? = null
         return try {
             val conn0 = URL(urlStr).openConnection() as HttpURLConnection
@@ -1250,7 +1344,15 @@ object CoverFetcher {
             conn0.instanceFollowRedirects = true
             conn0.setRequestProperty("User-Agent", USER_AGENT)
             conn0.setRequestProperty("Accept", "image/png,image/*")
-            val code = conn0.responseCode
+            val code = try {
+                conn0.responseCode
+            } catch (t: Throwable) {
+                // 连接层就挂了（DNS/拒连/超时）→ 记通道失败
+                if (channel != null) noteChannelConnFailed(channel)
+                throw t
+            }
+            // 拿到 HTTP 响应码（含 404/5xx）→ 通道活着
+            if (channel != null) noteChannelAlive(channel)
             if (code != HttpURLConnection.HTTP_OK) return false
             val len = conn0.contentLengthLong
             // ★ chunked encoding 修复：len < 0 表示未知长度（chunked），

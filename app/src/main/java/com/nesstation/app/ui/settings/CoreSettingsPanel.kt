@@ -1612,7 +1612,8 @@ fun CoreSettingsPanel(
                         padLayout.azGraphicsApi
                     ) { updateLayout(padLayout.copy {azGraphicsApi = it}) }
                     DropdownRow("内部分辨率",
-                        listOf("0" to "1x (400x240 原生)", "1" to "2x", "2" to "3x", "3" to "4x", "4" to "5x"),
+                        listOf("0" to "自动 (适配窗口)", "1" to "1x (400x240 原生)", "2" to "2x (800x480)",
+                               "3" to "3x (1200x720)", "4" to "4x (1600x960)", "5" to "5x (2000x1200)"),
                         padLayout.azResolution
                     ) { updateLayout(padLayout.copy {azResolution = it}) }
                     DropdownRow("硬件着色器",
@@ -1643,10 +1644,6 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别游戏需要)"),
                         padLayout.azAccurateMultiplication
                     ) { updateLayout(padLayout.copy {azAccurateMultiplication = it}) }
-                    DropdownRow("跳过重复帧",
-                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
-                        padLayout.azSkipDuplicateFrames
-                    ) { updateLayout(padLayout.copy {azSkipDuplicateFrames = it}) }
                     DropdownRow("纹理过滤",
                         listOf("0" to "无", "1" to "Anime4K", "2" to "双三次", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
                         padLayout.azTextureFilter
@@ -1705,14 +1702,14 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "开启 (性能关键, 默认)", "disabled" to "关闭"),
                         padLayout.azUseCpuJit
                     ) { updateLayout(padLayout.copy {azUseCpuJit = it}) }
-                    DropdownRow("快速解释器",
-                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
-                        padLayout.azUseFastInterp
-                    ) { updateLayout(padLayout.copy {azUseFastInterp = it}) }
                     DropdownRow("New 3DS 模式",
                         listOf("enabled" to "开启 (更快 CPU, 默认)", "disabled" to "关闭 (老游戏兼容)"),
                         padLayout.azIsNew3ds
                     ) { updateLayout(padLayout.copy {azIsNew3ds = it}) }
+                    DropdownRow("LLE 系统小程序",
+                        listOf("disabled" to "关闭 (默认, 存档稳定)", "enabled" to "开启 (需完整 NAND 系统文件)"),
+                        padLayout.azLleApplets
+                    ) { updateLayout(padLayout.copy {azLleApplets = it}) }
                     DropdownRow("主机区域",
                         listOf("-1" to "自动", "0" to "日本", "1" to "美国", "2" to "欧洲", "3" to "澳大利亚", "4" to "中国", "5" to "韩国", "6" to "台湾"),
                         padLayout.azRegion

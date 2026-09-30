@@ -888,16 +888,19 @@ fun LibraryScreen(
                         refreshList(postMessage = "已获取 $fetched 个游戏封面")
                     }
                 } else {
-                    // ★ 诊断提示（附批量统计，用户/日志可直接看到卡在哪一环）
+                    // ★ 诊断提示（附批量统计 + 通道健康，用户/日志可直接看到卡在哪一环）
                     val s = com.nesstation.app.core.storage.CoverFetcher.lastBatchStats
+                    val dead = com.nesstation.app.core.storage.CoverFetcher.deadChannels()
                     dialogMsg = if (s.attempted == 0) {
                         "没有需要下载封面的游戏\n\n当前列表全部已有封面或自定义图标。" +
                             "\n（若个别封面显示异常，会自动重新下载 —— 旧版本会把这些游戏整体跳过）"
                     } else {
                         "未下载到新封面\n\n" + s.summary() +
                             "\n\n可能原因：无网络 / 封面站点被网络拦截 / 该平台无匹配源。" +
-                            "\n若显示\"封面索引不可用\"，多为当前网络无法访问 " +
-                            "thumbnails.libretro.com 与 GitHub，请更换网络后重试。"
+                            "\n已尝试通道：libretro 直连 + gh 代理（gh-proxy/ghfast/ghproxy.net）+ jsDelivr×3。" +
+                            (if (dead.isNotEmpty()) "\n本会话已判死通道：$dead" else "") +
+                            "\n若反复失败，多为当前网络无法访问 thumbnails.libretro.com / GitHub 及其镜像，" +
+                            "请更换网络后重试（索引缓存 30 天，命中后不再依赖）。"
                     }
                 }
             } catch (t: Throwable) {
@@ -2890,13 +2893,17 @@ private fun CoverCandidateDialog(
             if (result.isEmpty()) {
                 // 不再自动关闭：给出可操作的原因说明。
                 val stats = com.nesstation.app.core.storage.CoverFetcher.lastBatchStats
+                val dead = com.nesstation.app.core.storage.CoverFetcher.deadChannels()
                 failReason = buildString {
                     append("未找到候选封面。\n\n可能原因：\n")
-                    append("1. 当前网络无法访问封面站（已尝试 libretro 直连 + 3 个镜像）\n")
+                    append("1. 当前网络无法访问封面站（已尝试 libretro 直连 + gh 代理×3 + jsDelivr×3）\n")
                     append("2. 游戏名与封面库名差异过大 —— 可尝试「重命名」为英文官方名后再试\n")
                     append("3. 该平台无匹配源（DOS/Java 无封面库）")
                     if (stats.indexFailed > 0) {
                         append("\n\n诊断：封面索引不可用（网络受限）—— 更换网络后重试。")
+                    }
+                    if (dead.isNotEmpty()) {
+                        append("\n本会话已判死通道：$dead")
                     }
                 }
             }

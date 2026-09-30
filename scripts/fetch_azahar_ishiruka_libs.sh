@@ -54,6 +54,15 @@ extract_apk() {
             cp -v "$so" "$JNI_DIR/$base"
         fi
     done
+    # ★ 3DS 配置文件名二进制补丁（AzaharPlus 把核心配置名硬编码为
+    #   config-azahar-25game.ini，NesStation 写 config.ini —— 不补丁则
+    #   所有 3DS 设置永远无效。详见 scripts/patch_azahar_config.py）。
+    if [[ "$new_name" == "libazahar.so" ]]; then
+        python3 "$REPO_ROOT/scripts/patch_azahar_config.py" "$JNI_DIR/libazahar.so" || {
+            echo "❌ libazahar.so 配置名补丁失败 —— 请检查脚本输出。"
+            exit 1
+        }
+    fi
     echo "✅ [$tag] 完成：$JNI_DIR/$new_name"
 }
 

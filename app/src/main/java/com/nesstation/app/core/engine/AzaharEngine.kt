@@ -686,9 +686,49 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     override fun onSurfaceChanged(surface: Surface?, width: Int, height: Int) {
-        // Azahar 原生侧自行从 ANativeWindow 读取尺寸；仅在 Surface 实例变化时处理
-        if (surface != null && surface != this.surface) setSurface(surface)
+        if (surface == null) {
+            onSurfaceDestroyed()
+            return
+        }
+        if (surface != this.surface) {
+            setSurface(surface)
+            lastSurfaceW = width
+            lastSurfaceH = height
+            return
+        }
+        // ★★★ 3DS 双屏跟随全局「画面缩放」修复（本补丁核心）★★★
+        //
+        // 病灶：SurfaceView 尺寸变化（用户改 videoScale：4:3/16:9/custom…，
+        // 或旋转屏幕）时，Android 复用**同一个 Surface 实例**仅改尺寸 ——
+        // 原生 EmuWindow_Android::OnSurfaceChanged 对相同 ANativeWindow
+        // 直接 return false（emu_window.cpp：`if (render_window == surface)
+        // return false;`），window_width/height 永不重读 → 核心继续按**旧尺寸**
+        // 布局双屏，SurfaceFlinger 把旧画面拉伸到新视图 → 用户看到的
+        // “3DS 没有根据全局屏幕缩放”的直接根因。
+        //
+        // 修复：同实例但尺寸变化时，先 surfaceDestroyed（原生侧把
+        // render_window 置 null）再 surfaceChanged（重新拿到同一个
+        // ANativeWindow —— 此时 render_window != surface，强制重读
+        // ANativeWindow_getWidth/Height → OnFramebufferSizeChanged →
+        // UpdateCurrentFramebufferLayout 以新尺寸重算双屏布局）。
+        // 与上游真实 destroy/create 周期同路径，邮箱（mailbox）机制自带
+        // 处理，日志中的 “Failed to recreate present FBO!” 为无害自愈信息。
+        if (isLoaded && width > 0 && height > 0 &&
+            (width != lastSurfaceW || height != lastSurfaceH)) {
+            lastSurfaceW = width
+            lastSurfaceH = height
+            val lib = AzaharNative.lib
+            try {
+                lib.surfaceDestroyed()
+                lib.surfaceChanged(surface)
+            } catch (_: Throwable) {}
+            refreshFramebufferLayout()
+        }
     }
+
+    /** 上次上报给引擎的 Surface 尺寸（尺寸变化检测用）。 */
+    @Volatile private var lastSurfaceW = 0
+    @Volatile private var lastSurfaceH = 0
 
     override fun onSurfaceDestroyed() {
         setSurface(null)
@@ -751,6 +791,8 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         stopPresentation()
         try { AzaharNative.lib.surfaceDestroyed() } catch (_: Throwable) {}
         surface = null
+        lastSurfaceW = 0
+        lastSurfaceH = 0
         isLoaded = false
         _paused = false
         _ffSpeed = 0
@@ -763,13 +805,15 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     // ------------------------------------------------------------------
 
     override fun videoWidth(): Int {
+        // ★ 取值标度修复后的 resolution_factor：0=自动（适配窗口），1=1x 原生，
+        //   n=n 倍。旧实现 (f+1) 按旧错误标度计算，修正为直接乘倍数。
         val f = coreOptions["Renderer/resolution_factor"]?.toIntOrNull() ?: 1
-        return 400 * (f + 1).coerceIn(1, 19)
+        return 400 * (if (f <= 0) 1 else f.coerceIn(1, 5))
     }
 
     override fun videoHeight(): Int {
         val f = coreOptions["Renderer/resolution_factor"]?.toIntOrNull() ?: 1
-        return 240 * (f + 1).coerceIn(1, 19)
+        return 240 * (if (f <= 0) 1 else f.coerceIn(1, 5))
     }
 
     /**
