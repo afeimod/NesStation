@@ -209,19 +209,19 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         return null
     }
 
-    /** 3DS 环境自检摘要（密钥/引导文件状态，用于错误诊断文本）。 */
+    /** 3DS 环境自检摘要（密钥/引导文件/系统数据种子状态，用于错误诊断文本）。 */
     private fun sysDataDiag(): String {
         val userDir = try { userDir() } catch (_: Throwable) { "<unknown>" }
         val sysdata = File(userDir, "sysdata")
         fun st(name: String): String {
             val f = File(sysdata, name)
-            return if (f.isFile && f.length() > 0) "已存在" else "缺失"
+            return if (f.isFile && f.length() > 0) "已存在(${f.length()}B)" else "缺失"
         }
         // ★ 文案纠偏（用户实测 + 参考 APK 行为）：
-        //   参考 APK 无 boot9.bin 也可正常运行绝大多数游戏（Azahar 对
-        //   未加密 ROM 是 HLE 引导，不需要引导 ROM）；boot9/seeddb 仅
-        //   少数场景（LLE 引导/系统应用/区域种子）才用。未加密的
-        //   .app/.3ds/.cci 一切依赖都不需要 —— 打不开与这些文件无关。
+        //   参考 APK 内部不带 boot9.bin，也能正常运行绝大多数游戏
+        //   （Azahar 对未加密 ROM 是 HLE 引导，不需要引导 ROM）；boot9/seeddb
+        //   仅少数场景（LLE 引导/系统应用/区域种子）才用。未加密的
+        //   .app/.3ds/.cci 依赖的共享字体/系统 title 已由内置参考包自动解压。
         return buildString {
             append("未加密 ROM（.app/.3ds/.cci 大多数）：无需任何密钥/引导文件")
             append("\naes_keys.txt: ").append(st("aes_keys.txt"))
@@ -229,8 +229,15 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             append(sysdata.absolutePath)
             append("/，或放 azahar 目录由应用自动归位）")
             append("\nboot9.bin: ").append(st("boot9.bin"))
-            append("（**通常不需要**，仅 LLE/系统应用场景用）")
+            append("（**通常不需要**，参考 APK 也不内置，仅 LLE/系统应用场景用）")
             append("\nseeddb.bin: ").append(st("seeddb.bin")).append("（可选，区域种子）")
+            try {
+                val ctx = appContext
+                if (ctx != null) {
+                    append("\n\n—— 参考环境系统数据 ——\n")
+                    append(com.nesstation.app.core.storage.AzaharSystemData.diag(ctx, File(userDir)))
+                }
+            } catch (_: Throwable) {}
         }
     }
 
@@ -349,6 +356,21 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         this.saveDir = saveDir
         this.romPath = rom.absolutePath
 
+        // ★★ 参考环境系统数据种子（必须在核心读配置前完成）★★
+        //   参考 APK 首次初始化即解压 Mii.zip + Font_ACG.zip（共享字体 /
+        //   seeddb / 系统 title）。旧集成从不种这些 → 与参考环境不一致。
+        //   已就绪时幂等无开销。
+        try {
+            val seedCtx = appContext
+            if (seedCtx != null) {
+                com.nesstation.app.core.storage.AzaharSystemData.ensureSeeded(
+                    seedCtx, File(userDir())
+                )
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("AzaharEngine", "sysdata seed failed", t)
+        }
+
         // ★ 密钥/引导文件自动归位（必须在核心读配置前完成）
         ensureSysDataFiles()
 
@@ -407,7 +429,12 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 val ctx = appContext
                 val hookLibPath = ctx?.applicationInfo?.nativeLibraryDir?.let { "$it/" } ?: ""
                 val driverInstallPath = ctx?.filesDir?.let { File(it, "gpu_driver") }?.apply { mkdirs() }?.absolutePath ?: ""
-                val fileRedirectPath = File(File(userDir(), "gpu"), "vk_file_redirect").apply { mkdirs() }.absolutePath
+                // ★ 对齐参考 APK GpuDriverHelper.initializeDriverParameters()：
+                //   fileRedirectionPath = **filesDir 规范路径** + "/gpu/vk_file_redirect/"
+                //   （参考用的是 getInternalUserPath()，不是 azahar 用户目录子目录）
+                val fileRedirectPath = ctx?.filesDir?.let {
+                    File(File(it, "gpu"), "vk_file_redirect").apply { mkdirs() }.absolutePath
+                } ?: ""
                 lib.initializeGpuDriver(hookLibPath, driverInstallPath, "", fileRedirectPath)
             } catch (_: Throwable) {}
             try { lib.reloadSettings() } catch (_: Throwable) {}
@@ -443,6 +470,26 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         val lib = AzaharNative.lib
         val path = romPath ?: return
         if (emuThread?.isAlive == true) return
+        // ★★★ 启动前文件预检（native 视角）：Java File.exists() 为 true 不代表
+        //   native fopen 一定成功（FUSE/权限层差异）。核心侧打开失败只会写
+        //   "Failed to load ROM" 日志然后静默退出（黑屏/秒退无提示）。
+        //   这里用核心自己的 nativeFileExists 探测，失败立即上报明确错误。
+        try {
+            val nativeOk = lib.nativeFileExists(path)
+            if (!nativeOk) {
+                val msg = "无法从核心侧读取游戏文件（nativeFileExists=false）：\n$path" +
+                    "\n\n请检查：1) 文件是否已被移动/删除；" +
+                    "2) 系统设置 → 应用 → NesStation →『所有文件访问』权限是否开启；" +
+                    "3) 若文件在外置存储/网盘，请先拷入本机存储。"
+                lastErrorText = msg
+                if (!userRequestedStop && isLoaded) {
+                    try { onPrematureExit?.invoke("Azahar 模拟已结束\n\n$msg") } catch (_: Throwable) {}
+                }
+                return
+            }
+        } catch (_: Throwable) {
+            // nativeFileExists 不可用（老库）→ 交给核心自身判断
+        }
         // ★★★ 3DS 黑屏根治修复（surface 竞态终极加固）：在 lifecycleLock
         //   同步块内捕获 surface 到局部变量 bootSurface，整个启动流程
         //   都使用这个局部副本 —— 即便 setSurface(null) 在 startEmulationLocked
@@ -510,10 +557,17 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     append("\n\n")
                     append(sysDataDiag())
                     append("\n\n若非预期退出，常见原因：")
-                    append("\n1) 加密卡带需 aes_keys.txt + boot9.bin + seeddb.bin（放入 azahar/sysdata/，")
+                    append("\n1) 加密卡带需 aes_keys.txt + seeddb.bin（放入 azahar/sysdata/，")
                     append("或放 azahar 目录 / 应用外置 files 目录由应用自动归位）")
                     append("\n2) ROM 文件损坏或不完整")
                     append("\n3) Surface 在核心启动期间被销毁（已被本修复加固）")
+                    // ★★★ 核心真实日志尾部：run() 失败时 native 会在
+                    //   azahar_log.txt 留下 "Failed to load ROM (Error N)!" 等
+                    //   真实原因 —— 没有它一切诊断都是猜测。
+                    nativeLogTail()?.let {
+                        append("\n\n—— 核心日志尾部（azahar_log.txt）——\n")
+                        append(it)
+                    }
                 }
                 try { onPrematureExit?.invoke(diag) } catch (_: Throwable) {}
             }

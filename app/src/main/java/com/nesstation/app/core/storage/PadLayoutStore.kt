@@ -753,6 +753,13 @@ class PadLayout {
     var irDspHle: String = "enabled"                // enabled | disabled (DSPHLE)
     var irWiimoteSpeaker: String = "disabled"       // enabled | disabled (WiimoteEnableSpeaker)
     var irWiimoteScan: String = "disabled"          // enabled | disabled (WiimoteContinuousScanning)
+    // ★★ 本轮补全的设置（键名经 libishiiruka.so strings 逐一核实）★★
+    var irVsync: String = "disabled"                // enabled | disabled (Dolphin.ini/Core/VSync)
+    var irFastmem: String = "enabled"               // enabled | disabled (Dolphin.ini/Core/Fastmem, 性能关键)
+    var irAudioVolume: String = "100"               // "0".."100" (Dolphin.ini/Audio/Volume)
+    var irAudioLatency: String = "2"                // "0".."3" (Dolphin.ini/Audio/AudioLatency)
+    var irXfbImmediate: String = "enabled"          // enabled | disabled (GFX.ini/Hacks/ImmediateXFBEnable, Wii 文本呈现关键)
+    var irXfbToTexture: String = "enabled"          // enabled | disabled (GFX.ini/Hacks/XFBToTextureEnable)
 
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
@@ -1455,6 +1462,12 @@ class PadLayout {
         irDspHle = another.irDspHle
         irWiimoteSpeaker = another.irWiimoteSpeaker
         irWiimoteScan = another.irWiimoteScan
+        irVsync = another.irVsync
+        irFastmem = another.irFastmem
+        irAudioVolume = another.irAudioVolume
+        irAudioLatency = another.irAudioLatency
+        irXfbImmediate = another.irXfbImmediate
+        irXfbToTexture = another.irXfbToTexture
         n3dsDpad = another.n3dsDpad
         n3dsDpadP = another.n3dsDpadP
         n3dsLStick = another.n3dsLStick
@@ -2515,6 +2528,12 @@ object PadLayoutStore {
             irDspHle = p.getString("ir_dsp_hle", "enabled") ?: "enabled"
             irWiimoteSpeaker = p.getString("ir_wiimote_speaker", "disabled") ?: "disabled"
             irWiimoteScan = p.getString("ir_wiimote_scan", "disabled") ?: "disabled"
+            irVsync = p.getString("ir_vsync", "disabled") ?: "disabled"
+            irFastmem = p.getString("ir_fastmem", "enabled") ?: "enabled"
+            irAudioVolume = p.getString("ir_audio_volume", "100") ?: "100"
+            irAudioLatency = p.getString("ir_audio_latency", "2") ?: "2"
+            irXfbImmediate = p.getString("ir_xfb_immediate", "enabled") ?: "enabled"
+            irXfbToTexture = p.getString("ir_xfb_to_texture", "enabled") ?: "enabled"
             ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
             ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
             ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
@@ -3171,6 +3190,12 @@ object PadLayoutStore {
             putString("ir_dsp_hle", layout.irDspHle)
             putString("ir_wiimote_speaker", layout.irWiimoteSpeaker)
             putString("ir_wiimote_scan", layout.irWiimoteScan)
+            putString("ir_vsync", layout.irVsync)
+            putString("ir_fastmem", layout.irFastmem)
+            putString("ir_audio_volume", layout.irAudioVolume)
+            putString("ir_audio_latency", layout.irAudioLatency)
+            putString("ir_xfb_immediate", layout.irXfbImmediate)
+            putString("ir_xfb_to_texture", layout.irXfbToTexture)
             saveBtn("ngc_lstick", layout.ngcLStick)
             saveBtn("ngc_p_lstick", layout.ngcLStickP)
             saveBtn("ngc_rstick", layout.ngcRStick)

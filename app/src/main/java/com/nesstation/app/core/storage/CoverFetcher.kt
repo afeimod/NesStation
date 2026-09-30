@@ -349,8 +349,15 @@ object CoverFetcher {
         if (candidates.isEmpty()) return null
 
         val dest = File(coversDir(context), "${game.id}.png")
+        // ★★★ 封面下载主流程（回归 3.8 分支基线结构）★★★
+        //   用户实测："封面获取逻辑被完全破坏，所有封面都无法获取"。
+        //   3.8 备份分支（用户确认可用）的顺序是：每个系统目录先逐一尝试
+        //   盒装封面（每个候选名一个 URL），全部 404 后再整批尝试截图兜底，
+        //   最后才走索引+模糊匹配。主通道 URL 与 3.8 完全一致（libretro 直连
+        //   原名），jsDelivr 镜像仅作为**同名第二通道**（直连失败时兜底），
+        //   不改变 3.8 的尝试顺序与命中优先级。
         for (sys in systemDirs) {
-            // 1) 盒装封面（Named_Boxarts）—— 双通道：libretro 直连 + jsDelivr 镜像
+            // 1) 盒装封面（Named_Boxarts）—— 直连失败自动切 jsDelivr 镜像
             for (name in candidates) {
                 for (url in coverImageUrls(sys, "Named_Boxarts", name)) {
                     if (downloadCached(url, dest, cache)) {
@@ -1032,10 +1039,34 @@ object CoverFetcher {
         limit: Int = 200,
         onProgress: ((Int, Int) -> Unit)? = null
     ): Int {
-        val pending = games.filter { g ->
-            !onlyMissing || (g.coverPath.isNullOrBlank() && g.customIconPath.isNullOrBlank())
+        // ★★ "全部跳过"根治（用户实测：所有游戏都提示未下载到封面）★★
+        //   旧过滤只看 coverPath 字符串是否为空 —— 重新安装 APK / 清理缓存 /
+        //   存储路径变化后，库里残留的 coverPath 指向的文件早已不存在，
+        //   这些游戏全部被当成"已有封面"跳过 → 一次下载都不会发起，
+        //   提示永远是"未下载到新封面（尝试 0）"。现在把"coverPath 指向的
+        //   文件已丢失"视为缺封面，重新纳入抓取。
+        fun coverFileUsable(g: GameEntry): Boolean {
+            val p = g.coverPath ?: return false
+            if (p.isBlank()) return false
+            val f = File(p)
+            return f.exists() && f.length() > 0
         }
-        if (pending.isEmpty()) return 0
+        val pending = games.filter { g ->
+            if (!onlyMissing) {
+                true
+            } else {
+                if (!g.customIconPath.isNullOrBlank()) {
+                    false                      // 自定义图标优先，无需联网封面
+                } else {
+                    !coverFileUsable(g)        // 无封面 或 封面文件已丢失
+                }
+            }
+        }
+        if (pending.isEmpty()) {
+            // 统计归零并标注全部已有封面（UI 提示更准确）
+            lastBatchStats = BatchStats(attempted = 0, succeeded = 0)
+            return 0
+        }
         val batch = pending.take(limit)
         var done = 0
         var fetched = 0

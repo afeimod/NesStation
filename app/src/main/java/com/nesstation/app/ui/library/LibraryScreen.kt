@@ -889,10 +889,15 @@ fun LibraryScreen(
                 } else {
                     // ★ 诊断提示（附批量统计，用户/日志可直接看到卡在哪一环）
                     val s = com.nesstation.app.core.storage.CoverFetcher.lastBatchStats
-                    dialogMsg = "未下载到新封面\n\n" + s.summary() +
-                        "\n\n可能原因：已有封面 / 无网络 / 封面索引被网络拦截 / 该平台无匹配源。" +
-                        "\n若显示\"封面索引不可用\"，多为当前网络无法访问 " +
-                        "thumbnails.libretro.com 与 GitHub，请更换网络后重试。"
+                    dialogMsg = if (s.attempted == 0) {
+                        "没有需要下载封面的游戏\n\n当前列表全部已有封面或自定义图标。" +
+                            "\n（若个别封面显示异常，会自动重新下载 —— 旧版本会把这些游戏整体跳过）"
+                    } else {
+                        "未下载到新封面\n\n" + s.summary() +
+                            "\n\n可能原因：无网络 / 封面站点被网络拦截 / 该平台无匹配源。" +
+                            "\n若显示\"封面索引不可用\"，多为当前网络无法访问 " +
+                            "thumbnails.libretro.com 与 GitHub，请更换网络后重试。"
+                    }
                 }
             } catch (t: Throwable) {
                 dialogMsg = "封面获取失败：${t.message}"
@@ -970,6 +975,11 @@ fun LibraryScreen(
                 override fun azaharUserDirectory(): String = userDir
                 override fun onEmulationExited(result: Int) {}
             })
+            // ★ 参考环境系统数据种子：与引擎 loadRom 同源（nand 系统数据/字体/
+            //   seeddb 就绪后安装链路与参考 APK 一致）
+            com.nesstation.app.core.storage.AzaharSystemData.ensureSeeded(
+                context, java.io.File(userDir)
+            )
             // ⚠ 先 createLogFile()（= Common::Log::Initialize/Start）再
             // createConfigFile()/reloadSettings() —— 日志后端未初始化时
             // Config::ReadValues() 触发 native abort 闪退（try/catch 拦不住）。
@@ -992,7 +1002,12 @@ fun LibraryScreen(
             //   getNativePath 语义），避免把可达数 GB 的 CIA 全量拷进内部
             //   cacheDir（配额/空间不足 → "CIA 安装失败"）。仅当真实路径
             //   不可用（非主存储/权限未授予）时才回退 SAF 拷贝到缓存。
-            val direct = resolveNativeRomFile(uri.toString())
+            // ★★ "文件不存在"根治：native InstallCIA 用 fopen(path,"rb") 判
+            //   存在性 —— Java canRead 为 true 不代表 native fopen 成功
+            //   （FUSE 权限层差异）。这里先做 1 字节探测读；不可读一律回退
+            //   SAF 拷贝（cacheDir 对本 App 永远可读），两条路都失败再报错。
+            var direct = resolveNativeRomFile(uri.toString())
+            if (direct != null && !probeReadable(direct)) direct = null
             val tmp = if (direct == null) {
                 java.io.File(
                     context.cacheDir,
@@ -1004,10 +1019,14 @@ fun LibraryScreen(
                 if (tmp != null) {
                     val opened = context.contentResolver.openInputStream(uri)
                     if (opened == null) {
-                        failures += "$name：无法读取所选文件"
+                        failures += "$name：无法读取所选文件（文件可能已被移动或权限被收回）"
                         return@forEach
                     }
                     opened.use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                    if (!probeReadable(tmp)) {
+                        failures += "$name：临时副本写入后不可读（存储空间不足？）"
+                        return@forEach
+                    }
                 }
                 // 安装进度观察（原生侧在调用线程同步回调；节流刷 UI）
                 var lastUi = 0L
@@ -1018,16 +1037,54 @@ fun LibraryScreen(
                         ciaInstallMsg = "正在安装 $name…\n$progress / $max"
                     }
                 }
-                val installPath = direct?.absolutePath ?: tmp!!.absolutePath
-                val status = try {
+                var installPath = direct?.absolutePath ?: tmp!!.absolutePath
+                var status = try {
                     org.citra.citra_emu.utils.CiaInstallWorker().installCIA(installPath)
                 } finally {
                     org.citra.citra_emu.utils.CiaInstallWorker.listener = null
                 }
+                // ★ ErrorFileNotFound 自动换通道重试：直读通道被判不存在时
+                //   改走 SAF 全量拷贝通道再试一次（反之亦然）。
+                if (status == org.citra.citra_emu.NativeLibrary.InstallStatus.ErrorFileNotFound) {
+                    android.util.Log.w("LibraryScreen",
+                        "CIA install ErrorFileNotFound on $installPath, retrying via alternate channel")
+                    if (tmp == null && direct != null) {
+                        // 直读失败 → 拷到缓存重试
+                        val retry = java.io.File(
+                            context.cacheDir,
+                            "cia_install_${System.currentTimeMillis()}_" +
+                                name.replace(Regex("[^\\w.-]"), "_")
+                        )
+                        try {
+                            context.contentResolver.openInputStream(uri)?.use { input ->
+                                retry.outputStream().use { input.copyTo(it) }
+                            }
+                            if (probeReadable(retry)) {
+                                org.citra.citra_emu.utils.CiaInstallWorker.listener = { max: Int, progress: Int ->
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastUi > 300) {
+                                        lastUi = now
+                                        ciaInstallMsg = "正在安装 $name（重试）…\n$progress / $max"
+                                    }
+                                }
+                                try {
+                                    status = org.citra.citra_emu.utils.CiaInstallWorker()
+                                        .installCIA(retry.absolutePath)
+                                } finally {
+                                    org.citra.citra_emu.utils.CiaInstallWorker.listener = null
+                                }
+                                installPath = retry.absolutePath
+                            }
+                        } catch (_: Throwable) {
+                        } finally {
+                            try { retry.delete() } catch (_: Throwable) {}
+                        }
+                    }
+                }
                 if (status == org.citra.citra_emu.NativeLibrary.InstallStatus.Success) {
                     successCount++
                 } else {
-                    failures += "$name：${ciaStatusText(status)}"
+                    failures += "$name：${ciaStatusText(status)}（$installPath）"
                 }
             } finally {
                 tmp?.delete()
@@ -1766,6 +1823,20 @@ private fun queryDisplayName(uri: Uri): String? {
         }
     } catch (_: Exception) {
         uri.lastPathSegment
+    }
+}
+
+/**
+ * 1 字节探测读：File.exists()/canRead() 为 true 不代表核心 native fopen
+ * 一定成功（FUSE/权限层"可 stat 不可 open"场景）。CIA 安装传路径给 native
+ * 前必须先确认可真实读取，否则 InstallCIA 会以 ErrorFileNotFound 失败。
+ */
+private fun probeReadable(file: java.io.File): Boolean {
+    if (!file.exists() || file.length() == 0L) return false
+    return try {
+        file.inputStream().use { it.read() } >= 0
+    } catch (_: Throwable) {
+        false
     }
 }
 

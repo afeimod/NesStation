@@ -1816,8 +1816,32 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "开启 (默认)", "disabled" to "关闭"),
                         padLayout.irEfbAccess
                     ) { updateLayout(padLayout.copy {irEfbAccess = it}) }
+                    DropdownRow("垂直同步 (VSync)",
+                        listOf("disabled" to "关闭 (默认，性能优先)", "enabled" to "开启 (防画面撕裂)"),
+                        padLayout.irVsync
+                    ) { updateLayout(padLayout.copy {irVsync = it}) }
+                    DropdownRow("Fastmem 快速内存",
+                        listOf("enabled" to "开启 (性能关键，默认)", "disabled" to "关闭 (个别游戏兼容)"),
+                        padLayout.irFastmem
+                    ) { updateLayout(padLayout.copy {irFastmem = it}) }
+                    DropdownRow("XFB 即时显示",
+                        listOf("enabled" to "开启 (Wii 文本/转场呈现，默认)", "disabled" to "关闭"),
+                        padLayout.irXfbImmediate
+                    ) { updateLayout(padLayout.copy {irXfbImmediate = it}) }
+                    DropdownRow("XFB 到纹理",
+                        listOf("enabled" to "开启 (性能，默认)", "disabled" to "关闭"),
+                        padLayout.irXfbToTexture
+                    ) { updateLayout(padLayout.copy {irXfbToTexture = it}) }
                 }
                 SettingsSection("NGC/WII (Ishiiruka) · 音频 / Wii") {
+                    DropdownRow("音量",
+                        listOf("100" to "100%", "80" to "80%", "60" to "60%", "40" to "40%", "20" to "20%", "0" to "静音"),
+                        padLayout.irAudioVolume
+                    ) { updateLayout(padLayout.copy {irAudioVolume = it}) }
+                    DropdownRow("音频延迟",
+                        listOf("0" to "最低", "1" to "低", "2" to "中 (默认)", "3" to "高 (防爆音)"),
+                        padLayout.irAudioLatency
+                    ) { updateLayout(padLayout.copy {irAudioLatency = it}) }
                     DropdownRow("音频拉伸",
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (防爆音)"),
                         padLayout.irAudioStretch

@@ -4744,6 +4744,15 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             engine.setCoreOption("GFX.ini/Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
             engine.setCoreOption("GFX.ini/Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
             engine.setCoreOption("GFX.ini/Hacks/EFBAccessEnable", b(layout.irEfbAccess))
+            // ★★ 补全设置（键名经 libishiiruka.so strings 逐一核实）★★
+            //   VSync/Fastmem 是 Dolphin 标准性能项；XFB 两项直接关系
+            //   Wii 游戏文本/界面的呈现路径（"文本刷新慢/缺失"对症项之一）。
+            engine.setCoreOption("Dolphin.ini/Core/VSync", b(layout.irVsync))
+            engine.setCoreOption("Dolphin.ini/Core/Fastmem", b(layout.irFastmem))
+            engine.setCoreOption("Dolphin.ini/Audio/Volume", layout.irAudioVolume)
+            engine.setCoreOption("Dolphin.ini/Audio/AudioLatency", layout.irAudioLatency)
+            engine.setCoreOption("GFX.ini/Hacks/ImmediateXFBEnable", b(layout.irXfbImmediate))
+            engine.setCoreOption("GFX.ini/Hacks/XFBToTextureEnable", b(layout.irXfbToTexture))
         }
     }
 }
@@ -6429,7 +6438,7 @@ fun OnScreenController(
                 // KeyVisibilityDialog 的 ta/tb 开关控制）
                 val taRect = if (showTurboABtn) btnRect(btnTurboA) else null
                 val tbRect = if (showTurboBBtn) btnRect(btnTurboB) else null
-                val startRect = if (showStartBtn) btnRect(btnStart, 2.2f, 0.7f) else null
+                val startRect = if (showStartBtn && (!isNgcWii || showNgcStart)) btnRect(btnStart, 2.2f, 0.7f) else null
                 val selectRect = if (showSelectBtn) btnRect(btnSelect, 2.2f, 0.7f) else null
                 val lRect = if (showLR && showLBtn && (!isNgcWii || showNgcL)) btnRect(btnL, 1.6f, 0.7f) else null
                 val rRect = if (showLR && showRBtn && (!isNgcWii || showNgcR)) btnRect(btnR, 1.6f, 0.7f) else null
@@ -9323,6 +9332,16 @@ private fun PadLayoutEditor(
     val ngcWiiNunchuk = ngcWiiWiiSet && ngcWiiExtension == "nunchuk"
     val ngcWiiHoriz = ngcWiiWiiSet && ngcWiiOrientation == "horizontal"
     val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || (ngcWiiWiiSet && !ngcWiiHoriz))
+    // ★ GC 键组完整门控（与运行时 OnScreenController 同源）：通用槽位
+    //   （dpad/A/B/X/Y/L/R/START）在 NGCWII 下仅在 GC 模式渲染 —— 否则 Wii
+    //   模式下 GC+Wii 键同时出现（用户实测“编辑器里全部按键一起显示”）。
+    val showNgcA = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_a")
+    val showNgcB = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_b")
+    val showNgcX = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_x")
+    val showNgcY = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_y")
+    val showNgcDpad = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_dpad")
+    val showNgcL = ngcWiiShowGenericLR && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_l")
+    val showNgcR = ngcWiiShowGenericLR && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_r")
     val showNgcZ = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_z")
     val showNgcStart = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_start")
     val showWiiA = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_a")
@@ -9460,25 +9479,45 @@ private fun PadLayoutEditor(
     // PS2 写回专属字段（ps2*），其他平台写通用字段。
     fun updateBtn(btnType: BtnType, newLayout: ButtonLayout) {
         val updated = when (btnType) {
+            // ★ 3DS / NGC-WII 写回字段修复：编辑器读的是平台专属字段
+            //   （n3dsDpad / ngcDpad / ngcBtnL...），旧实现却写回通用字段
+            //   （dpad / btnL...）→ 拖动/改大小永远不生效（用户实测
+            //   “L 和 R 无法移动和设置大小”的直接根因，3DS 同受影响）。
             BtnType.DPAD -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2DpadP = newLayout} else padLayout.copy {this.ps2Dpad = newLayout})
+                            else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsDpadP = newLayout} else padLayout.copy {this.n3dsDpad = newLayout})
+                            else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcDpadP = newLayout} else padLayout.copy {this.ngcDpad = newLayout})
                             else if (isPortrait) padLayout.copy {this.dpadP = newLayout} else padLayout.copy {this.dpad = newLayout}
             BtnType.A -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnAP = newLayout} else padLayout.copy {this.ps2BtnA = newLayout})
+                         else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnAP = newLayout} else padLayout.copy {this.n3dsBtnA = newLayout})
+                         else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnAP = newLayout} else padLayout.copy {this.ngcBtnA = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnAP = newLayout} else padLayout.copy {this.btnA = newLayout}
             BtnType.B -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnBP = newLayout} else padLayout.copy {this.ps2BtnB = newLayout})
+                         else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnBP = newLayout} else padLayout.copy {this.n3dsBtnB = newLayout})
+                         else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnBP = newLayout} else padLayout.copy {this.ngcBtnB = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnBP = newLayout} else padLayout.copy {this.btnB = newLayout}
             BtnType.TURBO_A -> if (isPortrait) padLayout.copy {this.btnTurboAP = newLayout} else padLayout.copy {this.btnTurboA = newLayout}
             BtnType.TURBO_B -> if (isPortrait) padLayout.copy {this.btnTurboBP = newLayout} else padLayout.copy {this.btnTurboB = newLayout}
             BtnType.START -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnStartP = newLayout} else padLayout.copy {this.ps2BtnStart = newLayout})
+                             else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnStartP = newLayout} else padLayout.copy {this.n3dsBtnStart = newLayout})
+                             else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnStartP = newLayout} else padLayout.copy {this.ngcBtnStart = newLayout})
                              else if (isPortrait) padLayout.copy {this.btnStartP = newLayout} else padLayout.copy {this.btnStart = newLayout}
             BtnType.SELECT -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnSelectP = newLayout} else padLayout.copy {this.ps2BtnSelect = newLayout})
                               else if (isPortrait) padLayout.copy {this.btnSelectP = newLayout} else padLayout.copy {this.btnSelect = newLayout}
             BtnType.L -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL1P = newLayout} else padLayout.copy {this.ps2BtnL1 = newLayout})
+                         else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnLP = newLayout} else padLayout.copy {this.n3dsBtnL = newLayout})
+                         else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnLP = newLayout} else padLayout.copy {this.ngcBtnL = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnLP = newLayout} else padLayout.copy {this.btnL = newLayout}
             BtnType.R -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnR1P = newLayout} else padLayout.copy {this.ps2BtnR1 = newLayout})
+                         else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnRP = newLayout} else padLayout.copy {this.n3dsBtnR = newLayout})
+                         else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnRP = newLayout} else padLayout.copy {this.ngcBtnR = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnRP = newLayout} else padLayout.copy {this.btnR = newLayout}
             BtnType.X -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnXP = newLayout} else padLayout.copy {this.ps2BtnX = newLayout})
+                         else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnXP = newLayout} else padLayout.copy {this.n3dsBtnX = newLayout})
+                         else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnXP = newLayout} else padLayout.copy {this.ngcBtnX = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnXP = newLayout} else padLayout.copy {this.btnX = newLayout}
             BtnType.Y -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnYP = newLayout} else padLayout.copy {this.ps2BtnY = newLayout})
+                         else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnYP = newLayout} else padLayout.copy {this.n3dsBtnY = newLayout})
+                         else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnYP = newLayout} else padLayout.copy {this.ngcBtnY = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnYP = newLayout} else padLayout.copy {this.btnY = newLayout}
             BtnType.L2 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL2P = newLayout} else padLayout.copy {this.ps2BtnL2 = newLayout})
                           else if (isPortrait) padLayout.copy {this.btnL2P = newLayout} else padLayout.copy {this.btnL2 = newLayout}
@@ -9525,7 +9564,7 @@ private fun PadLayoutEditor(
     Box(modifier = Modifier.fillMaxSize().background(Color(0x88000000))) {
         // Draggable button previews — full screen, behind the control panel
         Box(modifier = Modifier.fillMaxSize()) {
-            if (showDpadBtn) {
+            if (showDpadBtn && (!isNgcWii || showNgcDpad)) {
                 EditableDpad(
                     layout = dpad,
                     surfaceSize = surfaceSize,
@@ -9539,7 +9578,7 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.DPAD }
                 )
             }
-            if (showABtn) {
+            if (showABtn && (!isNgcWii || showNgcA)) {
                 EditableRoundBtn(if (platform == GamePlatform.PCE) "I" else "A", Color(0xFFE74C3C), btnA, surfaceSize, selectedBtn == BtnType.A,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
@@ -9549,7 +9588,7 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.A }
                 )
             }
-            if (showBBtn) {
+            if (showBBtn && (!isNgcWii || showNgcB)) {
                 EditableRoundBtn(if (platform == GamePlatform.PCE) "II" else "B", Color(0xFFE67E22), btnB, surfaceSize, selectedBtn == BtnType.B,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
@@ -9579,7 +9618,7 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.TURBO_B }
                 )
             }
-            if (showStartBtn) {
+            if (showStartBtn && (!isNgcWii || showNgcStart)) {
                 EditablePillBtn(if (platform == GamePlatform.PCE) "RUN" else "START", btnStart, surfaceSize, selectedBtn == BtnType.START,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
@@ -9600,7 +9639,10 @@ private fun PadLayoutEditor(
                 )
             }
             // L/R shoulder buttons (GBA/SNES/ARCADE/MD/PCE)
-            if (showLR && showLBtn) {
+            // ★ NGC/WII 门控与运行时同源：GC 模式=扳机、经典手柄=ZL/ZR、
+            //   竖持 wiimote=摇晃、横持隐藏（旧版编辑器无条件渲染，导致
+            //   看到与运行时对不上的 L/R，且拖动写错字段 → 无法移动/改大小）
+            if (showLR && showLBtn && (!isNgcWii || showNgcL)) {
                 val lLabel = when (platform) {
                     GamePlatform.PCE -> "V"
                     GamePlatform.MD -> "Y"  // libretro L → SEGA Y
@@ -9616,7 +9658,7 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.L }
                 )
             }
-            if (showLR && showRBtn) {
+            if (showLR && showRBtn && (!isNgcWii || showNgcR)) {
                 val rLabel = when (platform) {
                     GamePlatform.PCE -> "VI"
                     GamePlatform.MD -> "Z"  // libretro R → SEGA Z
@@ -9633,7 +9675,7 @@ private fun PadLayoutEditor(
                 )
             }
             // X/Y face buttons (SNES/Arcade/MD/PCE)
-            if (showXY && showXBtn) {
+            if (showXY && showXBtn && (!isNgcWii || showNgcX)) {
                 val xLabel = when (platform) {
                     GamePlatform.PCE -> "IV"
                     GamePlatform.MD -> "C"  // libretro X → SEGA C
@@ -9650,7 +9692,7 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.X }
                 )
             }
-            if (showXY && showYBtn) {
+            if (showXY && showYBtn && (!isNgcWii || showNgcY)) {
                 val yLabel = when (platform) {
                     GamePlatform.PCE -> "III"
                     GamePlatform.MD -> "X"  // libretro Y → SEGA X

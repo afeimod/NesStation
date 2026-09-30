@@ -541,6 +541,21 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                     android.util.Log.e("IshirukaEngine", "PanicAlert: $caption: $text")
                 }
             })
+            // 0) ★★ Sys 系统数据种子（对齐参考 APK Ishiruka_01）★★
+            //    参考 APK 首次运行把 assets/Sys（GC 系统字库 / DSP ROM /
+            //    GameSettings×1328 / Wii shared2 / totaldb / codehandler /
+            //    着色器）整体解压进 Sys 目录。旧集成从不种 → 字库缺失导致
+            //    "Wii 文本刷新特别慢/显示不全缺失"，逐游戏 quirk 全丢。
+            //    必须在 SetSysDirectory 之前就位。
+            try {
+                appContext?.let { ctx ->
+                    com.nesstation.app.core.storage.IshirukaSystemData.ensureSeeded(
+                        ctx, File(File(filesRoot(), "ishiiruka"), "sys")
+                    )
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("IshirukaEngine", "Sys seed failed", t)
+            }
             // 1) 用户目录 + Sys 目录 + 标准目录结构
             NativeLibrary.SetUserDirectory(userDir())
             DirectoryInitializationService.initialize(
