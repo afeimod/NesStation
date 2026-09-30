@@ -756,10 +756,15 @@ class PadLayout {
     // ★★ 本轮补全的设置（键名经 libishiiruka.so strings 逐一核实）★★
     var irVsync: String = "disabled"                // enabled | disabled (Dolphin.ini/Core/VSync)
     var irFastmem: String = "enabled"               // enabled | disabled (Dolphin.ini/Core/Fastmem, 性能关键)
-    var irAudioVolume: String = "100"               // "0".."100" (Dolphin.ini/Audio/Volume)
-    var irAudioLatency: String = "2"                // "0".."3" (Dolphin.ini/Audio/AudioLatency)
+    var irAudioVolume: String = "100"               // "0".."100" (Dolphin.ini/DSP/Volume，.so 反汇编核实段名)
+    var irAudioLatency: String = "2"                // "0".."3" (Dolphin.ini/Core/AudioLatency，.so 反汇编核实段名)
     var irXfbImmediate: String = "enabled"          // enabled | disabled (GFX.ini/Hacks/ImmediateXFBEnable, Wii 文本呈现关键)
     var irXfbToTexture: String = "enabled"          // enabled | disabled (GFX.ini/Hacks/XFBToTextureEnable)
+    // ★★ 本轮补全的设置（用户反馈缺失项；键名经 libishiiruka.so strings 逐一核实）★★
+    var irJitFollowBranch: String = "disabled"      // enabled | disabled (Dolphin.ini/Core/JITFollowBranch, JIT 分支优化)
+    var irWidescreenHack: String = "disabled"       // enabled | disabled (GFX.ini/Settings/WidescreenHack, 宽屏修正)
+    var irGcLanguage: String = "0"                   // "0".."5" (Dolphin.ini/Core/SelectedLanguage, NGC 主机语言)
+    var irWiiLanguage: String = "1"                  // "0".."6" (SYSCONF IPL.LNG, Wii 主机语言)
 
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
@@ -1468,6 +1473,10 @@ class PadLayout {
         irAudioLatency = another.irAudioLatency
         irXfbImmediate = another.irXfbImmediate
         irXfbToTexture = another.irXfbToTexture
+        irJitFollowBranch = another.irJitFollowBranch
+        irWidescreenHack = another.irWidescreenHack
+        irGcLanguage = another.irGcLanguage
+        irWiiLanguage = another.irWiiLanguage
         n3dsDpad = another.n3dsDpad
         n3dsDpadP = another.n3dsDpadP
         n3dsLStick = another.n3dsLStick
@@ -2534,6 +2543,10 @@ object PadLayoutStore {
             irAudioLatency = p.getString("ir_audio_latency", "2") ?: "2"
             irXfbImmediate = p.getString("ir_xfb_immediate", "enabled") ?: "enabled"
             irXfbToTexture = p.getString("ir_xfb_to_texture", "enabled") ?: "enabled"
+            irJitFollowBranch = p.getString("ir_jit_follow_branch", "disabled") ?: "disabled"
+            irWidescreenHack = p.getString("ir_widescreen_hack", "disabled") ?: "disabled"
+            irGcLanguage = p.getString("ir_gc_language", "0") ?: "0"
+            irWiiLanguage = p.getString("ir_wii_language", "1") ?: "1"
             ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
             ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
             ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
@@ -3196,6 +3209,10 @@ object PadLayoutStore {
             putString("ir_audio_latency", layout.irAudioLatency)
             putString("ir_xfb_immediate", layout.irXfbImmediate)
             putString("ir_xfb_to_texture", layout.irXfbToTexture)
+            putString("ir_jit_follow_branch", layout.irJitFollowBranch)
+            putString("ir_widescreen_hack", layout.irWidescreenHack)
+            putString("ir_gc_language", layout.irGcLanguage)
+            putString("ir_wii_language", layout.irWiiLanguage)
             saveBtn("ngc_lstick", layout.ngcLStick)
             saveBtn("ngc_p_lstick", layout.ngcLStickP)
             saveBtn("ngc_rstick", layout.ngcRStick)

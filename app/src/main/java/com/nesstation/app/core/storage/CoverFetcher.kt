@@ -72,11 +72,28 @@ object CoverFetcher {
      * 构建某系统目录下同一张封面图的多通道 URL 列表（按优先级）。
      * 系统目录名中的空格在 GitHub 仓库名里是下划线
      * ("Nintendo - NES" → "Nintendo_-_NES")。
+     *
+     * ★★ 多镜像加固（本轮）：★★
+     *   用户网络环境（中国大陆）实测 thumbnails.libretro.com 直连与
+     *   cdn.jsdelivr.net 均常不可达 → “封面全部跳过”的直接原因。
+     *   现按优先级依次尝试 4 个通道：
+     *     1. libretro 官方直连；
+     *     2. fastly.jsdelivr.net（Fastly 边缘，大陆可达性最好）；
+     *     3. gcore.jsdelivr.net（Gcore 边缘）；
+     *     4. cdn.jsdelivr.net（主站）。
+     *   文件名与目录结构在四个通道完全一致（同一份 GitHub 仓库内容），
+     *   任一通道 200 即命中。
      */
-    private fun coverImageUrls(system: String, subDir: String, name: String): List<String> {
-        val primary = "$BASE/${urlSeg(system)}/$subDir/${urlSeg(name)}.png"
-        val mirror = "$MIRROR_BASE/${system.replace(' ', '_')}/$subDir/${urlSeg(name)}.png"
-        return listOf(primary, mirror)
+    fun coverImageUrls(system: String, subDir: String, name: String): List<String> {
+        val jsRepo = system.replace(' ', '_')
+        val segName = urlSeg(name)
+        val segDir = urlSeg(system)
+        return listOf(
+            "$BASE/$segDir/$subDir/$segName.png",
+            "https://fastly.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png",
+            "https://gcore.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png",
+            "$MIRROR_BASE/$jsRepo/$subDir/$segName.png"
+        )
     }
 
     /** 单个游戏最多尝试的候选名数量（防止极端命名膨胀请求数）。 */
@@ -252,6 +269,20 @@ object CoverFetcher {
         for (mapped in mapRegions(noBrackets)) {
             candidates.add(mapped)
             dotTitle(mapped)?.let { candidates.add(it) }
+        }
+        // 4) ★ 区域后缀变体（本轮新增 —— 索引免依赖直命中）：
+        //   libretro 收录名几乎全部带区域标签（"Metal Max 4 - Gekkou no
+        //   Diva (Japan)"），而翻译/手输的搜索名常无区域 → 精确候选全部
+        //   404，只能依赖"拉整个系统索引（可达 12MB）+ 模糊匹配"兜底；
+        //   网络受限时索引拉不下来 → "封面全部跳过"。对**无任何 () 区域
+        //   标签**的名字直接补 4 个常见区域变体，精确通道即可命中：
+        //     日文游戏翻译名（中文名映射而来）→ (Japan) 放最前。
+        if (!n0.contains('(')) {
+            for (r in listOf("Japan", "USA", "Europe", "World")) {
+                val v = "$n0 ($r)"
+                candidates.add(v)
+                dotTitle(v)?.let { candidates.add(it) }
+            }
         }
         // 极端命名（多 () 标签全命中映射表）可能膨胀候选，截断防止单游戏
         // 发过多请求。
@@ -449,16 +480,42 @@ object CoverFetcher {
                         ?.let { translateIfCjk(it)?.let { t -> out[t] = true } }
                 } else {
                     out[translateIfCjk(base)] = true
+                    // ★ 数字后缀变体：DC 中文名常带续作序号（"疾风忍者传2" →
+                    //   "Naruto 2"），翻译键未收录序号时补一个带数字的搜索名。
+                    addDigitVariant(out, base, translateIfCjk(base))
                 }
             }
             else -> {
                 val base = game.title.takeIf { it.isNotBlank() }
                     ?: romFileStem(game)?.takeIf { it.isNotBlank() }
                     ?: return emptyList()
-                out[translateIfCjk(base)] = true
+                val translated = translateIfCjk(base)
+                out[translated] = true
+                // ★★ 数字后缀变体（本轮命中率根治）：★★
+                //   CnGameNameMapper 的键多是不带序号的系列正名（"重装机兵" →
+                //   "Metal Max"）。中文 ROM 名通常带续作序号（"重装机兵4F3.03
+                //   完结版"）—— 前缀命中只得到 "Metal Max"，与索引里的
+                //   "Metal Max 4 - Gekkou no Diva (Japan)" 对不上（相似度低于
+                //   阈值）。从原名提取数字后缀补一个 "翻译名 + 序号" 的搜索名
+                //   （"Metal Max 4"）→ 模糊命中（词序列包含加分 0.95）→ 封面
+                //   下载成功。序号≤2位，避免 "F3.03" 这类版本号被误当序号。
+                addDigitVariant(out, base, translated)
             }
         }
         return out.keys.filter { it.isNotBlank() }
+    }
+
+    /**
+     * 从原始中文名提取首位数字（1-2 位），若翻译名不含该数字则补一个
+     * "翻译名 + 数字" 搜索名（见 [searchNamesFor] 注释）。
+     */
+    private fun addDigitVariant(out: LinkedHashMap<String, Boolean>, raw: String, translated: String) {
+        if (translated == raw) return  // 未发生翻译（原名即英文）→ 无需补
+        val m = Regex("(?<![0-9.])([0-9]{1,2})(?![0-9.])").find(raw) ?: return
+        val digit = m.groupValues[1]
+        if (translated.contains(Regex("\\b$digit\\b"))) return  // 翻译名已含序号
+        val variant = "$translated $digit"
+        if (variant !in out) out[variant] = true
     }
 
     /**
@@ -836,12 +893,28 @@ object CoverFetcher {
         return null
     }
 
-    /** GitHub 官方镜像兜底：git/trees?recursive=1 一请求拿全系统文件树。 */
+    /** GitHub 官方镜像兜底：git/trees?recursive=1 一请求拿全系统文件树。
+     *
+     * ★★ 通道加固（本轮）：api.github.com 之后追加 gh-proxy.com 镜像兜底 ——
+     *   api.github.com 在大陆网络经常不可达/被限流，镜像通道命中后索引
+     *   照常落盘缓存（30 天），后续请求不再依赖任何单一通道。
+     */
     private fun fetchGithubTreeIndex(system: String): List<String>? {
+        val repo = system.replace(' ', '_')
+        val urls = listOf(
+            "https://api.github.com/repos/libretro-thumbnails/$repo/git/trees/master?recursive=1",
+            "https://gh-proxy.com/https://api.github.com/repos/libretro-thumbnails/$repo/git/trees/master?recursive=1"
+        )
+        for (url in urls) {
+            val result = tryFetchGithubTree(url)
+            if (result != null) return result
+        }
+        return null
+    }
+
+    private fun tryFetchGithubTree(url: String): List<String>? {
         var conn: HttpURLConnection? = null
         return try {
-            val repo = system.replace(' ', '_')
-            val url = "https://api.github.com/repos/libretro-thumbnails/$repo/git/trees/master?recursive=1"
             val c = URL(url).openConnection() as HttpURLConnection
             conn = c
             c.connectTimeout = 20000
@@ -851,7 +924,7 @@ object CoverFetcher {
             c.setRequestProperty("Accept", "application/vnd.github+json")
             val code = c.responseCode
             if (code != HttpURLConnection.HTTP_OK) {
-                Log.w(TAG, "GitHub trees HTTP $code: $system")
+                Log.w(TAG, "GitHub trees HTTP $code: $url")
                 return null
             }
             val json = c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
@@ -865,7 +938,7 @@ object CoverFetcher {
             }
             if (names.isEmpty()) null else names.toList()
         } catch (t: Throwable) {
-            Log.w(TAG, "GitHub trees fetch failed: $system (${t.message})")
+            Log.w(TAG, "GitHub trees fetch failed: $url (${t.message})")
             null
         } finally {
             try { conn?.disconnect() } catch (_: Throwable) {}

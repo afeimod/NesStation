@@ -60,6 +60,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -1039,7 +1040,12 @@ fun LibraryScreen(
                 }
                 var installPath = direct?.absolutePath ?: tmp!!.absolutePath
                 var status = try {
-                    org.citra.citra_emu.utils.CiaInstallWorker().installCIA(installPath)
+                    // ★ '!' 前缀 = 原生绝对路径标记：Azahar 原生侧 InstallCIA
+                    //   开头即 FileUtil::Exists(path) 判存在性，经
+                    //   AndroidUtils::TranslateFilePath 翻译 —— 裸绝对路径会被拼成
+                    //   <userDir>/<原路径> → 永远“不存在” → ErrorFileNotFound。
+                    //   参考 APK CiaInstallWorker 同样传 "!" + getNativePath(uri)。
+                    org.citra.citra_emu.utils.CiaInstallWorker().installCIA("!$installPath")
                 } finally {
                     org.citra.citra_emu.utils.CiaInstallWorker.listener = null
                 }
@@ -1069,7 +1075,7 @@ fun LibraryScreen(
                                 }
                                 try {
                                     status = org.citra.citra_emu.utils.CiaInstallWorker()
-                                        .installCIA(retry.absolutePath)
+                                        .installCIA("!" + retry.absolutePath)
                                 } finally {
                                     org.citra.citra_emu.utils.CiaInstallWorker.listener = null
                                 }
@@ -1097,7 +1103,17 @@ fun LibraryScreen(
             try {
                 val installed = lib.getInstalledGamePaths()
                 val known = importedGames.mapNotNull { it.romPath }.toSet()
-                val items = installed.mapNotNull { (path, _) ->
+                val items = installed.mapNotNull { (rawPath, _) ->
+                    // ★ '!'-userDir 模式（本轮修复）下原生返回 "!<userDir>/…/xxx.app"
+                    //   绝对路径；剥掉 '!' 前缀即真实路径。剥完不存在时再按
+                    //   根相对路径（旧 "/" 模式可能返回 "/nand/title/…"）拼
+                    //   userDir 兑底 —— 两种模式收敛到同一真实文件。
+                    var path = rawPath
+                    if (path.startsWith("!")) path = path.substring(1)
+                    if (!java.io.File(path).exists()) {
+                        val joined = java.io.File(userDir, path.removePrefix("/")).absolutePath
+                        if (java.io.File(joined).exists()) path = joined
+                    }
                     val fileUri = "file://$path"
                     if (fileUri in known) return@mapNotNull null
                     // NAND 路径形如 …/nand/title/<高ID>/<低ID>/content/xxxx.app
@@ -2844,12 +2860,20 @@ private fun CoverCandidateDialog(
     var loading by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
     var picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     var progress by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
+    // ★★ "点击就消失"根治：拉取结果为空时不再自动关弹窗 —— 旧实现直接
+    //   onError() 关闭，用户根本不知道发生了什么（网络不通 / 无匹配源都
+    //   表现为"点了没反应"）。现在弹窗保留并展示具体原因 + 关闭按钮，
+    //   用户可据此排查（换网络 / 重命名后重试）。
+    var failReason by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    // 重试计数器（计入 LaunchedEffect 键，自增即重新拉取）
+    var retryTick by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
 
     // 弹出即后台拉取（IO 线程；逐张下载约 250ms 间隔限速）。
     // ★ 闪退根治：整段 runCatching —— 任何异常（网络/IO/解码/配置）都
-    //   收敛为 onError()，绝不让协程带未捕获异常冲垮进程。
-    androidx.compose.runtime.LaunchedEffect(game.id) {
+    //   收敛为错误文案，绝不让协程带未捕获异常冲垮进程。
+    androidx.compose.runtime.LaunchedEffect(game.id, retryTick) {
         loading = true
+        failReason = null
         runCatching {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 val raw = com.nesstation.app.core.storage.CoverFetcher.fetchCandidates(
@@ -2863,10 +2887,22 @@ private fun CoverCandidateDialog(
         }.onSuccess { result ->
             candidates = result
             loading = false
-            if (result.isEmpty()) onError()
+            if (result.isEmpty()) {
+                // 不再自动关闭：给出可操作的原因说明。
+                val stats = com.nesstation.app.core.storage.CoverFetcher.lastBatchStats
+                failReason = buildString {
+                    append("未找到候选封面。\n\n可能原因：\n")
+                    append("1. 当前网络无法访问封面站（已尝试 libretro 直连 + 3 个镜像）\n")
+                    append("2. 游戏名与封面库名差异过大 —— 可尝试「重命名」为英文官方名后再试\n")
+                    append("3. 该平台无匹配源（DOS/Java 无封面库）")
+                    if (stats.indexFailed > 0) {
+                        append("\n\n诊断：封面索引不可用（网络受限）—— 更换网络后重试。")
+                    }
+                }
+            }
         }.onFailure {
             loading = false
-            onError()
+            failReason = "候选封面拉取失败：${it.message ?: "未知错误"}"
         }
     }
 
@@ -2903,6 +2939,13 @@ private fun CoverCandidateDialog(
                             fontSize = 12.sp, color = Color(0xFF667788)
                         )
                     }
+                } else if (failReason != null) {
+                    // ★ 失败原因展示（不再自动关弹窗）
+                    Text(
+                        failReason ?: "",
+                        fontSize = 12.sp, color = Color(0xFF667788),
+                        modifier = Modifier.padding(vertical = 20.dp)
+                    )
                 } else if (candidates.isEmpty()) {
                     Text(
                         "未找到候选封面。可尝试「重命名」为英文官方名后再试。",
@@ -2973,7 +3016,16 @@ private fun CoverCandidateDialog(
                 }
                 Spacer(Modifier.size(10.dp))
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-                    TextButton(onClick = onDismiss) { Text("关闭") }
+                    Row {
+                        // ★ 失败/空结果时可一键重试（网络抖动场景无需退出弹窗）
+                        if (candidates.isEmpty() && !loading) {
+                            TextButton(onClick = {
+                                // 重置状态并重新触发拉取（LaunchedEffect 键加计数器）
+                                retryTick++
+                            }) { Text("重试") }
+                        }
+                        TextButton(onClick = onDismiss) { Text("关闭") }
+                    }
                 }
             }
         }

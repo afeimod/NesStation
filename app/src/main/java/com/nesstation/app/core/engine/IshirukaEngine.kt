@@ -214,6 +214,67 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     /** `<userDir>/Config/` 目录（Dolphin 全部运行时 INI 的规范位置）。 */
     private fun configDir(): File = File(userDir(), "Config").apply { mkdirs() }
 
+    /**
+     * ★ Wii 主机语言 SYSCONF 补丁（IPL.LNG）。
+     *
+     * Dolphin 5.0 系的 Wii 系统语言存在 Wii 自己的 SYSCONF 文件里，不在
+     * 任何 INI。核心读写的规范位置 = <userDir>/Wii/shared2/SYSCONF
+     * （首次启动 Wii 内容时由核心生成默认值）；Sys 目录下的副本仅作
+     * 静态兜底。SYSCONF 条目布局：[type:1][nameLen:2 BE][name][data]，
+     *   IPL.LNG 是 BIGBYTE 型（type 0x01）—— 检索字节序列
+     *   01 00 07 'I''P''L''.''L''N''G' 后紧跟的 1 字节即语言值。
+     *
+     * 取值（Wii IPL/LNG）：0=日语 1=英语 2=德语 3=法语 4=西班牙语 5=意大利语 6=荷兰语。
+     * 找不到文件/条目时静默跳过（首次 Wii 启动前 SYSCONF 尚未生成，
+     * [pendingWiiLanguage] 会在下次 loadRom 前重放补丁）。
+     */
+    private fun patchSysconfLanguage(language: Int) {
+        val ctx = appContext
+        val userSysconf = File(File(File(userDir(), "Wii"), "shared2"), "SYSCONF")
+        val sysRoot = ctx?.let { File(File(File(it.filesDir, "ishiiruka"), "sys"), "Wii") }
+        val sysSysconf = sysRoot?.let { File(File(it, "shared2"), "SYSCONF") }
+        var patched = false
+        if (userSysconf.isFile) {
+            patchSysconfFile(userSysconf, language)
+            patched = true
+        }
+        if (sysSysconf != null && sysSysconf.isFile) {
+            patchSysconfFile(sysSysconf, language)
+            patched = true
+        }
+        if (!patched) {
+            android.util.Log.w("IshirukaEngine", "SYSCONF not found for language patch (will retry on next loadRom)")
+        }
+    }
+
+    /** 用户请求的 Wii 主机语言（-1 = 未设置；loadRom 前重放补丁）。 */
+    @Volatile private var pendingWiiLanguage: Int = -1
+
+    private fun patchSysconfFile(sysconf: File, language: Int) {
+        val data = sysconf.readBytes()
+        // SYSCONF 头验证（"SCv0"）
+        if (data.size < 0x40 || data[0].toInt() != 'S'.code || data[1].toInt() != 'C'.code) return
+        // IPL.LNG（BIGBYTE，nameLen=7）条目前缀：01 00 07 49 50 4C 2E 4C 4E 47
+        val pattern = byteArrayOf(0x01, 0x00, 0x07, 0x49, 0x50, 0x4C, 0x2E, 0x4C, 0x4E, 0x47)
+        outer@ for (i in 0..data.size - pattern.size - 1) {
+            for (j in pattern.indices) {
+                if (data[i + j] != pattern[j]) continue@outer
+            }
+            val valueOffset = i + pattern.size
+            if (data[valueOffset].toInt() == language) return
+            data[valueOffset] = language.toByte()
+            val tmp = File(sysconf.parentFile, "SYSCONF.tmp")
+            tmp.writeBytes(data)
+            if (!tmp.renameTo(sysconf)) {
+                tmp.copyTo(sysconf, overwrite = true)
+                tmp.delete()
+            }
+            android.util.Log.i("IshirukaEngine", "SYSCONF IPL.LNG -> $language (${sysconf.absolutePath})")
+            return
+        }
+        android.util.Log.w("IshirukaEngine", "IPL.LNG entry not found in SYSCONF")
+    }
+
     private fun filesRoot(): String {
         val ctx = appContext
             ?: throw IllegalStateException("IshirukaEngine: app context not initialised")
@@ -444,9 +505,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
 
     override fun setCoreOption(key: String, value: String) {
         // key 形如 "Dolphin.ini/Core/CPUCore"；"IshirukaEngine/*" 前缀是
-        // 引擎内部门面键（控制模式 / 扩展手柄），不落 INI 而是改运行时属性。
-        // ★ 修复：旧实现把这两个键存进 coreOptions 后在 writeCoreIni 里因
-        //   parts.size != 3 被静默丢弃，controlMode/wiiExtension 永远停在
+        // 引擎内部门面键（控制模式 / 扩展手柄 / Wii 主机语言），不落 INI 而是改
+        // 运行时属性或直接补 SYSCONF。
+        // ★ 修复：旧实现把控制模式/扩展手柄键存进 coreOptions 后在 writeCoreIni
+        //   里因 parts.size != 3 被静默丢弃，controlMode/wiiExtension 永远停在
         //   默认值 —— UI 选"GameCube 手柄/Wii Remote/经典手柄"全部无效，
         //   auto 模式也只会给出错误的 effectiveMode（进而路由错误按键）。
         when (key) {
@@ -473,6 +535,20 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             "IshirukaEngine/wiiOrientation" -> {
                 // 仅前端虚拟按键布局使用；引擎存一份供 effective 布局查询。
                 wiiOrientation = if (value == "horizontal") "horizontal" else "vertical"
+                return
+            }
+            "IshirukaEngine/wiiLanguage" -> {
+                // ★ Wii 主机语言：存于 Wii 的 SYSCONF（shared2/SYSCONF）而非
+                //   Dolphin.ini —— Dolphin 5.0 系 Wii 语言仅从 SYSCONF 的
+                //   IPL.LNG 条目读取。直接补丁 SYSCONF 二进制：
+                //   条目布局 = [type=0x01(BIGBYTE)][00 07]["IPL.LNG"][值1字节]。
+                //   下次启动游戏生效（与真机/Dolphin 行为一致），loadRom
+                //   前会自动重放（见 [pendingWiiLanguage]）。
+                val lang = value.toIntOrNull()?.coerceIn(0, 6) ?: 1
+                pendingWiiLanguage = lang
+                try { patchSysconfLanguage(lang) } catch (t: Throwable) {
+                    android.util.Log.w("IshirukaEngine", "SYSCONF language patch failed", t)
+                }
                 return
             }
         }
@@ -526,6 +602,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         // ★ NGC/WII 闪退修复（根因处置）：先创建原生 GameFileCache 单例，
         //   再做一次性平台判定（IO 线程，安全窗口内）。旧实现从未 init()，
         //   单例槽为 null，overlay 线程的 addOrGet 直接空指针解引用闪退。
+        //   ★ 本轮加固：判定在 SetUserDirectory / Sys 种子之后进行 ——
+        //   GameFile 解析需读 GameSettings/字库等用户目录数据，早于目录
+        //   初始化时 addOrGet 可能解析失败返回错误平台（NGC 游戏被判成
+        //   Wii → 虚拟按键出现双节棍布局的直接原因）。
         try {
             org.dolphinemu.dolphinemu.model.GameFileCache.init()
             gameFileCacheReady = true
@@ -533,7 +613,6 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             gameFileCacheReady = false
             android.util.Log.w("IshirukaEngine", "GameFileCache.init failed", t)
         }
-        cachedIsGameCube = detectIsGameCube(rom.absolutePath)
 
         try {
             NativeLibrary.NesStationHost.register(object : NativeLibrary.Host {
@@ -564,9 +643,18 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             // 2) 核心设置 / 手柄绑定
             writeCoreIni()
             writeControllerInis()
+            // 3) ★ Wii 主机语言补丁重放（首次设置时 SYSCONF 可能尚未生成，
+            //    每次启动前重试，生成后即生效）
+            if (pendingWiiLanguage >= 0) {
+                try { patchSysconfLanguage(pendingWiiLanguage) } catch (_: Throwable) {}
+            }
         } catch (t: Throwable) {
             android.util.Log.w("IshirukaEngine", "dir / config init failed", t)
         }
+
+        // 4) ★ 平台判定（目录/配置就绪后）—— 加固：检测失败时兑底逻辑
+        //    与 JNI 结果不一致的场合优先更可靠的通道（见 detectIsGameCube）。
+        cachedIsGameCube = detectIsGameCube(rom.absolutePath)
 
         this.romPath = rom.absolutePath
         this.saveDir = saveDir
@@ -789,9 +877,14 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             for ((button, bit) in pairs) {
                 NativeLibrary.onGamePadEvent(dev, button, state(bit))
             }
-            // ★ IR+/IR- 修复：改走轴事件（与 WiimoteNew.ini 的 Axis 绑定对齐）
-            setPointerDepth(forward = true,  pressed = (bits and BIT_IR_FAR  != 0))
-            setPointerDepth(forward = false, pressed = (bits and BIT_IR_NEAR != 0))
+            // ★ IR+/IR- 修复：改走轴事件（与 WiimoteNew.ini 的 Axis 绑定对齐）。
+            //   ★★ 本轮根治：旧实现每帧调用两次 setPointerDepth（IR+/IR- 各
+            //   一次），第二次调用永远把第一次的轴值归零 —— 按钮完全无效的
+            //   直接根因。现改为单次调用同步两个按钮状态。
+            setPointerDepth(
+                farPressed = (bits and BIT_IR_FAR != 0),
+                nearPressed = (bits and BIT_IR_NEAR != 0)
+            )
             when (effectiveWiiExtension()) {
                 "classic" -> {
                     // 经典手柄（复用 Wii 布局位 + L/R/Z 扳机位）
@@ -907,6 +1000,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     /**
      * Wii IR 指针：把视图归一化坐标 (nx, ny ∈ [0,1]) 转换为 WIIMOTE_IR 六轴
      * 绝对输入（左/右/上/下决定位置，前/后由 IR+ 按钮提供）。
+     *
+     * ★ IR+/IR− 可见化配套：按住 IR+ 时指针活动范围扩大（能点到平时
+     *   出屏的角落），按住 IR− 时收缩到屏幕中部 —— 对用户立即可见，
+     *   同时兼容原生 z 深度（见 [setPointerDepth]）。
      */
     override fun setPointer(nx: Float, ny: Float, pressed: Boolean) {
         if (!isLoaded || effectiveMode() == "ngc") return
@@ -922,8 +1019,17 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         //   旧实现只给单轴发 0..1 正向半轴值：触左半屏发到 Axis 114 的正值
         //   会被原生当作 Right 半轴 → 指针永远只能往右/下跑，且上/左半区
         //   发正值的轴被整流后归零 —— "红外无法往左边去只能右半边"的直接根因。
-        val xs = x * 2f - 1f          // 左=-1 .. 右=+1（参考 APK: (x*i - g)/g）
-        val ys = y * 2f - 1f          // 上=-1 .. 下=+1（参考 APK: (y*j - h)/h）
+        val scale = irRangeScale
+        var xs = (x * 2f - 1f) * scale          // 左=-1.. 右=+1（参考 APK: (x*i - g)/g）
+        var ys = (y * 2f - 1f) * scale          // 上=-1.. 下=+1（参考 APK: (y*j - h)/h）
+        if (xs > 1f) xs = 1f
+        if (xs < -1f) xs = -1f
+        if (ys > 1f) ys = 1f
+        if (ys < -1f) ys = -1f
+        // 记录最近触摸位置与状态（IR+/IR− 改变范围后按新比例重推）
+        irLastNx = x
+        irLastNy = y
+        irPointerActive = pressed
         val values = if (!pressed) floatArrayOf(0f, 0f, 0f, 0f)
                      else floatArrayOf(ys, ys, xs, xs)   // 112&113=Y带符号；114&115=X带符号
         val ids = intArrayOf(
@@ -944,33 +1050,61 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         }
     }
 
-    /** IR 进深轴（IR+ / IR− 按钮）。 */
-    fun setPointerDepth(forward: Boolean, pressed: Boolean) {
+    /**
+     * IR 进深轴（IR+ / IR− 按钮）—— 每帧一次性同步两个按钮的状态。
+     *
+     * ★★ IR+ 失效根治（双重根因）：★★
+     *   1. 【双调用互相覆灭（本 Bug 本轮定位）】旧实现每帧被 setPad1 调用
+     *      【两次】（IR+ 一次、IR− 一次）：按住 IR+ 时第一次调用把轴值发
+     *      出去，紧随的第二次（IR− 未按，pressed=false）把 z 归零再发一遍
+     *      —— 每帧末尾轴值永远是 0，按钮完全无效。现在改为单次调用同步
+     *      两个按钮状态，互不覆盖。
+     *   2. 【同值双轴抵消】旧实现把同一个 z 同时发给 Axis 116(Forward) 与
+     *      Axis 117(Backward) —— Cursor 的 zz = Forward − Backward 会互相
+     *      抵消。现在只向目标半轴发值：
+     *      IR+（推远/Forward）→ 仅 Axis 116 = −1.0；
+     *      IR−（拉近/Backward）→ 仅 Axis 117 = +1.0。
+     *
+     * ★ 可见化配套：多数 Wii 游戏只读红外光点质心，z 深度本身几乎无视觉
+     *   反馈。IR+/IR− 按住期间调整 [irRangeScale]（指针活动范围），用户能
+     *   立刻看到指针移动范围变化（出屏角落可达/收窄）。
+     */
+    fun setPointerDepth(farPressed: Boolean, nearPressed: Boolean) {
         if (!isLoaded || effectiveMode() == "ngc") return
         val dev = NativeLibrary.TouchScreenDevice
-        // ★★ IR+/IR− 符号修复（与方向轴同约定）★★
-        //   原生对 Axis 116(Forward)/117(Backward) 同样按符号半波整流：
-        //   负=Forward(推向屏幕深处/远离)，正=Backward(拉向玩家)。
-        //   参考 APK 的方向约定：上/左/前 = 负值，下/右/后 = 正值。
-        //   旧实现给 Forward 发 +1f → 被整流为 0 → "IR+ 失效"。
-        //   与方向对一致：把同一个带符号值同时发给 116 与 117 两根轴。
-        val z = when {
-            !pressed -> 0f
-            forward  -> -1f     // IR+（推远）→ Forward 半轴（负值）
-            else     -> 1f      // IR−（拉近）→ Backward 半轴（正值）
-        }
+        // IR+ → 只动 116；IR− → 只动 117；都松开 → 两轴全零（互不覆盖）
+        val fwd = if (farPressed) -1f else 0f     // IR+（推远）→ Forward 半轴（负号，同摇杆上/左约定）
+        val bwd = if (nearPressed) 1f else 0f      // IR−（拉近）→ Backward 半轴（正号）
         val ids = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_IR_FORWARD,
             NativeLibrary.ButtonType.WIIMOTE_IR_BACKWARD
         )
+        val vals = floatArrayOf(fwd, bwd)
         for (i in ids.indices) {
             val idx = 4 + i
-            if (irLast[idx] != z) {
-                irLast[idx] = z
-                try { NativeLibrary.onGamePadMoveEvent(dev, ids[i], z) } catch (_: Throwable) {}
+            if (irLast[idx] != vals[i]) {
+                irLast[idx] = vals[i]
+                try { NativeLibrary.onGamePadMoveEvent(dev, ids[i], vals[i]) } catch (_: Throwable) {}
             }
         }
+        // 可见化：按住 IR+ → 范围扩大（指针可及屏幕外角落）；按住 IR− → 收窄
+        irRangeScale = when {
+            farPressed  -> 1.6f
+            nearPressed -> 0.55f
+            else        -> 1.0f
+        }
+        // 范围变化后立刻按新比例重推当前位置（若指针正按着）
+        if (irPointerActive) {
+            setPointer(irLastNx, irLastNy, true)
+        }
     }
+
+    /** 当前 IR 指针范围缩放（IR+/IR− 按住期间变化，见 [setPointerDepth]）。 */
+    @Volatile private var irRangeScale = 1.0f
+    /** 最近一次 IR 触摸位置（范围变化时重推用）。 */
+    @Volatile private var irLastNx = 0.5f
+    @Volatile private var irLastNy = 0.5f
+    @Volatile private var irPointerActive = false
 
     // ------------------------------------------------------------------
     // 控制模式
@@ -1001,6 +1135,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      *   归一化，无论上游声明成什么类型都能通过编译。
      */
     private fun detectIsGameCube(path: String): Boolean {
+        // 主通道：JNI GameFileCache（精确解析 rvz/gcz/wbfs 等全部容器）。
+        // 本轮已把判定移到 SetUserDirectory / Sys 种子之后，解析所需的
+        // 用户目录数据就绪，JNI 可靠性大幅提升（旧时序下 addOrGet 解析
+        // 失败 → NGC 游戏被判 Wii → 双节棍布局误现）。
         if (gameFileCacheReady) {
             try {
                 val gf = org.dolphinemu.dolphinemu.model.GameFileCache.addOrGet(path)
@@ -1014,7 +1152,18 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     }
 
     /**
-     * 兑底平台判定：扩展名白名单 + .gcm/.iso 的 0x18 偏移卷头魔数。
+     * 兑底平台判定：扩展名白名单 + 卷头魔数。
+     *
+     * ★★ GC 检测加固（本轮）：
+     *   旧兑底把 rvz/gcz/ciso/nkit 一律判成 Wii —— 但这些是【通用压缩容器】
+     *   （GC 游戏同样可以压缩成 rvz/gcz），导致 GC 游戏被误判 → 虚拟按键
+     *   变成 Wii+双节棍布局。现改为：
+     *     - wbfs/wad/dol/elf → Wii（这些确实是 Wii 专属）；
+     *     - gcm/iso/ciso → 读卷头魔数（GC: 0xC2339F3D；CISO 首个数据块即
+     *       光盘偏移 0，块大小头部可读，解出魔数后精准判定）；
+     *     - rvz/gcz/nkit → JNI 无法使用时兑底 Wii（压缩卷头不可直读），
+     *       但 JNI 通道（主通道）已能精确解析 —— 本轮已把判定移到目录
+     *       初始化之后，JNI 可靠性大幅提升。
      *
      * ★ 编译修复：`magic` 由 shl/or 运算得出，为 Int；而 `0xC2339F3D` 超过
      *   Int.MAX_VALUE（2147483647），Kotlin 会把该字面量推断为 Long，导致
@@ -1025,7 +1174,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val lower = path.lowercase()
         val ext = lower.substringAfterLast('.', "")
         // Wii 专属容器：直接判 Wii
-        if (ext in setOf("rvz", "wbfs", "gcz", "ciso", "nkit", "wad", "dol", "elf")) return false
+        if (ext in setOf("wbfs", "wad", "dol", "elf")) return false
         // .gcm/.iso：读 0x18 偏移 4 字节魔数判平台 ——
         //   GameCube: 0xC2339F3D，Wii: 0x5D1C9EA3（读不到/未知 → 按兼容
         //   性取向兑底 Wii：wii 布局兼容 GC 的 SI 手柄，反之无输入）。
@@ -1045,8 +1194,40 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 }
             } catch (_: Throwable) { false }
         }
-        // 未知扩展名：默认按 Wii 处理（wii 布局兼容 GC 游戏的 SI 手柄，
-        // 反之 NGC 布局对 Wii 游戏完全无输入）
+        // .ciso：通用压缩容器（GC/Wii 均可能）。CISO 头部：
+        //   [0x00]"CISO" [0x04]block_size(BE u32，通常 0x8000) [0x08]block_map...
+        //   第一个被映射的数据块即光盘偏移 0 → 块内 +0x18 处即卷头魔数。
+        if (ext == "ciso") {
+            return try {
+                java.io.RandomAccessFile(path, "r").use { raf ->
+                    if (raf.length() < 0x8018) return false
+                    val hdr = ByteArray(8)
+                    raf.readFully(hdr)
+                    if (hdr[0] != 'C'.toByte() || hdr[1] != 'I'.toByte()) return false
+                    val blockSize = ((hdr[4].toInt() and 0xFF) shl 24) or
+                        ((hdr[5].toInt() and 0xFF) shl 16) or
+                        ((hdr[6].toInt() and 0xFF) shl 8) or
+                        (hdr[7].toInt() and 0xFF)
+                    if (blockSize <= 0) return false
+                    // 块映射表首字节非 0 → 第 0 块已映射，位于 0x8000 头部之后
+                    val map = ByteArray(1)
+                    raf.seek(0x8)
+                    raf.readFully(map)
+                    if (map[0].toInt() == 0) return false
+                    raf.seek(0x8000 + 0x18)
+                    val b = ByteArray(4)
+                    raf.readFully(b)
+                    val magic = ((b[0].toInt() and 0xFF) shl 24) or
+                        ((b[1].toInt() and 0xFF) shl 16) or
+                        ((b[2].toInt() and 0xFF) shl 8) or
+                        (b[3].toInt() and 0xFF)
+                    magic.toLong() == 0xC2339F3DL
+                }
+            } catch (_: Throwable) { false }
+        }
+        // rvz/gcz/nkit/未知扩展名：默认按 Wii 处理（wii 布局兼容 GC 游戏的
+        // SI 手柄，反之 NGC 布局对 Wii 游戏完全无输入）—— 主判定通道
+        // （JNI GameFileCache）已能精确解析这些容器。
         return false
     }
 

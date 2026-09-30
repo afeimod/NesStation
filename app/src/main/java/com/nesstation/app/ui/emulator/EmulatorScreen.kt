@@ -718,17 +718,21 @@ private fun arcadeToLibretroLayout(bits: Int): Int {
  */
 internal fun resolveNativeRomFile(romPath: String): java.io.File? {
     return try {
+        // ★ '!' 原生路径前缀（3DS Azahar '!'-userDir 模式）：getInstalledGamePaths
+        //   返回的已安装标题路径带 '!' 前缀（核心侧绝对路径标记），剥掉即真实路径。
+        //   （普通共享存储 ROM 路径不带 '!'，不受影响。）
+        val normalized = if (romPath.startsWith("!")) romPath.substring(1) else romPath
         val f: java.io.File? = when {
-            romPath.startsWith("file://", ignoreCase = true) -> {
+            normalized.startsWith("file://", ignoreCase = true) -> {
                 val path = try {
-                    java.net.URI(romPath).path
+                    java.net.URI(normalized).path
                 } catch (_: Throwable) {
                     null
-                } ?: android.net.Uri.decode(romPath.removePrefix("file://").removePrefix("FILE://"))
+                } ?: android.net.Uri.decode(normalized.removePrefix("file://").removePrefix("FILE://"))
                 java.io.File(path)
             }
-            romPath.startsWith("content://") -> {
-                val uri = android.net.Uri.parse(romPath)
+            normalized.startsWith("content://") -> {
+                val uri = android.net.Uri.parse(normalized)
                 val lastSeg = uri.lastPathSegment ?: return null
                 val decoded = android.net.Uri.decode(lastSeg)
                 // documentId 形如 "primary:ROMs/3ds/game.3ds"（冒号前为挂载点名）
@@ -739,7 +743,7 @@ internal fun resolveNativeRomFile(romPath: String): java.io.File? {
                 val base = android.os.Environment.getExternalStorageDirectory().absolutePath
                 java.io.File(base, decoded.substring(colon + 1))
             }
-            else -> java.io.File(romPath)
+            else -> java.io.File(normalized)
         }
         if (f != null && f.exists() && f.canRead()) f else null
     } catch (_: Throwable) {
@@ -1891,7 +1895,12 @@ fun EmulatorScreen(
                    padLayout.irAspect, padLayout.irEfbToTexture,
                    padLayout.irEfbScaledCopy, padLayout.irEfbAccess,
                    padLayout.irAudioStretch, padLayout.irDspHle,
-                   padLayout.irWiimoteSpeaker, padLayout.irWiimoteScan
+                   padLayout.irWiimoteSpeaker, padLayout.irWiimoteScan,
+                   padLayout.irVsync, padLayout.irFastmem,
+                   padLayout.irAudioVolume, padLayout.irAudioLatency,
+                   padLayout.irXfbImmediate, padLayout.irXfbToTexture,
+                   padLayout.irJitFollowBranch, padLayout.irWidescreenHack,
+                   padLayout.irGcLanguage, padLayout.irWiiLanguage
                    ) {
         applyCoreOptions(engine, padLayout, platform)
         // Apply video filter (frontend post-processing, not a core option)
@@ -4749,10 +4758,35 @@ private fun applyCoreOptions(engine: EmulatorEngine, layout: PadLayout, platform
             //   Wii 游戏文本/界面的呈现路径（"文本刷新慢/缺失"对症项之一）。
             engine.setCoreOption("Dolphin.ini/Core/VSync", b(layout.irVsync))
             engine.setCoreOption("Dolphin.ini/Core/Fastmem", b(layout.irFastmem))
-            engine.setCoreOption("Dolphin.ini/Audio/Volume", layout.irAudioVolume)
-            engine.setCoreOption("Dolphin.ini/Audio/AudioLatency", layout.irAudioLatency)
+            // ★ 音频键段落修正（.so 反汇编核实）：
+            //   Volume → Dolphin.ini [DSP]（so 字符串表 "DSP\0Backend\0Volume"
+            //   相邻布局实测）；AudioLatency → Dolphin.ini [Core]（SConfig 注册
+            //   函数 0xa2fd8 反汇编：Info 对象内联段名 w29="Core"）。
+            //   旧实现写 [Audio] 段（不存在）→ 两项都无效。
+            engine.setCoreOption("Dolphin.ini/DSP/Volume", layout.irAudioVolume)
+            engine.setCoreOption("Dolphin.ini/Core/AudioLatency", layout.irAudioLatency)
             engine.setCoreOption("GFX.ini/Hacks/ImmediateXFBEnable", b(layout.irXfbImmediate))
             engine.setCoreOption("GFX.ini/Hacks/XFBToTextureEnable", b(layout.irXfbToTexture))
+            // ★★ 本轮补全的设置（用户反馈缺失项）★★
+            //   JIT 分支优化：Dolphin.ini [Core] JITFollowBranch（so strings
+            //   实测键名，默认关）。
+            engine.setCoreOption("Dolphin.ini/Core/JITFollowBranch", b(layout.irJitFollowBranch))
+            //   宽屏修正：GFX.ini [Settings] wideScreenHack（Ishiiruka 分支键名
+            //   为小写 w 开头，so strings 实测 —— 与官方 Dolphin 的 WidescreenHack
+            //   不同，此处按 Ishiiruka 键名写入；参考 APK settings 代码同键名同段）。
+            engine.setCoreOption("GFX.ini/Settings/wideScreenHack", b(layout.irWidescreenHack))
+            //   NGC 主机语言：Dolphin.ini [Core] SelectedLanguage（0..5）。
+            //   ★ 必须**同时**写 OverrideGCLang=True —— Dolphin 5.0 系语义：
+            //   OverrideGCLang=false 时语言跟随游戏区域（SelectedLanguage 被
+            //   忽略），true 才用 SelectedLanguage。参考 APK 的 GameCube 设置页
+            //   把 "Override Language on Game Load"（[Core] OverrideGCLang）作为
+            //   独立开关暴露在 SelectedLanguage 旁边；NesStation 下拉即意图
+            //   覆盖，故联动置 true（so 注册函数 0xa3438 实测同段键名）。
+            engine.setCoreOption("Dolphin.ini/Core/SelectedLanguage", layout.irGcLanguage)
+            engine.setCoreOption("Dolphin.ini/Core/OverrideGCLang", "True")
+            //   Wii 主机语言：SYSCONF IPL.LNG 补丁（引擎门面键，见
+            //   IshirukaEngine.setCoreOption 的 wiiLanguage 分支）。
+            engine.setCoreOption("IshirukaEngine/wiiLanguage", layout.irWiiLanguage)
         }
     }
 }
@@ -12858,6 +12892,10 @@ private fun SettingsPanel(
                     listOf("4" to "JIT ARM64 (推荐)", "1" to "JIT64", "0" to "解释器 (慢)"),
                     padLayout.irCpuCore
                 ) { onLayoutChange(padLayout.copy {irCpuCore = it}) }
+                // ★ JIT 分支优化（用户反馈缺失项）：提高分支指令跟随精度，
+                //   个别 JIT 崩溃游戏对症；轻微性能代价。
+                SwitchSetting("JIT 分支优化", "提高兼容性（部分游戏需要）", padLayout.irJitFollowBranch == "enabled"
+                ) { onLayoutChange(padLayout.copy {irJitFollowBranch = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("双核模拟 (CPUThread)", "CPU/GPU 线程分离", padLayout.irDualCore == "enabled"
                 ) { onLayoutChange(padLayout.copy {irDualCore = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("CPU 超频开关", "解除 CPU 时钟限制，部分游戏可能异常", padLayout.irOverclockEnable == "enabled"
@@ -12866,6 +12904,8 @@ private fun SettingsPanel(
                     listOf("100" to "100% (默认)", "150" to "150%", "200" to "200%", "300" to "300%", "400" to "400%"),
                     padLayout.irOverclock
                 ) { onLayoutChange(padLayout.copy {irOverclock = it}) }
+                SwitchSetting("Fastmem 快速内存", "性能关键（个别游戏异常时关闭）", padLayout.irFastmem == "enabled"
+                ) { onLayoutChange(padLayout.copy {irFastmem = if (it) "enabled" else "disabled"}) }
 
                 Text("图形 (GFX)", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("渲染后端",
@@ -12873,7 +12913,7 @@ private fun SettingsPanel(
                     padLayout.irBackend
                 ) { onLayoutChange(padLayout.copy {irBackend = it}) }
                 DropdownSetting("内部分辨率 (EFB)",
-                    listOf("2" to "1x 原生 (640x528)", "4" to "2x", "6" to "3x", "7" to "4x"),
+                    listOf("100" to "1x 原生", "200" to "2x", "300" to "3x", "400" to "4x"),
                     padLayout.irResolution
                 ) { onLayoutChange(padLayout.copy {irResolution = it}) }
                 DropdownSetting("多重采样 (MSAA)",
@@ -12898,8 +12938,39 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {irEfbScaledCopy = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("EFB 访问", "个别游戏需要", padLayout.irEfbAccess == "enabled"
                 ) { onLayoutChange(padLayout.copy {irEfbAccess = if (it) "enabled" else "disabled"}) }
+                // ★★ 宽屏修正 / XFB / VSync（用户反馈缺失项，与主设置同步）★★
+                SwitchSetting("宽屏修正 (16:9)", "强制 16:9 视锥，画面更宽（下次启动生效）", padLayout.irWidescreenHack == "enabled"
+                ) { onLayoutChange(padLayout.copy {irWidescreenHack = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("立即呈现 XFB", "Wii 文本/转场呈现关键（下次启动生效）", padLayout.irXfbImmediate == "enabled"
+                ) { onLayoutChange(padLayout.copy {irXfbImmediate = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("XFB 到纹理", "性能优化（下次启动生效）", padLayout.irXfbToTexture == "enabled"
+                ) { onLayoutChange(padLayout.copy {irXfbToTexture = if (it) "enabled" else "disabled"}) }
+                SwitchSetting("垂直同步 (VSync)", "防画面撕裂（略降性能）", padLayout.irVsync == "enabled"
+                ) { onLayoutChange(padLayout.copy {irVsync = if (it) "enabled" else "disabled"}) }
+
+                Text("主机语言", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // ★ NGC 主机语言：Dolphin.ini [Core] SelectedLanguage（0..5）。
+                DropdownSetting("NGC 主机语言",
+                    listOf("0" to "英语", "1" to "德语", "2" to "法语",
+                           "3" to "西班牙语", "4" to "意大利语", "5" to "荷兰语"),
+                    padLayout.irGcLanguage
+                ) { onLayoutChange(padLayout.copy {irGcLanguage = it}) }
+                // ★ Wii 主机语言：SYSCONF IPL.LNG（下次启动 Wii 游戏生效）。
+                DropdownSetting("Wii 主机语言",
+                    listOf("0" to "日语", "1" to "英语", "2" to "德语", "3" to "法语",
+                           "4" to "西班牙语", "5" to "意大利语", "6" to "荷兰语"),
+                    padLayout.irWiiLanguage
+                ) { onLayoutChange(padLayout.copy {irWiiLanguage = it}) }
 
                 Text("音频 / Wii", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("音量",
+                    listOf("100" to "100%", "80" to "80%", "60" to "60%", "40" to "40%", "20" to "20%", "0" to "静音"),
+                    padLayout.irAudioVolume
+                ) { onLayoutChange(padLayout.copy {irAudioVolume = it}) }
+                DropdownSetting("音频延迟",
+                    listOf("0" to "最低", "1" to "低", "2" to "中 (默认)", "3" to "高 (防爆音)"),
+                    padLayout.irAudioLatency
+                ) { onLayoutChange(padLayout.copy {irAudioLatency = it}) }
                 SwitchSetting("音频拉伸", "防音频爆音", padLayout.irAudioStretch == "enabled"
                 ) { onLayoutChange(padLayout.copy {irAudioStretch = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("DSP HLE", "高速音频模拟 (推荐)", padLayout.irDspHle == "enabled"

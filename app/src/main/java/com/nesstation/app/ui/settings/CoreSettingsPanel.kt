@@ -1761,6 +1761,11 @@ fun CoreSettingsPanel(
                         listOf("4" to "JIT ARM64 (推荐)", "1" to "JIT64", "0" to "解释器 (慢)"),
                         padLayout.irCpuCore
                     ) { updateLayout(padLayout.copy {irCpuCore = it}) }
+                    // ★ JIT 分支优化（用户反馈缺失项）：Dolphin.ini [Core] JITFollowBranch。
+                    DropdownRow("JIT 分支优化",
+                        listOf("disabled" to "关闭 (默认，最快)", "enabled" to "开启 (提高兼容性)"),
+                        padLayout.irJitFollowBranch
+                    ) { updateLayout(padLayout.copy {irJitFollowBranch = it}) }
                     DropdownRow("双核模拟",
                         listOf("enabled" to "开启 (CPU/GPU 分线程, 默认)", "disabled" to "关闭"),
                         padLayout.irDualCore
@@ -1832,6 +1837,21 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "开启 (性能，默认)", "disabled" to "关闭"),
                         padLayout.irXfbToTexture
                     ) { updateLayout(padLayout.copy {irXfbToTexture = it}) }
+                    // ★★ 本轮补全（用户反馈缺失项）★★
+                    DropdownRow("宽屏修正 (16:9)",
+                        listOf("disabled" to "关闭 (默认，保持原始比例)", "enabled" to "开启 (强制 16:9)"),
+                        padLayout.irWidescreenHack
+                    ) { updateLayout(padLayout.copy {irWidescreenHack = it}) }
+                    DropdownRow("NGC 主机语言",
+                        listOf("0" to "英语", "1" to "德语", "2" to "法语",
+                               "3" to "西班牙语", "4" to "意大利语", "5" to "荷兰语"),
+                        padLayout.irGcLanguage
+                    ) { updateLayout(padLayout.copy {irGcLanguage = it}) }
+                    DropdownRow("Wii 主机语言",
+                        listOf("0" to "日语", "1" to "英语", "2" to "德语", "3" to "法语",
+                               "4" to "西班牙语", "5" to "意大利语", "6" to "荷兰语"),
+                        padLayout.irWiiLanguage
+                    ) { updateLayout(padLayout.copy {irWiiLanguage = it}) }
                 }
                 SettingsSection("NGC/WII (Ishiiruka) · 音频 / Wii") {
                     DropdownRow("音量",

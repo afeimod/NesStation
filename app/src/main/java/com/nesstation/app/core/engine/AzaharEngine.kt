@@ -190,13 +190,21 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     /**
      * 读取原生日志尾部（azahar_log.txt）—— 错误弹窗附带真实失败原因，
      * 用户截图即可定位（不用再猜"黑屏"是密钥/系统档案/驱动哪一环）。
-     * 核心把日志写在 <userDir>/azahar_log.txt（部分版本在 <userDir>/log/ 下）。
+     *
+     * ★★ '!'-userDir 修复后：核心 LogDir = "!<userDir>/log/"，每次
+     *   IOFile::Open 经 TranslateFilePath 剥 '!' → 日志**真实落盘**在
+     *   <userDir>/log/azahar_log.txt（与 NesStation 读取位置一致，有内容）。
+     *   旧版本（裸 setUserDirectory）日志被写到双重前缀的错乱嵌套路径，
+     *   这里的"折叠镜像"候选用于兼容诊断那些历史残留文件。
      */
     fun nativeLogTail(maxLines: Int = 24): String? {
         val userDir = try { userDir() } catch (_: Throwable) { return null }
+        // 主位置（'!'-userDir 模式真实落盘处）优先；折叠镜像路径仅兜底
+        val mangled = File(userDir, userDir.removePrefix("/").removePrefix("/"))
         val candidates = listOf(
+            File(File(userDir, "log"), "azahar_log.txt"),
             File(userDir, "azahar_log.txt"),
-            File(File(userDir, "log"), "azahar_log.txt")
+            File(mangled, "log/azahar_log.txt")
         )
         for (f in candidates) {
             if (!f.isFile || f.length() == 0L) continue
@@ -474,8 +482,20 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         //   native fopen 一定成功（FUSE/权限层差异）。核心侧打开失败只会写
         //   "Failed to load ROM" 日志然后静默退出（黑屏/秒退无提示）。
         //   这里用核心自己的 nativeFileExists 探测，失败立即上报明确错误。
+        //
+        //   ★★★★ 3DS 打不开根治修复（'!' 原生路径前缀）★★★★
+        //   Azahar 原生侧的 FileUtil::Exists / IOFile::Open 在 Android 上统一
+        //   经 AndroidUtils::TranslateFilePath 翻译路径（android_utils.cpp 实测）：
+        //     - 以 '!' 开头 → 剥掉 '!' 按原生绝对路径直读；
+        //     - 其它（含 "/storage/..." 绝对路径）→ 被拼成 <userDir>/<原路径> ——
+        //       文件必然“不存在”！
+        //   参考 AzaharPlus APK 的 GameHelper.getGame 把游戏路径存成
+        //   "!" + getNativePath(uri)，EmulationFragment 直接 run(该路径) ——
+        //   NesStation 旧实现传裸绝对路径 → nativeFileExists=false /
+        //   run() 加载失败 / CIA 安装 ErrorFileNotFound，全部同根因。
+        //   现在与参考 APK 一致：传给核心的路径一律加 "!" 前缀。
         try {
-            val nativeOk = lib.nativeFileExists(path)
+            val nativeOk = lib.nativeFileExists("!$path")
             if (!nativeOk) {
                 val msg = "无法从核心侧读取游戏文件（nativeFileExists=false）：\n$path" +
                     "\n\n请检查：1) 文件是否已被移动/删除；" +
@@ -530,7 +550,10 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 try { lib.surfaceChanged(attemptedSurface) } catch (_: Throwable) {}
             }
             try {
-                lib.run(path)
+                // ★ '!' 前缀 = 原生绝对路径标记（见 startEmulationLocked 注释）。
+                //   裸绝对路径会被 TranslateFilePath 拼到用户目录下变成不存在
+                //   的路径 → 核心 "Failed to load ROM" → 黑屏/秒退。
+                lib.run("!$path")
             } catch (t: Throwable) {
                 android.util.Log.e("AzaharEngine", "run() crashed", t)
                 lastErrorText = t.message ?: "run() crashed"
