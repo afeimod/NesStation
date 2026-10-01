@@ -222,6 +222,9 @@ fun LibraryScreen(
     var pendingRenameGame by remember { mutableStateOf<GameEntry?>(null) }
     // ★ 封面候选选择：长按菜单「选择封面」→ 拉取候选图列表弹窗
     var pendingCoverGame by remember { mutableStateOf<GameEntry?>(null) }
+    // ★ 3DS 存档急救：长按菜单「清除3DS存档」→ 确认弹窗（建档卡死兜底，
+    //   删除该游戏在 Azahar sdmc 里的 title 存档目录，下次进游戏重新建档）
+    var pendingClearSaveGame by remember { mutableStateOf<GameEntry?>(null) }
 
     // 刷新/重扫协程作用域。refreshList() 的文件夹重扫涉及 SAF 逐层 query +
     // 每个新文件的标题读取（含大量 CHD 镜像的目录尤其明显），整体搬到 IO
@@ -1743,6 +1746,16 @@ fun LibraryScreen(
                             longPressGame = null
                             pendingRenameGame = game
                         }
+                        // ★ 3DS 存档急救（建档卡死兜底）：删除该游戏在 Azahar
+                        //   sdmc 里的 title 存档目录，下次进游戏重新完整建档。
+                        //   适用场景：部分游戏（时之笛 3D 等）进游戏建档时卡死、
+                        //   存档异常、想重新开始。不影响游戏本体与其它游戏。
+                        if (game.platform == GamePlatform.N3DS) {
+                            MenuOption("清除3DS存档（建档卡死急救）", danger = true) {
+                                longPressGame = null
+                                pendingClearSaveGame = game
+                            }
+                        }
                         MenuOption("删除游戏", danger = true) {
                             longPressGame = null
                             pendingDeleteGame = game
@@ -1850,6 +1863,49 @@ fun LibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingDeleteGame = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // ★ 3DS 存档清除确认弹窗（建档卡死急救，见 pendingClearSaveGame 注释）
+    pendingClearSaveGame?.let { game ->
+        AlertDialog(
+            onDismissRequest = { pendingClearSaveGame = null },
+            title = { Text("清除 3DS 存档") },
+            text = {
+                Text(
+                    "删除「${game.customTitle?.takeIf { it.isNotBlank() } ?: game.title}」的 3DS 存档数据？\n\n" +
+                        "· 只删除 Azahar sdmc 里该游戏的存档（title/…/data），" +
+                        "游戏本体与其它游戏不受影响；\n" +
+                        "· 下次进入该游戏会重新建档（部分游戏建档卡死时的急救手段）；\n" +
+                        "· 此操作不可撤销，现有存档进度将丢失。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val g = game
+                    pendingClearSaveGame = null
+                    scope.launch(Dispatchers.IO) {
+                        val repair = com.nesstation.app.core.storage.AzaharSaveDataRepair
+                        // 先从 ROM（NCCH 头 / 已安装路径）解析 Title ID
+                        val tid = repair.parseTitleId(context, g.romPath)
+                        val ok = tid != null && repair.clearGameSaveData(context, tid)
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            dialogMsg = if (tid == null) {
+                                "未能从该游戏文件解析 Title ID（${g.romPath?.substringAfterLast('/') ?: "?"}），" +
+                                    "无法定位存档目录。"
+                            } else if (ok) {
+                                "已清除「${g.customTitle?.takeIf { it.isNotBlank() } ?: g.title}」的 3DS 存档" +
+                                    "（Title ID $tid）。下次进入将重新建档。"
+                            } else {
+                                "该游戏当前没有可清除的存档数据（Title ID $tid）。"
+                            }
+                        }
+                    }
+                }) { Text("清除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearSaveGame = null }) { Text("取消") }
             }
         )
     }

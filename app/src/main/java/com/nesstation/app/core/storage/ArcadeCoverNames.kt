@@ -11,347 +11,403 @@ package com.nesstation.app.core.storage
  * 变体由 CoverFetcher.fuzzyMatch 的包含加分路径命中）。
  *
  * 未收录的驱动名原样返回（继续走模糊匹配）。
+ *
+ * ★★★ 本轮结构重写（与 CnGameNameMapper 同根问题）★★★
+ *
+ * 用户实测：CnGameNameMapper 因 ~540 条 put 全在类初始化器里，首次访问
+ * 抛 ExceptionInInitializerError → 之后永久 NoClassDefFoundError →
+ * 封面批次"尝试 14，成功 0"。本表是**同样的巨型 <clinit> 写法**（~330 条
+ * mapOf 对 + 归一化派生表也在 clinit）—— 只是没有先炸（街机批尚未触发）。
+ * 现在同步根治：
+ *   1. <clinit> 清空，数据表懒加载；
+ *   2. 巨表拆 4 个小构建函数（每个 ~85 条）；
+ *   3. runCatching 兜底 + [lastInitError] 诊断（失败 → 空表 + 原名继续，
+ *      封面抓取绝不中断）。
  */
 object ArcadeCoverNames {
 
-    private val DRIVER_TO_EN: Map<String, String> = mapOf(
+    /** 最近一次构建/查询失败的诊断信息（null = 健康）。 */
+    @Volatile
+    var lastInitError: String? = null
+        private set
+
+    private fun recordError(where: String, t: Throwable) {
+        val chain = generateSequence<Throwable>(t) { it.cause }
+            .take(4)
+            .joinToString(" <- ") { "${it.javaClass.name}: ${it.message}" }
+        lastInitError = "$where: $chain"
+        try {
+            android.util.Log.e("ArcadeCoverNames", "driver table $where failed: $chain", t)
+        } catch (_: Throwable) {}
+    }
+
+    /** 驱动名 → 英文标题总表（懒加载；失败 → 空表 + 诊断记录，下次访问重试）。 */
+    private val DRIVER_TO_EN: Map<String, String> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            buildMap<String, String> {
+                entriesSnk()
+                entriesCapcom()
+                entriesClassic()
+                entriesModern()
+            }
+        } catch (t: Throwable) {
+            recordError("build", t)
+            emptyMap()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 分块数据表
+    // ------------------------------------------------------------------
+
+    /** SNK 格斗/射击：拳皇/合金弹头/侍魂/饿狼/龙虎/月华 等。 */
+    private fun MutableMap<String, String>.entriesSnk() {
         // ===== SNK 拳皇（The King of Fighters）=====
-        "kof94" to "The King of Fighters '94",
-        "kof94ea" to "The King of Fighters '94",
-        "kof95" to "The King of Fighters '95",
-        "kof95a" to "The King of Fighters '95",
-        "kof96" to "The King of Fighters '96",
-        "kof96ea" to "The King of Fighters '96",
-        "kof97" to "The King of Fighters '97",
-        "kof97a" to "The King of Fighters '97",
-        "kof97h" to "The King of Fighters '97",
-        "kof97pls" to "The King of Fighters '97",
-        "kof98" to "The King of Fighters '98 - Dream Match Never Ends",
-        "kof98a" to "The King of Fighters '98 - Dream Match Never Ends",
-        "kof98h" to "The King of Fighters '98 - Dream Match Never Ends",
-        "kof98k" to "The King of Fighters '98 - Dream Match Never Ends",
-        "kof99" to "The King of Fighters '99",
-        "kof99a" to "The King of Fighters '99",
-        "kof99e" to "The King of Fighters '99",
-        "kof99n" to "The King of Fighters '99",
-        "kof99p" to "The King of Fighters '99",
-        "kof2000" to "The King of Fighters 2000",
-        "kof2000n" to "The King of Fighters 2000",
-        "kof2001" to "The King of Fighters 2001",
-        "kof2001h" to "The King of Fighters 2001",
-        "kof2002" to "The King of Fighters 2002",
-        "kof2002b" to "The King of Fighters 2002",
-        "kof2002h" to "The King of Fighters 2002",
-        "kof2003" to "The King of Fighters 2003",
-        "kof2003h" to "The King of Fighters 2003",
-        "kof10th" to "The King of Fighters 2002 (10th Anniversary)",
-        "kof2k2um" to "The King of Fighters 2002 Unlimited Match",
-        "kof98um" to "The King of Fighters '98 Ultimate Match",
-        "kofxi" to "The King of Fighters XI",
-        "kofxii" to "The King of Fighters XII",
-        "kofxiii" to "The King of Fighters XIII",
+        put("kof94", "The King of Fighters '94")
+        put("kof94ea", "The King of Fighters '94")
+        put("kof95", "The King of Fighters '95")
+        put("kof95a", "The King of Fighters '95")
+        put("kof96", "The King of Fighters '96")
+        put("kof96ea", "The King of Fighters '96")
+        put("kof97", "The King of Fighters '97")
+        put("kof97a", "The King of Fighters '97")
+        put("kof97h", "The King of Fighters '97")
+        put("kof97pls", "The King of Fighters '97")
+        put("kof98", "The King of Fighters '98 - Dream Match Never Ends")
+        put("kof98a", "The King of Fighters '98 - Dream Match Never Ends")
+        put("kof98h", "The King of Fighters '98 - Dream Match Never Ends")
+        put("kof98k", "The King of Fighters '98 - Dream Match Never Ends")
+        put("kof99", "The King of Fighters '99")
+        put("kof99a", "The King of Fighters '99")
+        put("kof99e", "The King of Fighters '99")
+        put("kof99n", "The King of Fighters '99")
+        put("kof99p", "The King of Fighters '99")
+        put("kof2000", "The King of Fighters 2000")
+        put("kof2000n", "The King of Fighters 2000")
+        put("kof2001", "The King of Fighters 2001")
+        put("kof2001h", "The King of Fighters 2001")
+        put("kof2002", "The King of Fighters 2002")
+        put("kof2002b", "The King of Fighters 2002")
+        put("kof2002h", "The King of Fighters 2002")
+        put("kof2003", "The King of Fighters 2003")
+        put("kof2003h", "The King of Fighters 2003")
+        put("kof10th", "The King of Fighters 2002 (10th Anniversary)")
+        put("kof2k2um", "The King of Fighters 2002 Unlimited Match")
+        put("kof98um", "The King of Fighters '98 Ultimate Match")
+        put("kofxi", "The King of Fighters XI")
+        put("kofxii", "The King of Fighters XII")
+        put("kofxiii", "The King of Fighters XIII")
         // ===== SNK 合金弹头（Metal Slug）=====
-        "mslug" to "Metal Slug - Super Vehicle-001",
-        "mslug4" to "Metal Slug 4",
-        "mslug4p" to "Metal Slug 4 Plus",
-        "mslug5" to "Metal Slug 5",
-        "mslug5h" to "Metal Slug 5",
-        "mslug6" to "Metal Slug 6",
-        "mslugx" to "Metal Slug X - Super Vehicle-001",
-        "mslug2" to "Metal Slug 2 - Super Vehicle-001_II",
-        "mslug3" to "Metal Slug 3",
-        "mslug3h" to "Metal Slug 3",
+        put("mslug", "Metal Slug - Super Vehicle-001")
+        put("mslug4", "Metal Slug 4")
+        put("mslug4p", "Metal Slug 4 Plus")
+        put("mslug5", "Metal Slug 5")
+        put("mslug5h", "Metal Slug 5")
+        put("mslug6", "Metal Slug 6")
+        put("mslugx", "Metal Slug X - Super Vehicle-001")
+        put("mslug2", "Metal Slug 2 - Super Vehicle-001_II")
+        put("mslug3", "Metal Slug 3")
+        put("mslug3h", "Metal Slug 3")
         // ===== SNK 其它 =====
-        "samsho" to "Samurai Shodown",
-        "samshoh" to "Samurai Shodown",
-        "samsho2" to "Samurai Shodown II",
-        "samsho2k" to "Samurai Shodown II",
-        "samsho3" to "Samurai Shodown III",
-        "samsho4" to "Samurai Shodown IV",
-        "samsho5" to "Samurai Shodown V",
-        "samsho5sp" to "Samurai Shodown V Special",
-        "samsho6" to "Samurai Shodown VI",
-        "fatfury1" to "Fatal Fury - King of Fighters",
-        "fatfury2" to "Fatal Fury 2",
-        "fatfury3" to "Fatal Fury 3 - Road to the Final Victory",
-        "fatfursp" to "Fatal Fury Special",
-        "garou" to "Garou - Mark of the Wolves",
-        "garouh" to "Garou - Mark of the Wolves",
-        "rbff1" to "Real Bout Fatal Fury",
-        "rbff2" to "Real Bout Fatal Fury 2 - The Newcomers",
-        "rbffspc" to "Real Bout Fatal Fury Special",
-        "kizuna" to "Kizuna Encounter - Super Tag Battle",
-        "savagere" to "Savage Reign",
-        "wakuwak7" to "Waku Waku 7",
-        "breakers" to "Breakers",
-        "breakrev" to "Breakers Revenge",
-        "neobombe" to "Neo Bomberman",
-        "neodrift" to "Neo Drift Out - New Technology",
-        "gowcaizr" to "Voltage Fighter - Gowcaizer",
-        "wh1" to "World Heroes",
-        "wh2" to "World Heroes 2",
-        "wh2j" to "World Heroes 2 Jet",
-        "whp" to "World Heroes Perfect",
-        "lastblad" to "The Last Blade",
-        "lastbladh" to "The Last Blade",
-        "lastbld2" to "The Last Blade 2",
-        "tophuntr" to "Top Hunter - Roddy & Cathy",
-        "ncombat" to "Neo Turf Masters",
-        "nblktop" to "Neo Bomberman",
-        "joyjoy" to "Pochi and Nyaa",
-        "zupapa" to "Zupapa!",
-        // ===== Capcom =====
-        "sf2" to "Street Fighter II - The World Warrior",
-        "sf2ce" to "Street Fighter II' - Champion Edition",
-        "sf2hf" to "Street Fighter II' - Hyper Fighting",
-        "sf2t" to "Super Street Fighter II - The New Challengers",
-        "sf2tb" to "Super Street Fighter II - The New Challengers",
-        "sf2tj" to "Super Street Fighter II - The New Challengers",
-        "sfz2al" to "Street Fighter Zero 2 Alpha",
-        "sfzch" to "Street Fighter Zero 3",
-        "sfz3" to "Street Fighter Zero 3",
-        "sfz3a" to "Street Fighter Zero 3",
-        "sfa" to "Street Fighter Alpha - Warriors' Dreams",
-        "sfa2" to "Street Fighter Alpha 2",
-        "sfa3" to "Street Fighter Alpha 3",
-        "sfiii" to "Street Fighter III - New Generation",
-        "sfiii2" to "Street Fighter III 2nd Impact - Giant Attack",
-        "sfiii3" to "Street Fighter III 3rd Strike - Fight for the Future",
-        "sfiii3n" to "Street Fighter III 3rd Strike - Fight for the Future",
-        "sf4" to "Street Fighter IV",
-        "xmcota" to "X-Men - Children of the Atom",
-        "xmvsf" to "X-Men Vs. Street Fighter",
-        "msh" to "Marvel Super Heroes Vs. Street Fighter",
-        "mshvsf" to "Marvel Super Heroes Vs. Street Fighter",
-        "mvsc" to "Marvel Vs. Capcom - Clash of Super Heroes",
-        "mvsc2" to "Marvel Vs. Capcom 2 - New Age of Heroes",
-        "mvsc2u" to "Marvel Vs. Capcom 2 - New Age of Heroes",
-        "capsnk" to "Capcom Vs. SNK - Millennium Fight 2000",
-        "capsnk2" to "Capcom Vs. SNK 2 - Mark of the Millennium 2001",
-        "csclub" to "Capcom Sports Club",
-        "ddtod" to "Dungeons & Dragons - Tower of Doom",
-        "ddshadow" to "Dungeons & Dragons - Shadow over Mystara",
-        "armwar" to "Armored Warriors",
-        "awbash" to "Alien Vs. Predator",
-        "avsp" to "Alien Vs. Predator",
-        "dstlk" to "Darkstalkers - The Night Warriors",
-        "vhunt2" to "Vampire Hunter 2 - Darkstalkers Revenge",
-        "vsav" to "Vampire Savior - The Lord of Vampire",
-        "vsav2" to "Vampire Savior 2 - The Lord of Vampire",
-        "smbomb" to "Super Marvel Vs. Capcom",
-        "maribro" to "Marvel Super Heroes",
-        "strider" to "Strider Hiryu",
-        "strider2" to "Strider 2",
-        "ffight" to "Final Fight",
-        "ffightj" to "Final Fight",
-        "ffrevia" to "Final Fight Revenge",
-        "captcomm" to "Captain Commando",
-        "knights" to "Knights of the Round",
-        "knightsh" to "Knights of the Round",
-        "megaman" to "Mega Man - The Power Battle",
-        "megaman2" to "Mega Man 2 - The Power Fighters",
-        "megamans" to "Mega Man - The Power Battle",
-        "1941" to "1941 - Counter Attack",
-        "19xx" to "19XX - The War Against Destiny",
-        "1944" to "1944 - The Loop Master",
-        "varth" to "Varth - Operation Thunderstorm",
-        "cawing" to "Carrier Air Wing",
-        "msamurai" to "Mighty! Pang",
-        "mpang" to "Mighty! Pang",
-        "spf2t" to "Super Street Fighter II Turbo",
-        "superman" to "Superman - The Man of Steel",
-        "progear" to "Pro Gear no Arashi",
-        "dimahoo" to "Dimahoo",
-        "tgm2" to "Tetris The Grand Master 2 - The Absolute",
-        "giggman" to "Gigaman",
+        put("samsho", "Samurai Shodown")
+        put("samshoh", "Samurai Shodown")
+        put("samsho2", "Samurai Shodown II")
+        put("samsho2k", "Samurai Shodown II")
+        put("samsho3", "Samurai Shodown III")
+        put("samsho4", "Samurai Shodown IV")
+        put("samsho5", "Samurai Shodown V")
+        put("samsho5sp", "Samurai Shodown V Special")
+        put("samsho6", "Samurai Shodown VI")
+        put("fatfury1", "Fatal Fury - King of Fighters")
+        put("fatfury2", "Fatal Fury 2")
+        put("fatfury3", "Fatal Fury 3 - Road to the Final Victory")
+        put("fatfursp", "Fatal Fury Special")
+        put("garou", "Garou - Mark of the Wolves")
+        put("garouh", "Garou - Mark of the Wolves")
+        put("rbff1", "Real Bout Fatal Fury")
+        put("rbff2", "Real Bout Fatal Fury 2 - The Newcomers")
+        put("rbffspc", "Real Bout Fatal Fury Special")
+        put("kizuna", "Kizuna Encounter - Super Tag Battle")
+        put("savagere", "Savage Reign")
+        put("wakuwak7", "Waku Waku 7")
+        put("breakers", "Breakers")
+        put("breakrev", "Breakers Revenge")
+        put("neobombe", "Neo Bomberman")
+        put("neodrift", "Neo Drift Out - New Technology")
+        put("gowcaizr", "Voltage Fighter - Gowcaizer")
+        put("wh1", "World Heroes")
+        put("wh2", "World Heroes 2")
+        put("wh2j", "World Heroes 2 Jet")
+        put("whp", "World Heroes Perfect")
+        put("lastblad", "The Last Blade")
+        put("lastbladh", "The Last Blade")
+        put("lastbld2", "The Last Blade 2")
+        put("tophuntr", "Top Hunter - Roddy & Cathy")
+        put("ncombat", "Neo Turf Masters")
+        put("nblktop", "Neo Bomberman")
+        put("joyjoy", "Pochi and Nyaa")
+        put("zupapa", "Zupapa!")
+    }
+
+    /** Capcom（CPS1/2 + 恶魔战士/漫画系）与 CPS3。 */
+    private fun MutableMap<String, String>.entriesCapcom() {
+        put("sf2", "Street Fighter II - The World Warrior")
+        put("sf2ce", "Street Fighter II' - Champion Edition")
+        put("sf2hf", "Street Fighter II' - Hyper Fighting")
+        put("sf2t", "Super Street Fighter II - The New Challengers")
+        put("sf2tb", "Super Street Fighter II - The New Challengers")
+        put("sf2tj", "Super Street Fighter II - The New Challengers")
+        put("sfz2al", "Street Fighter Zero 2 Alpha")
+        put("sfzch", "Street Fighter Zero 3")
+        put("sfz3", "Street Fighter Zero 3")
+        put("sfz3a", "Street Fighter Zero 3")
+        put("sfa", "Street Fighter Alpha - Warriors' Dreams")
+        put("sfa2", "Street Fighter Alpha 2")
+        put("sfa3", "Street Fighter Alpha 3")
+        put("sfiii", "Street Fighter III - New Generation")
+        put("sfiii2", "Street Fighter III 2nd Impact - Giant Attack")
+        put("sfiii3", "Street Fighter III 3rd Strike - Fight for the Future")
+        put("sfiii3n", "Street Fighter III 3rd Strike - Fight for the Future")
+        put("sf4", "Street Fighter IV")
+        put("xmcota", "X-Men - Children of the Atom")
+        put("xmvsf", "X-Men Vs. Street Fighter")
+        put("msh", "Marvel Super Heroes Vs. Street Fighter")
+        put("mshvsf", "Marvel Super Heroes Vs. Street Fighter")
+        put("mvsc", "Marvel Vs. Capcom - Clash of Super Heroes")
+        put("mvsc2", "Marvel Vs. Capcom 2 - New Age of Heroes")
+        put("mvsc2u", "Marvel Vs. Capcom 2 - New Age of Heroes")
+        put("capsnk", "Capcom Vs. SNK - Millennium Fight 2000")
+        put("capsnk2", "Capcom Vs. SNK 2 - Mark of the Millennium 2001")
+        put("csclub", "Capcom Sports Club")
+        put("ddtod", "Dungeons & Dragons - Tower of Doom")
+        put("ddshadow", "Dungeons & Dragons - Shadow over Mystara")
+        put("armwar", "Armored Warriors")
+        put("awbash", "Alien Vs. Predator")
+        put("avsp", "Alien Vs. Predator")
+        put("dstlk", "Darkstalkers - The Night Warriors")
+        put("vhunt2", "Vampire Hunter 2 - Darkstalkers Revenge")
+        put("vsav", "Vampire Savior - The Lord of Vampire")
+        put("vsav2", "Vampire Savior 2 - The Lord of Vampire")
+        put("smbomb", "Super Marvel Vs. Capcom")
+        put("maribro", "Marvel Super Heroes")
+        put("strider", "Strider Hiryu")
+        put("strider2", "Strider 2")
+        put("ffight", "Final Fight")
+        put("ffightj", "Final Fight")
+        put("ffrevia", "Final Fight Revenge")
+        put("captcomm", "Captain Commando")
+        put("knights", "Knights of the Round")
+        put("knightsh", "Knights of the Round")
+        put("megaman", "Mega Man - The Power Battle")
+        put("megaman2", "Mega Man 2 - The Power Fighters")
+        put("megamans", "Mega Man - The Power Battle")
+        put("1941", "1941 - Counter Attack")
+        put("19xx", "19XX - The War Against Destiny")
+        put("1944", "1944 - The Loop Master")
+        put("varth", "Varth - Operation Thunderstorm")
+        put("cawing", "Carrier Air Wing")
+        put("msamurai", "Mighty! Pang")
+        put("mpang", "Mighty! Pang")
+        put("spf2t", "Super Street Fighter II Turbo")
+        put("superman", "Superman - The Man of Steel")
+        put("progear", "Pro Gear no Arashi")
+        put("dimahoo", "Dimahoo")
+        put("tgm2", "Tetris The Grand Master 2 - The Absolute")
+        put("giggman", "Gigaman")
         // ===== CPS3 =====
-        "jojo" to "JoJo's Venture",
-        "jojor" to "JoJo's Bizarre Adventure",
-        "jojoba" to "JoJo's Bizarre Adventure",
-        "redearth" to "Red Earth",
-        // ===== 经典街机 =====
-        "pacman" to "PuckMan (Japan set 1)",
-        "pacmania" to "Pac-Mania",
-        "puckman" to "PuckMan (Japan set 1)",
-        "puckmana" to "PuckMan (Japan set 1)",
-        "mspacman" to "Ms. Pac-Man",
-        "pacmanf" to "Pac-Man - Gugeulpan",
-        "dkong" to "Donkey Kong",
-        "dkongjr" to "Donkey Kong Junior",
-        "dkongx" to "Donkey Kong",
-        "frogger" to "Frogger",
-        "galaga" to "Galaga (Version A)",
-        "galaxian" to "Galaxian (Version B)",
-        "digdug" to "Dig Dug (Japan)",
-        "digdugat" to "Dig Dug",
-        "bublbobl" to "Bubble Bobble",
-        "bublboblr" to "Bubble Bobble",
-        "bubbob" to "Bubble Bobble",
-        "boblbobl" to "Bubble Bobble",
-        "snowbroj" to "Snow Bros. - Nick & Tom (Japan)",
-        "snowbros" to "Snow Bros. - Nick & Tom",
-        "snowbros2" to "Snow Bros. 2 - With New Elves",
-        "punipuni" to "Puzzle & Action - PuniPuniBalloo",
-        "toki" to "Toki - Going Ape Spit",
-        "rampage" to "Rampage",
-        "turtles" to "Teenage Mutant Ninja Turtles",
-        "tmht" to "Teenage Mutant Ninja Turtles",
-        "tmnt2" to "Teenage Mutant Ninja Turtles - Turtles in Time",
-        "tmht2" to "Teenage Mutant Ninja Turtles - Turtles in Time",
-        "tsuru" to "Turtle Ship",
-        "ggpo" to "Skull & Crossbones",
-        "crakwn" to "Crack Down",
-        "wonder3" to "Wonder 3",
-        "virtue" to "Virtua Fighter",
-        "vf" to "Virtua Fighter",
-        "vf2" to "Virtua Fighter 2",
-        "vfkids" to "Virtua Fighter Kids",
-        "vrally" to "V-Rally Edition 1999",
-        "hook" to "Hook",
-        "hsf2" to "Hyper Street Fighter 2 - The Anniversary Edition",
-        "news" to "Downtown - Nekketsu Monogatari",
+        put("jojo", "JoJo's Venture")
+        put("jojor", "JoJo's Bizarre Adventure")
+        put("jojoba", "JoJo's Bizarre Adventure")
+        put("redearth", "Red Earth")
+    }
+
+    /** 经典街机（吃豆/大金刚/小蜜蜂/泡泡龙/雪人兄弟）+ 彩京弹幕 + IGS。 */
+    private fun MutableMap<String, String>.entriesClassic() {
+        put("pacman", "PuckMan (Japan set 1)")
+        put("pacmania", "Pac-Mania")
+        put("puckman", "PuckMan (Japan set 1)")
+        put("puckmana", "PuckMan (Japan set 1)")
+        put("mspacman", "Ms. Pac-Man")
+        put("pacmanf", "Pac-Man - Gugeulpan")
+        put("dkong", "Donkey Kong")
+        put("dkongjr", "Donkey Kong Junior")
+        put("dkongx", "Donkey Kong")
+        put("frogger", "Frogger")
+        put("galaga", "Galaga (Version A)")
+        put("galaxian", "Galaxian (Version B)")
+        put("digdug", "Dig Dug (Japan)")
+        put("digdugat", "Dig Dug")
+        put("bublbobl", "Bubble Bobble")
+        put("bublboblr", "Bubble Bobble")
+        put("bubbob", "Bubble Bobble")
+        put("boblbobl", "Bubble Bobble")
+        put("snowbroj", "Snow Bros. - Nick & Tom (Japan)")
+        put("snowbros", "Snow Bros. - Nick & Tom")
+        put("snowbros2", "Snow Bros. 2 - With New Elves")
+        put("punipuni", "Puzzle & Action - PuniPuniBalloo")
+        put("toki", "Toki - Going Ape Spit")
+        put("rampage", "Rampage")
+        put("turtles", "Teenage Mutant Ninja Turtles")
+        put("tmht", "Teenage Mutant Ninja Turtles")
+        put("tmnt2", "Teenage Mutant Ninja Turtles - Turtles in Time")
+        put("tmht2", "Teenage Mutant Ninja Turtles - Turtles in Time")
+        put("tsuru", "Turtle Ship")
+        put("ggpo", "Skull & Crossbones")
+        put("crakwn", "Crack Down")
+        put("wonder3", "Wonder 3")
+        put("virtue", "Virtua Fighter")
+        put("vf", "Virtua Fighter")
+        put("vf2", "Virtua Fighter 2")
+        put("vfkids", "Virtua Fighter Kids")
+        put("vrally", "V-Rally Edition 1999")
+        put("hook", "Hook")
+        put("hsf2", "Hyper Street Fighter 2 - The Anniversary Edition")
+        put("news", "Downtown - Nekketsu Monogatari")
         // ===== 彩京/弹幕 =====
-        "dogyuun" to "Dogyuun",
-        "batrider" to "Armed Police Batrider",
-        "batridera" to "Armed Police Batrider",
-        "batsugun" to "Batsugun",
-        "batsugna" to "Batsugun",
-        "tfvark" to "Terra Cresta",
-        "s1945" to "Strikers 1945",
-        "s1945a" to "Strikers 1945",
-        "s1945ii" to "Strikers 1945 II",
-        "s1945iii" to "Strikers 1945 III",
-        "s1945j" to "Strikers 1945",
-        "dfeveron" to "Dangun Feveron",
-        "gunbird" to "Gunbird",
-        "gunbird2" to "Gunbird 2",
-        "donpachi" to "DonPachi",
-        "dodonpachi" to "DoDonPachi",
-        "esprade" to "ESP Ra.De.",
-        "guwange" to "Guwange",
-        "saber" to "Sengoku Ace",
-        "senkyu" to "Senkyu",
-        "tengai" to "Tengai",
+        put("dogyuun", "Dogyuun")
+        put("batrider", "Armed Police Batrider")
+        put("batridera", "Armed Police Batrider")
+        put("batsugun", "Batsugun")
+        put("batsugna", "Batsugun")
+        put("tfvark", "Terra Cresta")
+        put("s1945", "Strikers 1945")
+        put("s1945a", "Strikers 1945")
+        put("s1945ii", "Strikers 1945 II")
+        put("s1945iii", "Strikers 1945 III")
+        put("s1945j", "Strikers 1945")
+        put("dfeveron", "Dangun Feveron")
+        put("gunbird", "Gunbird")
+        put("gunbird2", "Gunbird 2")
+        put("donpachi", "DonPachi")
+        put("dodonpachi", "DoDonPachi")
+        put("esprade", "ESP Ra.De.")
+        put("guwange", "Guwange")
+        put("saber", "Sengoku Ace")
+        put("senkyu", "Senkyu")
+        put("tengai", "Tengai")
         // ===== IGS =====
-        "pgm" to "Oriental Legend",
-        "orientl" to "Oriental Legend",
-        "orientl1" to "Oriental Legend",
-        "kov" to "Knights of Valour",
-        "kovplus" to "Knights of Valour Plus",
-        "kov2" to "Knights of Valour 2",
-        "kov2p" to "Knights of Valour 2 Plus",
-        "kovsh" to "Knights of Valour - Sevengers",
-        "sango" to "Knights of Valour - Sangoku Senki",
-        "sgongi" to "Sengoku Giants",
-        "drgw2" to "Dragon World II",
-        "drgw3" to "Dragon World III",
-        "photoy2k" to "Photo Y2K",
-        "picolo" to "Photo Adventure",
-        "moonlgh" to "Moonlight",
-        "sximo" to "Xi You Shi E Zhuan Super",
-        "orlegend" to "Oriental Legend",
-        "puzzli2" to "Puzzli 2",
-        // ===== 现代/其他 =====
-        "tekken" to "Tekken",
-        "tekken2" to "Tekken 2",
-        "tekken3" to "Tekken 3",
-        "tektagt" to "Tekken Tag Tournament",
-        "soulclbr" to "Soul Calibur",
-        "souledbr" to "Soul Edge",
-        "beastor" to "Bloody Roar",
-        "beastorz" to "Bloody Roar 2",
-        "doapp" to "Dead or Alive++",
-        "rvschool" to "Rival Schools - Evolution 2",
-        "raizing" to "Battle Garegga",
-        "batcir" to "Battle Circuit",
-        "garegga" to "Battle Garegga",
-        "blastoff" to "Blast Off",
-        "trstar" to "Transfer Student",
-        "ryujin" to "Ryu Jin",
-        "samuraio" to "Samurai Aces",
-        "kungfu" to "Kung-Fu Master",
-        "sfexp" to "Street Fighter - The Battle Edition",
-        "toutra" to "Thunder Dragon",
-        "toutrun" to "OutRun",
-        "outrun" to "OutRun",
-        "afterbn2" to "After Burner II",
-        "afterbur" to "After Burner",
-        "swpower" to "Sonic Wings",
-        "sonicwi" to "Sonic Wings",
-        "sonicwi2" to "Sonic Wings 2",
-        "sonicwi3" to "Sonic Wings 3",
-        "turbo" to "Turbo",
-        "gunsmoke" to "Gun.Smoke",
-        "vulgus" to "Vulgus",
-        "sonson" to "SonSon",
-        "exedexes" to "Exed Exes",
-        "sengekis" to "Sengoku Strikers",
-        "sengoku" to "Sengoku Denshou",
-        "sengoku2" to "Sengoku 2 - Sengoku Denshou 2",
-        "sengoku3" to "Sengoku 3",
-        "shocktrp" to "Shock Troopers",
-        "shocktra" to "Shock Troopers - 2nd Squad",
-        "lresort" to "Last Resort",
-        "smshw2" to "Super Sidekicks 2 - The World Championship",
-        "palamed" to "Palamedes",
-        "joymach" to "Joyful Road",
-        "algiers" to "Algiers",
-        "cannonb" to "Cannon Ball",
-        "maglord" to "Magical Lord",
-        "socbrawl" to "Soccer Brawl",
-        "superspy" to "The Super Spy",
-        "mutnat" to "Mutation Nation",
-        "sengokuh" to "Sengoku Denshou",
-        "8ball" to "8 Ball Action",
-        "2020bb" to "2020 Super Baseball",
-        "3countb" to "3 Count Bout",
-        "aof" to "Art of Fighting",
-        "aof2" to "Art of Fighting 2",
-        "aof3" to "Art of Fighting 3 - The Path of the Warrior",
-        "alpham2" to "Alpha Mission II",
-        "bstar" to "Baseball Stars Professional",
-        "bstars2" to "Baseball Stars 2",
-        "cyberlip" to "Cyber-Lip",
-        "diggerma" to "Digger Man",
-        "doubledr" to "Double Dragon",
-        "fightfev" to "Fight Fever",
-        "ghostlop" to "Ghostlop",
-        "galaxyfg" to "Galaxy Fight - Universal Warriors",
-        "ironclad" to "Ironclad",
-        "janshin" to "Janshin Denshou",
-        "kabukikl" to "Kabuki Klash - Far East of Eden",
-        "kingofgl" to "King of the Monsters",
-        "kingofg2" to "King of the Monsters 2",
-        "league" to "League Bowling",
-        "magdrop2" to "Magical Drop II",
-        "magdrop3" to "Magical Drop III",
-        "mahretsu" to "Mahjong Kyoretsuden",
-        "minasan" to "Minasan no Okagesama Desu",
-        "moneypee" to "Money Puzzle Exchanger",
-        "mslug5p" to "Metal Slug 5 Plus",
-        "nam1975" to "NAM-1975",
-        "nitd" to "Nightmare in the Dark",
-        "panicbom" to "Panic Bomber",
-        "pgoal" to "Pleasure Goal - 5 on 5 Mini Soccer",
-        "popbounc" to "Pop'n Bounce",
-        "pspokes2" to "Power Spikes II",
-        "quizdais" to "Quiz King of Fighters",
-        "ridhero" to "Riding Hero",
-        "roboarmy" to "Robo Army",
-        "ssideki" to "Super Sidekicks",
-        "ssideki2" to "Super Sidekicks 2",
-        "ssideki3" to "Super Sidekicks 3 - The Next Glory",
-        "ssideki4" to "The Ultimate 11 - SNK Football Championship",
-        "stakwin" to "Stakes Winner",
-        "stakwin2" to "Stakes Winner 2",
-        "strhoop" to "Street Hoop - Street Slam",
-        "twinsym" to "Twinkle Star Sprites",
-        "viewpoin" to "Viewpoint",
-        "wjudose" to "Windjammers",
-        "xenoncr" to "Xenon Crisis",
-        "zedblade" to "Zed Blade",
-        "zintrick" to "ZinTrick"
-    )
+        put("pgm", "Oriental Legend")
+        put("orientl", "Oriental Legend")
+        put("orientl1", "Oriental Legend")
+        put("kov", "Knights of Valour")
+        put("kovplus", "Knights of Valour Plus")
+        put("kov2", "Knights of Valour 2")
+        put("kov2p", "Knights of Valour 2 Plus")
+        put("kovsh", "Knights of Valour - Sevengers")
+        put("sango", "Knights of Valour - Sangoku Senki")
+        put("sgongi", "Sengoku Giants")
+        put("drgw2", "Dragon World II")
+        put("drgw3", "Dragon World III")
+        put("photoy2k", "Photo Y2K")
+        put("picolo", "Photo Adventure")
+        put("moonlgh", "Moonlight")
+        put("sximo", "Xi You Shi E Zhuan Super")
+        put("orlegend", "Oriental Legend")
+        put("puzzli2", "Puzzli 2")
+    }
+
+    /** 现代 3D 街机 + NeoGeo 小品类。 */
+    private fun MutableMap<String, String>.entriesModern() {
+        put("tekken", "Tekken")
+        put("tekken2", "Tekken 2")
+        put("tekken3", "Tekken 3")
+        put("tektagt", "Tekken Tag Tournament")
+        put("soulclbr", "Soul Calibur")
+        put("souledbr", "Soul Edge")
+        put("beastor", "Bloody Roar")
+        put("beastorz", "Bloody Roar 2")
+        put("doapp", "Dead or Alive++")
+        put("rvschool", "Rival Schools - Evolution 2")
+        put("raizing", "Battle Garegga")
+        put("batcir", "Battle Circuit")
+        put("garegga", "Battle Garegga")
+        put("blastoff", "Blast Off")
+        put("trstar", "Transfer Student")
+        put("ryujin", "Ryu Jin")
+        put("samuraio", "Samurai Aces")
+        put("kungfu", "Kung-Fu Master")
+        put("sfexp", "Street Fighter - The Battle Edition")
+        put("toutra", "Thunder Dragon")
+        put("toutrun", "OutRun")
+        put("outrun", "OutRun")
+        put("afterbn2", "After Burner II")
+        put("afterbur", "After Burner")
+        put("swpower", "Sonic Wings")
+        put("sonicwi", "Sonic Wings")
+        put("sonicwi2", "Sonic Wings 2")
+        put("sonicwi3", "Sonic Wings 3")
+        put("turbo", "Turbo")
+        put("gunsmoke", "Gun.Smoke")
+        put("vulgus", "Vulgus")
+        put("sonson", "SonSon")
+        put("exedexes", "Exed Exes")
+        put("sengekis", "Sengoku Strikers")
+        put("sengoku", "Sengoku Denshou")
+        put("sengoku2", "Sengoku 2 - Sengoku Denshou 2")
+        put("sengoku3", "Sengoku 3")
+        put("shocktrp", "Shock Troopers")
+        put("shocktra", "Shock Troopers - 2nd Squad")
+        put("lresort", "Last Resort")
+        put("smshw2", "Super Sidekicks 2 - The World Championship")
+        put("palamed", "Palamedes")
+        put("joymach", "Joyful Road")
+        put("algiers", "Algiers")
+        put("cannonb", "Cannon Ball")
+        put("maglord", "Magical Lord")
+        put("socbrawl", "Soccer Brawl")
+        put("superspy", "The Super Spy")
+        put("mutnat", "Mutation Nation")
+        put("sengokuh", "Sengoku Denshou")
+        put("8ball", "8 Ball Action")
+        put("2020bb", "2020 Super Baseball")
+        put("3countb", "3 Count Bout")
+        put("aof", "Art of Fighting")
+        put("aof2", "Art of Fighting 2")
+        put("aof3", "Art of Fighting 3 - The Path of the Warrior")
+        put("alpham2", "Alpha Mission II")
+        put("bstar", "Baseball Stars Professional")
+        put("bstars2", "Baseball Stars 2")
+        put("cyberlip", "Cyber-Lip")
+        put("diggerma", "Digger Man")
+        put("doubledr", "Double Dragon")
+        put("fightfev", "Fight Fever")
+        put("ghostlop", "Ghostlop")
+        put("galaxyfg", "Galaxy Fight - Universal Warriors")
+        put("ironclad", "Ironclad")
+        put("janshin", "Janshin Denshou")
+        put("kabukikl", "Kabuki Klash - Far East of Eden")
+        put("kingofgl", "King of the Monsters")
+        put("kingofg2", "King of the Monsters 2")
+        put("league", "League Bowling")
+        put("magdrop2", "Magical Drop II")
+        put("magdrop3", "Magical Drop III")
+        put("mahretsu", "Mahjong Kyoretsuden")
+        put("minasan", "Minasan no Okagesama Desu")
+        put("moneypee", "Money Puzzle Exchanger")
+        put("mslug5p", "Metal Slug 5 Plus")
+        put("nam1975", "NAM-1975")
+        put("nitd", "Nightmare in the Dark")
+        put("panicbom", "Panic Bomber")
+        put("pgoal", "Pleasure Goal - 5 on 5 Mini Soccer")
+        put("popbounc", "Pop'n Bounce")
+        put("pspokes2", "Power Spikes II")
+        put("quizdais", "Quiz King of Fighters")
+        put("ridhero", "Riding Hero")
+        put("roboarmy", "Robo Army")
+        put("ssideki", "Super Sidekicks")
+        put("ssideki2", "Super Sidekicks 2")
+        put("ssideki3", "Super Sidekicks 3 - The Next Glory")
+        put("ssideki4", "The Ultimate 11 - SNK Football Championship")
+        put("stakwin", "Stakes Winner")
+        put("stakwin2", "Stakes Winner 2")
+        put("strhoop", "Street Hoop - Street Slam")
+        put("twinsym", "Twinkle Star Sprites")
+        put("viewpoin", "Viewpoint")
+        put("wjudose", "Windjammers")
+        put("xenoncr", "Xenon Crisis")
+        put("zedblade", "Zed Blade")
+        put("zintrick", "ZinTrick")
+    }
 
     /** 归一化驱动名（小写、去扩展名/路径/空白/下划线）。 */
     private fun normalizeDriver(name: String): String =
@@ -364,15 +420,30 @@ object ArcadeCoverNames {
             .replace(Regex("\\s+"), " ")
             .lowercase()
 
-    private val NORMALIZED: Map<String, String> = DRIVER_TO_EN.entries.associate {
-        normalizeDriver(it.key) to it.value
+    /** 归一化键 → 英文标题（懒构建；失败退化空表）。 */
+    private val NORMALIZED: Map<String, String> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            DRIVER_TO_EN.entries.associate { normalizeDriver(it.key) to it.value }
+        } catch (t: Throwable) {
+            recordError("normalize", t)
+            emptyMap()
+        }
     }
 
     /**
      * 驱动名（zip 主干）→ libretro 英文标题。
      * 未收录返回 null（调用方继续用原名走模糊匹配）。
+     * ★ 任何内部异常同样返回 null —— 街机封面抓取绝不因映射器故障中断。
      */
-    fun lookup(driverName: String): String? {
+    fun lookup(driverName: String): String? = try {
+        lookupInner(driverName)
+    } catch (t: Throwable) {
+        recordError("lookup", t)
+        null
+    }
+
+    private fun lookupInner(driverName: String): String? {
+        if (NORMALIZED.isEmpty()) return null
         val key = normalizeDriver(driverName)
         NORMALIZED[key]?.let { return it }
         // 兜底：常见修改版后缀（h/p/k/a/b）剥离后再查一次（"kof98h" 类

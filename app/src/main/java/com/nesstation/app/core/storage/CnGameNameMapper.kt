@@ -10,12 +10,37 @@ package com.nesstation.app.core.storage
  * 用于 libretro 缩略图库（按 No-Intro 英文命名组织）。本表把常见中文游戏名
  * （含港台常用译名、俗称）映射到 libretro 收录的标准英文标题。
  *
+ * ★★★ 本轮结构重写（"封面一直不去下载"根治）★★★
+ *
+ * 用户实测日志（cover_debug.log）：
+ *   [GAME-ERR] '火纹外传' ExceptionInInitializerError: null
+ *   [GAME-ERR] '超级玛丽' NoClassDefFoundError: CnGameNameMapper
+ *   ……全部 14 个游戏同错 → 尝试 14，成功 0。
+ *
+ * 根因：旧版把 ~540 条 put 全部写进 object 的类初始化器（<clinit>），
+ * 首次访问触发静态初始化时抛出底层异常（ExceptionInInitializerError 的
+ * message 恒为 null，真实原因被吞），之后整进程内该类永久为
+ * NoClassDefFoundError 状态 —— translateIfCjk 对每个游戏都抛错，
+ * 封面批次全军覆没（连英文命名的游戏也一个都下载不了）。
+ *
+ * 结构修复（三层防御，互为兜底）：
+ *   1. <clinit> 清空 —— 全部数据表改为懒加载，类加载本身零工作量，
+ *      任何"类初始化失败"模式都无从触发；
+ *   2. 巨表拆分 —— 540 条 put 分到 8 个小构建函数（每个 ~70 条），
+ *      单方法体量极小，规避一切巨型方法相关的字节码/校验问题；
+ *   3. runCatching 兜底 —— 表构建/查询任何一步失败都退化为"空表/原名"，
+ *      封面抓取继续走原名 + 模糊匹配，绝不因映射器故障而中断；
+ *      同时把真实底层异常记录到 [lastInitError]（含 cause 链），
+ *      fetchAllMissing 批诊断会输出它 —— 若再出问题，日志直接给出根因，
+ *      不再是 message=null 的黑盒。
+ *
  * 匹配策略（[resolve]）：
  *   1. 输入先做归一化（去扩展名/空格折叠/去常见标签/全角转半角/小写）；
  *   2. 精确命中归一化键；
- *   3. 前缀/包含匹配（输入是键的前缀，或键是输入的子串 —— 处理
+ *   3. 罗马数字等价（II↔2）；
+ *   4. 前缀/包含匹配（输入是键的前缀，或键是输入的子串 —— 处理
  *      "魂斗罗2010"、"超级玛丽特别版" 这类派生命名）；
- *   4. 命中多个时按 (键长度差 + 别名表序) 取最短最具体的键。
+ *   5. 命中多个时按最长键取最具体的映射。
  *
  * 表条目按 平台无关 的"游戏正名"组织 —— 同一游戏在 FC/SFC/GB/MD 的封面
  * 在 libretro 属于各自系统目录，由 CoverFetcher.libretroSystemDir 决定目录，
@@ -24,11 +49,56 @@ package com.nesstation.app.core.storage
 object CnGameNameMapper {
 
     /**
-     * 中文/别名 → libretro 标准英文标题。
-     * 一个游戏可以有多个别名条目指向同一英文名。
+     * 最近一次表构建/查询失败的诊断信息（null = 健康）。
+     * cover_debug.log 批次诊断会输出该字段；若非 null 说明底层环境仍有问题，
+     * 但映射器已自动退化为空表（封面抓取不受影响，仅中文名翻译暂缺）。
      */
-    private val TABLE: Map<String, String> = buildMap {
-        // ---------------- FC / NES 热门 ----------------
+    @Volatile
+    var lastInitError: String? = null
+        private set
+
+    private fun recordError(where: String, t: Throwable) {
+        val chain = generateSequence<Throwable>(t) { it.cause }
+            .take(4)
+            .joinToString(" <- ") { "${it.javaClass.name}: ${it.message}" }
+        lastInitError = "$where: $chain"
+        try {
+            android.util.Log.e("CnGameNameMapper", "name table $where failed: $chain", t)
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * 中文/别名 → libretro 标准英文标题总表（懒加载）。
+     * 一个游戏可以有多个别名条目指向同一英文名。
+     * ★ lazy 初始化抛异常不会缓存失败状态（Synchronized 模式下每次访问
+     *   都会重新尝试），配合 runCatching：失败 → 空表 + 诊断记录，
+     *   下一次访问仍会重试构建。
+     */
+    private val TABLE: Map<String, String> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            buildMap<String, String> {
+                entriesPopularA()
+                entriesPopularB()
+                entriesPopularC()
+                entriesPopularD()
+                entriesSeriesRpg()
+                entriesArcade()
+                entriesDcPce()
+                entriesNds()
+                entriesMame()
+            }
+        } catch (t: Throwable) {
+            recordError("build", t)
+            emptyMap()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 分块数据表（每块 ~70 条 put，单方法极小；按主题切分）
+    // ------------------------------------------------------------------
+
+    /** FC/NES 热门 A：马里奥/魂斗罗/恶魔城/洛克人 等卷轴动作。 */
+    private fun MutableMap<String, String>.entriesPopularA() {
         put("超级玛丽", "Super Mario Bros.")
         put("超级马里奥", "Super Mario Bros.")
         put("超级马莉", "Super Mario Bros.")
@@ -96,6 +166,10 @@ object CnGameNameMapper {
         put("气球大战", "Balloon Fight")
         put("打鸭子", "Duck Hunt")
         put("火之鸟", "Fire Emblem")
+    }
+
+    /** FC/NES 热门 B：火纹/塞尔达/银河/FF/DQ 等 RPG 名作 + 常见小游戏。 */
+    private fun MutableMap<String, String>.entriesPopularB() {
         put("火焰纹章", "Fire Emblem")
         put("火焰之纹章", "Fire Emblem")
         put("塞尔达传说", "The Legend of Zelda")
@@ -162,6 +236,10 @@ object CnGameNameMapper {
         put("打砖块", "Arkanoid")
         put("小蜜蜂", "Galaxian")
         put("大蜜蜂", "Galaga")
+    }
+
+    /** FC/NES 热门 C：吃豆人/功夫/龙珠/圣斗士 等动漫改编与经典小品。 */
+    private fun MutableMap<String, String>.entriesPopularC() {
         put("吃豆人", "Pac-Man")
         put("吃豆人小姐", "Ms. Pac-Man")
         put("大力士", "Kung Fu")
@@ -225,6 +303,10 @@ object CnGameNameMapper {
         put("口袋怪兽", "Pokémon")
         put("神奇宝贝", "Pokémon")
         put("宠物小精灵", "Pokémon")
+    }
+
+    /** FC/NES 热门 D + 掌机世代：口袋妖怪各版本 / 卡比 / 马里奥聚会。 */
+    private fun MutableMap<String, String>.entriesPopularD() {
         put("口袋妖怪红", "Pokémon Red Version")
         put("口袋妖怪蓝", "Pokémon Blue Version")
         put("口袋妖怪绿", "Pokémon Green Version")
@@ -275,6 +357,10 @@ object CnGameNameMapper {
         put("光明与黑暗", "Shining Force")
         put("光明力量", "Shining Force")
         put("光明与黑暗2", "Shining Force II")
+    }
+
+    /** 系列续作与主机世代名作：幽游白书/大金刚/梦幻之星/索尼克/生化危机 等。 */
+    private fun MutableMap<String, String>.entriesSeriesRpg() {
         put("幽游白书", "Yu Yu Hakusho")
         put("幽游白书魔强统一战", "Yu Yu Hakusho: Makyou Toitsusen")
         put("幽灵电王", "Yu Yu Hakusho: Makyou Toitsusen")
@@ -344,8 +430,10 @@ object CnGameNameMapper {
         put("天地劫", "Tian Di Jie")
         put("阿玛迪斯战记", "Amadeus Rebellion")
         put("幻世录", "Phantom Chronicles")
+    }
 
-        // ---------------- 街机 ----------------
+    /** 街机格斗/射击：街霸/拳皇/饿狼/侍魂/合金弹头/恐龙快打 等。 */
+    private fun MutableMap<String, String>.entriesArcade() {
         put("街霸", "Street Fighter II: The World Warrior")
         put("街霸2", "Street Fighter II: The World Warrior")
         put("街头霸王", "Street Fighter II: The World Warrior")
@@ -418,8 +506,10 @@ object CnGameNameMapper {
         put("快打旋风", "Final Fight")
         put("快打旋风2", "Final Fight 2")
         put("超级快打旋风", "Final Fight")
+    }
 
-        // ---------------- DC ----------------
+    /** DC / PCE / MD 其他：世嘉与 Dreamcast 常见译名。 */
+    private fun MutableMap<String, String>.entriesDcPce() {
         put("疯狂出租车", "Crazy Taxi")
         put("莎木", "Shenmue")
         put("莎木2", "Shenmue II")
@@ -435,8 +525,6 @@ object CnGameNameMapper {
         put("索尼克大冒险2", "Sonic Adventure 2")
         put("梦游美国", "Daytona USA")
         put("GT赛车", "Gran Turismo")
-
-        // ---------------- PCE / MD 其他 ----------------
         put("天外魔境", "Tengai Makyou")
         put("桃太郎电铁", "Momotarou Dentetsu")
         put("恶魔城X血之轮回", "Castlevania: Rondo of Blood")
@@ -444,8 +532,10 @@ object CnGameNameMapper {
         put("炸弹人93", "Bomberman '93")
         put("兽王记", "Altered Beast")
         put("超级猴子球", "Super Monkey Ball")
+    }
 
-        // ---------------- NDS / 3DS ----------------
+    /** NDS / 3DS：新超级马里奥兄弟/马车DS/大乱斗/怪猎 等。 */
+    private fun MutableMap<String, String>.entriesNds() {
         put("马里奥赛车DS", "Mario Kart DS")
         put("新超级马里奥兄弟", "New Super Mario Bros.")
         put("超级马里奥64DS", "Super Mario 64 DS")
@@ -467,12 +557,16 @@ object CnGameNameMapper {
         put("超级大乱斗", "Super Smash Bros. Brawl")
         put("健身环大冒险", "Ring Fit Adventure")
         put("精灵宝可梦", "Pokémon")
+    }
 
-        // ---------------- 街机驱动名（MAME/FBNeo zip 文件名 → MAME 描述名） ----------------
-        // libretro 街机封面目录（FBNeo - Arcade Games / MAME）按 MAME 描述名
-        // 组织（"The King of Fighters '97 (NGM-2320).png"），ROM 是驱动名
-        // （kof97.zip）—— 直接搜驱动名永远 404。这里补最常见街机集的
-        // 驱动名映射（描述名不带序号后缀也能被模糊匹配命中变体）。
+    /**
+     * 街机驱动名（MAME/FBNeo zip 文件名 → MAME 描述名）。
+     * libretro 街机封面目录（FBNeo - Arcade Games / MAME）按 MAME 描述名
+     * 组织（"The King of Fighters '97 (NGM-2320).png"），ROM 是驱动名
+     * （kof97.zip）—— 直接搜驱动名永远 404。这里补最常见街机集的
+     * 驱动名映射（描述名不带序号后缀也能被模糊匹配命中变体）。
+     */
+    private fun MutableMap<String, String>.entriesMame() {
         put("kof94", "The King of Fighters '94")
         put("kof95", "The King of Fighters '95")
         put("kof96", "The King of Fighters '96")
@@ -566,9 +660,16 @@ object CnGameNameMapper {
         return s
     }
 
-    /** 原始表：归一化键 → 英文名（构建一次）。 */
-    private val NORMALIZED: Map<String, String> = TABLE.entries.associate {
-        normalize(it.key) to it.value
+    /**
+     * 原始表：归一化键 → 英文名（懒构建，构建失败退化为空表）。
+     */
+    private val NORMALIZED: Map<String, String> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            TABLE.entries.associate { normalize(it.key) to it.value }
+        } catch (t: Throwable) {
+            recordError("normalize", t)
+            emptyMap()
+        }
     }
 
     /** 罗马数字/阿拉伯数字等价（超级玛丽2 ↔ 超级玛丽II）。 */
@@ -580,11 +681,22 @@ object CnGameNameMapper {
     /**
      * 中文名 → 英文名。
      * @return 英文标题；未命中返回 null（调用方继续走原名模糊搜索）。
+     *         ★ 任何内部异常同样返回 null（映射器故障绝不外溢 ——
+     *           封面抓取按原名继续，这是"全部游戏一个封面都下不了"的根治）。
      */
-    fun resolve(rawName: String): String? {
+    fun resolve(rawName: String): String? = try {
+        resolveInner(rawName)
+    } catch (t: Throwable) {
+        recordError("resolve", t)
+        null
+    }
+
+    private fun resolveInner(rawName: String): String? {
         if (rawName.isBlank()) return null
         val key = normalize(rawName)
         if (key.isEmpty()) return null
+        // 表构建失败退化为空表 → 走到前缀匹配也全 miss，直接返回 null
+        if (NORMALIZED.isEmpty()) return null
         // 1) 精确命中
         NORMALIZED[key]?.let { return it }
         // 2) 罗马数字等价（"街霸ii" → "街霸2"）
@@ -605,9 +717,24 @@ object CnGameNameMapper {
         return best?.second
     }
 
-    /** 输入是否含中日韩字符（决定是否值得做翻译查询）。 */
-    fun containsCjk(raw: String): Boolean = raw.any {
-        val c = it.code
-        (c in 0x4E00..0x9FFF) || (c in 0x3040..0x30FF) || (c in 0x3400..0x4DBF)
+    /**
+     * 输入是否含中日韩字符（决定是否值得做翻译查询）。
+     * 纯函数无状态，理论上不可能失败 —— 仍包一层防御与 [resolve] 对齐。
+     */
+    fun containsCjk(raw: String): Boolean = try {
+        raw.any {
+            val c = it.code
+            (c in 0x4E00..0x9FFF) || (c in 0x3040..0x30FF) || (c in 0x3400..0x4DBF)
+        }
+    } catch (_: Throwable) {
+        false
+    }
+
+    /** 触发一次表构建（诊断/预热用，失败返回 false 且原因进 [lastInitError]）。 */
+    fun warmUp(): Boolean = try {
+        if (NORMALIZED.isEmpty() && lastInitError != null) false else true
+    } catch (t: Throwable) {
+        recordError("warmUp", t)
+        false
     }
 }

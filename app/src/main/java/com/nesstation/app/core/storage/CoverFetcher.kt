@@ -659,6 +659,19 @@ object CoverFetcher {
      * libretro 收录标题（精确命中），全部 404 再用驱动名走模糊匹配。
      */
     fun searchNamesFor(game: GameEntry): List<String> {
+        // ★ 整体兑底（本轮“尝试 14，成功 0”根治配套）：任何一步抛异常都
+        //   退化为空搜索名（该游戏本轮跳过），绝不把异常抛出导致整批每个
+        //   游戏都在 [GAME-ERR] 处中断 —— 封面批次永远能推进到网络层。
+        return try {
+            searchNamesForInner(game)
+        } catch (t: Throwable) {
+            Log.w(TAG, "searchNamesFor failed for '${game.title}': " +
+                "${t.javaClass.simpleName}: ${t.message}")
+            emptyList()
+        }
+    }
+
+    private fun searchNamesForInner(game: GameEntry): List<String> {
         val out = LinkedHashMap<String, Boolean>()
         when (game.platform) {
             GamePlatform.ARCADE, GamePlatform.DC -> {
@@ -668,7 +681,11 @@ object CoverFetcher {
                     ?: return emptyList()
                 if (game.platform == GamePlatform.ARCADE) {
                     // 1) 驱动名 → libretro 英文标题（"kof97" → "The King of Fighters '97"）
-                    ArcadeCoverNames.lookup(base)?.let { out[it] = true }
+                    try {
+                        ArcadeCoverNames.lookup(base)?.let { out[it] = true }
+                    } catch (_: Throwable) {
+                        // 映射器故障（理论上已内部兑底）不影响后续原名搜索
+                    }
                     // 2) 驱动名主干原样兜底（模糊匹配路径）
                     out[base] = true
                     // 3) 标题若为中文（自定义名）也尝试翻译
@@ -748,12 +765,20 @@ object CoverFetcher {
 
     /** 含 CJK 的名字先过中文→英文映射；未命中原样返回（继续走模糊匹配）。 */
     private fun translateIfCjk(name: String): String {
-        if (!CnGameNameMapper.containsCjk(name)) return name
-        CnGameNameMapper.resolve(name)?.let {
-            Log.i(TAG, "cn name mapped: '$name' -> '$it'")
-            return it
+        // ★ 双层兑底：CnGameNameMapper 内部已 fail-soft（详见其文件头注释：
+        //   旧版 ~540 条 put 全在 <clinit>，首次访问 ExceptionInInitializerError
+        //   → 全进程 NoClassDefFoundError → "尝试 14，成功 0"）。这里再加一道
+        //   防线：任何残余异常（含类加载层问题）都退化为原名，封面抓取绝不中断。
+        return try {
+            if (!CnGameNameMapper.containsCjk(name)) return name
+            CnGameNameMapper.resolve(name)?.let {
+                Log.i(TAG, "cn name mapped: '$name' -> '$it'")
+                it
+            } ?: name
+        } catch (t: Throwable) {
+            Log.w(TAG, "cn translate failed for '$name': ${t.javaClass.simpleName}: ${t.message}")
+            name
         }
-        return name
     }
 
     /**
@@ -1406,6 +1431,30 @@ object CoverFetcher {
                             "—— 实时尝试日志 ——\n")
                 }
             } catch (_: Throwable) {}
+        }
+        // ★★ 名字映射器健康预热（本轮"尝试 14，成功 0"根因的配套诊断）★★
+        //   两个映射器已重构为 fail-soft（表构建失败 → 空表 + 原名继续下载），
+        //   这里强制构建一次并把健康状态写入日志：
+        //   - OK：中→英翻译/街机驱动名翻译可用；
+        //   - DEGRADED：映射器退化（表构建抛异常），封面抓取不受影响
+        //     （按原名 + 模糊匹配），但日志会给出**真实底层异常链**
+        //     （旧版 ExceptionInInitializerError 的 message 恒为 null，根因
+        //     被完全吞掉 —— 现在不再黑盒）。
+        try {
+            val cnErr = CnGameNameMapper.lastInitError
+            val cnHit = CnGameNameMapper.resolve("超级玛丽")
+            logAttempt(if (cnErr == null)
+                "[MAPPER] CnGameNameMapper: OK (探针 '超级玛丽' -> '$cnHit')"
+            else
+                "[MAPPER] CnGameNameMapper: DEGRADED, 本批中文名将按原名兜底搜索: $cnErr")
+            val acErr = ArcadeCoverNames.lastInitError
+            val acHit = ArcadeCoverNames.lookup("kof97")
+            logAttempt(if (acErr == null)
+                "[MAPPER] ArcadeCoverNames: OK (探针 'kof97' -> '$acHit')"
+            else
+                "[MAPPER] ArcadeCoverNames: DEGRADED, 本批街机驱动名将按原名兜底搜索: $acErr")
+        } catch (t: Throwable) {
+            logAttempt("[MAPPER] 健康预检自身异常: ${t.javaClass.name}: ${t.message}")
         }
         if (pending.isEmpty()) {
             // 统计归零并标注全部已有封面（UI 提示更准确）

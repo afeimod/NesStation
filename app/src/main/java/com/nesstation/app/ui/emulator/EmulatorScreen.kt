@@ -1697,6 +1697,15 @@ fun EmulatorScreen(
         ))
     }
 
+    // ★★ 3DS 双屏编辑器拖动中标记（本轮"自定义布局调整后又恢复到原样"根治）★★
+    //   3DS 拖动中不写 ndsTopRect/ndsBottomRect 状态（避免 60Hz 全屏重组卡顿），
+    //   但编辑器外部状态与编辑器内部矩形因此会短暂不一致 —— 此时任何
+    //   其它状态变化引起的重组都会执行 AndroidView.update 的
+    //   setRects(ndsTopRect, ndsBottomRect)，把过期矩形回写给编辑器
+    //   （= 用户看到的"拖完松手矩形弹回原位"）。拖动中置 true，update
+    //   块据此跳过回写；松手（confirm）时同步一次新矩形再持久化。
+    var ndsEditorDragging by remember { mutableStateOf(false) }
+
     // === Debounced persistence of PadLayout ===
     // Dragging a button fires onLayoutChange on EVERY pointer move event
     // (60+ times per second). Calling PadLayoutStore.save() on each event
@@ -2064,9 +2073,16 @@ fun EmulatorScreen(
         if (showNdsCustomLayoutEditor) {
             Toast.makeText(
                 context,
-                "NDS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成",
+                if (platform == GamePlatform.N3DS)
+                    "3DS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成"
+                else
+                    "NDS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成",
                 Toast.LENGTH_LONG
             ).show()
+        } else {
+            // 编辑器关闭（返回键/完成）时清拖动标记：避免拖动中途退出后
+            // 标记残留，下次打开期间 update 块被误跳过。
+            ndsEditorDragging = false
         }
     }
 
@@ -2433,6 +2449,30 @@ fun EmulatorScreen(
                             "重新授予『所有文件访问』后再进游戏。"
                         return@LaunchedEffect
                     }
+                }
+            }
+            // ★★ 3DS 建档卡死前端修复（本轮）：loadRom 前清理半格式化存档。
+            //   Azahar 存档格式化是"先建目录再写文件"两步 —— 上一局中途退出
+            //   会留下只有目录没有文件的坏存档；下次进游戏 FS 判定"已格式化"
+            //   → 游戏直接 OpenFile 读 sys/slot_* → 文件不存在 → 部分游戏
+            //   （时之笛 3D 等）死等卡死（用户日志停在 slot_1 后再无输出）。
+            //   这里删掉"零文件"的 data 目录让游戏重新完整建档；只删空目录，
+            //   有任何存档文件的目录绝不动（详见 AzaharSaveDataRepair 注释）。
+            if (platform == GamePlatform.N3DS) {
+                val repaired = withContext(Dispatchers.IO) {
+                    com.nesstation.app.core.storage.AzaharSaveDataRepair
+                        .repairIncompleteSaveData(context)
+                }
+                if (repaired > 0) {
+                    android.util.Log.i("EmulatorScreen",
+                        "3DS save repair: removed $repaired incomplete save dir(s)")
+                    try {
+                        Toast.makeText(
+                            context,
+                            "已清理 $repaired 个不完整的 3DS 存档目录（建档卡死修复）",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } catch (_: Throwable) {}
                 }
             }
             val ok = withContext(Dispatchers.IO) {
@@ -4027,7 +4067,23 @@ fun EmulatorScreen(
                                     //   全量重组 → "拖动游戏画面非常卡"。
                                     //   编辑器视图自绘实时反馈（invalidate 自身），
                                     //   这里只在松手(confirm)时持久化即可。
-                                    if (confirm) persistDualRects(top, bottom)
+                                    //
+                                    //   ★★ 本轮补丁（"调整后又恢复到原样"根治）★★
+                                    //   旧版松手只 persistDualRects：padLayout 变化 →
+                                    //   全屏重组 → AndroidView.update 用**从未更新
+                                    //   过的** ndsTopRect/ndsBottomRect 回写编辑器 →
+                                    //   矩形弹回拖动前位置；再点「完成」又把过期
+                                    //   状态写回 padLayout → 自定义布局全部白调。
+                                    //   松手时同步一次新矩形（单次写入，无 60Hz
+                                    //   重组代价），编辑器显示与持久化数据始终一致。
+                                    if (confirm) {
+                                        ndsEditorDragging = false
+                                        ndsTopRect = top.copyOf()
+                                        ndsBottomRect = bottom.copyOf()
+                                        persistDualRects(top, bottom)
+                                    } else {
+                                        ndsEditorDragging = true
+                                    }
                                 } else {
                                     // NDS：画布路径的实时双屏位置仍需状态驱动
                                     ndsTopRect = top
@@ -4042,7 +4098,13 @@ fun EmulatorScreen(
                     }
                 },
                 update = { ed: NdsScreenPositionEditor ->
-                    ed.setRects(ndsTopRect, ndsBottomRect)
+                    // ★ 3DS 拖动中禁止回写：拖动期间外部状态是过期值（性能
+                    //   优化有意为之），此时任何重组（FPS 计数器、进度回调等）
+                    //   触发本 update 都会把编辑器矩形重置回拖前位置 ——
+                    //   跳过，让编辑器保持自绘的最新矩形。
+                    if (!(platform == GamePlatform.N3DS && ndsEditorDragging)) {
+                        ed.setRects(ndsTopRect, ndsBottomRect)
+                    }
                 },
                 modifier = Modifier.fillMaxSize()
             )
