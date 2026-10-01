@@ -5100,7 +5100,18 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
             engine.setCoreOption("GFX.ini/Settings/ShowFPS", b(layout.irShowFps))
             engine.setCoreOption("GFX.ini/Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
-            engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.irAspect)
+            // ★★★ NGC/WII 画面比例取消（本轮）：恒写 "3"（拉伸到窗口）★★★
+            //   需求原话："ngcwii核心设置取消屏幕比例，要根据全局屏幕缩放来，
+            //   保证正常自定义布局"。核心拉伸 = 画面铺满前端给的 Surface，
+            //   最终画面形状 100% 由全局「屏幕缩放」决定：
+            //     - stretch → 全屏填充；
+            //     - 4:3 / 16:9 / 8:7 → 前端按该比例排 Surface，核心铺满
+            //       （所见即所得，无核心侧二次黑边）；
+            //     - custom → Surface 即玩家拖的自由布局矩形，核心铺满
+            //       （自定义布局精确生效 —— 旧实现核心按自动/4:3 自行
+            //       加黑边，导致自定义矩形里画面变形/留边）。
+            //   irAspect 字段保留仅为存量存档兼容，不再被任何 UI 写入。
+            engine.setCoreOption("GFX.ini/Settings/AspectRatio", "3")
             engine.setCoreOption("GFX.ini/Enhancements/MaxAnisotropy", layout.irAnisotropy)
             // ★★★ 全局滤镜 xbr/hqx 生效（NGC/Wii 分支）★★：
             //   Dolphin/Ishiiruka 是直绘核心（前端 setVideoFilter no-op），
@@ -6485,8 +6496,11 @@ fun OnScreenController(
     val ngcWiiNunchuk = ngcWiiWiiSet && ngcWiiExtension == "nunchuk"
     val ngcWiiHoriz = ngcWiiWiiSet && ngcWiiOrientation == "horizontal"
     // Wii 模式 L/R 复用位：竖持（双节棍/无扩展）= 摇晃（引擎映射 WIIMOTE_SHAKE），
-    // 经典手柄 = ZL/ZR（引擎映射 CLASSIC_BUTTON_ZL/ZR）。横持隐藏。
-    val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || (ngcWiiWiiSet && !ngcWiiHoriz))
+    // 经典手柄 = ZL/ZR（引擎映射 CLASSIC_BUTTON_ZL/ZR）。
+    // ★★ 本轮（横持补全体感键）：横持不再隐藏 L/R —— 横持 Wiimote 同样
+    //   支持 X/Z 轴摇晃（甩手、抖 Mii 类体感玩法），需求原话：“wii横持
+    //   手柄也要加入红外等所有体感按钮”。
+    val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || ngcWiiWiiSet)
 
     // Which extra buttons to show based on platform.
     // SNES / ARCADE / MD / PCE: 6-button layout — show all of A/B/X/Y/L/R.
@@ -6685,7 +6699,8 @@ fun OnScreenController(
     val showNgcX = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_x")
     val showNgcY = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_y")
     val showNgcZ = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_z")
-    // L/R 通用槽位：GC = 扳机；经典手柄 = ZL/ZR；竖持 wiimote = 摇晃。横持隐藏。
+    // ★ L/R 通用槽位：GC = 扳机；经典手柄 = ZL/ZR；wiimote（竖持/横持）= 摇晃。
+    //   横持同样提供（体感需求），可在「显隐按键」里单独关闭。
     val showNgcL = ngcWiiShowGenericLR && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_l")
     val showNgcR = ngcWiiShowGenericLR && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_r")
     val showNgcStart = ngcWiiGcSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "ngc_start")
@@ -6697,16 +6712,17 @@ fun OnScreenController(
     val showWii2 = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_2")
     val showWiiPlus = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_plus")
     val showWiiMinus = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_minus")
-    // HOME：横持精简隐藏（真实横持操作很少用 HOME）
-    val showWiiHome = ngcWiiWiiSet && !ngcWiiHoriz && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
+    // HOME：横持同样保留（可经「显隐按键」单独关闭；需求：加入所有按钮）
+    val showWiiHome = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
     val showWiiDpad = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_dpad")
     // 双节棍 C/Z：仅双节棍组合显示
     val showWiiC = ngcWiiNunchuk && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_c")
     val showWiiZ = ngcWiiNunchuk && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_z")
-    // IR 进深：经典手柄（双摇杆占手）与横持（无指向玩法）隐藏
-    val showWiiIrNear = ngcWiiWiiSet && !ngcWiiClassic && !ngcWiiHoriz &&
+    // IR 进深：经典手柄（双摇杆占手）隐藏；竖持/横持都提供 —— 横持
+    //   同样可指 IR（体感需求：“wii横持手柄也要加入红外等所有体感按钮”）
+    val showWiiIrNear = ngcWiiWiiSet && !ngcWiiClassic &&
         !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_near")
-    val showWiiIrFar = ngcWiiWiiSet && !ngcWiiClassic && !ngcWiiHoriz &&
+    val showWiiIrFar = ngcWiiWiiSet && !ngcWiiClassic &&
         !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_far")
     // 3DS ZL/ZR 显隐
     val showZlBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
@@ -9846,7 +9862,8 @@ private fun PadLayoutEditor(
     val ngcWiiClassic = ngcWiiWiiSet && ngcWiiExtension == "classic"
     val ngcWiiNunchuk = ngcWiiWiiSet && ngcWiiExtension == "nunchuk"
     val ngcWiiHoriz = ngcWiiWiiSet && ngcWiiOrientation == "horizontal"
-    val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || (ngcWiiWiiSet && !ngcWiiHoriz))
+    // ★ 横持不再隐藏 L/R/HOME/IR 进深（与运行时同源，体感需求）
+    val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || ngcWiiWiiSet)
     // ★ GC 键组完整门控（与运行时 OnScreenController 同源）：通用槽位
     //   （dpad/A/B/X/Y/L/R/START）在 NGCWII 下仅在 GC 模式渲染 —— 否则 Wii
     //   模式下 GC+Wii 键同时出现（用户实测“编辑器里全部按键一起显示”）。
@@ -9865,13 +9882,13 @@ private fun PadLayoutEditor(
     val showWii2 = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_2")
     val showWiiPlus = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_plus")
     val showWiiMinus = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_minus")
-    val showWiiHome = ngcWiiWiiSet && !ngcWiiHoriz && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
+    val showWiiHome = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_home")
     val showWiiDpad = ngcWiiWiiSet && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_dpad")
     val showWiiC = ngcWiiNunchuk && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_c")
     val showWiiZ = ngcWiiNunchuk && !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_z")
-    val showWiiIrNear = ngcWiiWiiSet && !ngcWiiClassic && !ngcWiiHoriz &&
+    val showWiiIrNear = ngcWiiWiiSet && !ngcWiiClassic &&
         !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_near")
-    val showWiiIrFar = ngcWiiWiiSet && !ngcWiiClassic && !ngcWiiHoriz &&
+    val showWiiIrFar = ngcWiiWiiSet && !ngcWiiClassic &&
         !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_far")
 
     // === Per-button visibility for ALL platforms ===
@@ -10155,8 +10172,7 @@ private fun PadLayoutEditor(
             }
             // L/R shoulder buttons (GBA/SNES/ARCADE/MD/PCE)
             // ★ NGC/WII 门控与运行时同源：GC 模式=扳机、经典手柄=ZL/ZR、
-            //   竖持 wiimote=摇晃、横持隐藏（旧版编辑器无条件渲染，导致
-            //   看到与运行时对不上的 L/R，且拖动写错字段 → 无法移动/改大小）
+            //   wiimote（竖持/横持）=摇晃 —— 横持同样渲染（体感需求）
             if (showLR && showLBtn && (!isNgcWii || showNgcL)) {
                 val lLabel = when (platform) {
                     GamePlatform.PCE -> "V"
@@ -13434,10 +13450,10 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {irShowFps = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("启动时编译着色器", "减少游戏中卡顿 (启动变慢)", padLayout.irWaitForShaders == "enabled"
                 ) { onLayoutChange(padLayout.copy {irWaitForShaders = if (it) "enabled" else "disabled"}) }
-                DropdownSetting("画面比例",
-                    listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口"),
-                    padLayout.irAspect
-                ) { onLayoutChange(padLayout.copy {irAspect = it}) }
+                // ★★★ 画面比例（irAspect）设置项已删除（本轮）★★★
+                //   "ngcwii核心设置取消屏幕比例，要根据全局屏幕缩放来，保证
+                //   正常自定义布局"——核心恒按拉伸渲染（applyCoreOptions 处），
+                //   画面形状由全局「屏幕缩放」决定，自定义布局所见即所得。
                 SwitchSetting("EFB 纹理复制 (EFB2RAM→纹理)", "性能关键，关闭会变慢", padLayout.irEfbToTexture == "enabled"
                 ) { onLayoutChange(padLayout.copy {irEfbToTexture = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("EFB 缩放复制", "高清分辨率下保持清晰", padLayout.irEfbScaledCopy == "enabled"

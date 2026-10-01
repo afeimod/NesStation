@@ -361,6 +361,19 @@ object CnGameNameMapper {
 
     /** 系列续作与主机世代名作：幽游白书/大金刚/梦幻之星/索尼克/生化危机 等。 */
     private fun MutableMap<String, String>.entriesSeriesRpg() {
+        // ★ 火焰纹章系列（用户实测 "火纹外传" 未收录 → 补全正名与常见简称）：
+        put("火纹外传", "Fire Emblem Gaiden")
+        put("火纹外传外传", "Fire Emblem Gaiden")
+        put("火纹传说", "Fire Emblem: Shadow Dragon and the Blade of Light")
+        put("火炎之纹章外传", "Fire Emblem Gaiden")
+        put("火炎之纹章", "Fire Emblem: Shadow Dragon and the Blade of Light")
+        put("火焰之纹章外传", "Fire Emblem Gaiden")
+        put("火焰之纹章", "Fire Emblem: Shadow Dragon and the Blade of Light")
+        put("火焰纹章外传", "Fire Emblem Gaiden")
+        put("火焰纹章", "Fire Emblem: Shadow Dragon and the Blade of Light")
+        put("圣火徽章外传", "Fire Emblem Gaiden")
+        put("圣火徽章", "Fire Emblem: Shadow Dragon and the Blade of Light")
+        put("暗黑龙与光之剑", "Fire Emblem: Shadow Dragon and the Blade of Light")
         put("幽游白书", "Yu Yu Hakusho")
         put("幽游白书魔强统一战", "Yu Yu Hakusho: Makyou Toitsusen")
         put("幽灵电王", "Yu Yu Hakusho: Makyou Toitsusen")
@@ -650,9 +663,18 @@ object CnGameNameMapper {
         }
         s = sb.toString()
         // 去括号标签与空白
+        // ★★★ Android ICU 正则转义修复（"DEGRADED: PatternSyntaxException
+        //   near index 11"根因）★★★：Android 的 java.util.regex 底层是 ICU
+        //   引擎（与桌面 OpenJDK 不同）——字符类外的**未转义右花括号/右中
+        //   括号**（"\s*\{[^}]*}" 的结尾 "}"）在 ICU 里按量词闭合符解析，
+        //   直接抛 PatternSyntaxException；桌面 JVM 当字面量放行 → 本 Bug
+        //   只在真机复现。normalize() 是**每次表构建必经**的路径 → 首次
+        //   resolve 即抛 → runCatching 把整表退化为空表（DEGRADED）→ 全部
+        //   中文名按原文搜索 → libretro 全 404。修复：全部右括号字面量
+        //   显式转义（"\]"、"\}"）。
         s = s.replace(Regex("\\s*\\([^)]*\\)"), "")
-            .replace(Regex("\\s*\\[[^]]*]"), "")
-            .replace(Regex("\\s*\\{[^}]*}"), "")
+            .replace(Regex("\\s*\\[[^\\]]*\\]"), "")
+            .replace(Regex("\\s*\\{[^}]*\\}"), "")
             .replace(Regex("\\s+"), "")
             .lowercase()
         // 去尾部数字编号分隔符（"拳皇97 " / "拳皇97版"）
@@ -715,6 +737,274 @@ object CnGameNameMapper {
             }
         }
         return best?.second
+    }
+
+    // ==================================================================
+    // ★★★ 词汇级中文 → 英文模糊翻译（"超级玛丽" → "super mario"）★★★
+    //
+    // 需求来源（用户原话）："要的是模糊搜索，中文翻译成英语……比如超级
+    // 翻译为 super，玛丽翻译为 mario"。全名表（TABLE）只覆盖完整键，
+    // 玩家库里大量"火纹外传"、"超级玛丽HACK版"、"XX汉化版"等派生命名
+    // 永远 miss → 原名（中文）直连 libretro 全 404。本层做**最长匹配
+    // 分词翻译**：把名字里的已收录中文词汇逐个换成英文词，未收录的
+    // 中文字符丢弃（不干扰搜索），字母/数字原样保留 —— 得到英文搜索
+    // 短语后交给 CoverFetcher.fuzzyMatch 对系统索引做模糊匹配。
+    // ==================================================================
+
+    /**
+     * 词汇级中文 → 英文模糊翻译。
+     *
+     * @return 英文搜索短语（如 "super mario" / "fire emblem gaiden"）；
+     *         输入无 CJK、或一个词都命中不了时返回 null（调用方继续用原名）。
+     *         ★ 任何内部异常同样返回 null（与 [resolve] 同级 fail-soft）。
+     */
+    fun fuzzyTranslate(rawName: String): String? = try {
+        fuzzyTranslateInner(rawName)
+    } catch (t: Throwable) {
+        recordError("fuzzyTranslate", t)
+        null
+    }
+
+    private fun fuzzyTranslateInner(rawName: String): String? {
+        if (rawName.isBlank() || !containsCjk(rawName)) return null
+        // 1) 全角 → 半角（与 normalize 同款换算，但保留空格/字母/数字）
+        val sb = StringBuilder(rawName.length)
+        for (ch in rawName) {
+            when {
+                ch.code in 0xFF01..0xFF5E -> sb.append((ch.code - 0xFEE0).toChar())
+                ch == '　' -> sb.append(' ')
+                else -> sb.append(ch)
+            }
+        }
+        var s = sb.toString()
+        // 2) 去括号/书名号段（（ ）【 】[ ]{ }内全部丢弃 —— 版本注记不参与搜索）
+        //    注意：全部方/花括号都在字符类内转义，规避 Android ICU 正则的
+        //    "未转义 } / ] 直接 PatternSyntaxException" 限制（见 normalize 修复注释）。
+        s = s.replace(Regex("[（(【\\[\\{][^）)】\\]\\}]*[）)】\\]\\}]"), " ")
+        // 3) 去常见版本噪声词（先长后短，避免"汉化版"只删掉"版"）
+        for (n in NOISE_WORDS) s = s.replace(n, " ")
+        // 4) 最长匹配分词：每轮先试 6→2 字词表命中；未收录 CJK 字符丢弃；
+        //    非半角 CJK（字母/数字/符号）原样保留。
+        //    ★ 中英边界补空格："超级玛丽2" → "super mario 2"（而非
+        //    "super mario2"）、"魂斗罗HACK" → "contra hack" —— 否则
+        //    翻译词与原文粘连成一个 token，模糊匹配分词后完全对不上。
+        val out = StringBuilder()
+        var i = 0
+        var hits = 0
+        var lastWasTranslated = false
+        while (i < s.length) {
+            val c = s[i]
+            if (c.code in 0x4E00..0x9FFF || c.code in 0x3400..0x4DBF) {
+                var matchedLen = 0
+                var matchedEn: String? = null
+                val maxLen = minOf(6, s.length - i)
+                for (len in maxLen downTo 2) {
+                    val en = WORDS[s.substring(i, i + len)]
+                    if (en != null) {
+                        matchedLen = len
+                        matchedEn = en
+                        break
+                    }
+                }
+                if (matchedEn != null) {
+                    if (out.isNotEmpty() && out.last() != ' ') out.append(' ')
+                    out.append(matchedEn)
+                    hits++
+                    i += matchedLen
+                    lastWasTranslated = true
+                } else {
+                    i++ // 未收录的中文字符：丢弃（避免拼音式噪声污染搜索）
+                }
+            } else {
+                // ASCII/数字边界补空格：翻译词后紧跟的原文、字母↔数字切换处
+                if (out.isNotEmpty() && out.last() != ' ') {
+                    val last = out.last()
+                    if (lastWasTranslated ||
+                        (last.isLetter() && c.isDigit()) ||
+                        (last.isDigit() && c.isLetter())) {
+                        out.append(' ')
+                    }
+                }
+                out.append(c)
+                lastWasTranslated = false
+                i++
+            }
+        }
+        val result = out.toString().replace(Regex("\\s+"), " ").trim()
+        if (hits == 0 || result.isBlank()) return null
+        return result
+    }
+
+    /** 版本/汉化噪声词（分词前整体剔除；先长后短匹配）。 */
+    private val NOISE_WORDS = listOf(
+        "汉化版", "中文版", "重修版", "修改版", "完结版", "加强版", "简易版",
+        "典藏版", "合卡版", "磁碟机版", "完美版", "修正版", "测试版", "体验版",
+        "金手指", "作弊码", "作弊器", "无限人", "散弹枪", "一坑版", "汉化",
+        "中文", "简体", "繁体", "金版", "版"
+    )
+
+    /** 中文词汇 → 英文词表（懒加载；构建失败退化空表，绝不绝外抛）。 */
+    private val WORDS: Map<String, String> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            buildMap<String, String> {
+                entriesWordsAction()
+                entriesWordsSeries()
+            }
+        } catch (t: Throwable) {
+            recordError("buildWords", t)
+            emptyMap()
+        }
+    }
+
+    /** 词汇表 A：动作/通用词。 */
+    private fun MutableMap<String, String>.entriesWordsAction() {
+        put("超级", "super")
+        put("玛丽", "mario")
+        put("马里奥", "mario")
+        put("玛莉", "mario")
+        put("魂斗罗", "contra")
+        put("冒险岛", "adventure island")
+        put("冒险", "adventure")
+        put("战士", "warrior")
+        put("战斗", "battle")
+        put("格斗", "fighting")
+        put("战争", "war")
+        put("大战", "wars")
+        put("忍者", "ninja")
+        put("侦探", "detective")
+        put("坦克大战", "battle city")
+        put("坦克", "tank")
+        put("雪人兄弟", "snow bros")
+        put("兄弟", "bros")
+        put("双截龙", "double dragon")
+        put("沙罗曼蛇", "salamander")
+        put("绿色兵团", "rush n attack")
+        put("赤色要塞", "jackal")
+        put("赤影战士", "shadow of the ninja")
+        put("影子传说", "legend of kage")
+        put("热血", "nekketsu")
+        put("街头霸王", "street fighter")
+        put("街霸", "street fighter")
+        put("格斗之王", "king of fighters")
+        put("拳皇", "king of fighters")
+        put("拳王", "king of fighters")
+        put("合金弹头", "metal slug")
+        put("越南大战", "metal slug")
+        put("恐龙快打", "cadillacs and dinosaurs")
+        put("恐龙新世纪", "cadillacs and dinosaurs")
+        put("圆桌武士", "knights of the round")
+        put("三国战记", "knights of valour")
+        put("名将", "captain commando")
+        put("快打旋风", "final fight")
+        put("龙珠", "dragon ball")
+        put("七龙珠", "dragon ball")
+        put("北斗神拳", "fist of the north star")
+        put("怪物猎人", "monster hunter")
+        put("妖怪", "monster")
+        put("怪物", "monster")
+        put("怪兽", "monster")
+        put("恶魔", "devil")
+        put("天使", "angel")
+        put("幽灵", "ghost")
+        put("英雄", "hero")
+        put("勇者", "hero")
+        put("传说", "legend")
+        put("传奇", "legend")
+        put("物语", "story")
+        put("王国", "kingdom")
+        put("帝国", "empire")
+        put("世界", "world")
+        put("宇宙", "space")
+        put("太空", "space")
+        put("银河", "galaxy")
+        put("星际", "star")
+        put("城市", "city")
+        put("监狱", "prison")
+        put("警察", "police")
+        put("海盗", "pirate")
+        put("医院", "hospital")
+        put("学校", "school")
+        put("少年", "boy")
+        put("少女", "girl")
+        put("魔法", "magic")
+        put("魔法师", "wizard")
+        put("剑士", "swordsman")
+        put("恐龙", "dinosaur")
+        put("龙", "dragon")
+        put("剑", "sword")
+        put("网球", "tennis")
+        put("棒球", "baseball")
+        put("足球", "soccer")
+        put("篮球", "basketball")
+        put("排球", "volleyball")
+        put("高尔夫", "golf")
+        put("拳击", "boxing")
+        put("摔角", "wrestling")
+        put("赛车", "racing")
+        put("竞速", "racing")
+        put("摩托", "moto")
+        put("飞机", "plane")
+        put("格斗家", "fighter")
+    }
+
+    /** 词汇表 B：系列/IP 专名。 */
+    private fun MutableMap<String, String>.entriesWordsSeries() {
+        put("火纹外传", "fire emblem gaiden")
+        put("火炎之纹章", "fire emblem")
+        put("火焰之纹章", "fire emblem")
+        put("火焰纹章", "fire emblem")
+        put("圣火徽章", "fire emblem")
+        put("火纹", "fire emblem")
+        put("外传", "gaiden")
+        put("纹章", "emblem")
+        put("最终幻想", "final fantasy")
+        put("勇者斗恶龙", "dragon quest")
+        put("龙谜", "dragon quest")
+        put("塞尔达传说", "legend of zelda")
+        put("塞尔达", "zelda")
+        put("洛克人", "mega man")
+        put("恶魔城", "castlevania")
+        put("德古拉", "dracula")
+        put("吞食天地", "destiny of an emperor")
+        put("松鼠大战", "chip n dale")
+        put("忍者龙剑传", "ninja gaiden")
+        put("忍者神龟", "teenage mutant ninja turtles")
+        put("音速小子", "sonic")
+        put("刺猬索尼克", "sonic")
+        put("索尼克", "sonic")
+        put("星之卡比", "kirby")
+        put("卡比", "kirby")
+        put("大乱斗", "smash bros")
+        put("宝可梦", "pokemon")
+        put("口袋妖怪", "pokemon")
+        put("宠物小精灵", "pokemon")
+        put("数码宝贝", "digimon")
+        put("游戏王", "yu-gi-oh")
+        put("高达", "gundam")
+        put("圣斗士", "saint seiya")
+        put("幽游白书", "yu yu hakusho")
+        put("灌篮高手", "slam dunk")
+        put("城市猎人", "city hunter")
+        put("名侦探柯南", "detective conan")
+        put("蜘蛛侠", "spider man")
+        put("蝙蝠侠", "batman")
+        put("钢铁侠", "iron man")
+        put("超人", "superman")
+        put("梦幻模拟战", "langrisser")
+        put("皇家骑士团", "tactics ogre")
+        put("超时空之轮", "chrono trigger")
+        put("机器人大战", "robot wars")
+        put("超级机器人大战", "super robot wars")
+        put("实况足球", "winning eleven")
+        put("胜利十一人", "winning eleven")
+        put("光明与黑暗", "shining force")
+        put("光明力量", "shining force")
+        put("大战略", "daisenryaku")
+        put("三国志", "sangokushi")
+        put("西游记", "saiyuki")
+        put("信长野望", "nobunaga")
+        put("太阁立志传", "taikou")
+        put("提督决断", "teitoku")
     }
 
     /**

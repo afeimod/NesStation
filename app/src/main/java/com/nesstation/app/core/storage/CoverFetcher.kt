@@ -388,8 +388,9 @@ object CoverFetcher {
             .trim()
         if (n0.isEmpty()) return emptyList()
         val candidates = LinkedHashSet<String>()
-        // 1) 基础变体
-        val noBrackets = n0.replace(Regex("\\s*\\[[^]]*]"), "").trim()
+        // 1) 基础变体（★ 右中括号显式转义：Android ICU 正则对字符类外未转义
+        //    的 ] / } 会抛 PatternSyntaxException —— 同 CnGameNameMapper 修复）
+        val noBrackets = n0.replace(Regex("\\s*\\[[^\\]]*\\]"), "").trim()
         val noTags = noBrackets.replace(Regex("\\s*\\([^)]*\\)"), "").trim()
         candidates.add(n0)
         if (noBrackets.isNotBlank() && noBrackets != n0) candidates.add(noBrackets)
@@ -688,14 +689,16 @@ object CoverFetcher {
                     }
                     // 2) 驱动名主干原样兜底（模糊匹配路径）
                     out[base] = true
-                    // 3) 标题若为中文（自定义名）也尝试翻译
+                    // 3) 标题若为中文（自定义名）也尝试翻译（全名表 + 词汇级兜底）
                     game.title.takeIf { !it.equals(base, ignoreCase = true) }
-                        ?.let { translateIfCjk(it)?.let { t -> out[t] = true } }
+                        ?.let { addTranslatedVariants(out, it) }
                 } else {
                     out[translateIfCjk(base)] = true
                     // ★ 数字后缀变体：DC 中文名常带续作序号（"疾风忍者传2" →
                     //   "Naruto 2"），翻译键未收录序号时补一个带数字的搜索名。
                     addDigitVariant(out, base, translateIfCjk(base))
+                    // ★ 词汇级模糊翻译兜底（火纹外传/超级玛丽HACK版 类未收录名）
+                    addFuzzyTokenVariant(out, base)
                 }
             }
             else -> {
@@ -713,9 +716,39 @@ object CoverFetcher {
                 //   （"Metal Max 4"）→ 模糊命中（词序列包含加分 0.95）→ 封面
                 //   下载成功。序号≤2位，避免 "F3.03" 这类版本号被误当序号。
                 addDigitVariant(out, base, translated)
+                // ★★★ 词汇级模糊翻译兜底（本轮新增）：★★★
+                //   全名表 miss 时（"火纹外传"/"超级玛丽HACK版"等派生命名），
+                //   用词表把中文名逐词换英文（超级→super、玛丽→mario）作为
+                //   额外搜索名 —— 模糊索引匹配即可命中，不再原名直连 404。
+                addFuzzyTokenVariant(out, base)
             }
         }
         return out.keys.filter { it.isNotBlank() }
+    }
+
+    /**
+     * 把 [raw] 的全部翻译变体（全名表命中 + 词汇级模糊翻译）加入 [out]。
+     * 仅在名字含 CJK 时生效；任何一步异常静默跳过（绝不阻断封面批次）。
+     */
+    private fun addTranslatedVariants(out: LinkedHashMap<String, Boolean>, raw: String) {
+        try {
+            val t = translateIfCjk(raw)
+            if (t.isNotBlank()) out[t] = true
+            addFuzzyTokenVariant(out, raw)
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * ★ 词汇级模糊翻译变体（含 CJK 且全名表未命中时）。
+     *   "火纹外传" → "fire emblem gaiden"；"超级玛丽HACK版" → "super mario"。
+     */
+    private fun addFuzzyTokenVariant(out: LinkedHashMap<String, Boolean>, raw: String) {
+        try {
+            if (!CnGameNameMapper.containsCjk(raw)) return
+            CnGameNameMapper.fuzzyTranslate(raw)?.let {
+                if (it.isNotBlank()) out[it] = true
+            }
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -912,8 +945,86 @@ object CoverFetcher {
     ): List<Pair<File, String>> {
         // ★ 整体防御：任何一步失败都返回空列表而非抛出（调用方为 UI 协程，
         //   未捕获异常会直接闪退 —— "选择封面按钮点击就闪退"的根治措施之一）
+        return fetchCandidatesNames(context, game, searchNamesFor(game), max, onProgress)
+    }
+
+    /**
+     * ★★★ 玩家手输关键词搜索候选（本轮新增）★★★
+     * "选择封面"弹窗不再自动搜索 —— 玩家自行输入名字（中/英均可），
+     * 这里把输入扩展成搜索名序列（原名 + 全名表翻译 + 词汇级模糊翻译，
+     * "超级玛丽" → super mario），再走与自动抓取完全一致的
+     * 精确候选 + 系统索引模糊匹配管线。
+     */
+    fun fetchCandidatesForQuery(
+        context: Context,
+        game: GameEntry,
+        query: String,
+        max: Int = 8,
+        onProgress: ((Int, Int) -> Unit)? = null
+    ): List<Pair<File, String>> {
+        return fetchCandidatesNames(context, game, searchNamesForQuery(query), max, onProgress)
+    }
+
+    /**
+     * 玩家查询词 → 搜索名序列：原名 / 全名表翻译 / 词汇级模糊翻译 全部尝试
+     * （首个为"所见即所得"的原文，供精确候选；后续为模糊匹配查询键）。
+     */
+    fun searchNamesForQuery(query: String): List<String> {
         return try {
-            fetchCandidatesInner(context, game, max, onProgress)
+            val q = query.trim()
+            if (q.isEmpty()) return emptyList()
+            val out = LinkedHashMap<String, Boolean>()
+            out[q] = true
+            addTranslatedVariants(out, q)
+            out.keys.filter { it.isNotBlank() }
+        } catch (t: Throwable) {
+            Log.w(TAG, "searchNamesForQuery failed: ${t.javaClass.simpleName}: ${t.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * ★ "选择封面"弹窗的默认搜索词（玩家可自行改写）：
+     *   - 街机/DC → **实际 ROM 文件名主干**（"读取实际 rom 文件"的需求，
+     *     绝不塞中文显示名）；
+     *   - 其它 → 标题经全名表翻译；仍未翻译（生僻/派生命名）时退化为
+     *     词汇级模糊翻译短语（"火纹外传" → "fire emblem gaiden"），
+     *     再不行才给原标题。
+     */
+    fun defaultSearchQuery(game: GameEntry): String {
+        return try {
+            when (game.platform) {
+                GamePlatform.ARCADE, GamePlatform.DC -> {
+                    // 实际 ROM 文件名主干（SAF URI 已解码；无文件名才用标题）
+                    romFileStem(game)
+                        ?: game.title.takeIf { it.isNotBlank() }
+                        ?: ""
+                }
+                else -> {
+                    val title = game.customTitle?.takeIf { it.isNotBlank() } ?: game.title
+                    val translated = translateIfCjk(title)
+                    if (CnGameNameMapper.containsCjk(translated)) {
+                        CnGameNameMapper.fuzzyTranslate(title) ?: translated
+                    } else translated
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "defaultSearchQuery failed: ${t.javaClass.simpleName}: ${t.message}")
+            game.title
+        }
+    }
+
+    private fun fetchCandidatesNames(
+        context: Context,
+        game: GameEntry,
+        searchNames: List<String>,
+        max: Int,
+        onProgress: ((Int, Int) -> Unit)?
+    ): List<Pair<File, String>> {
+        // ★ 整体防御：任何一步失败都返回空列表而非抛出（调用方为 UI 协程，
+        //   未捕获异常会直接闪退 —— "选择封面按钮点击就闪退"的根治措施之一）
+        return try {
+            fetchCandidatesInner(context, game, searchNames, max, onProgress)
         } catch (t: Throwable) {
             Log.w(TAG, "fetchCandidates failed: ${t.message}")
             emptyList()
@@ -923,11 +1034,10 @@ object CoverFetcher {
     private fun fetchCandidatesInner(
         context: Context,
         game: GameEntry,
+        searchNames: List<String>,
         max: Int,
         onProgress: ((Int, Int) -> Unit)?
     ): List<Pair<File, String>> {
-        // ★ 多搜索名序列（街机 = 英文标题 + 驱动名主干；中文已翻译）
-        val searchNames = searchNamesFor(game)
         if (searchNames.isEmpty()) return emptyList()
         val romFile = game.romPath?.substringAfterLast('/') ?: ""
         val systemDirs = libretroSystemDir(game.platform, romFile)
@@ -1317,7 +1427,7 @@ object CoverFetcher {
     private fun bareTitleForFuzzy(name: String): String =
         normalizeForFuzzy(
             name.replace(Regex("\\s*\\([^)]*\\)"), " ")
-                .replace(Regex("\\s*\\[[^]]*]"), " ")
+                .replace(Regex("\\s*\\[[^\\]]*\\]"), " ")
         )
 
     /** 模糊匹配归一化（双方一致应用，见 [fuzzyMatch] 注释）。 */
@@ -1325,7 +1435,7 @@ object CoverFetcher {
         var s = name.lowercase()
         // 去掉括号段（()/[]）：区域/版本/标签不参与匹配
         s = s.replace(Regex("\\([^)]*\\)"), " ")
-        s = s.replace(Regex("\\[[^]]*]"), " ")
+        s = s.replace(Regex("\\[[^\\]]*\\]"), " ")
         s = s.replace("&", " and ")
         // 常见罗马数字（词边界）→ 阿拉伯数字（"Final Fight II" → "final fight 2"）
         s = s.replace(Regex("\\bii\\b"), "2")

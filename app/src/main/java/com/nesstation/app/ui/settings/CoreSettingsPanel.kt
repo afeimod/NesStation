@@ -1750,7 +1750,7 @@ fun CoreSettingsPanel(
                     Text(
                         "虚拟按键随所选控制器变化：GameCube 手柄 → GC 键组；" +
                         "经典手柄 → ABXY + ZL/ZR + 双摇杆；双节棍 → 竖持 Wiimote + C/Z + 摇杆；" +
-                        "无扩展 + 横持 → NES 式十字键 + A/B/1/2。",
+                        "无扩展 + 横持 → NES 式十字键 + A/B/1/2 + L/R 摇晃 + HOME + IR±（体感/红外齐全）。",
                         color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 SettingsSection("NGC/WII (Ishiiruka) · 性能 / 图形") {
@@ -1802,10 +1802,13 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (游戏中防卡顿)"),
                         padLayout.irWaitForShaders
                     ) { updateLayout(padLayout.copy {irWaitForShaders = it}) }
-                    DropdownRow("画面比例",
-                        listOf("0" to "自动", "1" to "强制 16:9", "2" to "强制 4:3", "3" to "拉伸到窗口"),
-                        padLayout.irAspect
-                    ) { updateLayout(padLayout.copy {irAspect = it}) }
+                    // ★★★ 画面比例（irAspect）设置项已删除（本轮）★★★
+                    //   需求原话："ngcwii核心设置取消屏幕比例，要根据全局
+                    //   屏幕缩放来，保证正常自定义布局"。核心现在恒按
+                    //   AspectRatio=拉伸渲染（见 EmulatorScreen.applyCoreOptions），
+                    //   画面形状完全由全局「屏幕缩放」决定（拉伸/4:3/16:9/
+                    //   自由布局矩形）—— 自定义布局所见即所得，不再有核心
+                    //   侧二次黑边/变形。
                     DropdownRow("EFB 纹理复制",
                         listOf("enabled" to "开启 (性能关键, 默认)", "disabled" to "关闭"),
                         padLayout.irEfbToTexture

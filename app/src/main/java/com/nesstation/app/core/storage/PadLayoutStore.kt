@@ -771,11 +771,13 @@ class PadLayout {
     var irControlMode: String = "auto"              // auto | ngc | wii (控制模式, auto 按游戏判定)
     var irWiiExtension: String = "nunchuk"          // nunchuk | classic | none (Wii 扩展手柄)
     // Wii Remote 握持方向：
-    // ★ 横持行为（本轮修复"方向键还是原方向输出"）：
+    // ★ 横持行为（本轮更新"方向键还是原方向输出"+体感键补全）：
     //   1) 虚拟十字键随遥控器旋转 90° 绘制（顶部朝左 NES 式）；
     //   2) 方向输出经 routePadBits 旋转补偿 —— 视觉"上"→WIIMOTE_RIGHT
     //      （横持游戏按旋转坐标系读方向，视觉方向 = 游戏方向）；
-    //   3) 横持隐藏 L/R 摇晃、HOME、IR 进深键（真实横持用不到）。
+    //   3) ★ 横持不再隐藏 L/R 摇晃、HOME、IR 进深键 —— 横持 Wiimote 同样
+    //      需要体感（甩手/摇晃）与红外进深（需求："wii横持手柄也要加入
+    //      红外等所有体感按钮"），不需要的可经「显隐按键」逐个关闭。
     var irWiiOrientation: String = "vertical"       // vertical | horizontal (Wii 手柄横/竖持)
     var irCpuCore: String = "4"                     // "0" 解释器 | "4" JIT ARM64 (CPUCore)
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)

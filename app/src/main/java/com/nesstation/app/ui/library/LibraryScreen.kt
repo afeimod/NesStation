@@ -49,6 +49,8 @@ import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -2875,13 +2877,17 @@ private fun JavaSettingsSwitchRow(
 // ★ 封面候选选择弹窗（中文名/模糊匹配封面让玩家挑选）
 // ---------------------------------------------------------------------------
 /**
- * 「选择封面」弹窗：后台调用 CoverFetcher.fetchCandidates 拉取候选封面
- * （精确候选名 + libretro 系统索引模糊命中，最多 8 张），网格展示。
+ * 「选择封面」弹窗（本轮重做）：**不自动搜索** —— 玩家自行输入名字搜索。
  *
- * 数据来源与主流程一致（thumbnails.libretro.com），搜索名走
- * coverSearchName（街机/DC 用实际 zip 文件名，中文标题先经
- * CnGameNameMapper 翻译成英文）—— 解决"中文名下载不到封面/候选"
- * 后让玩家最终定夺的交互闭环。
+ * 需求原话："长按卡片的选择封面不要自动搜索，要让玩家自行输入名字搜索，
+ * 支持模糊搜索，比如超级翻译为 super，玛丽翻译为 mario"。
+ *
+ * 交互：打开弹窗只给搜索框（默认词智能预填：街机/DC = 实际 ROM 文件名
+ * 主干，绝不塞中文显示名；其它 = 翻译后的英文标题/词汇级模糊短语），
+ * 点「搜索」才发起请求。输入经 CoverFetcher.searchNamesForQuery 三级
+ * 扩展（原名 + 全名表翻译 + 词汇级翻译）后走 libretro 精确候选 +
+ * 系统索引模糊匹配，中文输入（"超级玛丽"）与英文输入（"super mario"）
+ * 都能搜到。
  *
  * 点选任意候选 → CoverFetcher.pickCandidate 复制为正式封面并写回
  * RomStore（coverPath 持久化），DC 平台同时同步 flycast boxart 目录。
@@ -2936,59 +2942,64 @@ private fun CoverCandidateDialog(
     onError: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    // ★★★ 本轮重做：不再自动搜索（需求原话："长按卡片的选择封面不要自动
+    //   搜索，要让玩家自行输入名字搜索，支持模糊搜索"）★★★
+    //   弹窗打开只给一个**可编辑的搜索框**：默认词按平台智能预填
+    //   （街机/DC = 实际 ROM 文件名主干；其它 = 中文已翻译的英文标题，
+    //     生僻名给词汇级模糊翻译短语，如 "火纹外传" → "fire emblem gaiden"），
+    //   玩家点「搜索」才发起请求 —— 中文/英文/混合输入均可：
+    //   输入会经全名表翻译 + 词汇级翻译（超级→super、玛丽→mario）
+    //   + 系统索引模糊匹配三级扩展后再去 libretro 缩略图库找图。
+    var query by androidx.compose.runtime.remember {
+        androidx.compose.runtime.mutableStateOf(
+            com.nesstation.app.core.storage.CoverFetcher.defaultSearchQuery(game)
+        )
+    }
     var candidates by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf<List<CoverCandidateUi>>(emptyList())
     }
-    var loading by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
+    var loading by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var searched by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     var picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     var progress by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
-    // ★★ "点击就消失"根治：拉取结果为空时不再自动关弹窗 —— 旧实现直接
-    //   onError() 关闭，用户根本不知道发生了什么（网络不通 / 无匹配源都
-    //   表现为"点了没反应"）。现在弹窗保留并展示具体原因 + 关闭按钮，
-    //   用户可据此排查（换网络 / 重命名后重试）。
+    // 搜索无结果/异常时给出可操作原因（不自动关弹窗 —— "点击就消失"根治延续）
     var failReason by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
-    // 重试计数器（计入 LaunchedEffect 键，自增即重新拉取）
-    var retryTick by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
-    // 弹出即后台拉取（IO 线程；逐张下载约 250ms 间隔限速）。
-    // ★ 闪退根治：整段 runCatching —— 任何异常（网络/IO/解码/配置）都
-    //   收敛为错误文案，绝不让协程带未捕获异常冲垮进程。
-    androidx.compose.runtime.LaunchedEffect(game.id, retryTick) {
+    fun doSearch() {
+        val q = query.trim()
+        if (q.isEmpty() || loading) return
         loading = true
+        searched = true
         failReason = null
-        runCatching {
+        progress = 0
+        // ★ 闪退根治延续：整段 runCatching + IO 线程解码位图
+        scope.launch {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                val raw = com.nesstation.app.core.storage.CoverFetcher.fetchCandidates(
-                    context, game, max = 8,
-                    onProgress = { done, _ -> progress = done }
-                )
-                raw.map { (file, name) ->
-                    CoverCandidateUi(file, name, decodeCoverBitmap(file.absolutePath)?.asImageBitmap())
-                }
-            }
-        }.onSuccess { result ->
-            candidates = result
-            loading = false
-            if (result.isEmpty()) {
-                // 不再自动关闭：给出可操作的原因说明。
-                val stats = com.nesstation.app.core.storage.CoverFetcher.lastBatchStats
-                val dead = com.nesstation.app.core.storage.CoverFetcher.deadChannels()
-                failReason = buildString {
-                    append("未找到候选封面。\n\n可能原因：\n")
-                    append("1. 当前网络无法访问封面站（已尝试 libretro 直连 + gh 代理×3 + jsDelivr×3）\n")
-                    append("2. 游戏名与封面库名差异过大 —— 可尝试「重命名」为英文官方名后再试\n")
-                    append("3. 该平台无匹配源（DOS/Java 无封面库）")
-                    if (stats.indexFailed > 0) {
-                        append("\n\n诊断：封面索引不可用（网络受限）—— 更换网络后重试。")
-                    }
-                    if (dead.isNotEmpty()) {
-                        append("\n本会话已判死通道：$dead")
+                runCatching {
+                    val raw = com.nesstation.app.core.storage.CoverFetcher
+                        .fetchCandidatesForQuery(context, game, q, max = 8) { done, _ -> progress = done }
+                    raw.map { (file, name) ->
+                        CoverCandidateUi(file, name, decodeCoverBitmap(file.absolutePath)?.asImageBitmap())
                     }
                 }
+            }.onSuccess { result ->
+                candidates = result
+                loading = false
+                if (result.isEmpty()) {
+                    val dead = com.nesstation.app.core.storage.CoverFetcher.deadChannels()
+                    failReason = buildString {
+                        append("未搜到「$q」的封面。\n\n提示：\n")
+                        append("1. 支持中文名（自动翻译，如 超级玛丽 → Super Mario）、英文名、关键词模糊搜索\n")
+                        append("2. 试试更短的关键词（如 mario、contra）或官方英文名\n")
+                        append("3. 街机游戏可直接输入 zip 文件名（如 kof97）")
+                        if (dead.isNotEmpty()) append("\n\n本会话已判死通道：$dead")
+                    }
+                }
+            }.onFailure {
+                loading = false
+                failReason = "搜索失败：${it.message ?: "未知错误"}"
             }
-        }.onFailure {
-            loading = false
-            failReason = "候选封面拉取失败：${it.message ?: "未知错误"}"
         }
     }
 
@@ -3007,13 +3018,61 @@ private fun CoverCandidateDialog(
                 )
                 Text(
                     text = (game.customTitle?.takeIf { it.isNotBlank() } ?: game.title) +
-                        " · 候选来自 libretro 封面库（模糊匹配）",
+                        " · 输入名字搜索（支持中文自动翻译与模糊匹配）",
                     fontSize = 11.sp, color = Color(0xFF8899AA),
-                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
+                    modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
                 )
+                // 搜索框 + 搜索按钮（不自动搜索 —— 玩家点按钮才发起）
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = { Text("输入游戏名（中文/英文均可）", fontSize = 12.sp) },
+                        singleLine = true,
+                        trailingIcon = {
+                            if (query.isNotEmpty()) {
+                                IconButton(onClick = { query = "" }, modifier = Modifier.size(22.dp)) {
+                                    Icon(
+                                        Icons.Rounded.Clear,
+                                        contentDescription = "清空",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 56.dp)
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Button(
+                        onClick = { doSearch() },
+                        enabled = !loading && query.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFE74C3C),
+                            disabledContainerColor = Color(0xFFE8EEF4)
+                        ),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        if (loading) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White
+                            )
+                        } else {
+                            Text("搜索", color = Color.White, fontSize = 14.sp)
+                        }
+                    }
+                }
+                Spacer(Modifier.size(10.dp))
                 if (loading) {
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 36.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         androidx.compose.material3.CircularProgressIndicator(
@@ -3021,22 +3080,28 @@ private fun CoverCandidateDialog(
                         )
                         Spacer(Modifier.size(10.dp))
                         Text(
-                            "正在搜索候选封面…（已找到 $progress 张）",
+                            "正在搜索「${query.take(20)}」…（已找到 $progress 张）",
                             fontSize = 12.sp, color = Color(0xFF667788)
                         )
                     }
                 } else if (failReason != null) {
-                    // ★ 失败原因展示（不再自动关弹窗）
                     Text(
                         failReason ?: "",
                         fontSize = 12.sp, color = Color(0xFF667788),
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                } else if (searched && candidates.isEmpty()) {
+                    Text(
+                        "未找到候选封面。可换个关键词（中文/英文/缩写）再试。",
+                        fontSize = 12.sp, color = Color(0xFF667788),
                         modifier = Modifier.padding(vertical = 20.dp)
                     )
-                } else if (candidates.isEmpty()) {
+                } else if (!searched) {
                     Text(
-                        "未找到候选封面。可尝试「重命名」为英文官方名后再试。",
-                        fontSize = 12.sp, color = Color(0xFF667788),
-                        modifier = Modifier.padding(vertical = 24.dp)
+                        "输入名字后点「搜索」：中文会自动翻译成英文（超级→super、玛丽→mario），" +
+                            "并做模糊匹配；街机默认用 ROM 文件名。",
+                        fontSize = 12.sp, color = Color(0xFF8899AA),
+                        modifier = Modifier.padding(vertical = 16.dp)
                     )
                 } else {
                     androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
@@ -3103,13 +3168,6 @@ private fun CoverCandidateDialog(
                 Spacer(Modifier.size(10.dp))
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                     Row {
-                        // ★ 失败/空结果时可一键重试（网络抖动场景无需退出弹窗）
-                        if (candidates.isEmpty() && !loading) {
-                            TextButton(onClick = {
-                                // 重置状态并重新触发拉取（LaunchedEffect 键加计数器）
-                                retryTick++
-                            }) { Text("重试") }
-                        }
                         TextButton(onClick = onDismiss) { Text("关闭") }
                     }
                 }
