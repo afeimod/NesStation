@@ -889,18 +889,27 @@ fun LibraryScreen(
                     }
                 } else {
                     // ★ 诊断提示（附批量统计 + 通道健康，用户/日志可直接看到卡在哪一环）
-                    val s = com.nesstation.app.core.storage.CoverFetcher.lastBatchStats
-                    val dead = com.nesstation.app.core.storage.CoverFetcher.deadChannels()
+                    val cf = com.nesstation.app.core.storage.CoverFetcher
+                    val s = cf.lastBatchStats
+                    val dead = cf.deadChannels()
+                    // ★★ 真实通道统计（替换旧的写死文案）—— 到底发没发请求、
+                    //   每个通道拿到什么状态码，按实际计数呈现：
+                    //   - 全 0 尝试 = 根本没发请求（无源/无名，见 noSource 计数）；
+                    //   - 连接失败 = 网络层不可达（DNS/拒连/超时）；
+                    //   - 404 = 名字不匹配（网络是通的）。
+                    val chStats = cf.channelStatsSnapshot()
+                    val chLines = if (chStats.isEmpty()) "(本批未发起任何网络请求)"
+                    else chStats.entries.joinToString("\n") { "  ${it.key}: ${it.value}" }
                     dialogMsg = if (s.attempted == 0) {
                         "没有需要下载封面的游戏\n\n当前列表全部已有封面或自定义图标。" +
                             "\n（若个别封面显示异常，会自动重新下载 —— 旧版本会把这些游戏整体跳过）"
                     } else {
                         "未下载到新封面\n\n" + s.summary() +
-                            "\n\n可能原因：无网络 / 封面站点被网络拦截 / 该平台无匹配源。" +
-                            "\n已尝试通道：libretro 直连 + gh 代理（gh-proxy/ghfast/ghproxy.net）+ jsDelivr×3。" +
+                            "\n\n—— 每通道真实统计 ——\n" + chLines +
                             (if (dead.isNotEmpty()) "\n本会话已判死通道：$dead" else "") +
-                            "\n若反复失败，多为当前网络无法访问 thumbnails.libretro.com / GitHub 及其镜像，" +
-                            "请更换网络后重试（索引缓存 30 天，命中后不再依赖）。"
+                            "\n\n最近尝试：\n" + cf.attemptLogTail(6).joinToString("\n") +
+                            "\n\n完整诊断已写入：内部存储/Android/data/com.nesstation.app/files/cover_debug.log" +
+                            "\n（反馈封面问题时请附上该文件内容，可直接定位根因）"
                     }
                 }
             } catch (t: Throwable) {

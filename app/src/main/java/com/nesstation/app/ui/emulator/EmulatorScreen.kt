@@ -55,6 +55,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CameraAlt
 import com.nesstation.app.ui.swf.NdsScreenPositionEditor
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Pause
@@ -1532,6 +1533,10 @@ fun EmulatorScreen(
     var saveLoadSlot by remember { mutableStateOf(0) } // 0-9 state slots
     var showSlotPicker by remember { mutableStateOf<String?>(null) } // "save" | "load" | null
     var showFFSpeedPicker by remember { mutableStateOf(false) }
+    // ★ 核心日志诊断弹窗（存档卡死类问题的定位武器）：冻结/卡死时核心
+    //   线程不再推进，但 azahar_log.txt 里最后几行就是卡死点
+    //（如 “Could not load title=...”、“Failed to find title ... resetting”）。
+    var showCoreLog by remember { mutableStateOf(false) }
 
     // Current active player for on-screen controller input (0-indexed).
     // 0 = player 1, 1 = player 2, etc.
@@ -3521,6 +3526,7 @@ fun EmulatorScreen(
                     },
                     onLayoutEditor = { showLayoutEditor = true },
                     onSettings = { showSettings = true },
+                    onCoreLog = { showCoreLog = true },
                     onClose = { showMenu = false },
                     onExit = { onExit() }
                 )
@@ -3644,6 +3650,14 @@ fun EmulatorScreen(
                     androidx.compose.material3.TextButton(onClick = { showFFSpeedPicker = false }) { Text("关闭") }
                 }
             )
+        }
+
+        // ★ 核心日志诊断弹窗（3DS 存档卡死类问题定位）：
+        //   卡死/冻结时核心线程停住，azahar_log.txt 尾部几行 = 卡死现场
+        //（LaunchTitle 失败 / Failed to find title / applet 错误等）。
+        //   游戏运行中可随时打开实时刷新，把内容发回即可精确定位。
+        if (showCoreLog) {
+            CoreLogDialog(platform = platform, onDismiss = { showCoreLog = false })
         }
 
         if (loaded && showLayoutEditor) {
@@ -3908,12 +3922,24 @@ fun EmulatorScreen(
                         setRects(ndsTopRect, ndsBottomRect)
                         listener = object : NdsScreenPositionEditor.Listener {
                             override fun onRectChanged(top: FloatArray, bottom: FloatArray, confirm: Boolean) {
-                                // Live-update 双屏渲染
-                                ndsTopRect = top
-                                ndsBottomRect = bottom
-                                if (confirm) {
-                                    // Touch-up — persist into padLayout
-                                    persistDualRects(top, bottom)
+                                if (platform == GamePlatform.N3DS) {
+                                    // ★ 3DS 拖动卡顿根治：3DS 的自定义布局走核心
+                                    //   CustomLayout（全屏 Surface 不随矩形变化），
+                                    //   游戏视图完全不消费 ndsTopRect/ndsBottomRect
+                                    //   —— 但旧实现在拖动中 60Hz 写这两个状态 →
+                                    //   整个 EmulatorScreen（1.4 万行 Compose）每帧
+                                    //   全量重组 → "拖动游戏画面非常卡"。
+                                    //   编辑器视图自绘实时反馈（invalidate 自身），
+                                    //   这里只在松手(confirm)时持久化即可。
+                                    if (confirm) persistDualRects(top, bottom)
+                                } else {
+                                    // NDS：画布路径的实时双屏位置仍需状态驱动
+                                    ndsTopRect = top
+                                    ndsBottomRect = bottom
+                                    if (confirm) {
+                                        // Touch-up — persist into padLayout
+                                        persistDualRects(top, bottom)
+                                    }
                                 }
                             }
                         }
@@ -4292,6 +4318,22 @@ private fun rotateWiiHorizontalDpad(bits: Int): Int {
 // ---------------------------------------------------------------------------
 // Apply core options to engine — platform-aware option mapping
 // ---------------------------------------------------------------------------
+
+/**
+ * ★ 全局滤镜是否为"放大型"（xbr / hqx 家族）。
+ *   放大型滤镜需要访问帧像素做放大 —— 直绘核心（3DS/GC/Wii）没有前端
+ *   后处理链路，改走核心自带的等效能力（3DS: texture_filter=xBRZ；
+ *   NGC/Wii: PostProcessingShader=SEDI）。叠加类外观（扫描线/仿电视等）
+ *   仍由 FilterOverlay 覆盖，与本判定无关。
+ */
+private fun isGlobalUpscaleFilter(videoFilter: String?): Boolean =
+    videoFilter in setOf(
+        "xbr", "4xbr", "xbr_dot", "4xbr_dot",
+        "hq2x", "hq4x", "hq2x_dot", "hq4x_dot",
+        "xbr_scanline", "4xbr_scanline", "hq2x_scanline", "hq4x_scanline",
+        "xbr_tv", "4xbr_tv", "hq2x_tv", "hq4x_tv"
+    )
+
 private fun applyCoreOptions(
     engine: EmulatorEngine,
     layout: PadLayout,
@@ -4299,6 +4341,25 @@ private fun applyCoreOptions(
     // ★ 3DS 双屏自定义布局：全屏 Surface 尺寸（归一化矩形 → 核心像素矩形
     //   的换算基准；IntSize.Zero 时按 0 写入，Surface 尺寸就绪后重算会覆盖）。
     n3dsSurfaceSize: androidx.compose.ui.unit.IntSize = androidx.compose.ui.unit.IntSize.Zero
+) {
+    // ★ 批量事务：一次设置面板变更会连发几十个 setCoreOption ——
+    //   AzaharEngine 旧行为每个键都全量重写 config.ini + reloadSettings +
+    //   updateFramebuffer（一次 = 50 次核心全量重载 → "动一下设置就非常卡"
+    //   与自定义布局拖动卡顿的直接根源）。begin/end 之间只缓存，结束时统一
+    //   提交一次。其它引擎 begin/end 为默认空实现，行为完全不变。
+    engine.beginCoreOptionsBatch()
+    try {
+        applyCoreOptionsInner(engine, layout, platform, n3dsSurfaceSize)
+    } finally {
+        engine.endCoreOptionsBatch()
+    }
+}
+
+private fun applyCoreOptionsInner(
+    engine: EmulatorEngine,
+    layout: PadLayout,
+    platform: GamePlatform,
+    n3dsSurfaceSize: androidx.compose.ui.unit.IntSize
 ) {
     when (platform) {
         GamePlatform.NES -> {
@@ -4756,7 +4817,15 @@ private fun applyCoreOptions(
             engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
             engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
             engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
-            engine.setCoreOption("Renderer/texture_filter", layout.azTextureFilter)
+            // ★★★ 全局滤镜 xbr/hqx 生效（3DS 分支）★★：
+            //   直绘核心无前端后处理链路（setVideoFilter no-op），xbr/hqx
+            //   类全局滤镜通过核心自带的 GPU 纹理滤波器落地：
+            //     texture_filter 4 = xBRZ（与 XBR 同族的边缘导向放大）。
+            //   全局选了放大型滤镜时优先于平台专属设置，退出后恢复用户选择。
+            engine.setCoreOption(
+                "Renderer/texture_filter",
+                if (isGlobalUpscaleFilter(layout.videoFilter)) "4" else layout.azTextureFilter
+            )
             engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
             engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
             engine.setCoreOption("Renderer/use_frame_limit", "true")
@@ -4875,6 +4944,19 @@ private fun applyCoreOptions(
             engine.setCoreOption("GFX.ini/Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
             engine.setCoreOption("GFX.ini/Settings/AspectRatio", layout.irAspect)
             engine.setCoreOption("GFX.ini/Enhancements/MaxAnisotropy", layout.irAnisotropy)
+            // ★★★ 全局滤镜 xbr/hqx 生效（NGC/Wii 分支）★★：
+            //   Dolphin/Ishiiruka 是直绘核心（前端 setVideoFilter no-op），
+            //   xbr/hqx 类全局滤镜改走核心自带的后处理链路：
+            //   GFX.ini [Enhancements] PostProcessingShader（.so 字符串表与
+            //   参考 APK assets/Sys/Shaders 实测均支持，已随 Sys 种子解压
+            //   到 <filesDir>/ishiiruka/sys/Shaders/）。SEDI = 边缘导向插值
+            //   放大（与 XBR/HQx 同族效果，最接近用户预期）；未选放大类
+            //   滤镜时置空恢复默认。注意：后处理着色器在渲染器初始化时
+            //   加载 —— 游戏运行中修改将在下次进入游戏时生效。
+            engine.setCoreOption(
+                "GFX.ini/Enhancements/PostProcessingShader",
+                if (isGlobalUpscaleFilter(layout.videoFilter)) "SEDI" else ""
+            )
             engine.setCoreOption("GFX.ini/Hacks/EFBToTextureEnable", b(layout.irEfbToTexture))
             engine.setCoreOption("GFX.ini/Hacks/EFBScaledCopy", b(layout.irEfbScaledCopy))
             engine.setCoreOption("GFX.ini/Hacks/EFBAccessEnable", b(layout.irEfbAccess))
@@ -8050,6 +8132,71 @@ private fun ShoulderButtonCanvas(
 // ---------------------------------------------------------------------------
 // Menu overlay
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ★ 核心日志诊断弹窗 —— 存档卡死/冻结问题的现场抓取工具
+//   Azahar(3DS) 的原生日志实时落盘在 <filesDir>/azahar/log/azahar_log.txt；
+//   核心冻结后最后几行日志就是卡死现场（APT applet LaunchTitle 失败 /
+//   FS 存档错误 / "Failed to find title ... resetting" 自重启失败等）。
+//   用户把弹窗内容截图或抄回即可精确定位，不再靠猜。
+// ---------------------------------------------------------------------------
+@Composable
+private fun CoreLogDialog(platform: GamePlatform, onDismiss: () -> Unit) {
+    // 刷新计数 —— 点"刷新"重读日志文件
+    var refreshTick by remember { mutableStateOf(0) }
+    var logText by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(refreshTick) {
+        logText = withContext(Dispatchers.IO) {
+            when (platform) {
+                GamePlatform.N3DS -> {
+                    val tail = try {
+                        com.nesstation.app.core.engine.AzaharEngine.get().nativeLogTail(80)
+                    } catch (_: Throwable) { null }
+                    tail ?: "（暂无 3DS 核心日志 —— 游戏启动后才会生成）"
+                }
+                GamePlatform.NGCWII -> {
+                    // Dolphin 日志：<filesDir>/ishiiruka/... 无独立文件日志时给提示
+                    "（NGC/Wii 核心无独立日志文件；如遇问题请反馈具体游戏与操作步骤）"
+                }
+                else -> "（该平台暂不支持核心日志查看）"
+            }
+        }
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("核心日志（诊断）") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = logText ?: "读取中…",
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    color = Color(0xFFC8D6E5)
+                )
+                if (platform == GamePlatform.N3DS) {
+                    Text(
+                        "——\n游戏卡死时打开本弹窗：最后几行日志即卡死原因，截图反馈即可精准修复。",
+                        fontSize = 11.sp,
+                        color = Color.Gray,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { refreshTick++ }) { Text("刷新") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
 @Composable
 private fun MenuOverlay(
     gameTitle: String,
@@ -8065,6 +8212,7 @@ private fun MenuOverlay(
     onReset: () -> Unit,
     onLayoutEditor: () -> Unit,
     onSettings: () -> Unit,
+    onCoreLog: () -> Unit = {},
     onClose: () -> Unit,
     onExit: () -> Unit
 ) {
@@ -8117,6 +8265,7 @@ private fun MenuOverlay(
             FocusableIconButton(onClick = onReset) { Icon(Icons.Rounded.Refresh, "重置", tint = Color(0xFFFFD66B)) }
             FocusableIconButton(onClick = onLayoutEditor) { Icon(Icons.Rounded.Tune, "手柄布局", tint = Color.White) }
             FocusableIconButton(onClick = onSettings) { Icon(Icons.Rounded.Settings, "设置", tint = Color.White) }
+            FocusableIconButton(onClick = onCoreLog) { Icon(Icons.Rounded.Description, "核心日志", tint = Color.White) }
             FocusableIconButton(onClick = onClose) { Icon(Icons.Rounded.Fullscreen, "隐藏菜单", tint = Color(0xFF4A90D9)) }
             FocusableIconButton(onClick = onExit) { Icon(Icons.Rounded.Close, "退出", tint = Color(0xFFFF6B6B)) }
         }

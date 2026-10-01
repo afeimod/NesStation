@@ -83,15 +83,54 @@ object CoverFetcher {
         var attempted: Int = 0,
         var succeeded: Int = 0,
         var indexFailed: Int = 0,
-        var notFound: Int = 0
+        var notFound: Int = 0,
+        // ★ 无源/无名跳过（诊断新增）：systemDirs 为空（平台无封面源）
+        //   或搜索名/候选名为空 → 旧实现静默 return null，统计全部为 0，
+        //   用户误判为“网络连不上” —— 实际根本没发请求。现在显式计数。
+        var noSource: Int = 0
     ) {
-        fun summary(): String =
-            "尝试 $attempted，成功 $succeeded；${
-                if (indexFailed > 0) "封面索引不可用 $indexFailed 次（网络受限）" else ""
-            }${
-                if (notFound > 0) "${if (indexFailed > 0) "；" else ""}未匹配到 $notFound 个" else ""
-            }"
+        fun summary(): String = buildString {
+            append("尝试 $attempted，成功 $succeeded")
+            if (noSource > 0) append("；无封面源跳过 $noSource 个（该平台无匹配源或无名可搜）")
+            if (indexFailed > 0) append("${if (noSource > 0) "" else "；"}封面索引不可用 $indexFailed 次（网络受限）")
+            if (notFound > 0) append("；未匹配到 $notFound 个")
+            if (succeeded > 0) append("。")
+        }
     }
+
+    /**
+     * ★★ 每通道真实统计（诊断新增）：旧弹窗把“已尝试通道”写死在文案里，
+     *   实际可能一个请求都没发。现在每个通道记录 真实尝试数/HTTP状态码/
+     *   连接级失败，诊断弹窗按真实数据呈现，不再猜。
+     */
+    class ChannelStat {
+        var attempted: Int = 0
+        var httpOk: Int = 0       // 200（不含命中落盘的成功，仅为拿过响应码）
+        var http404: Int = 0
+        var httpOther: Int = 0    // 403/5xx 等
+        var connFailed: Int = 0   // DNS/拒连/超时
+        override fun toString(): String =
+            "试$attempted/成功$httpOk/404:$http404/其它:$httpOther/连接失败:$connFailed"
+    }
+    private val channelStats = java.util.concurrent.ConcurrentHashMap<String, ChannelStat>()
+    private fun statFor(ch: String): ChannelStat = channelStats.getOrPut(ch) { ChannelStat() }
+    fun channelStatsSnapshot(): Map<String, String> =
+        channelStats.entries.associate { it.key to it.value.toString() }
+
+    /**
+     * ★ 逐次尝试日志（最近 60 条）：下载尝试的最终结果一行一条，
+     *   fetchAllMissing 结束时写入 <filesDir>/cover_debug.log（用户可直接分享），
+     *   弹窗展示末尾若干条 —— “到底发没发请求/拿到什么状态码”一目了然。
+     */
+    private val attemptLog = ArrayDeque<String>(64)
+    private fun logAttempt(line: String) {
+        synchronized(attemptLog) {
+            if (attemptLog.size >= 60) attemptLog.removeFirst()
+            attemptLog.addLast(line)
+        }
+    }
+    fun attemptLogTail(n: Int = 12): List<String> =
+        synchronized(attemptLog) { attemptLog.toList().takeLast(n) }
 
     /** 最近一次批量抓取统计（UI 线程读取）。 */
     @Volatile
@@ -324,9 +363,39 @@ object CoverFetcher {
                 dotTitle(v)?.let { candidates.add(it) }
             }
         }
+        // ★★★ The 后置变体（本轮新增 —— 实测 404→200 的真实匹配缺口）：
+        //   No-Intro 命名规范把开头的英文冠词 The 移到末尾并加逗号：
+        //     “The Legend of Zelda - Ocarina of Time 3D (USA)”.png → 404
+        //     “Legend of Zelda, The - Ocarina of Time 3D (USA)”.png → 200
+        //   覆盖所有 “The XXX” 类经典系列（Zelda/Sims/Fast and Furious…）。
+        //   对以上全部变体统一追加 The 后置形态。
+        run {
+            val base = ArrayList(candidates)
+            for (v in base) {
+                theSuffixTitle(v)?.let { candidates.add(it) }
+            }
+        }
         // 极端命名（多 () 标签全命中映射表）可能膨胀候选，截断防止单游戏
         // 发过多请求。
         return candidates.toList().take(MAX_CANDIDATES)
+    }
+
+    /**
+     * No-Intro 冠词后置："The Legend of Zelda - X" → "Legend of Zelda, The - X"。
+     *
+     * No-Intro 官方命名把开头的 The 移到标题末尾（逗号分隔）：
+     *   "Legend of Zelda, The - Ocarina of Time 3D (USA)"
+     *   实测：前者 404，后者 200（thumbnails.libretro.com）。只处理
+     *   标题部分以 “The ” 开头的名字；生成后与 dotTitle 组合由调用方完成。
+     */
+    private fun theSuffixTitle(name: String): String? {
+        val idx = name.indexOf('(')
+        val title = (if (idx >= 0) name.substring(0, idx) else name).trim()
+        if (!title.lowercase().startsWith("the ")) return null
+        val rest = title.substring(4).trim()
+        if (rest.isEmpty()) return null
+        val moved = "$rest, The"
+        return if (idx >= 0) "$moved ${name.substring(idx)}" else moved
     }
 
     /**
@@ -401,7 +470,12 @@ object CoverFetcher {
             extractJarCover(context, game)?.let { return it }
             // JAR 无内嵌图 → 继续走后续缩略图库路径（用游戏名）
         }
-        if (systemDirs.isEmpty()) return null
+        if (systemDirs.isEmpty()) {
+            // ★ 诊断：旧实现静默跳过 → 统计全 0，用户误判“网络连不上”
+            lastBatchStats.noSource++
+            Log.w(TAG, "no cover source for platform ${game.platform} — no request sent")
+            return null
+        }
         // ★ SAF URI 双重编码修复：game.romPath 在 SAF 导入时是 content:// URI，
         //   最后一段是 URL 编码的 documentId（含 %20 %28 %5B 等编码字符）。
         //   旧实现对它直接 substringAfterLast + substringBeforeLast('.'),
@@ -415,9 +489,16 @@ object CoverFetcher {
         //   3. 全平台：标题含中文时先经 CnGameNameMapper 翻译成英文
         //      （"魂斗罗"→"Contra"）再走模糊匹配 —— 中文模糊转英文下载。
         val searchNames = searchNamesFor(game)
-        if (searchNames.isEmpty()) return null
+        if (searchNames.isEmpty()) {
+            lastBatchStats.noSource++
+            Log.w(TAG, "no searchable name for '${game.title}' — no request sent")
+            return null
+        }
         val candidates = searchNames.flatMap { nameCandidates(it) }.distinct()
-        if (candidates.isEmpty()) return null
+        if (candidates.isEmpty()) {
+            lastBatchStats.noSource++
+            return null
+        }
 
         val dest = File(coversDir(context), "${game.id}.png")
         // ★★★ 封面下载主流程（回归 3.8 分支基线结构）★★★
@@ -1182,12 +1263,20 @@ object CoverFetcher {
     /**
      * 批量为缺封面的游戏抓取（顺序 + 限速，IO 线程调用）。
      *
+     * ★ @Synchronized（诊断修复）：进入平台页的自动抓取（LaunchedEffect）与
+     *   工具栏「获取封面」手动抓取可并发 —— 两批各自 set lastBatchStats
+     *   且 fetchCover 内部经 lastBatchStats 字段计数，并发时计数互相串扰
+     *   （弹窗读到中间态，“成功 0/索引 0/未匹配 0”不可信）+ 双倍请求。
+     *   串行化后手动批等自动批完成再跑（封面已入库 → 直接“没有需要下载”），
+     *   统计永远真实。
+     *
      * @param games 候选列表（通常为当前平台页的全部游戏）
      * @param onlyMissing true = 只处理无封面且无自定义图标的条目
      * @param onProgress 每完成一个回调（done, total）—— UI 进度提示用
      * @param limit 单批上限（默认 200，防止一次刷几百个请求）
      * @return 实际新下载成功的数量
      */
+    @Synchronized
     fun fetchAllMissing(
         context: Context,
         games: List<GameEntry>,
@@ -1270,7 +1359,24 @@ object CoverFetcher {
         flush()
         stats.succeeded = fetched
         Log.i(TAG, "Cover fetch batch done: $fetched/${batch.size} succeeded; " +
-                "indexFailed=${stats.indexFailed}, notFound=${stats.notFound}")
+                "indexFailed=${stats.indexFailed}, notFound=${stats.notFound}, noSource=${stats.noSource}")
+        // ★ 诊断落盘：完整尝试日志 + 每通道统计写入 cover_debug.log，
+        //   下次“封面连不上网”的报告直接带上这个文件，根因一目了然。
+        try {
+            val dbg = File(context.filesDir, "cover_debug.log")
+            dbg.writeText(buildString {
+                append("==== NesStation 封面抓取诊断 ")
+                append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                    .format(java.util.Date()))
+                append(" ====\n")
+                append("统计: ${stats.summary()}\n")
+                append("判死通道: ${deadChannels().joinToString()}\n")
+                append("—— 每通道真实统计 ——\n")
+                channelStatsSnapshot().forEach { (k, v) -> append("  $k: $v\n") }
+                append("—— 尝试日志（最近 ${attemptLogTail(60).size} 条）——\n")
+                attemptLogTail(60).forEach { append(it).append('\n') }
+            })
+        } catch (_: Throwable) {}
         return fetched
     }
 
@@ -1335,6 +1441,9 @@ object CoverFetcher {
     private fun downloadImage(urlStr: String, dest: File, channel: String? = null): Boolean {
         // 通道已被本会话标记为死亡 → 直接跳过（不再吃连接超时）
         if (channel != null && !channelAlive(channel)) return false
+        val ch = channel ?: "?"
+        val st = statFor(ch)
+        st.attempted++
         var conn: HttpURLConnection? = null
         return try {
             val conn0 = URL(urlStr).openConnection() as HttpURLConnection
@@ -1349,11 +1458,21 @@ object CoverFetcher {
             } catch (t: Throwable) {
                 // 连接层就挂了（DNS/拒连/超时）→ 记通道失败
                 if (channel != null) noteChannelConnFailed(channel)
+                st.connFailed++
+                logAttempt("[CONN-FAIL] $ch ${t.javaClass.simpleName}: ${t.message} <- ${urlStr.take(110)}")
                 throw t
             }
             // 拿到 HTTP 响应码（含 404/5xx）→ 通道活着
             if (channel != null) noteChannelAlive(channel)
-            if (code != HttpURLConnection.HTTP_OK) return false
+            when {
+                code == HttpURLConnection.HTTP_OK -> st.httpOk++
+                code == 404 -> st.http404++
+                else -> st.httpOther++
+            }
+            if (code != HttpURLConnection.HTTP_OK) {
+                logAttempt("[HTTP $code] $ch <- ${urlStr.take(110)}")
+                return false
+            }
             val len = conn0.contentLengthLong
             // ★ chunked encoding 修复：len < 0 表示未知长度（chunked），
             //   旧实现直接返回 false 导致部分 libretro 缩略图失败。
@@ -1382,11 +1501,16 @@ object CoverFetcher {
                 if (!tmp.renameTo(dest)) {
                     tmp.copyTo(dest, overwrite = true); tmp.delete()
                 }
+                logAttempt("[OK ${tmpLen}B] $ch -> ${dest.name}")
                 return true
             }
             false
         } catch (t: Throwable) {
             Log.d(TAG, "download miss: $urlStr (${t.message})")
+            if (st.connFailed == 0 || t !is java.io.IOException) {
+                // 连接级失败已在 responseCode 处记录；这里只记读流阶段异常
+                logAttempt("[READ-FAIL] $ch ${t.javaClass.simpleName}: ${t.message}")
+            }
             false
         } finally {
             try { conn?.disconnect() } catch (_: Throwable) {}

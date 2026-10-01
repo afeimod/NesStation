@@ -119,6 +119,20 @@ interface EmulatorEngine {
     /** Set a core option by key/value. */
     fun setCoreOption(key: String, value: String)
 
+    /**
+     * ★ 批量设置事务（3DS "动一下设置就卡"根治）：
+     * UI 每次设置变更会连发 50+ 个 setCoreOption —— AzaharEngine 的旧实现
+     * **每个键**都做一次 flushConfig(整文件重写) + reloadSettings(全量 INI
+     * 重读 + ApplySettings) + updateFramebuffer，一次设置变更 = 50 次全量
+     * 核心重载（自定义布局拖动时更甚）→ 明显卡顿。
+     *
+     * begin/end 之间 setCoreOption 只缓存键值，endCoreOptionsBatch 时统一
+     * 做一次 flush + reload + framebuffer 刷新。默认空实现 —— 其它引擎
+     * （libretro/Ishiiruka 等）行为完全不变。
+     */
+    fun beginCoreOptionsBatch() {}
+    fun endCoreOptionsBatch() {}
+
     /** Current video width from the core. */
     fun videoWidth(): Int
 

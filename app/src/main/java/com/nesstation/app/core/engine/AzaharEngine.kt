@@ -330,6 +330,9 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     override fun setCoreOption(key: String, value: String) {
         coreOptions[key] = value
+        // ★ 批量事务中只缓存 —— 由 endCoreOptionsBatch 统一提交一次
+        //（旧行为：每个键全量 flush+reload+updateFramebuffer，50 键连发 = 卡顿根源）
+        if (optionsBatching) return
         if (isRunning2()) {
             flushConfig()
             try { AzaharNative.lib.reloadSettings() } catch (_: Throwable) {}
@@ -339,6 +342,27 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             }
         }
     }
+
+    /** ★ 批量设置事务开启（见 EmulatorEngine 注释）。 */
+    override fun beginCoreOptionsBatch() {
+        optionsBatching = true
+    }
+
+    /**
+     * ★ 批量设置事务提交：一次 flush + 一次 reload + 一次 framebuffer 刷新
+     *（等价旧行为的“最后一次”效果，但只做一次）。
+     */
+    override fun endCoreOptionsBatch() {
+        if (!optionsBatching) return
+        optionsBatching = false
+        if (isRunning2()) {
+            flushConfig()
+            try { AzaharNative.lib.reloadSettings() } catch (_: Throwable) {}
+            refreshFramebufferLayout()
+        }
+    }
+
+    @Volatile private var optionsBatching = false
 
     // ------------------------------------------------------------------
     // 生命周期
@@ -536,16 +560,37 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             //   命中即推给 native 并 break，避免永久黑屏。
             var attemptedSurface = bootSurface
             if (!attemptedSurface.isValid) {
-                // bootSurface 已失效 —— 等待新 surface 到达并重试
-                for (attempt in 1..5) {
-                    Thread.sleep(50)
+                // bootSurface 已失效 —— 等待新 surface 到达并重试（Compose 重建
+                // SurfaceView 可能需要几百毫秒，旧版 5×50ms=250ms 太短）。
+                var ready = false
+                for (attempt in 1..30) {
+                    Thread.sleep(100)
+                    if (!running.get()) return@thread
                     val cur = surface
                     if (cur != null && cur.isValid) {
                         attemptedSurface = cur
-                        try { lib.surfaceChanged(cur) } catch (_: Throwable) {}
+                        ready = true
                         break
                     }
                 }
+                if (!ready) {
+                    // ★★★ Vulkan 闪退根治：绝不能带着无效 surface 进入 run()！
+                    //   原生 RunCitra 用 s_surface 构造 EmuWindow_Android_Vulkan，
+                    //   null → “surface is nullptr” LOG_CRITICAL → 后续
+                    //   vkCreateAndroidSurfaceKHR CHECK 失败 → SIGABRT（GL 路径
+                    //   只是黑屏，VK 路径直接闪退 —— “vk 用不了会闪退”根因）。
+                    //   这里放弃本次启动并上报；SurfaceView 重建后 setSurface()
+                    //   会重新拉起 startEmulationLocked，不会卡死。
+                    lastErrorText = "启动时 Surface 尚未就绪（视图重建中），已放弃本次启动；\n画面恢复后将自动重启。"
+                    try {
+                        onPrematureExit?.invoke(
+                            "Azahar 启动等待 Surface 超时\n\n$lastErrorText\n" +
+                                "\n常见原因：横竖屏切换/布局切换与游戏启动同时发生。\n" +
+                                "返回后重进游戏即可。")
+                    } catch (_: Throwable) {}
+                    return@thread
+                }
+                try { lib.surfaceChanged(attemptedSurface) } catch (_: Throwable) {}
             } else {
                 try { lib.surfaceChanged(attemptedSurface) } catch (_: Throwable) {}
             }
@@ -626,6 +671,19 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                                 try { AzaharNative.lib.surfaceChanged(surf) } catch (_: Throwable) {}
                             }
                             refreshFramebufferLayout()
+                            // ★ 补做启动期被推迟的 surface 尺寸重置（见
+                            //   onSurfaceChanged 的 Vulkan 竞态加固注释）：
+                            //   核心此刻已就绪，destroy/recreate 对安全。
+                            if (pendingSurfaceResize.compareAndSet(true, false)) {
+                                val rs = surface
+                                if (rs != null && rs.isValid) {
+                                    try {
+                                        AzaharNative.lib.surfaceDestroyed()
+                                        AzaharNative.lib.surfaceChanged(rs)
+                                    } catch (_: Throwable) {}
+                                    refreshFramebufferLayout()
+                                }
+                            }
                             return@thread
                         }
                         Thread.sleep(100)
@@ -718,13 +776,32 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             lastSurfaceW = width
             lastSurfaceH = height
             val lib = AzaharNative.lib
-            try {
-                lib.surfaceDestroyed()
-                lib.surfaceChanged(surface)
-            } catch (_: Throwable) {}
-            refreshFramebufferLayout()
+            // ★★★ Vulkan 启动竞态加固：核心启动中（emuThread 存活且原生
+            //   尚未进入主循环 —— isRunning()=false，即 System::Init/渲染器
+            //   构造窗口期）绝不做 surfaceDestroyed+surfaceChanged 对。
+            //   旧实现在这里无保护地打这对组合拳：destroy 后原生
+            //   render_window/s_surface 短暂为 null，恰逢 RunCitra 构造
+            //   EmuWindow_Android_Vulkan(s_surface=null) → “surface is
+            //   nullptr” → vkCreateAndroidSurfaceKHR CHECK → SIGABRT
+            //   （GL 路径仅黑屏自愈，VK 路径必闪退）。
+            //   启动期改记 pendingSurfaceResize，由 azahar-layout-ensure
+            //   线程在核心就绪后补做（见 startEmulationLocked）。
+            val nativeRunning = try { lib.isRunning() } catch (_: Throwable) { false }
+            val booting = emuThread?.isAlive == true && !nativeRunning
+            if (booting) {
+                pendingSurfaceResize.set(true)
+            } else {
+                try {
+                    lib.surfaceDestroyed()
+                    lib.surfaceChanged(surface)
+                } catch (_: Throwable) {}
+                refreshFramebufferLayout()
+            }
         }
     }
+
+    /** 启动期被推迟的 surface 尺寸重置（layout-ensure 线程补做）。 */
+    private val pendingSurfaceResize = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** 上次上报给引擎的 Surface 尺寸（尺寸变化检测用）。 */
     @Volatile private var lastSurfaceW = 0
