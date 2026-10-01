@@ -1496,7 +1496,6 @@ class PadLayout {
         azSwapScreens = another.azSwapScreens
         azCpuClock = another.azCpuClock
         azUseCpuJit = another.azUseCpuJit
-        azUseFastInterp = another.azUseFastInterp
         azIsNew3ds = another.azIsNew3ds
         azLleApplets = another.azLleApplets
         azRegion = another.azRegion
@@ -2563,7 +2562,6 @@ object PadLayoutStore {
             azSwapScreens = p.getString("az_swap_screens", "disabled") ?: "disabled"
             azCpuClock = p.getString("az_cpu_clock", "100") ?: "100"
             azUseCpuJit = p.getString("az_use_cpu_jit", "enabled") ?: "enabled"
-            azUseFastInterp = p.getString("az_use_fast_interp", "disabled") ?: "disabled"
             azIsNew3ds = p.getString("az_is_new_3ds", "enabled") ?: "enabled"
             azLleApplets = p.getString("az_lle_applets", "disabled") ?: "disabled"
             azRegion = p.getString("az_region", "-1") ?: "-1"
@@ -3255,7 +3253,6 @@ object PadLayoutStore {
             putString("az_swap_screens", layout.azSwapScreens)
             putString("az_cpu_clock", layout.azCpuClock)
             putString("az_use_cpu_jit", layout.azUseCpuJit)
-            putString("az_use_fast_interp", layout.azUseFastInterp)
             putString("az_is_new_3ds", layout.azIsNew3ds)
             putString("az_lle_applets", layout.azLleApplets)
             putString("az_region", layout.azRegion)
