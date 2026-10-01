@@ -78,6 +78,14 @@ object CoverFetcher {
     fun deadChannels(): List<String> =
         channelFailCount.filter { it.value >= CHANNEL_FAIL_THRESHOLD }.keys.toList()
 
+    /**
+     * ★ 该通道本批是否出现过连接级失败（404 不算）—— 出现过才值得
+     *   走镜像（镜像与直连是同一份仓库内容：直连 404 = 镜像也 404，
+     *   只有直连**连不上**时镜像才有意义）。
+     */
+    private fun hasConnFailed(channel: String): Boolean =
+        (channelFailCount[channel] ?: 0) > 0
+
     /** 批量抓取统计（fetchAllMissing 结束后 UI 可读取，用于诊断提示）。 */
     data class BatchStats(
         var attempted: Int = 0,
@@ -109,8 +117,9 @@ object CoverFetcher {
         var http404: Int = 0
         var httpOther: Int = 0    // 403/5xx 等
         var connFailed: Int = 0   // DNS/拒连/超时
+        var skippedDead: Int = 0  // 本批判死后被跳过的请求（不再吃超时）
         override fun toString(): String =
-            "试$attempted/成功$httpOk/404:$http404/其它:$httpOther/连接失败:$connFailed"
+            "试$attempted/成功$httpOk/404:$http404/其它:$httpOther/连接失败:$connFailed/批内跳过:$skippedDead"
     }
     private val channelStats = java.util.concurrent.ConcurrentHashMap<String, ChannelStat>()
     private fun statFor(ch: String): ChannelStat = channelStats.getOrPut(ch) { ChannelStat() }
@@ -123,11 +132,23 @@ object CoverFetcher {
      *   弹窗展示末尾若干条 —— “到底发没发请求/拿到什么状态码”一目了然。
      */
     private val attemptLog = ArrayDeque<String>(64)
+
+    /** 批量进行中的诊断日志文件（实时追加 —— 批没结束时查看也不再是空的）。 */
+    @Volatile
+    private var debugLogFile: File? = null
+    private val fileLogLock = Any()
+
     private fun logAttempt(line: String) {
         synchronized(attemptLog) {
             if (attemptLog.size >= 60) attemptLog.removeFirst()
             attemptLog.addLast(line)
         }
+        // ★ 实时落盘：旧版只在批结束时写 cover_debug.log，自动批耗时数分钟
+        //   期间查看永远是空文件 → “日志都是空的”误导。现在每条实时追加。
+        val f = debugLogFile ?: return
+        try {
+            synchronized(fileLogLock) { f.appendText(line + "\n") }
+        } catch (_: Throwable) {}
     }
     fun attemptLogTail(n: Int = 12): List<String> =
         synchronized(attemptLog) { attemptLog.toList().takeLast(n) }
@@ -135,6 +156,11 @@ object CoverFetcher {
     /** 最近一次批量抓取统计（UI 线程读取）。 */
     @Volatile
     var lastBatchStats: BatchStats = BatchStats()
+        private set
+
+    /** 最近一批的 pending 拆解（attempted=0 时弹窗展示“为什么没有待下载项”）。 */
+    @Volatile
+    var lastPendingInfo: String = ""
         private set
 
     /**
@@ -166,6 +192,34 @@ object CoverFetcher {
         val rawPath = "$jsRepo/master/$subDir/$segName.png"
         return buildList {
             add("libretro" to "$BASE/$segDir/$subDir/$segName.png")
+            for (p in GH_PROXIES) add("ghproxy:${p.removePrefix("https://")}" to "$p$RAW_PREFIX/$rawPath")
+            add("jsdelivr:fastly" to "https://fastly.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png")
+            add("jsdelivr:gcore" to "https://gcore.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png")
+            add("jsdelivr:cdn" to "$MIRROR_BASE/$jsRepo/$subDir/$segName.png")
+        }
+    }
+
+    /**
+     * ★★ 波1 通道：libretro 直连（与 3.8 基线完全同款 URL）★★
+     *
+     * 本轮（用户实测“压根没有尝试下载”）回归 3.8 的主通道策略：
+     *   精确候选阶段先把全部候选名在 libretro 直连上走完，只有直连
+     *   出现**连接级失败**（连不上，非 404）才补镜像 —— 镜像和直连是
+     *   同一份仓库内容，名字 404 时镜像也 404，只有站点不可达时镜像
+     *   才有意义。旧实现逐候选交错 7 通道：可达网络下每个 404 白挨
+     *   6 个镜像请求（单游戏请求数 ×7），不可达网络下每通道吃
+     *   3×8s 超时 → 自动批一跑几分钟，手动批被 @Synchronized 挡在
+     *   队列里毫无反馈。
+     */
+    private fun coverImageUrlsPrimary(system: String, subDir: String, name: String): String =
+        "$BASE/${urlSeg(system)}/$subDir/${urlSeg(name)}.png"
+
+    /** ★ 波2 通道：gh 代理链 + jsDelivr（仅当 libretro 连接级不可达时才走）。 */
+    private fun coverImageUrlsMirrors(system: String, subDir: String, name: String): List<Pair<String, String>> {
+        val jsRepo = system.replace(' ', '_')
+        val segName = urlSeg(name)
+        val rawPath = "$jsRepo/master/$subDir/$segName.png"
+        return buildList {
             for (p in GH_PROXIES) add("ghproxy:${p.removePrefix("https://")}" to "$p$RAW_PREFIX/$rawPath")
             add("jsdelivr:fastly" to "https://fastly.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png")
             add("jsdelivr:gcore" to "https://gcore.jsdelivr.net/gh/libretro-thumbnails/$jsRepo/$subDir/$segName.png")
@@ -501,29 +555,43 @@ object CoverFetcher {
         }
 
         val dest = File(coversDir(context), "${game.id}.png")
-        // ★★★ 封面下载主流程（回归 3.8 分支基线结构）★★★
-        //   用户实测："封面获取逻辑被完全破坏，所有封面都无法获取"。
-        //   3.8 备份分支（用户确认可用）的顺序是：每个系统目录先逐一尝试
-        //   盒装封面（每个候选名一个 URL），全部 404 后再整批尝试截图兜底，
-        //   最后才走索引+模糊匹配。主通道 URL 与 3.8 完全一致（libretro 直连
-        //   原名），jsDelivr 镜像仅作为**同名第二通道**（直连失败时兜底），
-        //   不改变 3.8 的尝试顺序与命中优先级。
+        // ★★★ 封面下载主流程（本轮回归 3.8 基线：libretro 直连优先走完全部候选）★★★
+        //   3.8（用户确认可用）的顺序：每个系统目录先逐一盒装封面，全部
+        //   404 后再整批截图兜底，最后索引+模糊匹配，全程 libretro 直连。
+        //   主波与 3.8 完全一致；仅当 libretro 出现连接级失败（真不可达，
+        //   404 不算）才对同一批 URL 补 gh 代理 + jsDelivr 镜像 —— 镜像
+        //   与直连是同一份仓库内容，名字 404 时镜像也 404，只有站点连不上
+        //   时镜像才有意义。旧实现逐候选交错 7 通道：可达网络下每个 404
+        //   白挨 6 个镜像请求（单游戏请求数 ×7、一批时间 ×7），不可达
+        //   网络下每通道吃 3×8s 超时 → 自动批一跑几分钟。
         for (sys in systemDirs) {
-            // 1) 盒装封面（Named_Boxarts）—— 多通道：libretro 直连 → gh 代理链 → jsDelivr 链
+            // 1) 盒装封面（Named_Boxarts）—— libretro 直连（3.8 同款 URL）
             for (name in candidates) {
-                for ((ch, url) in coverImageUrls(sys, "Named_Boxarts", name)) {
-                    if (downloadCached(url, dest, cache, ch)) {
-                        syncDcBoxart(context, game, dest)
-                        return dest
+                if (downloadCached(coverImageUrlsPrimary(sys, "Named_Boxarts", name), dest, cache, "libretro")) {
+                    syncDcBoxart(context, game, dest)
+                    return dest
+                }
+                if (hasConnFailed("libretro")) {
+                    for ((ch, url) in coverImageUrlsMirrors(sys, "Named_Boxarts", name)) {
+                        if (downloadCached(url, dest, cache, ch)) {
+                            syncDcBoxart(context, game, dest)
+                            return dest
+                        }
                     }
                 }
             }
             // 2) 游戏截图兜底（Named_Snaps —— 有图总比占位色块好）
             for (name in candidates) {
-                for ((ch, url) in coverImageUrls(sys, "Named_Snaps", name)) {
-                    if (downloadCached(url, dest, cache, ch)) {
-                        syncDcBoxart(context, game, dest)
-                        return dest
+                if (downloadCached(coverImageUrlsPrimary(sys, "Named_Snaps", name), dest, cache, "libretro")) {
+                    syncDcBoxart(context, game, dest)
+                    return dest
+                }
+                if (hasConnFailed("libretro")) {
+                    for ((ch, url) in coverImageUrlsMirrors(sys, "Named_Snaps", name)) {
+                        if (downloadCached(url, dest, cache, ch)) {
+                            syncDcBoxart(context, game, dest)
+                            return dest
+                        }
                     }
                 }
             }
@@ -548,11 +616,18 @@ object CoverFetcher {
             for (name in fuzzy) {
                 // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
                 if (candidates.any { it.equals(name, ignoreCase = true) }) continue
-                for ((ch, url) in coverImageUrls(sys, "Named_Boxarts", name)) {
-                    if (downloadImage(url, dest, ch)) {
-                        Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
-                        syncDcBoxart(context, game, dest)
-                        return dest
+                if (downloadImage(coverImageUrlsPrimary(sys, "Named_Boxarts", name), dest, "libretro")) {
+                    Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
+                    syncDcBoxart(context, game, dest)
+                    return dest
+                }
+                if (hasConnFailed("libretro")) {
+                    for ((ch, url) in coverImageUrlsMirrors(sys, "Named_Boxarts", name)) {
+                        if (downloadImage(url, dest, ch)) {
+                            Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
+                            syncDcBoxart(context, game, dest)
+                            return dest
+                        }
                     }
                 }
             }
@@ -1263,12 +1338,13 @@ object CoverFetcher {
     /**
      * 批量为缺封面的游戏抓取（顺序 + 限速，IO 线程调用）。
      *
-     * ★ @Synchronized（诊断修复）：进入平台页的自动抓取（LaunchedEffect）与
-     *   工具栏「获取封面」手动抓取可并发 —— 两批各自 set lastBatchStats
-     *   且 fetchCover 内部经 lastBatchStats 字段计数，并发时计数互相串扰
-     *   （弹窗读到中间态，“成功 0/索引 0/未匹配 0”不可信）+ 双倍请求。
-     *   串行化后手动批等自动批完成再跑（封面已入库 → 直接“没有需要下载”），
-     *   统计永远真实。
+     * ★★ 方法级锁已移除（本轮回归修复）★★：旧版 @Synchronized 会让
+     *   手动批排在自动批（进平台页 LaunchedEffect 触发，一批可达
+     *   数分钟）后面 —— 手动按钮点了毫无反馈、cover_debug.log 只在
+     *   批结束才落盘，用户实测"根本没有尝试去下载、日志都是空的"。
+     *   现在回归 3.8 的并发语义（手动立即开跑），并发防护交给调用方：
+     *   LibraryScreen 的自动批在手动批运行中直接跳过；入库写入
+     *   （RomStore.setCoverPaths）单独加锁防并发写坏。
      *
      * @param games 候选列表（通常为当前平台页的全部游戏）
      * @param onlyMissing true = 只处理无封面且无自定义图标的条目
@@ -1276,7 +1352,6 @@ object CoverFetcher {
      * @param limit 单批上限（默认 200，防止一次刷几百个请求）
      * @return 实际新下载成功的数量
      */
-    @Synchronized
     fun fetchAllMissing(
         context: Context,
         games: List<GameEntry>,
@@ -1296,22 +1371,53 @@ object CoverFetcher {
             val f = File(p)
             return f.exists() && f.length() > 0
         }
+        var hasCustomIcon = 0
+        var hasCover = 0
         val pending = games.filter { g ->
             if (!onlyMissing) {
                 true
             } else {
                 if (!g.customIconPath.isNullOrBlank()) {
+                    hasCustomIcon++
                     false                      // 自定义图标优先，无需联网封面
+                } else if (coverFileUsable(g)) {
+                    hasCover++
+                    false                      // 封面文件存在且非空
                 } else {
-                    !coverFileUsable(g)        // 无封面 或 封面文件已丢失
+                    true
                 }
             }
+        }
+        // ★ 批开始即落盘诊断头（旧版只在批结束写 → 排队/长批期间
+        //   cover_debug.log 永远是空的，误导"压根没跑"）+ 拆解
+        //   "为什么 pending=0"（自定义图标/封面已在库），弹窗直接展示。
+        lastPendingInfo = "候选 ${games.size} 个：待下载 ${pending.size} 个，" +
+                "已有封面 $hasCover 个，自定义图标 $hasCustomIcon 个"
+        val dbgFile = try { File(context.filesDir, "cover_debug.log") } catch (_: Throwable) { null }
+        if (dbgFile != null) {
+            debugLogFile = dbgFile
+            try {
+                synchronized(fileLogLock) {
+                    dbgFile.writeText("==== NesStation 封面抓取诊断 " +
+                            java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                                .format(java.util.Date()) + " ====\n" +
+                            lastPendingInfo + "\n" +
+                            (if (pending.isEmpty()) "*** 本批无需下载（全部已有封面/自定义图标）***\n" else "") +
+                            "—— 实时尝试日志 ——\n")
+                }
+            } catch (_: Throwable) {}
         }
         if (pending.isEmpty()) {
             // 统计归零并标注全部已有封面（UI 提示更准确）
             lastBatchStats = BatchStats(attempted = 0, succeeded = 0)
+            debugLogFile = null
             return 0
         }
+        // ★ 每批重置通道健康：上一批的连接级判死不再影响本批 —— 手动
+        //   重试永远给通道全新机会（批内连续 3 次连接失败仍会快速跳过，
+        //   不吃满超时）。旧版判死是会话级：自动批判死后，同一会话内的
+        //   手动批全部请求被静默跳过（统计还先于跳过 → "0 尝试"假象）。
+        synchronized(channelFailCount) { channelFailCount.clear() }
         val batch = pending.take(limit)
         var done = 0
         var fetched = 0
@@ -1324,10 +1430,16 @@ object CoverFetcher {
         // 中途被杀最多丢最近 25 个的入库记录（封面文件仍在缓存目录，
         // 下次抓取会重新关联）。
         val buffer = LinkedHashMap<String, String>()
+        val persistLock = Any()
         fun flush() {
             if (buffer.isNotEmpty()) {
                 try {
-                    RomStore.setCoverPaths(context, buffer)
+                    // ★ 入库写入加锁：方法级锁移除后自动/手动批可能并发，
+                    //   setCoverPaths 并发写有丢写风险（RomStore 落盘是
+                    //   读-改-写）。仅锁入库段，不锁下载段。
+                    synchronized(persistLock) {
+                        RomStore.setCoverPaths(context, buffer)
+                    }
                     fetched += buffer.size
                 } catch (t: Throwable) {
                     Log.w(TAG, "cover persist failed: ${t.message}")
@@ -1342,9 +1454,14 @@ object CoverFetcher {
                 val cover = fetchCover(context, game, urlCache)
                 if (cover != null && !cover.absolutePath.equals(game.coverPath)) {
                     buffer[game.id] = cover.absolutePath
+                } else if (cover == null) {
+                    // ★ 游戏级汇总行：一个游戏全部尝试失败时留一行记录
+                    //   （名字是什么、库里有没有这张图，看封面日志一目了然）
+                    logAttempt("[GAME-MISS] '${game.title.take(40)}' (${game.platform})")
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "cover fetch failed for ${game.title}: ${t.message}")
+                logAttempt("[GAME-ERR] '${game.title.take(40)}' ${t.javaClass.simpleName}: ${t.message}")
             }
             done++
             onProgress?.invoke(done, batch.size)
@@ -1360,23 +1477,23 @@ object CoverFetcher {
         stats.succeeded = fetched
         Log.i(TAG, "Cover fetch batch done: $fetched/${batch.size} succeeded; " +
                 "indexFailed=${stats.indexFailed}, notFound=${stats.notFound}, noSource=${stats.noSource}")
-        // ★ 诊断落盘：完整尝试日志 + 每通道统计写入 cover_debug.log，
+        // ★ 诊断落盘（追加模式）：批开始已写实时日志头，这里追加总结；
         //   下次“封面连不上网”的报告直接带上这个文件，根因一目了然。
         try {
             val dbg = File(context.filesDir, "cover_debug.log")
-            dbg.writeText(buildString {
-                append("==== NesStation 封面抓取诊断 ")
-                append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
-                    .format(java.util.Date()))
-                append(" ====\n")
-                append("统计: ${stats.summary()}\n")
-                append("判死通道: ${deadChannels().joinToString()}\n")
-                append("—— 每通道真实统计 ——\n")
-                channelStatsSnapshot().forEach { (k, v) -> append("  $k: $v\n") }
-                append("—— 尝试日志（最近 ${attemptLogTail(60).size} 条）——\n")
-                attemptLogTail(60).forEach { append(it).append('\n') }
-            })
+            synchronized(fileLogLock) {
+                dbg.appendText(buildString {
+                    append("\n==== 批结束总结 ====\n")
+                    append("统计: ${stats.summary()}\n")
+                    append("判死通道: ${deadChannels().joinToString()}\n")
+                    append("—— 每通道真实统计（本会话累计）——\n")
+                    channelStatsSnapshot().forEach { (k, v) -> append("  $k: $v\n") }
+                    append("—— 尝试日志（最近 ${attemptLogTail(60).size} 条）——\n")
+                    attemptLogTail(60).forEach { append(it).append('\n') }
+                })
+            }
         } catch (_: Throwable) {}
+        debugLogFile = null
         return fetched
     }
 
@@ -1439,11 +1556,17 @@ object CoverFetcher {
      * 404 不计入失败 —— 它只说明这个候选名不存在，与通道健康无关。
      */
     private fun downloadImage(urlStr: String, dest: File, channel: String? = null): Boolean {
-        // 通道已被本会话标记为死亡 → 直接跳过（不再吃连接超时）
-        if (channel != null && !channelAlive(channel)) return false
         val ch = channel ?: "?"
         val st = statFor(ch)
+        // ★ 统计先于判死检查（旧版判死跳过在计数之前 → 被判死通道完全
+        //   静默跳过时弹窗显示"未发起任何网络请求"，误导排查方向）
         st.attempted++
+        // 通道已在本批判死（连续 3 次连接级失败）→ 直接跳过（不再吃超时）
+        if (channel != null && !channelAlive(channel)) {
+            st.skippedDead++
+            logAttempt("[SKIP-DEAD] $ch（本批已判死） <- ${urlStr.take(110)}")
+            return false
+        }
         var conn: HttpURLConnection? = null
         return try {
             val conn0 = URL(urlStr).openConnection() as HttpURLConnection

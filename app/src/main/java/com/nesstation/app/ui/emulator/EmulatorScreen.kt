@@ -1538,6 +1538,47 @@ fun EmulatorScreen(
     //（如 “Could not load title=...”、“Failed to find title ... resetting”）。
     var showCoreLog by remember { mutableStateOf(false) }
 
+    // ★★ 3DS 软键盘（swkbd applet）真实输入桥 ★★
+    //   游戏建档命名（时之笛 3D 等"部分游戏建档卡死"的根因）：原生 swkbd
+    //   回调 SoftwareKeyboard.Execute 时旧桩返回空文本 → 需要非空名字的
+    //   游戏无限重请求 → 画面冻结且日志无任何新增。这里注册宿主把请求
+    //   挂到真实输入对话框上，阻塞模拟线程等用户输入（上游 Citra 同款
+    //   行为），输入确认后游戏正常继续。
+    var swkbdRequest by remember { mutableStateOf<SwkbdRequest?>(null) }
+    var swkbdText by remember { mutableStateOf("") }
+    val swkbdHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    DisposableEffect(Unit) {
+        val disposed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val host = object : org.citra.citra_emu.applets.SoftwareKeyboard.Host {
+            override fun requestInput(
+                config: org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardConfig
+            ): org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardData? {
+                val latch = java.util.concurrent.SynchronousQueue<org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardData?>()
+                swkbdHandler.post {
+                    if (disposed.get()) {
+                        latch.put(null)
+                        return@post
+                    }
+                    swkbdText = ""
+                    swkbdRequest = SwkbdRequest(config) { data -> latch.put(data) }
+                }
+                // 阻塞模拟线程等待用户输入（游戏画面停在键盘阶段 = 真机同款）；
+                // 15 分钟保险阀 + 响应中断，避免界面销毁后模拟线程永久挂死
+                return try {
+                    latch.poll(15, java.util.concurrent.TimeUnit.MINUTES)
+                } catch (_: InterruptedException) { null }
+            }
+        }
+        org.citra.citra_emu.applets.SoftwareKeyboard.host = host
+        onDispose {
+            disposed.set(true)
+            org.citra.citra_emu.applets.SoftwareKeyboard.host = null
+            // 解除可能挂着的模拟线程（返回 null → 非空兜底名继续跑）
+            swkbdRequest?.complete(null)
+            swkbdRequest = null
+        }
+    }
+
     // Current active player for on-screen controller input (0-indexed).
     // 0 = player 1, 1 = player 2, etc.
     var currentPlayer by remember { mutableStateOf(0) }
@@ -3658,6 +3699,61 @@ fun EmulatorScreen(
         //   游戏运行中可随时打开实时刷新，把内容发回即可精确定位。
         if (showCoreLog) {
             CoreLogDialog(platform = platform, onDismiss = { showCoreLog = false })
+        }
+
+        // ★★ 3DS 软键盘 applet 输入对话框（swkbd 真实输入桥）★★
+        //   游戏请求系统键盘（建档命名/起名/重命名等）时显示；确认后把
+        //   文本交回原生 applet，游戏继续。不可取消配置（SINGLE）时无
+        //   取消按钮，避免误触导致游戏拿不到有效输入。
+        swkbdRequest?.let { req ->
+            val cfg = req.config
+            val maxLen = if (cfg.maxTextLength in 1..64) cfg.maxTextLength else 16
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = {
+                    // 点弹窗外不关闭：游戏正阻塞等待这份输入，静默无响应
+                },
+                title = {
+                    Text(cfg.hintText?.takeIf { it.isNotBlank() } ?: "请输入")
+                },
+                text = {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = swkbdText,
+                        onValueChange = { if (it.length <= maxLen) swkbdText = it },
+                        singleLine = true,
+                        placeholder = { Text("最多 $maxLen 字符") }
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = {
+                            val typed = swkbdText.trim()
+                            if (typed.isNotEmpty()) {
+                                req.complete(
+                                    org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardData().apply {
+                                        this.text = typed
+                                        this.button =
+                                            org.citra.citra_emu.applets.SoftwareKeyboard.okButtonIndex(cfg.buttonConfig)
+                                    }
+                                )
+                                swkbdRequest = null
+                            }
+                        },
+                        enabled = swkbdText.isNotBlank()
+                    ) { Text("确定") }
+                },
+                dismissButton = if (cfg.buttonConfig >= 1) ({
+                    androidx.compose.material3.TextButton(onClick = {
+                        // 取消按钮 = DUAL/TRIPLE 配置里的 0 号位
+                        req.complete(
+                            org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardData().apply {
+                                this.text = ""
+                                this.button = 0
+                            }
+                        )
+                        swkbdRequest = null
+                    }) { Text(cfg.buttonText?.getOrNull(0)?.takeIf { it.isNotBlank() } ?: "取消") }
+                }) else null
+            )
         }
 
         if (loaded && showLayoutEditor) {
@@ -8130,9 +8226,18 @@ private fun ShoulderButtonCanvas(
 }
 
 // ---------------------------------------------------------------------------
-// Menu overlay
+// ★ swkbd 挂起请求：一次性的完成回调封装（防双击/重复完成）
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+private class SwkbdRequest(
+    val config: org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardConfig,
+    private val done: (org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardData?) -> Unit
+) {
+    private val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+    fun complete(data: org.citra.citra_emu.applets.SoftwareKeyboard.KeyboardData?) {
+        if (completed.compareAndSet(false, true)) done(data)
+    }
+}
+
 // ★ 核心日志诊断弹窗 —— 存档卡死/冻结问题的现场抓取工具
 //   Azahar(3DS) 的原生日志实时落盘在 <filesDir>/azahar/log/azahar_log.txt；
 //   核心冻结后最后几行日志就是卡死现场（APT applet LaunchTitle 失败 /
@@ -8151,7 +8256,26 @@ private fun CoreLogDialog(platform: GamePlatform, onDismiss: () -> Unit) {
                     val tail = try {
                         com.nesstation.app.core.engine.AzaharEngine.get().nativeLogTail(80)
                     } catch (_: Throwable) { null }
-                    tail ?: "（暂无 3DS 核心日志 —— 游戏启动后才会生成）"
+                    // ★ swkbd 请求记录：卡死若发生在键盘/命名环节，这里能直接
+                    //   看到游戏反复请求键盘（旧空文本桩 → 无限重请求的现场）
+                    val swkbd = try {
+                        org.citra.citra_emu.applets.SoftwareKeyboard.recentRequests()
+                    } catch (_: Throwable) { emptyList() }
+                    // ★ lle_applets 生效值：确认为 HLE 路径（=disabled 走内置
+                    //   键盘弹窗；=true 且无完整 NAND → LLE applet 加载失败卡死）
+                    val cfg = try {
+                        com.nesstation.app.core.engine.AzaharEngine.get().lleAppletsEffective()
+                    } catch (_: Throwable) { null }
+                    buildString {
+                        append(tail ?: "（暂无 3DS 核心日志 —— 游戏启动后才会生成）")
+                        if (cfg != null) {
+                            append("\n\n—— 设置生效值 ——\n").append(cfg)
+                        }
+                        if (swkbd.isNotEmpty()) {
+                            append("\n\n—— 软键盘(swkbd)请求记录 ——\n")
+                            swkbd.forEach { append(it).append('\n') }
+                        }
+                    }.toString()
                 }
                 GamePlatform.NGCWII -> {
                     // Dolphin 日志：<filesDir>/ishiiruka/... 无独立文件日志时给提示

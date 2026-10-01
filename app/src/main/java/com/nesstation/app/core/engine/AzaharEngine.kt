@@ -217,6 +217,30 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         return null
     }
 
+    /**
+     * 诊断：config.ini 里 lle_applets 的实际生效值（核心日志弹窗展示）。
+     * 核心默认 true（LLE 系统小程序）：无完整 NAND 时 applet 加载失败 →
+     * 建档命名类操作卡死。此处读合并写入后的最终值，一眼确认 HLE 生效。
+     */
+    fun lleAppletsEffective(): String {
+        val userDir = try { userDir() } catch (_: Throwable) { return "userDir 不可用" }
+        return try {
+            val ini = configFile(userDir)
+            if (!ini.isFile) {
+                "config.ini 不存在 → lle_applets 走核心默认 true（LLE，需完整 NAND）"
+            } else {
+                val m = Regex("(?im)^\\s*lle_applets\\s*=\\s*(\\S+)").find(ini.readText())
+                val v = m?.groupValues?.get(1)
+                when {
+                    v == null -> "lle_applets 未写入 → 核心默认 true（LLE，需完整 NAND）"
+                    v.equals("false", true) || v == "0" ->
+                        "lle_applets = $v（HLE —— 建档命名走应用内键盘对话框）"
+                    else -> "lle_applets = $v（LLE —— 无完整 NAND 时建档类操作会卡死）"
+                }
+            }
+        } catch (t: Throwable) { "config.ini 读取失败: ${t.message}" }
+    }
+
     /** 3DS 环境自检摘要（密钥/引导文件/系统数据种子状态，用于错误诊断文本）。 */
     private fun sysDataDiag(): String {
         val userDir = try { userDir() } catch (_: Throwable) { "<unknown>" }

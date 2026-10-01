@@ -901,12 +901,16 @@ fun LibraryScreen(
                     val chLines = if (chStats.isEmpty()) "(本批未发起任何网络请求)"
                     else chStats.entries.joinToString("\n") { "  ${it.key}: ${it.value}" }
                     dialogMsg = if (s.attempted == 0) {
-                        "没有需要下载封面的游戏\n\n当前列表全部已有封面或自定义图标。" +
-                            "\n（若个别封面显示异常，会自动重新下载 —— 旧版本会把这些游戏整体跳过）"
+                        "没有需要下载封面的游戏\n\n" + cf.lastPendingInfo +
+                            "\n（已有封面/自定义图标的条目不重复下载；若个别封面显示异常，" +
+                            "清理后重进会自动重下）\n\n" +
+                            "若这与实际不符（列表里明显还有游戏没封面），" +
+                            "请把下面路径的 cover_debug.log 内容反馈：\n" +
+                            "内部存储/Android/data/com.nesstation.app/files/cover_debug.log"
                     } else {
                         "未下载到新封面\n\n" + s.summary() +
-                            "\n\n—— 每通道真实统计 ——\n" + chLines +
-                            (if (dead.isNotEmpty()) "\n本会话已判死通道：$dead" else "") +
+                            "\n\n—— 每通道真实统计（本会话累计，含后台自动批）——\n" + chLines +
+                            (if (dead.isNotEmpty()) "\n本批已判死通道（下批自动重试）：$dead" else "") +
                             "\n\n最近尝试：\n" + cf.attemptLogTail(6).joinToString("\n") +
                             "\n\n完整诊断已写入：内部存储/Android/data/com.nesstation.app/files/cover_debug.log" +
                             "\n（反馈封面问题时请附上该文件内容，可直接定位根因）"
@@ -927,13 +931,23 @@ fun LibraryScreen(
     LaunchedEffect(selectedPlatform) {
         if (selectedPlatform == GamePlatform.JAVA) return@LaunchedEffect
         if (selectedPlatform in coverAutoDone) return@LaunchedEffect
+        // ★ 手动批运行中自动批直接跳过（不再竞争锁 —— 旧 @Synchronized
+        //   已移除，两批并发只浪费请求且串扰统计）
+        if (coverFetching) {
+            coverAutoDone.add(selectedPlatform)
+            return@LaunchedEffect
+        }
         coverAutoDone.add(selectedPlatform)
         val platformGames = importedGames.toList().filter { it.platform == selectedPlatform }
         if (platformGames.isEmpty()) return@LaunchedEffect
         val fetched = withContext(Dispatchers.IO) {
             try {
                 CoverFetcher.fetchAllMissing(context, platformGames, limit = 200)
-            } catch (_: Throwable) { 0 }
+            } catch (t: Throwable) {
+                // 取消必须向外传播（否则协程取消被吞 → 结构化并发失效）
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                0
+            }
         }
         if (fetched > 0) {
             // 静默重载：不弹提示、不重扫文件夹，只重读库并同步外部列表
