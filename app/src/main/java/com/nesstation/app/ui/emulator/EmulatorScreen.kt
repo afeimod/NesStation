@@ -414,6 +414,11 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
         )
         // NGC/WII（Ishiiruka）— GC 手柄 + Wii Remote 双布局（实体手柄按键双份映射：
         // NGC 模式下 BUTTON_A→GC A；Wii 模式下同一物理键→Wii A，引擎按模式路由）
+        // ★★ Wii 倾斜体感默认键位（本轮，需求：“左右倾斜分别是L2R2，L2是
+        //   向左倾斜，R2向右倾斜；前后可以用按钮L3，R3作为后期自定义”）：
+        //   实体手柄 L2=左倾 / R2=右倾 / L3(左摇杆按下)=前倾 / R3(右摇杆
+        //   按下)=后倾。双节棍 C/Z 改绑 BUTTON_C/Z（旧默认占用 L2/R2 与
+        //   倾斜冲突；可在按键映射页自定义换回）。
         GamePlatform.NGCWII -> listOf(
             KeyActionInternal("ngc_up", KeyEvent.KEYCODE_DPAD_UP),
             KeyActionInternal("ngc_down", KeyEvent.KEYCODE_DPAD_DOWN),
@@ -432,8 +437,13 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ngc_wii_plus", KeyEvent.KEYCODE_BUTTON_START),
             KeyActionInternal("ngc_wii_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("ngc_wii_home", KeyEvent.KEYCODE_BUTTON_MODE),
-            KeyActionInternal("ngc_wii_c", KeyEvent.KEYCODE_BUTTON_L2),
-            KeyActionInternal("ngc_wii_z", KeyEvent.KEYCODE_BUTTON_R2)
+            KeyActionInternal("ngc_wii_c", KeyEvent.KEYCODE_BUTTON_C),
+            KeyActionInternal("ngc_wii_z", KeyEvent.KEYCODE_BUTTON_Z),
+            // ★ Wii 倾斜体感：L2 左倾 / R2 右倾 / L3 前倾 / R3 后倾
+            KeyActionInternal("ngc_wii_tilt_l", KeyEvent.KEYCODE_BUTTON_L2),
+            KeyActionInternal("ngc_wii_tilt_r", KeyEvent.KEYCODE_BUTTON_R2),
+            KeyActionInternal("ngc_wii_tilt_f", KeyEvent.KEYCODE_BUTTON_THUMBL),
+            KeyActionInternal("ngc_wii_tilt_b", KeyEvent.KEYCODE_BUTTON_THUMBR)
         )
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
         // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
@@ -458,6 +468,8 @@ private fun actionToBits(action: KeyActionInternal, platform: GamePlatform): Int
     }
     // NGC/WII（Ishiiruka）：实体手柄按键按动作 id 双份映射
     // （ngc_wii_* id 优先命中，避免与 ngc_* 同键码冲突）
+    // ★ 倾斜体感四键（本轮）：L2 左倾 / R2 右倾 / L3 前倾 / R3 后倾 ——
+    //   与虚拟按键同一批位（引擎 setPad1 → pushWiiTilt 四轴）。
     if (platform == GamePlatform.NGCWII) {
         return when (action.id.substringBeforeLast("_p")) {
             "ngc_z"         -> BTN_Z
@@ -468,6 +480,10 @@ private fun actionToBits(action: KeyActionInternal, platform: GamePlatform): Int
             "ngc_wii_home"  -> BTN_HOME
             "ngc_wii_c"     -> BTN_WII_C
             "ngc_wii_z"     -> BTN_WII_Z
+            "ngc_wii_tilt_l" -> BTN_L2
+            "ngc_wii_tilt_r" -> BTN_R2
+            "ngc_wii_tilt_f" -> BTN_L3
+            "ngc_wii_tilt_b" -> BTN_R3
             else -> 0
         }.takeIf { it != 0 }
             ?: defaultActionToBits(action, lBit, rBit)
@@ -2042,6 +2058,50 @@ fun EmulatorScreen(
         LaunchedEffect(loaded, surfaceSize, padLayout.videoScale, padLayout.azLayoutOption) {
             if (surfaceSize != IntSize.Zero && loaded) {
                 applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
+            }
+        }
+    }
+
+    // ★★★ 手机体感 → Wii 倾斜模拟（本轮新增，需求："并加入手机体感模拟
+    //   wii体感"）★★★
+    //   加速度计 → 重力方向（按显示旋转角换算到屏幕坐标）→ 与开启时的
+    //   基准姿态求差 → 四向倾斜强度（0..1）→ 引擎 [NgcWiiCoreEngine.
+    //   setWiiMotionTilt]，与 L2/R2/L3/R3 按钮倾斜**叠加**。
+    //   - 仅 NGC/WII 平台；NGC 模式由引擎内部忽略；
+    //   - 开关持久化在 PadLayoutStore.wiiMotionSensor（设置面板可切换）；
+    //   - 无加速度计的设备 start() 返回 false，功能自然退化为纯按钮倾斜；
+    //   - 旋转屏幕时重启监听（键值含 displayRotation），方向换算即时更新。
+    if (platform == GamePlatform.NGCWII) {
+        val motionCtx = LocalContext.current
+        val displayRotation = try {
+            val wm = motionCtx.getSystemService(android.content.Context.WINDOW_SERVICE)
+                as? android.view.WindowManager
+            @Suppress("DEPRECATION")
+            val rotation = wm?.defaultDisplay?.rotation ?: android.view.Surface.ROTATION_0
+            rotation
+        } catch (_: Throwable) { android.view.Surface.ROTATION_0 }
+        androidx.compose.runtime.DisposableEffect(
+            padLayout.wiiMotionSensor, engine, displayRotation
+        ) {
+            if (padLayout.wiiMotionSensor) {
+                val started = com.nesstation.app.core.engine.WiiMotionSensors.start(
+                    motionCtx, displayRotation
+                ) { left, right, forward, backward ->
+                    (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                        ?.setWiiMotionTilt(left, right, forward, backward)
+                }
+                if (!started) {
+                    android.util.Log.w("EmulatorScreen", "Wii 手机体感：设备无加速度计，退化为按钮倾斜")
+                }
+            } else {
+                // 开关关闭时立即清零传感器输入（按钮倾斜不受影响）
+                (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                    ?.setWiiMotionTilt(0f, 0f, 0f, 0f)
+            }
+            onDispose {
+                com.nesstation.app.core.engine.WiiMotionSensors.stop()
+                (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                    ?.setWiiMotionTilt(0f, 0f, 0f, 0f)
             }
         }
     }
@@ -4960,8 +5020,21 @@ private fun applyCoreOptionsInner(
         //   与 NDS 双屏分离布局同体验，核心原生 CustomLayout 生效）。
         GamePlatform.N3DS -> {
             val b = { v: String -> if (v == "enabled") "true" else "false" }
+            // ★★★ VK 设备能力校验（"3ds的vk渲染失效……甚至游戏闪退"修复）★★★
+            //   渲染器在 run() 启动时按 graphics_api 分派 Vulkan/OpenGL 窗口；
+            //   设备无 Vulkan 硬件时 adrenotools 初始化失败 → VK 路径
+            //   vkCreateAndroidSurfaceKHR CHECK 失败 → SIGABRT 闪退
+            //   （Java try/catch 拦不住 native abort）。这里前置探测系统
+            //   feature，不支持 VK 的设备强制回落 OpenGL（graphics_api=1）。
+            val hasVulkan = try {
+                com.nesstation.app.NesApp.get()?.packageManager
+                    ?.hasSystemFeature(android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
+                    ?: true
+            } catch (_: Throwable) { true }
             val api = when (layout.azGraphicsApi) {
-                "software" -> "0"; "vulkan" -> "2"; else -> "1"
+                "software" -> "0"
+                "vulkan" -> if (hasVulkan) "2" else "1"
+                else -> "1"
             }
             engine.setCoreOption("Renderer/graphics_api", api)
             engine.setCoreOption("Renderer/use_gles", "true")
@@ -6536,10 +6609,19 @@ fun OnScreenController(
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE ||
-                   platform == GamePlatform.PSX || platform == GamePlatform.PS2
+                   platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
+                   // ★★ Wii 倾斜体感（本轮新增）：L2=左倾 / R2=右倾
+                   //   （需求：“左右倾斜分别是L2R2，L2是向左倾斜，R2向右倾斜”）。
+                   //   仅 wii 模式（GC 手柄无体感）。经典手柄模式下复用 L/R 位
+                   //   输出 ZL/ZR，不显示 L2/R2 避免冲突。
+                   (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic)
     // PS2 专属：L3/R3（摇杆按下）小按钮，可在显隐对话框里关闭
-    val showL3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
-    val showR3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
+    // ★ NGC/WII：L3/R3 = 前倾/后倾体感按钮（需求：“前后可以用按钮
+    //   L3，R3作为后期自定义”），wii 模式下显示。
+    val showL3Btn = (isPs2 || (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic)) &&
+                    !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
+    val showR3Btn = (isPs2 || (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic)) &&
+                    !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
 
     // === Per-button visibility for ALL platforms ===
     // Each platform can independently hide/show individual buttons via the
@@ -6665,6 +6747,9 @@ fun OnScreenController(
     val ps2RStick = if (isPortrait) padLayout.ps2RStickP else padLayout.ps2RStick
     val ps2BtnL3 = if (isPortrait) padLayout.ps2BtnL3P else padLayout.ps2BtnL3
     val ps2BtnR3 = if (isPortrait) padLayout.ps2BtnR3P else padLayout.ps2BtnR3
+    // ★ 通用 L3/R3（NGC/WII wii 模式：前倾/后倾体感按钮）
+    val btnL3 = if (isPortrait) padLayout.btnL3P else padLayout.btnL3
+    val btnR3 = if (isPortrait) padLayout.btnR3P else padLayout.btnR3
     // 3DS / NGC-WII 专属摇杆（CirclePad / C-Stick；GC 主摇杆 / C 摇杆；
     // Wii 双节棍摇杆）—— 常驻模拟控件，不参与显隐
     val n3dsLStick = if (isPortrait) padLayout.n3dsLStickP else padLayout.n3dsLStick
@@ -6871,9 +6956,12 @@ fun OnScreenController(
                 // 即时存档 / 即时读档按钮命中区（Pill 形，跟 START/SELECT 一样放宽）
                 val qsRect = if (showQuickSaveBtn) btnRect(btnQuickSave, 2.2f, 0.7f) else null
                 val qlRect = if (showQuickLoadBtn) btnRect(btnQuickLoad, 2.2f, 0.7f) else null
-                // PS2 专属：L3/R3 小按钮 + 双摇杆（摇杆命中区 1.3x，方便拖动）
-                val l3Rect = if (showL3Btn) btnRect(ps2BtnL3, 1.4f, 1.4f) else null
-                val r3Rect = if (showR3Btn) btnRect(ps2BtnR3, 1.4f, 1.4f) else null
+                // PS2 专属：L3/R3 小按钮；★ NGC/WII：L3/R3 = 前倾/后倾体感
+                //   按钮（通用布局字段 btnL3/btnR3，wii 模式下显示）
+                val l3Rect = if (isPs2) (if (showL3Btn) btnRect(ps2BtnL3, 1.4f, 1.4f) else null)
+                             else if (showL3Btn) btnRect(btnL3, 1.4f, 1.4f) else null
+                val r3Rect = if (isPs2) (if (showR3Btn) btnRect(ps2BtnR3, 1.4f, 1.4f) else null)
+                             else if (showR3Btn) btnRect(btnR3, 1.4f, 1.4f) else null
                 // NGC/WII 摇杆命中区按控制器组合选择：
                 //   GC → 主摇杆/C 摇杆；双节棍/经典手柄 → 左摇杆（wiiLStick）；
                 //   经典手柄另有右摇杆（复用 ngcRStick 位）。DC（Flycast）：左摇杆。
@@ -7352,15 +7440,16 @@ fun OnScreenController(
             GamePlatform.DC -> "RT"
             else -> "R"
         }.let { if (ngcWiiClassic) "ZR" else it }  // NGC/WII 经典手柄：R 位显示 ZR
-        val labelL2 = when (platform) {
+    val labelL2 = when (platform) {
             GamePlatform.PCE -> "TURBO II"
             GamePlatform.PSX, GamePlatform.PS2 -> "L2"
-            else -> "L2"
+            // ★ NGC/WII Wii 模式：L2/R2 = 倾斜体感（左倾/右倾）
+            else -> if (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic) "左倾" else "L2"
         }
         val labelR2 = when (platform) {
             GamePlatform.PCE -> "TURBO I"
             GamePlatform.PSX, GamePlatform.PS2 -> "R2"
-            else -> "R2"
+            else -> if (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic) "右倾" else "R2"
         }
         if (showABtn && (!isNgcWii || showNgcA)) {
             val aColor = when (platform) {
@@ -7574,6 +7663,29 @@ fun OnScreenController(
             if (showR3Btn) {
                 ActionButtonCanvas(
                     "R3", Color(0xFF95A5A6), ps2BtnR3, surfaceSize, opacity, visualState and BTN_R3 != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "r3"),
+                    image = r3Img,
+                    pressedImage = r3ImgPressed
+                )
+            }
+        }
+        // ★ NGC/WII（wii 模式）：L3/R3 = 前倾/后倾体感按钮（需求："前后
+        //   可以用按钮L3，R3作为后期自定义"）。位置独立可拖（编辑器内
+        //   "前倾"/"后倾"），与 L2/R2（左倾/右倾）组成四向倾斜。
+        if (isNgcWii && !isPs2) {
+            val (l3Img, l3ImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+            val (r3Img, r3ImgPressed) = rememberThemeButtonImages(overlayTheme, "r3")
+            if (showL3Btn) {
+                ActionButtonCanvas(
+                    "前倾", Color(0xFF95A5A6), btnL3, surfaceSize, opacity, visualState and BTN_L3 != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "l3"),
+                    image = l3Img,
+                    pressedImage = l3ImgPressed
+                )
+            }
+            if (showR3Btn) {
+                ActionButtonCanvas(
+                    "后倾", Color(0xFF95A5A6), btnR3, surfaceSize, opacity, visualState and BTN_R3 != 0,
                     pressedColor = themePressedButtonColor(overlayTheme, "r3"),
                     image = r3Img,
                     pressedImage = r3ImgPressed
@@ -9840,15 +9952,14 @@ private fun PadLayoutEditor(
                  platform == GamePlatform.DC ||
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     // L2/R2 editable in edit mode for Arcade (when enabled) and PCE (turbo toggle)
+    // ★ NGC/WII（wii 模式）：L2/R2 = 左倾/右倾体感按钮可编辑（需在
+    //   ngcWiiWiiSet/ngcWiiClassic 之后计算，见下方声明）
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE || platform == GamePlatform.PSX ||
                    platform == GamePlatform.PS2
     val isPs2 = platform == GamePlatform.PS2
     val is3ds = platform == GamePlatform.N3DS
     val isNgcWii = platform == GamePlatform.NGCWII
-    // PS2 专属键的可编辑开关（双摇杆常驻始终可编辑；L3/R3 可隐）
-    val showL3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
-    val showR3Btn = isPs2 && !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
     // 3DS / NGC-WII 专属键的可编辑开关（与 OnScreenController 一致）
     // 3DS ZL/ZR 可编辑开关（NGC/WII 键组门控见下方独立块）
     val showZlBtn = is3ds && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
@@ -9862,6 +9973,14 @@ private fun PadLayoutEditor(
     val ngcWiiClassic = ngcWiiWiiSet && ngcWiiExtension == "classic"
     val ngcWiiNunchuk = ngcWiiWiiSet && ngcWiiExtension == "nunchuk"
     val ngcWiiHoriz = ngcWiiWiiSet && ngcWiiOrientation == "horizontal"
+    // ★★ 编辑器 L2/R2/L3/R3 体感键开关（本轮新增，须在 ngcWiiClassic 之后声明）：
+    //   wii 模式（非经典手柄）下 L2/R2=左/右倾、L3/R3=前/后倾可拖动编辑。
+    val editorShowWiiTilt = isNgcWii && ngcWiiWiiSet && !ngcWiiClassic
+    val showL2R2Final = showL2R2 || editorShowWiiTilt
+    val showL3Btn = (isPs2 || editorShowWiiTilt) &&
+                    !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
+    val showR3Btn = (isPs2 || editorShowWiiTilt) &&
+                    !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
     // ★ 横持不再隐藏 L/R/HOME/IR 进深（与运行时同源，体感需求）
     val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || ngcWiiWiiSet)
     // ★ GC 键组完整门控（与运行时 OnScreenController 同源）：通用槽位
@@ -9978,6 +10097,9 @@ private fun PadLayoutEditor(
     val ps2RStick = if (isPortrait) padLayout.ps2RStickP else padLayout.ps2RStick
     val ps2BtnL3 = if (isPortrait) padLayout.ps2BtnL3P else padLayout.ps2BtnL3
     val ps2BtnR3 = if (isPortrait) padLayout.ps2BtnR3P else padLayout.ps2BtnR3
+    // ★ 通用 L3/R3（NGC/WII wii 模式：前倾/后倾体感按钮）
+    val btnL3 = if (isPortrait) padLayout.btnL3P else padLayout.btnL3
+    val btnR3 = if (isPortrait) padLayout.btnR3P else padLayout.btnR3
     // 3DS / NGC-WII 专属摇杆与按键（与 OnScreenController 一致）
     val n3dsLStick = if (isPortrait) padLayout.n3dsLStickP else padLayout.n3dsLStick
     val n3dsRStick = if (isPortrait) padLayout.n3dsRStickP else padLayout.n3dsRStick
@@ -10033,7 +10155,16 @@ private fun PadLayoutEditor(
                              else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnStartP = newLayout} else padLayout.copy {this.n3dsBtnStart = newLayout})
                              else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnStartP = newLayout} else padLayout.copy {this.ngcBtnStart = newLayout})
                              else if (isPortrait) padLayout.copy {this.btnStartP = newLayout} else padLayout.copy {this.btnStart = newLayout}
+            // ★★ 3DS SELECT 拖动失效修复（“3ds的select按键布局时无法拖动”
+            //   根因）：编辑器读的是平台专属字段（n3dsBtnSelect，见上方
+            //   btnSelect 读取处），旧实现却写回通用字段 btnSelect —— 拖动/
+            //   改大小的新布局永远落不进 3DS 专属字段 → 重组后预览弹回原位，
+            //   表现为“拖不动”。镜像 START 的分支写法补上 is3ds（同时补
+            //   isNgcWii 分支，与 START 完全对齐）。NGCWII 编辑器不渲染
+            //   SELECT（wii 模式用 +/− 键），该分支仅为防未来接入。
             BtnType.SELECT -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnSelectP = newLayout} else padLayout.copy {this.ps2BtnSelect = newLayout})
+                              else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnSelectP = newLayout} else padLayout.copy {this.n3dsBtnSelect = newLayout})
+                              else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnSelectP = newLayout} else padLayout.copy {this.btnSelect = newLayout})
                               else if (isPortrait) padLayout.copy {this.btnSelectP = newLayout} else padLayout.copy {this.btnSelect = newLayout}
             BtnType.L -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL1P = newLayout} else padLayout.copy {this.ps2BtnL1 = newLayout})
                          else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnLP = newLayout} else padLayout.copy {this.n3dsBtnL = newLayout})
@@ -10052,11 +10183,18 @@ private fun PadLayoutEditor(
                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnYP = newLayout} else padLayout.copy {this.ngcBtnY = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnYP = newLayout} else padLayout.copy {this.btnY = newLayout}
             BtnType.L2 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL2P = newLayout} else padLayout.copy {this.ps2BtnL2 = newLayout})
+                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnL2P = newLayout} else padLayout.copy {this.btnL2 = newLayout})
                           else if (isPortrait) padLayout.copy {this.btnL2P = newLayout} else padLayout.copy {this.btnL2 = newLayout}
             BtnType.R2 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnR2P = newLayout} else padLayout.copy {this.ps2BtnR2 = newLayout})
+                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnR2P = newLayout} else padLayout.copy {this.btnR2 = newLayout})
                           else if (isPortrait) padLayout.copy {this.btnR2P = newLayout} else padLayout.copy {this.btnR2 = newLayout}
-            BtnType.L3 -> if (isPortrait) padLayout.copy {this.ps2BtnL3P = newLayout} else padLayout.copy {this.ps2BtnL3 = newLayout}
-            BtnType.R3 -> if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout}
+            // ★ NGC/WII：L3/R3 = 前倾/后倾体感按钮（通用字段，PS2 仍用专属字段）
+            BtnType.L3 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL3P = newLayout} else padLayout.copy {this.ps2BtnL3 = newLayout})
+                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnL3P = newLayout} else padLayout.copy {this.btnL3 = newLayout})
+                          else if (isPortrait) padLayout.copy {this.ps2BtnL3P = newLayout} else padLayout.copy {this.ps2BtnL3 = newLayout}
+            BtnType.R3 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout})
+                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnR3P = newLayout} else padLayout.copy {this.btnR3 = newLayout})
+                          else if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout}
             BtnType.LSTICK -> when {
                 isPs2 -> if (isPortrait) padLayout.copy {this.ps2LStickP = newLayout} else padLayout.copy {this.ps2LStick = newLayout}
                 is3ds -> if (isPortrait) padLayout.copy {this.n3dsLStickP = newLayout} else padLayout.copy {this.n3dsLStick = newLayout}
@@ -10241,8 +10379,10 @@ private fun PadLayoutEditor(
                 )
             }
             // L2/R2 extra buttons (Arcade when enabled, PCE turbo toggle always)
-            if (showL2R2 && showL2Btn) {
-                val l2Label = if (platform == GamePlatform.PCE) "TURBO II" else "L2"
+            // ★ NGC/WII：L2/R2 = 左倾/右倾体感按钮（通用字段，可在编辑器拖动）
+            if (showL2R2Final && showL2Btn) {
+                val l2Label = if (platform == GamePlatform.PCE) "TURBO II"
+                              else if (isNgcWii) "左倾" else "L2"
                 EditableRoundBtn(l2Label, Color(0xFFFF9800), btnL2, surfaceSize, selectedBtn == BtnType.L2,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
@@ -10252,8 +10392,9 @@ private fun PadLayoutEditor(
                     onSelect = { selectedBtn = BtnType.L2 }
                 )
             }
-            if (showL2R2 && showR2Btn) {
-                val r2Label = if (platform == GamePlatform.PCE) "TURBO I" else "R2"
+            if (showL2R2Final && showR2Btn) {
+                val r2Label = if (platform == GamePlatform.PCE) "TURBO I"
+                              else if (isNgcWii) "右倾" else "R2"
                 EditableRoundBtn(r2Label, Color(0xFFFF9800), btnR2, surfaceSize, selectedBtn == BtnType.R2,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
@@ -10261,6 +10402,27 @@ private fun PadLayoutEditor(
                         updateBtn(BtnType.R2, btnR2.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.R2 }
+                )
+            }
+            // ★ NGC/WII：L3/R3 = 前倾/后倾体感按钮（通用字段，可拖动/调大小）
+            if (isNgcWii && showL3Btn) {
+                EditableRoundBtn("前倾", Color(0xFF95A5A6), btnL3, surfaceSize, selectedBtn == BtnType.L3,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.L3, btnL3.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.L3 }
+                )
+            }
+            if (isNgcWii && showR3Btn) {
+                EditableRoundBtn("后倾", Color(0xFF95A5A6), btnR3, surfaceSize, selectedBtn == BtnType.R3,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.R3, btnR3.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.R3 }
                 )
             }
             // 即时存档 / 即时读档按钮（所有平台可拖动，位置默认在顶部两侧）
@@ -13291,6 +13453,8 @@ private fun SettingsPanel(
 
                 Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("图形后端",
+                    // ★ 游戏中切换会自动重启模拟线程重建渲染器（否则不生效）；
+                    //   不支持 Vulkan 的设备自动回落 OpenGL（防闪退）。
                     listOf("opengl" to "OpenGL (兼容)", "vulkan" to "Vulkan (性能, 推荐)", "software" to "软件渲染 (慢)"),
                     padLayout.azGraphicsApi
                 ) { onLayoutChange(padLayout.copy {azGraphicsApi = it}) }

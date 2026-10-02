@@ -23,6 +23,10 @@ import java.util.zip.ZipFile
  *   - FBNeo (Arcade): some ROM zips include preview .png images (rare but
  *     happens for homebrew/translation packs). We check for any .png file
  *     in the zip and use the first one as the icon.
+ *   - NDS: ROM 自带 banner 图标（头 0x68 偏移，32×32 4bpp）。
+ *   - 3DS: 卡带镜像 (.3ds/.cci) 自带 SMDH 图标（0x20C0 偏移，48×48）。
+ *     需求：“nds和3ds以及java游戏自己都有封面的，核心应该自动显示
+ *     自带的封面才对”。
  *   - Other platforms (NES/SFC/GB/GBA/MD/DOS): no built-in icon in the ROM
  *     format. Returns null — the library shows a colored placeholder with
  *     the platform badge.
@@ -60,6 +64,8 @@ object GameIconExtractor {
         return when (game.platform) {
             GamePlatform.JAVA -> resolveJavaIcon(game)
             GamePlatform.ARCADE -> resolveArcadeIcon(context, game)
+            GamePlatform.NDS -> resolveRomBannerIcon(context, game, is3ds = false)
+            GamePlatform.N3DS -> resolveRomBannerIcon(context, game, is3ds = true)
             else -> game.coverPath?.takeIf { File(it).exists() }
         }
     }
@@ -121,6 +127,68 @@ object GameIconExtractor {
             Log.w(TAG, "Failed to extract arcade icon from ${zipFile.name}: ${e.message}")
         }
         return game.coverPath?.takeIf { File(it).exists() }
+    }
+
+    /**
+     * NDS / 3DS：优先用已下载封面（coverPath，可能是网络盒装图也可能是
+     * 自动批持久化的内置图标）；无封面时现场从 ROM 提取 banner / SMDH
+     * 图标并缓存到 <filesDir>/icons/<gameId>.png —— 满足“核心应该自动
+     * 显示自带的封面”。本地路径与 SAF content:// 都支持。
+     */
+    private fun resolveRomBannerIcon(context: Context, game: GameEntry, is3ds: Boolean): String? {
+        // 已有封面文件优先（网络盒装图/已持久化内置图）
+        game.coverPath?.let { p -> if (File(p).exists() && File(p).length() > 0) return p }
+        val path = game.romPath ?: return null
+        val iconsDir = File(context.filesDir, "icons").apply { mkdirs() }
+        val cachedIcon = File(iconsDir, "${game.id}.png")
+        if (cachedIcon.exists() && cachedIcon.length() > 0) return cachedIcon.absolutePath
+        try {
+            val bitmap = if (path.startsWith("content://")) {
+                context.contentResolver.openInputStream(android.net.Uri.parse(path))?.use { s ->
+                    if (is3ds) RomBannerExtractor.extract3dsIcon(s) else RomBannerExtractor.extractNdsIcon(s)
+                }
+            } else {
+                val f = File(path)
+                if (!f.exists()) null
+                else if (is3ds) RomBannerExtractor.extract3dsIcon(f) else RomBannerExtractor.extractNdsIcon(f)
+            } ?: return null
+            cachedIcon.outputStream().use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            }
+            Log.i(TAG, "Extracted ${if (is3ds) "3DS SMDH" else "NDS banner"} icon for ${game.id}")
+            return cachedIcon.absolutePath
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to extract ${if (is3ds) "3DS" else "NDS"} icon for ${game.id}: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * 供 CoverFetcher 自动批调用：提取 NDS/3DS 内置封面并直接落盘到
+     * 指定目标文件（covers/<gameId>.png），成功返回 true。
+     */
+    fun extractRomBannerTo(context: Context, game: GameEntry, destFile: File): Boolean {
+        val is3ds = game.platform == GamePlatform.N3DS
+        val path = game.romPath ?: return false
+        return try {
+            val bitmap = if (path.startsWith("content://")) {
+                context.contentResolver.openInputStream(android.net.Uri.parse(path))?.use { s ->
+                    if (is3ds) RomBannerExtractor.extract3dsIcon(s) else RomBannerExtractor.extractNdsIcon(s)
+                }
+            } else {
+                val f = File(path)
+                if (!f.exists()) null
+                else if (is3ds) RomBannerExtractor.extract3dsIcon(f) else RomBannerExtractor.extractNdsIcon(f)
+            } ?: return false
+            destFile.parentFile?.mkdirs()
+            destFile.outputStream().use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "extractRomBannerTo failed for ${game.id}: ${e.message}")
+            false
+        }
     }
 
     /**

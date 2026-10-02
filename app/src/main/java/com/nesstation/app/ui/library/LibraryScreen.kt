@@ -2960,7 +2960,6 @@ private fun CoverCandidateDialog(
     }
     var loading by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     var searched by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-    var picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     var progress by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
     // 搜索无结果/异常时给出可操作原因（不自动关弹窗 —— "点击就消失"根治延续）
     var failReason by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
@@ -2977,22 +2976,43 @@ private fun CoverCandidateDialog(
         scope.launch {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 runCatching {
+                    // ★★ 本轮（"长按卡片选择封面获取的太少，最多只有三张"根治）：
+                    //   旧实现 max=8 且模糊匹配只取 top-3 → 弹窗永远 ~3 张。
+                    //   现在全量索引匹配（显示所有符合的 png），max 提升到 24，
+                    //   onEach 增量回调 —— 找到一张显示一张，不用等全部下载完。
                     val raw = com.nesstation.app.core.storage.CoverFetcher
-                        .fetchCandidatesForQuery(context, game, q, max = 8) { done, _ -> progress = done }
+                        .fetchCandidatesForQuery(context, game, q, max = 24,
+                            onProgress = { done, _ ->
+                                android.os.Handler(android.os.Looper.getMainLooper()).post { progress = done }
+                            },
+                            onEach = { file, name ->
+                                // 下载线程回调（非协程）→ 解码后投递主线程增量展示
+                                val ui = CoverCandidateUi(
+                                    file, name,
+                                    decodeCoverBitmap(file.absolutePath)?.asImageBitmap()
+                                )
+                                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                    candidates = candidates + ui
+                                }
+                            })
                     raw.map { (file, name) ->
+                        // 已在 onEach 里增量展示过的不再重复（按文件路径去重）
                         CoverCandidateUi(file, name, decodeCoverBitmap(file.absolutePath)?.asImageBitmap())
                     }
                 }
             }.onSuccess { result ->
-                candidates = result
+                // 与增量结果合并去重（onEach 已先展示）
+                val seenFiles = candidates.map { it.file.absolutePath }.toHashSet()
+                val merged = candidates + result.filter { it.file.absolutePath !in seenFiles }
+                candidates = merged
                 loading = false
-                if (result.isEmpty()) {
+                if (merged.isEmpty()) {
                     val dead = com.nesstation.app.core.storage.CoverFetcher.deadChannels()
                     failReason = buildString {
                         append("未搜到「$q」的封面。\n\n提示：\n")
                         append("1. 支持中文名（自动翻译，如 超级玛丽 → Super Mario）、英文名、关键词模糊搜索\n")
                         append("2. 试试更短的关键词（如 mario、contra）或官方英文名\n")
-                        append("3. 街机游戏可直接输入 zip 文件名（如 kof97）")
+                        append("3. 街机游戏可直接输入 zip 文件名（如 kof97），会自动转成官方英文标题搜索")
                         if (dead.isNotEmpty()) append("\n\n本会话已判死通道：$dead")
                     }
                 }
@@ -3072,7 +3092,7 @@ private fun CoverCandidateDialog(
                 Spacer(Modifier.size(10.dp))
                 if (loading) {
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         androidx.compose.material3.CircularProgressIndicator(
@@ -3080,9 +3100,25 @@ private fun CoverCandidateDialog(
                         )
                         Spacer(Modifier.size(10.dp))
                         Text(
-                            "正在搜索「${query.take(20)}」…（已找到 $progress 张）",
+                            "正在搜索「${query.take(20)}」…（已找到 $progress 张${if (candidates.isNotEmpty()) "，已展示 ${candidates.size} 张" else ""}）",
                             fontSize = 12.sp, color = Color(0xFF667788)
                         )
+                        // ★ 增量展示：下载中的候选随到随显（不再等整批结束）
+                        if (candidates.isNotEmpty()) {
+                            Spacer(Modifier.size(8.dp))
+                            androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                                columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(3),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 260.dp)
+                            ) {
+                                items(candidates.size) { idx ->
+                                    CandidateCell(candidates[idx], game, onPicked, onError)
+                                }
+                            }
+                        }
                     }
                 } else if (failReason != null) {
                     Text(
@@ -3099,7 +3135,8 @@ private fun CoverCandidateDialog(
                 } else if (!searched) {
                     Text(
                         "输入名字后点「搜索」：中文会自动翻译成英文（超级→super、玛丽→mario），" +
-                            "并做模糊匹配；街机默认用 ROM 文件名。",
+                            "并做全量模糊匹配（显示所有符合的封面）；街机默认用 ROM 文件名，" +
+                            "自动转成官方英文标题搜索。",
                         fontSize = 12.sp, color = Color(0xFF8899AA),
                         modifier = Modifier.padding(vertical = 16.dp)
                     )
@@ -3110,58 +3147,10 @@ private fun CoverCandidateDialog(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 380.dp)
+                            .heightIn(max = 460.dp)
                     ) {
                         items(candidates.size) { idx ->
-                            val cand = candidates[idx]
-                            val file = cand.file
-                            val name = cand.name
-                            Column(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .clickable {
-                                        if (!picked) {
-                                            picked = true
-                                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-                                                val ok = runCatching {
-                                                    com.nesstation.app.core.storage.CoverFetcher
-                                                        .pickCandidate(context, game, file)
-                                                }.getOrDefault(false)
-                                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                                    if (ok) onPicked() else onError()
-                                                }
-                                            }
-                                        }
-                                    }
-                            ) {
-                                if (cand.bitmap != null) {
-                                    Image(
-                                        bitmap = cand.bitmap,
-                                        contentDescription = name,
-                                        contentScale = ContentScale.Fit,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .aspectRatio(0.72f)
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .aspectRatio(0.72f)
-                                            .background(Color(0xFFE8EEF4))
-                                    )
-                                }
-                                Text(
-                                    name,
-                                    fontSize = 9.sp, lineHeight = 11.sp,
-                                    color = Color(0xFF334455),
-                                    maxLines = 2,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .background(Color(0xFFF2F5F8))
-                                        .padding(horizontal = 4.dp, vertical = 3.dp)
-                                )
-                            }
+                            CandidateCell(candidates[idx], game, onPicked, onError)
                         }
                     }
                 }
@@ -3173,5 +3162,67 @@ private fun CoverCandidateDialog(
                 }
             }
         }
+    }
+}
+
+/**
+ * ★ 候选封面单元格（本轮从 CoverCandidateDialog 抽出，增量展示与最终
+ *   列表共用）：点击后 IO 线程调 pickCandidate 写回封面，成功 onPicked /
+ *   失败 onError。双击防抖由本地 remember 守卫。*/
+@androidx.compose.runtime.Composable
+private fun CandidateCell(
+    cand: CoverCandidateUi,
+    game: com.nesstation.app.core.model.GameEntry,
+    onPicked: () -> Unit,
+    onError: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val file = cand.file
+    val name = cand.name
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable {
+                if (!picked) {
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                        val ok = runCatching {
+                            com.nesstation.app.core.storage.CoverFetcher
+                                .pickCandidate(context, game, file)
+                        }.getOrDefault(false)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            if (ok) onPicked() else onError()
+                        }
+                    }
+                }
+            }
+    ) {
+        if (cand.bitmap != null) {
+            Image(
+                bitmap = cand.bitmap,
+                contentDescription = name,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(0.72f)
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(0.72f)
+                    .background(Color(0xFFE8EEF4))
+            )
+        }
+        Text(
+            name,
+            fontSize = 9.sp, lineHeight = 11.sp,
+            color = Color(0xFF334455),
+            maxLines = 2,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFF2F5F8))
+                .padding(horizontal = 4.dp, vertical = 3.dp)
+        )
     }
 }

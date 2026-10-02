@@ -386,6 +386,19 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             wiiSet(sec, "Shake/X", "`Button 132`")
             wiiSet(sec, "Shake/Y", "`Button 133`")
             wiiSet(sec, "Shake/Z", "`Button 134`")
+            // ★★ Wii 倾斜体感（本轮新增，需求：“wii体感缺少……没有前后和
+            //   左右倾斜”）★★：Tilt 组四轴绑定。轴号对应
+            //   NativeLibrary.ButtonType：Forward=127 / Backward=128 /
+            //   Left=129 / Right=130。绑定用参考 APK 式**半轴后缀**
+            //   （“Axis N-” / “Axis N+” —— so 内实测序列化格式
+            //   "Device '%s'-Axis %d%c" 支持 +/- 后缀，控件读 0..1 强度）；
+            //   事件侧与引擎摇杆/IR 同号约定：Forward/Left 半轴发负值，
+            //   Backward/Right 发正值（见 pushWiiTilt）。按键事件无法激活
+            //   轴绑定（IR+/− 前车之鉴）——全部经 onGamePadMoveEvent。
+            wiiSet(sec, "Tilt/Forward", "`Axis 127-`")
+            wiiSet(sec, "Tilt/Backward", "`Axis 128+`")
+            wiiSet(sec, "Tilt/Left", "`Axis 129-`")
+            wiiSet(sec, "Tilt/Right", "`Axis 130+`")
             // 扩展手柄由控制模式决定（P1），且 Nunchuk/Classic 的绑定键名带
             // "Nunchuk/"、"Classic/" 前缀，写在 [WiimoteN] 主段内（参考 APK 结构）。
             // ★ 旧实现写成独立的 [Nunchuk] / [Classic] 段 —— 核心在 [WiimoteN] 段
@@ -728,8 +741,45 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     }
 
     override fun onSurfaceChanged(surface: Surface?, width: Int, height: Int) {
-        if (surface != null && surface != this.surface) setSurface(surface)
+        if (surface == null) {
+            setSurface(null)
+            return
+        }
+        if (surface != this.surface) {
+            setSurface(surface)
+            return
+        }
+        // ★★★ NGC/WII 自定义布局缩放修复（"游戏画面无法自定义布局进行缩小
+        //   放大，变成了剪切画面"根因）★★★
+        //
+        // 同一 Surface 实例只改尺寸（Compose 改 customRect → SurfaceView
+        // 重排 → Android 复用 Surface 回调 surfaceChanged(w,h)）时，旧实现
+        // 是完全 no-op —— 宽高被直接丢弃，核心的 EGL/viewport 保持旧
+        // （大）尺寸，新 buffer 里只能看到左上角一块 → "剪切画面、不跟缩放"。
+        //（并非前端有缩放百分比限制 —— 前端 surfaceModifier 的 custom
+        //   分支本来就会按矩形改 SurfaceView 尺寸，丢尺寸的是这一层。）
+        //
+        // 修复：尺寸变化时重推一次 SurfaceChanged(surface) —— 反汇编实测
+        // 该 JNI 对同一 surface 再次调用同样会置原生 "surface changed"
+        // 原子标志，渲染线程据此重读 ANativeWindow_getWidth/getHeight
+        // 并重建呈现 —— 画面真正跟随矩形缩小/放大。仅在核心已跑起来时
+        // 重推，避开 boot 窗口期的 SurfaceChanged 竞态。
+        if (isLoaded && width > 0 && height > 0 &&
+            (width != lastSurfaceW || height != lastSurfaceH)) {
+            lastSurfaceW = width
+            lastSurfaceH = height
+            val nativeRunning = try { NativeLibrary.IsRunning() } catch (_: Throwable) { false }
+            if (nativeRunning) {
+                try { NativeLibrary.SurfaceChanged(surface) } catch (t: Throwable) {
+                    android.util.Log.w("IshirukaEngine", "resize re-push failed", t)
+                }
+            }
+        }
     }
+
+    /** 最近一次通知给核心的 Surface 尺寸（同实例尺寸变化检测用）。 */
+    @Volatile private var lastSurfaceW = 0
+    @Volatile private var lastSurfaceH = 0
 
     override fun onSurfaceDestroyed() {
         setSurface(null)
@@ -794,6 +844,13 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         stickLast = FloatArray(8)
         lastErrorText = ""
         cachedIsGameCube = null
+        lastSurfaceW = 0
+        lastSurfaceH = 0
+        synchronized(wiiTiltLock) {
+            wiiTiltBtn.fill(0f)
+            wiiTiltSensor.fill(0f)
+        }
+        wiiTiltLast.fill(0f)
     }
 
     // ------------------------------------------------------------------
@@ -884,6 +941,17 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             setPointerDepth(
                 farPressed = (bits and BIT_IR_FAR != 0),
                 nearPressed = (bits and BIT_IR_NEAR != 0)
+            )
+            // ★★ Wii 倾斜体感（本轮新增，需求原话：“左右倾斜分别是L2R2，
+            //   L2是向左倾斜，R2向右倾斜；前后可以用按钮L3，R3作为后期
+            //   自定义”）★★：L2=左倾 / R2=右倾 / L3=前倾 / R3=后倾。
+            //   Tilt 绑定是轴表达式，按键事件无法激活 → 统一经
+            //   [pushWiiTilt] 走 onGamePadMoveEvent 轴事件。
+            setWiiTiltFromBits(
+                left = (bits and BIT_L2 != 0),
+                right = (bits and BIT_R2 != 0),
+                forward = (bits and BIT_L3 != 0),
+                backward = (bits and BIT_R3 != 0)
             )
             when (effectiveWiiExtension()) {
                 "classic" -> {
@@ -1107,6 +1175,86 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     @Volatile private var irPointerActive = false
 
     // ------------------------------------------------------------------
+    // ★★ Wii 倾斜体感（Tilt 组四轴：前/后/左/右）★★
+    // ----------------------------------------------------------------
+
+    /** 按钮触发的倾斜（L2/R2/L3/R3 位 → 0/1）。索引：[左, 右, 前, 后]。 */
+    private val wiiTiltBtn = FloatArray(4)
+    /** 手机体感传感器的倾斜值（0..1）。索引：[左, 右, 前, 后]。 */
+    @Volatile private var wiiTiltSensor = FloatArray(4)
+    /** 最近一次推送的合成轴值（去重，避免重复发轴事件）。 */
+    private val wiiTiltLast = FloatArray(4)
+    private val wiiTiltLock = Any()
+
+    /** setPad1 → 按钮位驱动的倾斜（虚拟按键/实体手柄的 L2/R2/L3/R3）。 */
+    private fun setWiiTiltFromBits(left: Boolean, right: Boolean, forward: Boolean, backward: Boolean) {
+        if (!isLoaded) return
+        synchronized(wiiTiltLock) {
+            wiiTiltBtn[0] = if (left) 1f else 0f
+            wiiTiltBtn[1] = if (right) 1f else 0f
+            wiiTiltBtn[2] = if (forward) 1f else 0f
+            wiiTiltBtn[3] = if (backward) 1f else 0f
+        }
+        pushWiiTilt()
+    }
+
+    /**
+     * ★★ 手机体感 → Wii 倾斜模拟（加速度计，值域 0..1，各方向独立）。
+     *   与按钮倾斜**叠加**（求和后截断 0..1）而非互相清零 —— 按住 L2
+     *   的同时甩手机不会抵消。任一来源变化都会重推全部四轴。NGC 模式
+     *   忽略（GC 手柄无体感）。
+     */
+    fun setWiiMotionTilt(left: Float, right: Float, forward: Float, backward: Float) {
+        if (!isLoaded || effectiveMode() == "ngc") return
+        var changed = false
+        synchronized(wiiTiltLock) {
+            val v = floatArrayOf(
+                left.coerceIn(0f, 1f), right.coerceIn(0f, 1f),
+                forward.coerceIn(0f, 1f), backward.coerceIn(0f, 1f)
+            )
+            for (i in 0 until 4) {
+                if (v[i] != wiiTiltSensor[i]) changed = true
+                wiiTiltSensor[i] = v[i]
+            }
+        }
+        if (changed) pushWiiTilt()
+    }
+
+    /**
+     * 合成按钮 + 传感器输入并推送四轴（仅变化时发事件）。
+     * 符号约定与引擎摇杆/IR 一致：Forward/Left 半轴发负值，
+     * Backward/Right 发正值；绑定为半轴表达式（`Axis N-` / `Axis N+`），
+     * 核心侧取幅值 0..1 作为倾斜强度。轴号：127 前 / 128 后 /
+     * 129 左 / 130 右。
+     */
+    private fun pushWiiTilt() {
+        if (!isLoaded || effectiveMode() == "ngc") return
+        val dev = NativeLibrary.TouchScreenDevice
+        val merged = FloatArray(4)
+        synchronized(wiiTiltLock) {
+            for (i in 0 until 4) merged[i] = (wiiTiltBtn[i] + wiiTiltSensor[i]).coerceIn(0f, 1f)
+        }
+        val ids = intArrayOf(
+            NativeLibrary.ButtonType.WIIMOTE_TILT_FORWARD,   // 127
+            NativeLibrary.ButtonType.WIIMOTE_TILT_BACKWARD,  // 128
+            NativeLibrary.ButtonType.WIIMOTE_TILT_LEFT,      // 129
+            NativeLibrary.ButtonType.WIIMOTE_TILT_RIGHT      // 130
+        )
+        val signed = floatArrayOf(
+            -merged[2],   // 前倾 → 负半轴
+            +merged[3],   // 后倾 → 正半轴
+            -merged[0],   // 左倾 → 负半轴
+            +merged[1]    // 右倾 → 正半轴
+        )
+        for (i in ids.indices) {
+            if (signed[i] != wiiTiltLast[i]) {
+                wiiTiltLast[i] = signed[i]
+                try { NativeLibrary.onGamePadMoveEvent(dev, ids[i], signed[i]) } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // 控制模式
     // ------------------------------------------------------------------
 
@@ -1324,9 +1472,12 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     private fun isRunning2(): Boolean = isLoaded && emuThread?.isAlive == true
 
     // 项目位布局（EmulatorScreen 直传：A=bit0, B=bit1, Select=2, Start=3,
-    // U/D/L/R=4..7, X=8, Y=9, L=10, R=11, L2=12, R2=13）+ NGC/WII 扩展位：
+    // U/D/L/R=4..7, X=8, Y=9, L=10, R=11, L2=12, R2=13, L3=14, R3=15）
+    // + NGC/WII 扩展位：
     // Z=18（GC Z / Wii IR 隐藏）、HOME=19、1=20、2=21、+=22、−=23、
     // C=24、Z(双节棍)=25、IR−=26、IR+=27
+    // ★ L2/R2/L3/R3 位（12-15）在 Wii 模式下驱动 Tilt 四轴（L2 左倾 /
+    // R2 右倾 / L3 前倾 / R3 后倾，见 setPad1），NGC 模式忽略。
     companion object {
         private const val BIT_A = 0x01
         private const val BIT_B = 0x02
@@ -1340,6 +1491,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         private const val BIT_Y = 0x200
         private const val BIT_L = 0x400
         private const val BIT_R = 0x800
+        private const val BIT_L2 = 0x1000
+        private const val BIT_R2 = 0x2000
+        private const val BIT_L3 = 0x4000
+        private const val BIT_R3 = 0x8000
         const val BIT_Z = 0x40000
         const val BIT_HOME = 0x80000
         const val BIT_WII_1 = 0x100000

@@ -39,7 +39,8 @@ object CoverFetcher {
     private const val BASE = "https://thumbnails.libretro.com"
     private const val USER_AGENT = "NesStation/1.0 (Android; cover-fetcher)"
     private const val MAX_IMAGE_BYTES = 4 * 1024 * 1024
-    private const val FETCH_INTERVAL_MS = 250L
+    // ★ 提速：旧 250ms 间隔在几百个游戏时拖慢整批；镜像超时也已收紧。
+    private const val FETCH_INTERVAL_MS = 60L
 
     // ★★ 多镜像加固（本轮）★★
     //   thumbnails.libretro.com（Apache 直出）在部分网络环境下载缓慢/不稳，
@@ -69,10 +70,12 @@ object CoverFetcher {
     private fun channelAlive(channel: String): Boolean =
         (channelFailCount[channel] ?: 0) < CHANNEL_FAIL_THRESHOLD
     private fun noteChannelConnFailed(channel: String) {
-        channelFailCount[channel] = (channelFailCount[channel] ?: 0) + 1
+        synchronized(channelFailCount) {
+            channelFailCount[channel] = (channelFailCount[channel] ?: 0) + 1
+        }
     }
     private fun noteChannelAlive(channel: String) {
-        channelFailCount.remove(channel)
+        synchronized(channelFailCount) { channelFailCount.remove(channel) }
     }
     /** 本会话内被禁用的通道列表（诊断用）。 */
     fun deadChannels(): List<String> =
@@ -229,6 +232,12 @@ object CoverFetcher {
 
     /** 单个游戏最多尝试的候选名数量（防止极端命名膨胀请求数）。 */
     private const val MAX_CANDIDATES = 16
+
+    /** ★ “选择封面”弹窗全量搜索：索引匹配名池上限（下载到 max 张为止）。 */
+    private const val MAX_PICK_NAMES = 60
+
+    /** ★ 统计锁（并行批下多线程递增诊断计数）。 */
+    private val statsLock = Any()
 
     /**
      * GoodTools 旧式区域码 → libretro No-Intro 区域名。
@@ -525,17 +534,23 @@ object CoverFetcher {
             extractJarCover(context, game)?.let { return it }
             // JAR 无内嵌图 → 继续走后续缩略图库路径（用游戏名）
         }
+        // ★★ NDS / 3DS：ROM 自带 banner / SMDH 封面直接提取（需求原话：
+        //    "nds和3ds以及java游戏自己都有封面的，核心应该自动显示自带
+        //    的封面才对"）—— 无需联网，也不占网络批额度。提取失败
+        //    （加密镜像 / 损坏 / CIA 容器）才继续走缩略图库下载。
+        if (game.platform == GamePlatform.NDS || game.platform == GamePlatform.N3DS) {
+            val dest0 = File(coversDir(context), "${game.id}.png")
+            if (GameIconExtractor.extractRomBannerTo(context, game, dest0)) {
+                logAttempt("[ROM-BANNER] '${game.title.take(40)}' 内置封面已提取（免联网）")
+                return dest0
+            }
+        }
         if (systemDirs.isEmpty()) {
-            // ★ 诊断：旧实现静默跳过 → 统计全 0，用户误判“网络连不上”
-            lastBatchStats.noSource++
+            // ★ 诊断：旧实现静默跳过 → 统计全 0，用户误判"网络连不上"
+            synchronized(statsLock) { lastBatchStats.noSource++ }
             Log.w(TAG, "no cover source for platform ${game.platform} — no request sent")
             return null
         }
-        // ★ SAF URI 双重编码修复：game.romPath 在 SAF 导入时是 content:// URI，
-        //   最后一段是 URL 编码的 documentId（含 %20 %28 %5B 等编码字符）。
-        //   旧实现对它直接 substringAfterLast + substringBeforeLast('.'),
-        //   再经 urlSeg 二次编码 → 永远 404。
-        //   game.title 在导入时由 queryDisplayName 解码后写入，是干净的可读名。
         // ★★★ 封面搜索名（平台感知 + 中文翻译 + 多名序列）★★★
         //   1. 街机：用**扫描文件夹的实际 zip 名**（SAF URI 解码后的真实文件名）
         //      经 [ArcadeCoverNames] 转换为 libretro 收录的英文标题，驱动名主干
@@ -545,29 +560,77 @@ object CoverFetcher {
         //      （"魂斗罗"→"Contra"）再走模糊匹配 —— 中文模糊转英文下载。
         val searchNames = searchNamesFor(game)
         if (searchNames.isEmpty()) {
-            lastBatchStats.noSource++
+            synchronized(statsLock) { lastBatchStats.noSource++ }
             Log.w(TAG, "no searchable name for '${game.title}' — no request sent")
             return null
         }
         val candidates = searchNames.flatMap { nameCandidates(it) }.distinct()
         if (candidates.isEmpty()) {
-            lastBatchStats.noSource++
+            synchronized(statsLock) { lastBatchStats.noSource++ }
             return null
         }
 
         val dest = File(coversDir(context), "${game.id}.png")
-        // ★★★ 封面下载主流程（本轮回归 3.8 基线：libretro 直连优先走完全部候选）★★★
-        //   3.8（用户确认可用）的顺序：每个系统目录先逐一盒装封面，全部
-        //   404 后再整批截图兜底，最后索引+模糊匹配，全程 libretro 直连。
-        //   主波与 3.8 完全一致；仅当 libretro 出现连接级失败（真不可达，
-        //   404 不算）才对同一批 URL 补 gh 代理 + jsDelivr 镜像 —— 镜像
-        //   与直连是同一份仓库内容，名字 404 时镜像也 404，只有站点连不上
-        //   时镜像才有意义。旧实现逐候选交错 7 通道：可达网络下每个 404
-        //   白挨 6 个镜像请求（单游戏请求数 ×7、一批时间 ×7），不可达
-        //   网络下每通道吃 3×8s 超时 → 自动批一跑几分钟。
+        // ★★★ 本轮提速根治：索引优先策略 ★★★
+        //   用户反馈"封面获取太慢"——旧实现每个游戏把 16+ 个精确候选对
+        //   每个系统目录盲发请求（盒装+截图两轮，404 风暴 ×56），再拉
+        //   整系统索引做模糊匹配。实测 thumbnails.libretro.com 国内可达
+        //   （用户原话"没必要乱搞"），慢的根因是**请求数爆炸**而非网络。
+        //   现在先把系统索引拉下来（assets 内置 → 磁盘缓存 → libretro 直连
+        //   → gh 代理镜像，libretro 直连仍为第一优先），然后：
+        //     A. 精确候选只对**索引里存在**的名字发请求（本地集合查询，
+        //        零网络成本过滤掉注定 404 的名字）；
+        //     B. 索引模糊匹配命中名 → 直接下载；
+        //     C. 盒装全落空时，对前几个名字试 Named_Snaps 截图兜底；
+        //     D. 索引不可用（无内置索引且网络受限）才回退旧式盲试。
+        //   单游戏请求数从 56+ 降到 1~3 个，整批时间下降一个数量级。
         for (sys in systemDirs) {
-            // 1) 盒装封面（Named_Boxarts）—— libretro 直连（3.8 同款 URL）
+            val index = fetchSystemIndex(context, sys)
+            if (index == null) {
+                Log.w(TAG, "cover index unavailable: $sys")
+                synchronized(statsLock) { lastBatchStats.indexFailed++ }
+                // D. 盲试（旧行为）：精确候选 → 截图兜底
+                for (name in candidates) {
+                    if (downloadCached(coverImageUrlsPrimary(sys, "Named_Boxarts", name), dest, cache, "libretro")) {
+                        syncDcBoxart(context, game, dest)
+                        return dest
+                    }
+                    if (hasConnFailed("libretro")) {
+                        for ((ch, url) in coverImageUrlsMirrors(sys, "Named_Boxarts", name)) {
+                            if (downloadCached(url, dest, cache, ch)) {
+                                syncDcBoxart(context, game, dest)
+                                return dest
+                            }
+                        }
+                    }
+                }
+                for (name in candidates.take(6)) {
+                    if (downloadCached(coverImageUrlsPrimary(sys, "Named_Snaps", name), dest, cache, "libretro")) {
+                        syncDcBoxart(context, game, dest)
+                        return dest
+                    }
+                    if (hasConnFailed("libretro")) {
+                        for ((ch, url) in coverImageUrlsMirrors(sys, "Named_Snaps", name)) {
+                            if (downloadCached(url, dest, cache, ch)) {
+                                syncDcBoxart(context, game, dest)
+                                return dest
+                            }
+                        }
+                    }
+                }
+                continue
+            }
+            // A. 精确候选 ∩ 索引（本地过滤，只下载确实存在的名字）
+            val indexLower = java.util.HashSet<String>(index.size)
+            for (n in index) {
+                val t = n.trim().lowercase()
+                if (t.isNotBlank()) indexLower.add(t)
+            }
+            val exactHits = ArrayList<String>()
             for (name in candidates) {
+                if (name.trim().lowercase() in indexLower) exactHits.add(name)
+            }
+            for (name in exactHits) {
                 if (downloadCached(coverImageUrlsPrimary(sys, "Named_Boxarts", name), dest, cache, "libretro")) {
                     syncDcBoxart(context, game, dest)
                     return dest
@@ -581,42 +644,14 @@ object CoverFetcher {
                     }
                 }
             }
-            // 2) 游戏截图兜底（Named_Snaps —— 有图总比占位色块好）
-            for (name in candidates) {
-                if (downloadCached(coverImageUrlsPrimary(sys, "Named_Snaps", name), dest, cache, "libretro")) {
-                    syncDcBoxart(context, game, dest)
-                    return dest
-                }
-                if (hasConnFailed("libretro")) {
-                    for ((ch, url) in coverImageUrlsMirrors(sys, "Named_Snaps", name)) {
-                        if (downloadCached(url, dest, cache, ch)) {
-                            syncDcBoxart(context, game, dest)
-                            return dest
-                        }
-                    }
-                }
-            }
-        }
-        // ★★ 封面模糊匹配（第二轮）：所有精确候选都 404 后，用系统索引
-        //   + 本地模糊匹配找到最接近的官方 No-Intro 名再试。每个系统
-        //   只拉一次索引（磁盘缓存 30 天），覆盖"标题改写/分隔符差异/
-        //   副标题缺失/序号写法不同"等精确候选永远覆盖不到的命名差异
-        //   （"模糊读取 ROM 名而不是绝对名字"的需求）。
-        for (sys in systemDirs) {
-            val index = fetchSystemIndex(context, sys)
-            if (index == null) {
-                Log.w(TAG, "cover index unavailable: $sys")
-                lastBatchStats.indexFailed++
-                continue
-            }
-            // 每个搜索名（街机 = 英文标题 + 驱动名主干）各自模糊一遍
+            // B. 模糊命中（每个搜索名各自模糊一遍，与 A 去重后直接下载）
             val fuzzy = searchNames.flatMap { searchName ->
                 fuzzyMatch(searchName, index)
             }.distinct()
             Log.i(TAG, "fuzzy hits for '$searchNames' ($sys): $fuzzy")
+            val triedExact = exactHits.map { it.trim().lowercase() }.toHashSet()
             for (name in fuzzy) {
-                // 模糊命中名与已试过的精确候选重叠时跳过（避免重复 404）
-                if (candidates.any { it.equals(name, ignoreCase = true) }) continue
+                if (name.trim().lowercase() in triedExact) continue
                 if (downloadImage(coverImageUrlsPrimary(sys, "Named_Boxarts", name), dest, "libretro")) {
                     Log.i(TAG, "fuzzy cover hit: '$searchNames' -> '$name' ($sys)")
                     syncDcBoxart(context, game, dest)
@@ -632,7 +667,25 @@ object CoverFetcher {
                     }
                 }
             }
-            lastBatchStats.notFound++
+            // C. 盒装全落空 → 截图兜底（精确命中 + 模糊命中 + 原始候选前几个）
+            val snapNames = (exactHits + fuzzy + candidates.take(3))
+                .distinctBy { it.trim().lowercase() }
+                .take(4)
+            for (name in snapNames) {
+                if (downloadCached(coverImageUrlsPrimary(sys, "Named_Snaps", name), dest, cache, "libretro")) {
+                    syncDcBoxart(context, game, dest)
+                    return dest
+                }
+                if (hasConnFailed("libretro")) {
+                    for ((ch, url) in coverImageUrlsMirrors(sys, "Named_Snaps", name)) {
+                        if (downloadCached(url, dest, cache, ch)) {
+                            syncDcBoxart(context, game, dest)
+                            return dest
+                        }
+                    }
+                }
+            }
+            synchronized(statsLock) { lastBatchStats.notFound++ }
         }
         return null
     }
@@ -949,32 +1002,56 @@ object CoverFetcher {
     }
 
     /**
-     * ★★★ 玩家手输关键词搜索候选（本轮新增）★★★
+     * ★★★ 玩家手输关键词搜索候选 ★★★
      * "选择封面"弹窗不再自动搜索 —— 玩家自行输入名字（中/英均可），
-     * 这里把输入扩展成搜索名序列（原名 + 全名表翻译 + 词汇级模糊翻译，
-     * "超级玛丽" → super mario），再走与自动抓取完全一致的
-     * 精确候选 + 系统索引模糊匹配管线。
+     * 这里把输入扩展成搜索名序列（原名 + 全名表翻译 + 词汇级模糊翻译 +
+     * ★街机驱动名→英文标题映射，"kof97"→"The King of Fighters '97"），
+     * 再走"索引全量模糊搜索"管线。
+     *
+     * ★★ 本轮（"长按卡片选择封面获取的太少，最多只有三张"根治）★★：
+     *   旧实现模糊匹配每个搜索名只取 top-3（MAX_FUZZY_TRIES），精确候选
+     *   又几乎全 404 → 弹窗永远只显示 ~3 张。用户需求原话："只需要针对
+     *   用户输入的名字进行模糊搜索并显示所有符合的png即可"。现在改为
+     *   [broadIndexMatch] 全量匹配（前缀/包含/全词命中全部收录，上限
+     *   [MAX_PICK_NAMES] 个名字），默认下载 [max] 张（弹窗传 24），
+     *   并行 3 线程下载 + [onEach] 增量回调 —— 图片找到一张显示一张。
      */
     fun fetchCandidatesForQuery(
         context: Context,
         game: GameEntry,
         query: String,
-        max: Int = 8,
-        onProgress: ((Int, Int) -> Unit)? = null
+        max: Int = 24,
+        onProgress: ((Int, Int) -> Unit)? = null,
+        onEach: ((File, String) -> Unit)? = null
     ): List<Pair<File, String>> {
-        return fetchCandidatesNames(context, game, searchNamesForQuery(query), max, onProgress)
+        return fetchCandidatesNames(
+            context, game, searchNamesForQuery(query, game), max, onProgress, onEach)
     }
 
     /**
-     * 玩家查询词 → 搜索名序列：原名 / 全名表翻译 / 词汇级模糊翻译 全部尝试
-     * （首个为"所见即所得"的原文，供精确候选；后续为模糊匹配查询键）。
+     * 玩家查询词 → 搜索名序列：原名 / 全名表翻译 / 词汇级模糊翻译 /
+     * ★街机驱动名映射 全部尝试（首个为"所见即所得"的原文，供精确候选；
+     * 后续为模糊匹配查询键）。
+     *
+     * ★★ 街机弹窗搜索修复（"长按卡片搜索街机封面也不对"根因）★★：
+     *   旧签名不接收 game —— 弹窗默认搜索词是驱动名（kof97），但
+     *   查询词扩展从未过 [ArcadeCoverNames]（驱动名→libretro 英文标题）
+     *   也没过中文名表 → kof97 / 拳皇97 都匹配不到任何索引名 → 0 结果。
+     *   现在平台感知扩展："街机也可以用真实英文或者中文翻译成英文"。
      */
-    fun searchNamesForQuery(query: String): List<String> {
+    fun searchNamesForQuery(query: String, game: GameEntry? = null): List<String> {
         return try {
             val q = query.trim()
             if (q.isEmpty()) return emptyList()
             val out = LinkedHashMap<String, Boolean>()
             out[q] = true
+            // ★ 街机：驱动名 → libretro 收录英文标题（kof97 → The King of
+            //   Fighters '97）；中文标题翻译由下方 addTranslatedVariants 覆盖。
+            if (game?.platform == GamePlatform.ARCADE) {
+                try {
+                    ArcadeCoverNames.lookup(q)?.let { out[it] = true }
+                } catch (_: Throwable) {}
+            }
             addTranslatedVariants(out, q)
             out.keys.filter { it.isNotBlank() }
         } catch (t: Throwable) {
@@ -1019,12 +1096,13 @@ object CoverFetcher {
         game: GameEntry,
         searchNames: List<String>,
         max: Int,
-        onProgress: ((Int, Int) -> Unit)?
+        onProgress: ((Int, Int) -> Unit)?,
+        onEach: ((File, String) -> Unit)? = null
     ): List<Pair<File, String>> {
         // ★ 整体防御：任何一步失败都返回空列表而非抛出（调用方为 UI 协程，
         //   未捕获异常会直接闪退 —— "选择封面按钮点击就闪退"的根治措施之一）
         return try {
-            fetchCandidatesInner(context, game, searchNames, max, onProgress)
+            fetchCandidatesInner(context, game, searchNames, max, onProgress, onEach)
         } catch (t: Throwable) {
             Log.w(TAG, "fetchCandidates failed: ${t.message}")
             emptyList()
@@ -1036,7 +1114,8 @@ object CoverFetcher {
         game: GameEntry,
         searchNames: List<String>,
         max: Int,
-        onProgress: ((Int, Int) -> Unit)?
+        onProgress: ((Int, Int) -> Unit)?,
+        onEach: ((File, String) -> Unit)? = null
     ): List<Pair<File, String>> {
         if (searchNames.isEmpty()) return emptyList()
         val romFile = game.romPath?.substringAfterLast('/') ?: ""
@@ -1044,46 +1123,152 @@ object CoverFetcher {
         if (systemDirs.isEmpty()) return emptyList()
         val results = LinkedHashMap<String, File>() // name -> file（去重）
         val out = ArrayList<Pair<File, String>>()
+        val outLock = Any()
         try {
             val exact = searchNames.flatMap { nameCandidates(it) }.distinct()
-            // 组装完整候选名序列：精确优先，然后模糊命中（每个搜索名各模糊一遍）
+            // ★ 组装完整候选名序列：精确候选 + **全量**索引匹配
+            //（不再是 top-3 模糊命中 —— "显示所有符合的png"）
             val names = ArrayList(exact)
+            val seen = HashSet<String>()
+            for (n in exact) seen.add(n.trim().lowercase())
             for (sys in systemDirs) {
                 val index = fetchSystemIndex(context, sys) ?: continue
                 for (searchName in searchNames) {
-                    for (n in fuzzyMatch(searchName, index)) {
-                        if (names.none { it.equals(n, ignoreCase = true) }) names.add(n)
-                        if (names.size >= max * 3) break  // 候选池上限（避免拉全表）
+                    for (n in broadIndexMatch(searchName, index)) {
+                        if (seen.add(n.trim().lowercase())) names.add(n)
+                        if (names.size >= MAX_PICK_NAMES) break
                     }
-                    if (names.size >= max * 3) break
+                    if (names.size >= MAX_PICK_NAMES) break
                 }
-                if (names.size >= max * 3) break
+                if (names.size >= MAX_PICK_NAMES) break
             }
-            for (sys in systemDirs) {
-                for (name in names) {
-                    if (out.size >= max) break
-                    if (results.containsKey(name.lowercase())) continue
-                    val i = out.size
-                    val f = File(coversDir(context), "${game.id}_cand$i.png")
-                    var hit = false
-                    for ((ch, url) in coverImageUrls(sys, "Named_Boxarts", name)) {
-                        if (downloadImage(url, f, ch)) { hit = true; break }
+            // ★ 索引可用时：精确候选也先在本地过滤（索引里不存在的不浪费请求）
+            val indexCached = systemDirs.firstOrNull { sys ->
+                fetchSystemIndex(context, sys) != null
+            }?.let { sys -> fetchSystemIndex(context, sys) }
+            val effective: List<String> = if (indexCached != null) {
+                val lower = java.util.HashSet<String>()
+                for (n in indexCached) lower.add(n.trim().lowercase())
+                names.filter { n -> n.trim().lowercase() in lower }
+            } else names
+            // ★ 并行下载（3 线程，找到一张回调一张 —— 弹窗增量显示）
+            //   文件名索引用 getAndIncrement 原子分配，避免并发重名。
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(
+                minOf(3, effective.size.coerceAtLeast(1))
+            )
+            try {
+                val counter = java.util.concurrent.atomic.AtomicInteger(0)
+                val jobs = ArrayList<java.util.concurrent.Future<*>>()
+                for (name in effective) {
+                    if (counter.get() >= max) break
+                    val job = pool.submit {
+                        try {
+                            if (counter.get() >= max) return@submit
+                            val idx = counter.getAndIncrement()
+                            if (idx >= max) return@submit
+                            val f = File(coversDir(context), "${game.id}_cand$idx.png")
+                            var hitFile: File? = null
+                            for (sys in systemDirs) {
+                                for ((ch, url) in coverImageUrls(sys, "Named_Boxarts", name)) {
+                                    if (downloadImage(url, f, ch)) { hitFile = f; break }
+                                }
+                                if (hitFile != null) break
+                            }
+                            if (hitFile != null) {
+                                synchronized(outLock) {
+                                    if (results.containsKey(name.lowercase())) return@submit
+                                    results[name.lowercase()] = f
+                                    out.add(f to name)
+                                }
+                                onEach?.invoke(f, name)
+                                onProgress?.invoke(out.size, max)
+                            }
+                        } catch (_: Throwable) {}
                     }
-                    if (hit) {
-                        results[name.lowercase()] = f
-                        out.add(f to name)
-                        onProgress?.invoke(out.size, max)
-                        try { Thread.sleep(FETCH_INTERVAL_MS) } catch (_: InterruptedException) {}
-                    }
+                    jobs.add(job)
                 }
-                if (out.size >= max) break
+                jobs.forEach { try { it.get() } catch (_: Throwable) {} }
+            } finally {
+                pool.shutdown()
             }
+            out.sortBy { it.second.length }   // 短名（标准版）靠前
         } catch (t: Throwable) {
             Log.w(TAG, "fetchCandidates failed: ${t.message}")
         }
         return out
     }
 
+    /**
+     * ★★ "选择封面"全量索引匹配（本轮新增）★★
+     * 把查询词与官方名列表逐一比对，返回**所有**符合的名字（按相关度
+     * 降序，上限 [MAX_PICK_NAMES]）：
+     *   - 裸标题/全名 完全相等 → 1.0；
+     *   - 前缀命中（查询词 ≥3 字符且是官方名前缀，或反向）→ 0.92；
+     *   - 包含命中（查询词整体出现在官方名中）→ 0.85；
+     *   - 全词命中（查询词的全部词都出现在官方名中，无序）→ 0.80；
+     *   - 其余走 [fuzzyMatch] 同款相似度（阈值 0.62）。
+     * hack/bootleg/no title 等杂项条目降权（同 [fuzzyMatch] 的排序规则）。
+     */
+    fun broadIndexMatch(rawQuery: String, officialNames: List<String>): List<String> {
+        val target = normalizeForFuzzy(rawQuery)
+        if (target.isBlank()) return emptyList()
+        val targetTokens = target.split(' ').filter { it.isNotBlank() }.toSet()
+        data class Scored(val name: String, val score: Double)
+        val scored = ArrayList<Scored>(64)
+        for (official in officialNames) {
+            val candFull = normalizeForFuzzy(official)
+            if (candFull.isBlank()) continue
+            val candBare = bareTitleForFuzzy(official)
+            var score = 0.0
+            for (cand in listOf(candFull, candBare)) {
+                if (cand.isBlank()) continue
+                var s = 0.0
+                when {
+                    cand == target -> s = 1.0
+                    target.length >= 3 && (cand.startsWith(target) || target.startsWith(cand)) -> s = 0.92
+                    target.length >= 3 && cand.contains(target) -> s = 0.85
+                    cand.isNotBlank() && cand != "the" -> {
+                        // 全词命中（无序包含）
+                        val ct = cand.split(' ').filter { it.isNotBlank() }.toSet()
+                        if (targetTokens.isNotEmpty() && ct.containsAll(targetTokens)) s = 0.80
+                    }
+                }
+                if (s == 0.0) {
+                    // 相似度兜底（jaccard + 编辑距离 + 包含率）
+                    val ct = cand.split(' ').filter { it.isNotBlank() }.toSet()
+                    val inter = targetTokens.intersect(ct).size.toDouble()
+                    val union = targetTokens.union(ct).size.toDouble()
+                    val jaccard = if (union > 0) inter / union else 0.0
+                    val lev = levenshteinRatio(target, cand)
+                    val containRate = if (targetTokens.isEmpty()) 0.0 else inter / targetTokens.size
+                    s = 0.5 * jaccard + 0.35 * lev + 0.15 * containRate
+                    if (target.length >= 4 &&
+                        (cand.startsWith(target) || target.startsWith(cand))) s += 0.08
+                    if (s < FUZZY_MIN_SCORE) s = 0.0
+                }
+                if (s > score) score = s
+            }
+            if (score > 0.0) scored.add(Scored(official, score))
+        }
+        fun markerPenalty(name: String): Int {
+            val n = name.lowercase()
+            var p = 0
+            for (marker in listOf(
+                "no title", "hack", "bootleg", "aftermarket", "pirate",
+                "homebrew", "prototype", "proto ", "unl", "[b]", "[p]", "[h]", "[t]",
+                "[tr ", "(beta)", "(sample)", "(promo)", "(unknown)"
+            )) {
+                if (marker in n) p += 2
+            }
+            return p
+        }
+        return scored
+            .sortedWith(compareByDescending<Scored> { it.score }
+                .thenBy { markerPenalty(it.name) }
+                .thenBy { it.name.length })
+            .take(MAX_PICK_NAMES)
+            .map { it.name }
+    }
     /**
      * 玩家选定候选封面 → 复制为正式封面并写回 RomStore。
      * @return true 写回成功（UI 刷新列表即可看到新封面）。
@@ -1204,8 +1389,10 @@ object CoverFetcher {
                 val url = "$BASE/${urlSeg(system)}/Named_Boxarts/"
                 val c = URL(url).openConnection() as HttpURLConnection
                 conn = c
-                c.connectTimeout = 20000
-                c.readTimeout = 90000
+                // ★ 提速：索引拉取 20s/90s → 8s/45s（网络受限时快速落到
+                //   gh 代理/镜像通道，而不是吃满 2×90s 超时）。
+                c.connectTimeout = 8000
+                c.readTimeout = 45000
                 c.instanceFollowRedirects = true
                 c.setRequestProperty("User-Agent", USER_AGENT)
                 val code = try {
@@ -1285,8 +1472,8 @@ object CoverFetcher {
         return try {
             val c = URL(url).openConnection() as HttpURLConnection
             conn = c
-            c.connectTimeout = 20000
-            c.readTimeout = 90000
+            c.connectTimeout = 8000
+            c.readTimeout = 45000
             c.instanceFollowRedirects = true
             c.setRequestProperty("User-Agent", USER_AGENT)
             c.setRequestProperty("Accept", "application/vnd.github+json")
@@ -1578,59 +1765,78 @@ object CoverFetcher {
         //   手动批全部请求被静默跳过（统计还先于跳过 → "0 尝试"假象）。
         synchronized(channelFailCount) { channelFailCount.clear() }
         val batch = pending.take(limit)
-        var done = 0
         var fetched = 0
+        // ★★ "封面 0/0"显示修复 + 提速（本轮）★★：
+        //   1) 进度回调在批开始即上报 (0, batch.size)——旧实现首个游戏
+        //      要处理几十秒才回调一次，工具栏长时间显示"封面 0/0"，
+        //      被误判为"街机搜索一直 0/0 没动"。现在总数立刻可见。
+        //   2) 顺序抓取改为 4 线程并行（配合索引优先策略把单游戏请求
+        //      数从 56+ 降到 1~3，整批时间再 ÷4）；NDS/3DS/Java 走
+        //      ROM 内置封面提取，完全不占网络额度。
+        onProgress?.invoke(0, batch.size)
         // ★ 批内 URL 结果去重：同一批次里大量游戏的候选名重复（如
         //   "Contra.nes" 与 "Contra (U).nes" 都生成 "Contra (USA)"），
         //   不缓存的话同一 URL 会被反复请求。缓存后每个 URL 只请求一次，
         //   命中结果直接复制给后续同候选游戏，请求量大幅下降。
-        val urlCache = HashMap<String, File?>()
+        //   ★ synchronizedMap：并行批下多线程安全（HashMap 包装后
+        //   单操作加锁，允许 null value）。
+        val urlCache: MutableMap<String, File?> =
+            java.util.Collections.synchronizedMap(HashMap<String, File?>())
         // 批量缓冲：每 25 个或批次结束时一次 setCoverPaths（线性 IO），
         // 中途被杀最多丢最近 25 个的入库记录（封面文件仍在缓存目录，
         // 下次抓取会重新关联）。
         val buffer = LinkedHashMap<String, String>()
         val persistLock = Any()
         fun flush() {
-            if (buffer.isNotEmpty()) {
-                try {
-                    // ★ 入库写入加锁：方法级锁移除后自动/手动批可能并发，
-                    //   setCoverPaths 并发写有丢写风险（RomStore 落盘是
-                    //   读-改-写）。仅锁入库段，不锁下载段。
-                    synchronized(persistLock) {
+            synchronized(persistLock) {
+                if (buffer.isNotEmpty()) {
+                    try {
+                        // ★ 入库写入加锁：方法级锁移除后自动/手动批可能并发，
+                        //   setCoverPaths 并发写有丢写风险（RomStore 落盘是
+                        //   读-改-写）。仅锁入库段，不锁下载段。
                         RomStore.setCoverPaths(context, buffer)
+                        fetched += buffer.size
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "cover persist failed: ${t.message}")
                     }
-                    fetched += buffer.size
-                } catch (t: Throwable) {
-                    Log.w(TAG, "cover persist failed: ${t.message}")
+                    buffer.clear()
                 }
-                buffer.clear()
             }
         }
         val stats = BatchStats(attempted = batch.size)
         lastBatchStats = stats
-        for (game in batch) {
-            try {
-                val cover = fetchCover(context, game, urlCache)
-                if (cover != null && !cover.absolutePath.equals(game.coverPath)) {
-                    buffer[game.id] = cover.absolutePath
-                } else if (cover == null) {
-                    // ★ 游戏级汇总行：一个游戏全部尝试失败时留一行记录
-                    //   （名字是什么、库里有没有这张图，看封面日志一目了然）
-                    logAttempt("[GAME-MISS] '${game.title.take(40)}' (${game.platform})")
+        val doneCounter = java.util.concurrent.atomic.AtomicInteger(0)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(
+            minOf(4, batch.size.coerceAtLeast(1))
+        )
+        try {
+            val jobs = ArrayList<java.util.concurrent.Future<*>>()
+            for (game in batch) {
+                val job = pool.submit {
+                    try {
+                        val cover = fetchCover(context, game, urlCache)
+                        synchronized(persistLock) {
+                            if (cover != null && !cover.absolutePath.equals(game.coverPath)) {
+                                buffer[game.id] = cover.absolutePath
+                                if (buffer.size >= 25) flush()
+                            } else if (cover == null) {
+                                // ★ 游戏级汇总行：一个游戏全部尝试失败时留一行记录
+                                //   （名字是什么、库里有没有这张图，看封面日志一目了然）
+                                logAttempt("[GAME-MISS] '${game.title.take(40)}' (${game.platform})")
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "cover fetch failed for ${game.title}: ${t.message}")
+                        logAttempt("[GAME-ERR] '${game.title.take(40)}' ${t.javaClass.simpleName}: ${t.message}")
+                    }
+                    val d = doneCounter.incrementAndGet()
+                    onProgress?.invoke(d, batch.size)
                 }
-            } catch (t: Throwable) {
-                Log.w(TAG, "cover fetch failed for ${game.title}: ${t.message}")
-                logAttempt("[GAME-ERR] '${game.title.take(40)}' ${t.javaClass.simpleName}: ${t.message}")
+                jobs.add(job)
             }
-            done++
-            onProgress?.invoke(done, batch.size)
-            if (buffer.size >= 25) flush()
-            if (done < batch.size) {
-                try { Thread.sleep(FETCH_INTERVAL_MS) } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                }
-            }
+            jobs.forEach { try { it.get() } catch (_: Throwable) {} }
+        } finally {
+            pool.shutdown()
         }
         flush()
         stats.succeeded = fetched
@@ -1730,8 +1936,11 @@ object CoverFetcher {
         return try {
             val conn0 = URL(urlStr).openConnection() as HttpURLConnection
             conn = conn0
-            conn0.connectTimeout = 8000
-            conn0.readTimeout = 12000
+            // ★ 提速：旧 8s/12s 在 404 风暴/死通道下拖慢整批；libretro 国内
+            //   直连实测正常（用户确认），收紧到 5s/10s —— 不可达时快速失败，
+            //   由镜像链接管。
+            conn0.connectTimeout = 5000
+            conn0.readTimeout = 10000
             conn0.instanceFollowRedirects = true
             conn0.setRequestProperty("User-Agent", USER_AGENT)
             conn0.setRequestProperty("Accept", "image/png,image/*")

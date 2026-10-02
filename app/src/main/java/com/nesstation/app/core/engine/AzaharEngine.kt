@@ -353,16 +353,31 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     override fun setCoreOption(key: String, value: String) {
-        coreOptions[key] = value
+        val prev = coreOptions.put(key, value)
         // ★ 批量事务中只缓存 —— 由 endCoreOptionsBatch 统一提交一次
         //（旧行为：每个键全量 flush+reload+updateFramebuffer，50 键连发 = 卡顿根源）
-        if (optionsBatching) return
+        if (optionsBatching) {
+            // ★ 图形后端变更标记（批末统一处理，见 endCoreOptionsBatch）
+            if (key == "Renderer/graphics_api" && prev != null && prev != value) {
+                pendingRendererRestart = true
+            }
+            return
+        }
         if (isRunning2()) {
             flushConfig()
             try { AzaharNative.lib.reloadSettings() } catch (_: Throwable) {}
             // 布局/呈现相关设置变更后刷新帧缓冲布局（上游同款对）
             if (key.startsWith("Layout/") || key.startsWith("Renderer/")) {
                 refreshFramebufferLayout()
+            }
+            // ★★★ 图形后端（VK/GL）切换生效修复（"3ds的vk渲染失效，没有
+            //   起作用"根因）★★★：渲染器只在 run() 启动时构造一次
+            //   （反汇编实测：run() 读 graphics_api 分派 EmuWindow_Vulkan/
+            //   OpenGL，reloadSettings 只更新 Settings 值不重建窗口）。
+            //   游戏中切换图形后端后必须重启模拟线程才会用新后端 ——
+            //   在后台线程执行 reset()（内部 join 最多 8s，不能阻塞主线程）。
+            if (key == "Renderer/graphics_api" && prev != null && prev != value) {
+                scheduleRendererRestart()
             }
         }
     }
@@ -383,7 +398,38 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             flushConfig()
             try { AzaharNative.lib.reloadSettings() } catch (_: Throwable) {}
             refreshFramebufferLayout()
+            if (pendingRendererRestart) {
+                pendingRendererRestart = false
+                scheduleRendererRestart()
+            }
+        } else {
+            pendingRendererRestart = false
         }
+    }
+
+    /** 批内标记的图形后端变更（见 setCoreOption 注释）。 */
+    @Volatile private var pendingRendererRestart = false
+
+    /** 渲染器重启单线程执行器（reset 会 join 模拟线程，绝不在主线程执行）。 */
+    private val rendererRestartExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "azahar-renderer-restart").apply { isDaemon = true }
+    }
+
+    /**
+     * 后台线程重启模拟线程：stopEmulation → 重新 run() → 新渲染器
+     *（VK/GL 热切换生效）。同一时刻只允许一个重启任务（重复触发直接忽略）
+     */
+    private fun scheduleRendererRestart() {
+        try {
+            rendererRestartExecutor.execute {
+                try {
+                    android.util.Log.i("AzaharEngine", "graphics_api changed, restarting renderer")
+                    reset()
+                } catch (t: Throwable) {
+                    android.util.Log.w("AzaharEngine", "renderer restart failed", t)
+                }
+            }
+        } catch (_: Throwable) {}
     }
 
     @Volatile private var optionsBatching = false

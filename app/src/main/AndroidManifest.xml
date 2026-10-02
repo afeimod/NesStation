@@ -53,6 +53,9 @@
     <uses-feature android:name="android.hardware.location" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!-- ★ Wii 手机体感模拟（可选，无加速度计的设备/TV 自动退化） -->
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+
     <application
         android:name=".NesApp"
         android:allowBackup="true"

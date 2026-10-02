@@ -282,8 +282,14 @@ private val NGCWII_ACTIONS = listOf(
     KeyAction("ngc_wii_plus",   "Wii +",    Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START, "Wii +"),
     KeyAction("ngc_wii_minus",  "Wii −",    Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT,"Wii −"),
     KeyAction("ngc_wii_home",   "Wii HOME", Color(0xFF607D8B), KeyEvent.KEYCODE_BUTTON_MODE, "Wii HOME"),
-    KeyAction("ngc_wii_c",      "双节棍 C", Color(0xFF16A085), KeyEvent.KEYCODE_BUTTON_L2,    "双节棍 C"),
-    KeyAction("ngc_wii_z",      "双节棍 Z", Color(0xFF27AE60), KeyEvent.KEYCODE_BUTTON_R2,    "双节棍 Z")
+    // ★ 双节棍 C/Z 默认改绑 BUTTON_C/Z（L2/R2 让位给倾斜体感）
+    KeyAction("ngc_wii_c",      "双节棍 C", Color(0xFF16A085), KeyEvent.KEYCODE_BUTTON_C,     "双节棍 C"),
+    KeyAction("ngc_wii_z",      "双节棍 Z", Color(0xFF27AE60), KeyEvent.KEYCODE_BUTTON_Z,     "双节棍 Z"),
+    // ★ Wii 倾斜体感（可自定义键位）：L2 左倾 / R2 右倾 / L3 前倾 / R3 后倾
+    KeyAction("ngc_wii_tilt_l", "倾斜·左",  Color(0xFF95A5A6), KeyEvent.KEYCODE_BUTTON_L2,     "Wii 向左倾斜"),
+    KeyAction("ngc_wii_tilt_r", "倾斜·右",  Color(0xFF95A5A6), KeyEvent.KEYCODE_BUTTON_R2,     "Wii 向右倾斜"),
+    KeyAction("ngc_wii_tilt_f", "倾斜·前",  Color(0xFF7F8C8D), KeyEvent.KEYCODE_BUTTON_THUMBL, "Wii 向前倾斜"),
+    KeyAction("ngc_wii_tilt_b", "倾斜·后",  Color(0xFF7F8C8D), KeyEvent.KEYCODE_BUTTON_THUMBR, "Wii 向后倾斜")
 )
 
 private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction> {

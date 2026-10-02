@@ -1747,10 +1747,20 @@ fun CoreSettingsPanel(
                         listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式)"),
                         padLayout.irWiiOrientation
                     ) { updateLayout(padLayout.copy {irWiiOrientation = it}) }
+                    // ★★ 手机体感模拟 Wii 倾斜（本轮新增，需求："并加入手机
+                    //    体感模拟wii体感"）：加速度计 → Wii Tilt 四轴，与
+                    //    L2/R2/L3/R3 按钮倾斜叠加。开启时以当前握持角为基准
+                    //    （相对倾斜）。无传感器的设备自动退化。
+                    DropdownRow("手机体感模拟",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (重力感应模拟倾斜)"),
+                        if (padLayout.wiiMotionSensor) "enabled" else "disabled"
+                    ) { updateLayout(padLayout.copy {wiiMotionSensor = it == "enabled"}) }
                     Text(
                         "虚拟按键随所选控制器变化：GameCube 手柄 → GC 键组；" +
                         "经典手柄 → ABXY + ZL/ZR + 双摇杆；双节棍 → 竖持 Wiimote + C/Z + 摇杆；" +
-                        "无扩展 + 横持 → NES 式十字键 + A/B/1/2 + L/R 摇晃 + HOME + IR±（体感/红外齐全）。",
+                        "无扩展 + 横持 → NES 式十字键 + A/B/1/2 + L/R 摇晃 + HOME + IR±（体感/红外齐全）。" +
+                        "体感四键：L2=左倾 / R2=右倾 / L3=前倾 / R3=后倾（实体键位可在按键映射页自定义），" +
+                        "开启手机体感后重力感应与按钮叠加。",
                         color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 SettingsSection("NGC/WII (Ishiiruka) · 性能 / 图形") {

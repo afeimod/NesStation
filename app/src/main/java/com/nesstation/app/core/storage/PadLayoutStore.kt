@@ -779,6 +779,10 @@ class PadLayout {
     //      需要体感（甩手/摇晃）与红外进深（需求："wii横持手柄也要加入
     //      红外等所有体感按钮"），不需要的可经「显隐按键」逐个关闭。
     var irWiiOrientation: String = "vertical"       // vertical | horizontal (Wii 手柄横/竖持)
+    // ★★ 手机体感模拟 Wii 体感（本轮新增，需求：“并加入手机体感模拟
+    //    wii体感”）：开启后加速度计 → Wii Tilt 四轴（与 L2/R2/L3/R3
+    //    按钮倾斜叠加）。无传感器设备自动退化。
+    var wiiMotionSensor: Boolean = false            // true = 手机体感模拟 Wii 倾斜
     var irCpuCore: String = "4"                     // "0" 解释器 | "4" JIT ARM64 (CPUCore)
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
     var irOverclockEnable: String = "disabled"      // enabled | disabled (OverclockEnable)
@@ -967,6 +971,13 @@ class PadLayout {
     var btnR2: ButtonLayout = ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48)
     var btnL2P: ButtonLayout = ButtonLayout(x = 0.10f, y = 0.28f, sizeDp = 46)
     var btnR2P: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.28f, sizeDp = 46)
+    // ★★ 通用 L3/R3 布局（本轮新增）：NGC/WII 模式下作为 Wii 倾斜体感
+    //    前倾/后倾按钮（需求：“前后可以用按钮L3，R3作为后期自定义”），
+    //    与 L2/R2（左倾/右倾）成套；PS2 仍用专属 ps2BtnL3/R3 字段。
+    var btnL3: ButtonLayout = ButtonLayout(x = 0.08f, y = 0.44f, sizeDp = 44)
+    var btnR3: ButtonLayout = ButtonLayout(x = 0.92f, y = 0.44f, sizeDp = 44)
+    var btnL3P: ButtonLayout = ButtonLayout(x = 0.10f, y = 0.40f, sizeDp = 40)
+    var btnR3P: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.40f, sizeDp = 40)
     // Whether to show L2/R2 buttons on the arcade overlay (hidden by default —
     // 4 face buttons + L/R is enough for most arcade games; 6-button fight
     // games like SFII/KOF benefit from L2/R2 mapped to strong punch/kick).
@@ -1510,6 +1521,7 @@ class PadLayout {
         irControlMode = another.irControlMode
         irWiiExtension = another.irWiiExtension
         irWiiOrientation = another.irWiiOrientation
+        wiiMotionSensor = another.wiiMotionSensor
         irCpuCore = another.irCpuCore
         irDualCore = another.irDualCore
         irOverclockEnable = another.irOverclockEnable
@@ -1620,6 +1632,10 @@ class PadLayout {
         btnR2 = another.btnR2
         btnL2P = another.btnL2P
         btnR2P = another.btnR2P
+        btnL3 = another.btnL3
+        btnR3 = another.btnR3
+        btnL3P = another.btnL3P
+        btnR3P = another.btnR3P
         arcadeShowL2R2 = another.arcadeShowL2R2
         arcadeInputMode = another.arcadeInputMode
         comboButtons = another.comboButtons
@@ -2609,6 +2625,7 @@ object PadLayoutStore {
                 it in setOf("nunchuk", "classic", "none") } ?: "nunchuk"
             irWiiOrientation = p.getString("ir_wii_orientation", "vertical")?.takeIf {
                 it in setOf("vertical", "horizontal") } ?: "vertical"
+            wiiMotionSensor = p.getBoolean("wii_motion_sensor", false)
             irCpuCore = p.getString("ir_cpu_core", "4") ?: "4"
             irDualCore = p.getString("ir_dual_core", "enabled") ?: "enabled"
             irOverclockEnable = p.getString("ir_overclock_enable", "disabled") ?: "disabled"
@@ -2697,6 +2714,11 @@ object PadLayoutStore {
             btnR2 = loadBtn(p, "btn_r2", ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48))
             btnL2P = loadBtn(p, "p_btn_l2", ButtonLayout(x = 0.10f, y = 0.28f, sizeDp = 46))
             btnR2P = loadBtn(p, "p_btn_r2", ButtonLayout(x = 0.90f, y = 0.28f, sizeDp = 46))
+            // ★ 通用 L3/R3（NGC/WII 体感前倾/后倾按钮）
+            btnL3 = loadBtn(p, "btn_l3", ButtonLayout(x = 0.08f, y = 0.44f, sizeDp = 44))
+            btnR3 = loadBtn(p, "btn_r3", ButtonLayout(x = 0.92f, y = 0.44f, sizeDp = 44))
+            btnL3P = loadBtn(p, "p_btn_l3", ButtonLayout(x = 0.10f, y = 0.40f, sizeDp = 40))
+            btnR3P = loadBtn(p, "p_btn_r3", ButtonLayout(x = 0.90f, y = 0.40f, sizeDp = 40))
             arcadeShowL2R2 = p.getBoolean("arcade_show_l2r2", false)
             arcadeInputMode = p.getString("arcade_input_mode", "dpad") ?: "dpad"
             // === Combo buttons (per-platform JSON) ===
@@ -3297,6 +3319,7 @@ object PadLayoutStore {
             putString("ir_control_mode", layout.irControlMode)
             putString("ir_wii_extension", layout.irWiiExtension)
             putString("ir_wii_orientation", layout.irWiiOrientation)
+            putBoolean("wii_motion_sensor", layout.wiiMotionSensor)
             putString("ir_cpu_core", layout.irCpuCore)
             putString("ir_dual_core", layout.irDualCore)
             putString("ir_overclock_enable", layout.irOverclockEnable)
@@ -3380,6 +3403,11 @@ object PadLayoutStore {
             saveBtn("btn_r2", layout.btnR2)
             saveBtn("p_btn_l2", layout.btnL2P)
             saveBtn("p_btn_r2", layout.btnR2P)
+            // ★ 通用 L3/R3（NGC/WII 体感前倾/后倾按钮）
+            saveBtn("btn_l3", layout.btnL3)
+            saveBtn("btn_r3", layout.btnR3)
+            saveBtn("p_btn_l3", layout.btnL3P)
+            saveBtn("p_btn_r3", layout.btnR3P)
             putBoolean("arcade_show_l2r2", layout.arcadeShowL2R2)
             putString("arcade_input_mode", layout.arcadeInputMode)
             // === Combo buttons (per-platform JSON) ===
