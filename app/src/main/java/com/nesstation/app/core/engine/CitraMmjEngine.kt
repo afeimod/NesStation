@@ -1,0 +1,620 @@
+package com.nesstation.app.core.engine
+
+import android.content.Context
+import android.view.Choreographer
+import android.view.Surface
+import com.nesstation.app.core.jni.CitraMmjNative
+import org.citra.emu.NativeLibrary
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.thread
+
+/**
+ * ★★ Citra MMJ（3DS）核心引擎 —— NesStation 集成（本轮新增）★★
+ *
+ * 需求原话："源码里我上传了一个citra的apk.zip，将它集成在3ds核心里用于
+ * 选择核心，就像nds的激烈核心一样，全部设置加入进去"。
+ *
+ * 集成模式 = DraStic / Azahar 同款：vendored .so（libcitra_mmj.so =
+ * Citra_MMJ_20250220.apk 的 libmain.so）+ 原包名 JNI 契约
+ * （org.citra.emu.NativeLibrary）+ 引擎类驱动生命周期。
+ *
+ * 架构（推模型，与 AzaharEngine 同构）：
+ *  1. [loadRom]：建用户目录树（<filesDir>/citra_mmj/）→ SetUserPath →
+ *     loadConfig → 应用 MMJ 设置（coreOptions）+ 输入映射配置 →
+ *     SurfaceChanged → 专用线程 Run(path)（阻塞直至退出）；
+ *  2. Choreographer 帧回调驱动 doFrame（呈现）；
+ *  3. 暂停/恢复 PauseEmulation/ResumeEmulation；停止 StopEmulation。
+ *
+ * 输入（so 反汇编实证的输入管理器模型）：
+ *  - 输入管理器把 KeyEvent/MoveEvent/InputEvent 的 key 与**配置键的值**
+ *    匹配后分发（配置键：button_a/b/x/y/l/r/start/select/zl/zr/home/
+ *    up/down/left/right、circle_pad_*、c_stick_*）；
+ *  - 本引擎在启动前把这些配置键写入自选 id（MMJ_ID_*），按键统一经
+ *    KeyEvent(id, 1/0) 下发；
+ *  - 摇杆经 MoveEvent(轴码, 带符号值)（负值 → 核心按 key+0x1000 匹配
+ *    反向槽 —— circle_pad_up = 轴码+0x1000，circle_pad_down = 轴码）；
+ *  - 兜底：A/B/X/Y/L/R/十字键同时经 InputEvent(小索引, value) 下发
+ *    （覆盖表索引通道，双通道确保至少一条命中）；
+ *  - 底屏触摸经 TouchEvent（action 位掩码：1=按下 / 2=抬起 / 4=移动）。
+ *
+ * 即时存档：MMJ so 未导出 SaveState/LoadState JNI（nm 实测），saveState
+ * 诚实返回 false 并给出说明（UI 提示改用 Azahar 核心）。
+ */
+class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
+
+    companion object {
+        // ---- 自选输入 id（写入 MMJ 配置键；启动前经 setConfigInteger 固化） ----
+        // 按键（KeyEvent 通道）
+        private const val MMJ_ID_A = 1001
+        private const val MMJ_ID_B = 1002
+        private const val MMJ_ID_X = 1003
+        private const val MMJ_ID_Y = 1004
+        private const val MMJ_ID_L = 1005
+        private const val MMJ_ID_R = 1006
+        private const val MMJ_ID_START = 1007
+        private const val MMJ_ID_SELECT = 1008
+        private const val MMJ_ID_ZL = 1009
+        private const val MMJ_ID_ZR = 1010
+        private const val MMJ_ID_HOME = 1011
+        private const val MMJ_ID_UP = 1012
+        private const val MMJ_ID_DOWN = 1013
+        private const val MMJ_ID_LEFT = 1014
+        private const val MMJ_ID_RIGHT = 1015
+        // 摇杆轴（MoveEvent 通道；负向槽 = 轴码 + 0x1000）
+        private const val MMJ_AXIS_CPAD_Y = 3000   // +下 / -上（circle_pad_down=3000, up=7096）
+        private const val MMJ_AXIS_CPAD_X = 3002   // +右 / -左
+        private const val MMJ_AXIS_CSTICK_Y = 3004
+        private const val MMJ_AXIS_CSTICK_X = 3006
+        private const val MMJ_NEG = 0x1000
+
+        // InputEvent 兜底通道的小索引（citra Android overlay 约定）
+        private const val IDX_A = 0
+        private const val IDX_B = 1
+        private const val IDX_X = 2
+        private const val IDX_Y = 3
+        private const val IDX_UP = 4
+        private const val IDX_DOWN = 5
+        private const val IDX_LEFT = 6
+        private const val IDX_RIGHT = 7
+        private const val IDX_L = 8
+        private const val IDX_R = 9
+        private const val IDX_START = 10
+        private const val IDX_SELECT = 11
+
+        // 项目位布局（EmulatorScreen 直传：A=bit0, B=bit1, Select=2, Start=3,
+        // U/D/L/R=4..7, X=8, Y=9, L=10, R=11；扩展位 ZL=16, ZR=17, HOME=19）
+        private const val BIT_A = 0x01
+        private const val BIT_B = 0x02
+        private const val BIT_SELECT = 0x04
+        private const val BIT_START = 0x08
+        private const val BIT_UP = 0x10
+        private const val BIT_DOWN = 0x20
+        private const val BIT_LEFT = 0x40
+        private const val BIT_RIGHT = 0x80
+        private const val BIT_X = 0x100
+        private const val BIT_Y = 0x200
+        private const val BIT_L = 0x400
+        private const val BIT_R = 0x800
+        private const val BIT_ZL = 0x10000
+        private const val BIT_ZR = 0x20000
+        private const val BIT_HOME = 0x80000
+
+        @Volatile private var instance: CitraMmjEngine? = null
+        fun get(): CitraMmjEngine = instance ?: synchronized(this) {
+            instance ?: CitraMmjEngine().also { instance = it }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 基础状态
+    // ------------------------------------------------------------------
+
+    override val frameBuffer: IntArray get() = IntArray(0)
+    override val isLoaded: Boolean get() = _loaded
+    @Volatile private var _loaded = false
+
+    @Volatile private var appContext: Context? = null
+    @Volatile private var romPath: String? = null
+    @Volatile private var lastErrorText = ""
+    @Volatile private var _paused = false
+    @Volatile private var _ffSpeed = 0
+
+    private val lifecycleLock = Any()
+    private var emuThread: Thread? = null
+    private var heartbeatThread: Thread? = null
+    private val running = AtomicBoolean(false)
+
+    @Volatile private var surface: Surface? = null
+    @Volatile private var surfaceW = 0
+    @Volatile private var surfaceH = 0
+
+    private var choreographer: Choreographer? = null
+    private var frameCallback: Choreographer.FrameCallback? = null
+
+    /** MMJ 设置（key = 配置键名，如 "resolution_factor"）。 */
+    private val coreOptions = LinkedHashMap<String, String>()
+
+    /** 输入轴去重（避免重复发 MoveEvent）。[lx, ly, rx, ry]。 */
+    private val stickLast = FloatArray(4)
+
+    override fun ensureLoaded(): Boolean = CitraMmjNative.ensureLoaded()
+
+    fun probeAvailability(): Pair<Boolean, String?> {
+        val ok = ensureLoaded()
+        return if (ok) true to null
+        else false to "Citra MMJ 核心库不可用（仅 arm64；当前进程无 ARM64 支持）"
+    }
+
+    override fun isCoreAvailable(): Boolean = ensureLoaded()
+
+    // ------------------------------------------------------------------
+    // 目录 / 配置
+    // ------------------------------------------------------------------
+
+    private fun userDir(): String {
+        val ctx = appContext
+            ?: throw IllegalStateException("CitraMmjEngine: app context not initialised")
+        return File(ctx.filesDir, "citra_mmj").apply { mkdirs() }.absolutePath
+    }
+
+    private fun ensureUserDirTree() {
+        val root = File(userDir())
+        for (rel in listOf(
+            "nand", "nand/title", "nand/data", "sdmc", "sdmc/1ds", "sysdata",
+            "config", "log", "states", "cheats", "shaders", "dump", "sdmc/Nintendo 3DS"
+        )) {
+            try { File(root, rel).mkdirs() } catch (_: Throwable) {}
+        }
+        // 密钥/字体种子：复用 Azahar 已放置的 sysdata（aes_keys.txt 等）。
+        try {
+            val azSysdata = File(File(appContext!!.filesDir, "azahar"), "sysdata")
+            val dst = File(root, "sysdata")
+            for (name in listOf("aes_keys.txt", "boot9.bin", "seeddb.bin")) {
+                val src = File(azSysdata, name)
+                val out = File(dst, name)
+                if (src.isFile && src.length() > 0 && !out.isFile) {
+                    src.copyTo(out, overwrite = true)
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /** 输入映射配置（自选 id 写入 MMJ 配置键）。 */
+    private fun applyInputConfig() {
+        val lib = CitraMmjNative.lib
+        fun i(key: String, value: Int) { try { lib.setConfigInteger(key, value) } catch (_: Throwable) {} }
+        i("button_a", MMJ_ID_A)
+        i("button_b", MMJ_ID_B)
+        i("button_x", MMJ_ID_X)
+        i("button_y", MMJ_ID_Y)
+        i("button_l", MMJ_ID_L)
+        i("button_r", MMJ_ID_R)
+        i("button_start", MMJ_ID_START)
+        i("button_select", MMJ_ID_SELECT)
+        i("button_zl", MMJ_ID_ZL)
+        i("button_zr", MMJ_ID_ZR)
+        i("button_home", MMJ_ID_HOME)
+        i("button_up", MMJ_ID_UP)
+        i("button_down", MMJ_ID_DOWN)
+        i("button_left", MMJ_ID_LEFT)
+        i("button_right", MMJ_ID_RIGHT)
+        // 摇杆轴（负向槽 = 轴码 + 0x1000 —— 输入管理器对负值的匹配规则）
+        i("circle_pad_down", MMJ_AXIS_CPAD_Y)
+        i("circle_pad_up", MMJ_AXIS_CPAD_Y + MMJ_NEG)
+        i("circle_pad_right", MMJ_AXIS_CPAD_X)
+        i("circle_pad_left", MMJ_AXIS_CPAD_X + MMJ_NEG)
+        i("c_stick_down", MMJ_AXIS_CSTICK_Y)
+        i("c_stick_up", MMJ_AXIS_CSTICK_Y + MMJ_NEG)
+        i("c_stick_right", MMJ_AXIS_CSTICK_X)
+        i("c_stick_left", MMJ_AXIS_CSTICK_X + MMJ_NEG)
+    }
+
+    /** 应用全部 coreOptions（MMJ 配置键 → setConfig*）。 */
+    private fun applyCoreOptions() {
+        val lib = CitraMmjNative.lib
+        for ((key, value) in coreOptions) {
+            try {
+                when {
+                    value.equals("true", true) || value.equals("false", true) ->
+                        lib.setConfigBoolean(key, value.equals("true", true))
+                    value.toIntOrNull() != null ->
+                        lib.setConfigInteger(key, value.toInt())
+                    else -> lib.setConfigString(key, value)
+                }
+            } catch (_: Throwable) {}
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 生命周期
+    // ------------------------------------------------------------------
+
+    override fun loadRom(
+        rom: File,
+        systemDir: String,
+        saveDir: String,
+        onFrame: () -> Unit
+    ): Boolean = synchronized(lifecycleLock) {
+        if (!ensureLoaded()) {
+            lastErrorText = probeAvailability().second ?: "Citra MMJ 核心不可用"
+            return false
+        }
+        cleanupLocked()
+
+        appContext = appContext ?: com.nesstation.app.NesApp.get()
+        if (appContext == null) {
+            lastErrorText = "应用上下文未初始化"
+            return false
+        }
+
+        try {
+            val lib = CitraMmjNative.lib
+            NativeLibrary.hostContext = appContext
+            NativeLibrary.host = object : NativeLibrary.MmjHost {
+                override fun onGameShutdown() {
+                    lastErrorText = "核心已停止"
+                }
+                override fun onMessage(type: Int, message: String) {
+                    android.util.Log.i("CitraMmjEngine", "core message[$type]: $message")
+                }
+            }
+            // 目录树 + 用户目录 + 配置管线
+            ensureUserDirTree()
+            try { lib.SetUserPath(userDir()) } catch (_: Throwable) {}
+            try { lib.loadConfig() } catch (_: Throwable) {}
+            // 输入映射 + 用户设置
+            applyInputConfig()
+            applyCoreOptions()
+            try { lib.saveConfig() } catch (_: Throwable) {}
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "init failed", t)
+        }
+
+        this.romPath = rom.absolutePath
+        _loaded = true
+
+        // HUD 心跳（FPS 计数兼容）
+        running.set(true)
+        heartbeatThread = thread(name = "mmj-hud-heartbeat", isDaemon = true) {
+            try {
+                while (running.get()) {
+                    onFrame()
+                    try { Thread.sleep(16) } catch (_: InterruptedException) { break }
+                }
+            } catch (_: Throwable) {}
+        }
+
+        surface?.let { startEmulationLocked() }
+        return true
+    }
+
+    private fun startEmulationLocked() {
+        val path = romPath ?: return
+        if (emuThread?.isAlive == true) return
+        val lib = CitraMmjNative.lib
+        try {
+            if (surfaceW > 0 && surfaceH > 0) {
+                lib.SetDisplayInfo(surfaceW, surfaceH, surfaceW, surfaceH, 0, 1f)
+            }
+        } catch (_: Throwable) {}
+        try { surface?.let { lib.SurfaceChanged(it) } } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "SurfaceChanged failed", t)
+        }
+        emuThread = thread(name = "CitraMmjNative") {
+            val surf = surface
+            if (surf != null && surf.isValid) {
+                try { lib.SurfaceChanged(surf) } catch (_: Throwable) {}
+            }
+            try {
+                if (_ffSpeed > 0) applyFastForwardConfig()
+                lib.Run(path)
+            } catch (t: Throwable) {
+                android.util.Log.e("CitraMmjEngine", "Run() crashed", t)
+                lastErrorText = t.message ?: "Run() crashed"
+            }
+        }
+        startPresentation()
+    }
+
+    /** Choreographer 驱动 doFrame（呈现节拍，与 Azahar 同构）。 */
+    private fun startPresentation() {
+        stopPresentation()
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        mainHandler.post {
+            try {
+                val cb = object : Choreographer.FrameCallback {
+                    override fun doFrame(frameTimeNanos: Long) {
+                        if (!running.get()) return
+                        try { CitraMmjNative.lib.doFrame(frameTimeNanos) } catch (_: Throwable) {}
+                        try { choreographer?.postFrameCallback(this) } catch (_: Throwable) {}
+                    }
+                }
+                frameCallback = cb
+                choreographer = Choreographer.getInstance()
+                choreographer?.postFrameCallback(cb)
+            } catch (_: Throwable) {}
+        }
+    }
+
+    private fun stopPresentation() {
+        try { frameCallback?.let { choreographer?.removeFrameCallback(it) } } catch (_: Throwable) {}
+        choreographer = null
+        frameCallback = null
+    }
+
+    override fun setSurface(surface: Surface?) {
+        synchronized(lifecycleLock) {
+            this.surface = surface
+            if (!_loaded) return
+            val lib = CitraMmjNative.lib
+            if (surface != null) {
+                try { lib.SurfaceChanged(surface) } catch (_: Throwable) {}
+                if (emuThread?.isAlive != true) startEmulationLocked()
+            } else {
+                try { lib.SurfaceDestroyed() } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    override fun onSurfaceChanged(surface: Surface?, width: Int, height: Int) {
+        if (surface == null) { setSurface(null); return }
+        surfaceW = width
+        surfaceH = height
+        if (surface != this.surface) { setSurface(surface); return }
+        if (_loaded && width > 0 && height > 0) {
+            try { CitraMmjNative.lib.SetDisplayInfo(width, height, width, height, 0, 1f) } catch (_: Throwable) {}
+        }
+    }
+
+    override fun onSurfaceDestroyed() { setSurface(null) }
+
+    override fun setSaveName(name: String) {
+        // MMJ 按游戏自身组织存档（sdmc/nand），无需前端命名
+    }
+
+    override fun setPaused(paused: Boolean) {
+        if (_paused == paused) return
+        _paused = paused
+        if (!_loaded) return
+        try {
+            val lib = CitraMmjNative.lib
+            if (paused) lib.PauseEmulation() else lib.ResumeEmulation()
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "pause/resume", t)
+        }
+    }
+
+    override fun reset(hard: Boolean) {
+        synchronized(lifecycleLock) {
+            if (!_loaded || romPath == null) return@synchronized
+            try {
+                CitraMmjNative.lib.StopEmulation()
+                emuThread?.join(8000)
+            } catch (_: Throwable) {}
+            emuThread = null
+            val surf = surface ?: return@synchronized
+            try { CitraMmjNative.lib.SurfaceChanged(surf) } catch (_: Throwable) {}
+            startEmulationLocked()
+        }
+    }
+
+    override fun unload() = synchronized(lifecycleLock) { cleanupLocked() }
+    override fun shutdown() = synchronized(lifecycleLock) { cleanupLocked() }
+
+    private fun cleanupLocked() {
+        running.set(false)
+        stopPresentation()
+        heartbeatThread?.let { t ->
+            t.interrupt()
+            try { t.join(500) } catch (_: InterruptedException) {}
+        }
+        heartbeatThread = null
+        if (emuThread?.isAlive == true) {
+            try {
+                CitraMmjNative.lib.StopEmulation()
+                emuThread?.join(8000)
+            } catch (_: Throwable) {}
+        }
+        emuThread = null
+        try { CitraMmjNative.lib.SurfaceDestroyed() } catch (_: Throwable) {}
+        surface = null
+        _loaded = false
+        _paused = false
+        _ffSpeed = 0
+        lastErrorText = ""
+        stickLast.fill(0f)
+    }
+
+    // ------------------------------------------------------------------
+    // 视频 / 快进
+    // ------------------------------------------------------------------
+
+    override fun videoWidth(): Int = 400
+    override fun videoHeight(): Int = 480
+    override fun realtimeFps(): Double = 0.0
+    override fun setVideoFilter(filter: Int) {}
+    override fun setHighQualityScaling(enabled: Boolean) {}
+
+    override fun setFastForward(speed: Int) {
+        _ffSpeed = speed
+        if (!_loaded) return
+        applyFastForwardConfig()
+    }
+
+    /**
+     * 快进：写 frame_limit / use_frame_limit 配置（MMJ 无运行时变速 JNI；
+     * use_frame_limit=false = 不限速）。写配置 + saveConfig —— MMJ 的帧率
+     * 限制在模拟循环内生效（若核心仅在启动读取，效果同"下次启动生效"，
+     * 与设置面板提示一致）。
+     */
+    private fun applyFastForwardConfig() {
+        try {
+            val lib = CitraMmjNative.lib
+            if (_ffSpeed > 0) {
+                lib.setConfigBoolean("use_frame_limit", false)
+            } else {
+                lib.setConfigBoolean("use_frame_limit", true)
+                lib.setConfigInteger("frame_limit", 100)
+            }
+            lib.saveConfig()
+        } catch (_: Throwable) {}
+    }
+
+    // ------------------------------------------------------------------
+    // 设置
+    // ------------------------------------------------------------------
+
+    /**
+     * MMJ 配置键直通（key = MMJ 配置键名，如 "resolution_factor" /
+     * "use_hw_shader"）。运行中写入即时经 setConfig* 生效（MMJ 的
+     * 配置为核心运行时读取的内存映射）；同时缓存供下次启动前重放。
+     */
+    override fun setCoreOption(key: String, value: String) {
+        coreOptions[key] = value
+        if (_loaded) {
+            try {
+                val lib = CitraMmjNative.lib
+                when {
+                    value.equals("true", true) || value.equals("false", true) ->
+                        lib.setConfigBoolean(key, value.equals("true", true))
+                    value.toIntOrNull() != null -> lib.setConfigInteger(key, value.toInt())
+                    else -> lib.setConfigString(key, value)
+                }
+                lib.saveConfig()
+            } catch (_: Throwable) {}
+        }
+    }
+
+    override fun beginCoreOptionsBatch() {}
+    override fun endCoreOptionsBatch() {}
+
+    // ------------------------------------------------------------------
+    // 输入
+    // ------------------------------------------------------------------
+
+    override fun setPad1(bits: Int) {
+        if (!_loaded) return
+        val lib = CitraMmjNative.lib
+        fun pressed(bit: Int) = bits and bit != 0
+        // 双通道：KeyEvent(自选配置 id) + InputEvent(小索引兜底)
+        val keyEvents = listOf(
+            MMJ_ID_A to (bits and BIT_A != 0),
+            MMJ_ID_B to (bits and BIT_B != 0),
+            MMJ_ID_X to (bits and BIT_X != 0),
+            MMJ_ID_Y to (bits and BIT_Y != 0),
+            MMJ_ID_L to (bits and BIT_L != 0),
+            MMJ_ID_R to (bits and BIT_R != 0),
+            MMJ_ID_START to (bits and BIT_START != 0),
+            MMJ_ID_SELECT to (bits and BIT_SELECT != 0),
+            MMJ_ID_ZL to (bits and BIT_ZL != 0),
+            MMJ_ID_ZR to (bits and BIT_ZR != 0),
+            MMJ_ID_UP to (bits and BIT_UP != 0),
+            MMJ_ID_DOWN to (bits and BIT_DOWN != 0),
+            MMJ_ID_LEFT to (bits and BIT_LEFT != 0),
+            MMJ_ID_RIGHT to (bits and BIT_RIGHT != 0)
+        )
+        for ((id, isPressed) in keyEvents) {
+            try { lib.KeyEvent(id, if (isPressed) 1 else 0) } catch (_: Throwable) {}
+        }
+        val idxEvents = listOf(
+            IDX_A to (bits and BIT_A != 0),
+            IDX_B to (bits and BIT_B != 0),
+            IDX_X to (bits and BIT_X != 0),
+            IDX_Y to (bits and BIT_Y != 0),
+            IDX_L to (bits and BIT_L != 0),
+            IDX_R to (bits and BIT_R != 0),
+            IDX_START to (bits and BIT_START != 0),
+            IDX_SELECT to (bits and BIT_SELECT != 0),
+            IDX_UP to (bits and BIT_UP != 0),
+            IDX_DOWN to (bits and BIT_DOWN != 0),
+            IDX_LEFT to (bits and BIT_LEFT != 0),
+            IDX_RIGHT to (bits and BIT_RIGHT != 0)
+        )
+        for ((idx, isPressed) in idxEvents) {
+            try { lib.InputEvent(idx, if (isPressed) 1f else 0f) } catch (_: Throwable) {}
+        }
+    }
+
+    override fun setPad2(bits: Int) {
+        // MMJ 触屏设备为 P1 专属 —— P2 不支持
+    }
+
+    /**
+     * 双摇杆：CirclePad (lx, ly) / C-Stick (rx, ry)。
+     * 屏幕坐标约定（上=负）与 MMJ 一致：MoveEvent(轴码, 带符号值)；
+     * 负值由核心按 轴码+0x1000 匹配反向槽（circle_pad_up / left）。
+     */
+    override fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float) {
+        if (!_loaded) return
+        val lib = CitraMmjNative.lib
+        val values = floatArrayOf(lx, ly, rx, ry)
+        val axes = intArrayOf(MMJ_AXIS_CPAD_X, MMJ_AXIS_CPAD_Y, MMJ_AXIS_CSTICK_X, MMJ_AXIS_CSTICK_Y)
+        for (i in axes.indices) {
+            val v = values[i].coerceIn(-1f, 1f)
+            if (v != stickLast[i]) {
+                stickLast[i] = v
+                try { lib.MoveEvent(axes[i], v) } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 触摸（AzaharCoreEngine 契约 —— 3DS 下屏）
+    // ------------------------------------------------------------------
+
+    override fun setTouchInput(x: Float, y: Float, pressed: Boolean) {
+        if (!_loaded) return
+        try {
+            CitraMmjNative.lib.TouchEvent(if (pressed) 1 else 2, x.toInt(), y.toInt())
+        } catch (_: Throwable) {}
+    }
+
+    override fun setTouchMoved(x: Float, y: Float) {
+        if (!_loaded) return
+        try {
+            CitraMmjNative.lib.TouchEvent(4, x.toInt(), y.toInt())
+        } catch (_: Throwable) {}
+    }
+
+    // ------------------------------------------------------------------
+    // 双屏 / 其它
+    // ------------------------------------------------------------------
+
+    override fun swapScreens() {
+        if (!_loaded) return
+        try {
+            // 布局交换（landscape_swap_screen 配置切换）
+            val lib = CitraMmjNative.lib
+            val current = lib.getConfigBoolean("landscape_swap_screen")
+            lib.setConfigBoolean("landscape_swap_screen", !current)
+            lib.setConfigBoolean("portrait_swap_screen", !current)
+            lib.saveConfig()
+        } catch (_: Throwable) {}
+    }
+
+    // ------------------------------------------------------------------
+    // 存档（MMJ 无即时存档 JNI —— 诚实反馈）
+    // ------------------------------------------------------------------
+
+    override fun saveState(slot: Int, dst: File): Boolean {
+        lastErrorText = "Citra MMJ 核心未提供即时存档接口（建议使用 Azahar 核心或游戏内存档）"
+        return false
+    }
+
+    override fun loadState(slot: Int, src: File): Boolean {
+        lastErrorText = "Citra MMJ 核心未提供即时读档接口（建议使用 Azahar 核心或游戏内存档）"
+        return false
+    }
+
+    override fun captureFrame(): FrameCapture? = null
+    override fun setRegion(region: Int) {}
+    override fun setSampleRate(rate: Int) {}
+
+    override fun lastError(): String = lastErrorText
+
+    // Netplay 不支持（推模型核心）
+    override var frameHook: NetplayHook?
+        get() = null
+        set(_) {}
+}

@@ -537,7 +537,15 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 val fileRedirectPath = ctx?.filesDir?.let {
                     File(File(it, "gpu"), "vk_file_redirect").apply { mkdirs() }.absolutePath
                 } ?: ""
-                lib.initializeGpuDriver(hookLibPath, driverInstallPath, "", fileRedirectPath)
+                // ★★ GPU 驱动安装与选择（本轮新增，对齐上游 Azahar）：第 3 参
+                //   customDriverLibraryName 接入用户在驱动管理器中选中的驱动
+                //   （空 = 系统驱动）。驱动 zip 经 GpuDriverHelper 安装到
+                //   <filesDir>/gpu_driver/<id>/，核心据此通过 adrenotools
+                //   加载自定义 Turnip/Adreno 驱动（VK 后端）。
+                val customDriverLibrary = try {
+                    org.citra.citra_emu.utils.GpuDriverHelper.selectedLibraryName(ctx)
+                } catch (_: Throwable) { "" }
+                lib.initializeGpuDriver(hookLibPath, driverInstallPath, customDriverLibrary, fileRedirectPath)
             } catch (_: Throwable) {}
             try { lib.reloadSettings() } catch (_: Throwable) {}
         } catch (t: Throwable) {
@@ -1101,13 +1109,79 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     // 存档 / 截图 / 其它
     // ------------------------------------------------------------------
 
+    /**
+     * 核心 states 目录下指定槽位的真实 .cst 文件（<userDir>/states/
+     * <titleId16hex>_version_2005.<slot02>.cst）。找不到返回 null。
+     */
+    private fun realStateFile(slot: Int): File? {
+        val statesDir = File(userDir(), "states")
+        val files = statesDir.listFiles { f -> f.isFile && f.name.endsWith(".cst") }
+            ?: return null
+        val suffix = "_%02d.cst".format(slot)
+        // 文件名形如 0004000000055F00_version_2005.01.cst —— 按后缀匹配槽位。
+        return files.firstOrNull { it.name.endsWith(suffix) }
+            ?: files.firstOrNull {
+                // 宽容：无 _version_ 段的非常规命名（未来版本格式变化）
+                it.name.endsWith(".state.${slot}.cst") || it.name.endsWith("_${slot}.cst")
+            }
+    }
+
+    /**
+     * ★★ 3DS 即时存档无效修复（本轮）★★
+     * 旧实现三重问题：
+     *   1. saveState 是**发后不管**的异步信号（RunLoop 下一帧才消费），
+     *      旧代码却立即返回 true + 无条件创建假标记文件 → UI 弹"已存档"
+     *      而核心可能静默失败（暂停中信号永不消费 / LLE 开启 / app loader
+     *      不支持）——“存档无作用"的直接根因；
+     *   2. 暂停态（菜单打开时 engine.setPaused(true)）下模拟线程停在
+     *      条件变量上，RunLoop 不再执行 → 存/读档信号永远不被消费；
+     *   3. 读档前置校验只看 NesStation 自己的假标记文件而非核心真实
+     *      .cst —— 假标记存在 → 发 Load 信号 → 核心抛异常 → 旧
+     *      onCoreError 返回 false 终止模拟 → "读取直接卡死"。
+     * 修复：
+     *   - 暂停中先临时解除（unPauseEmulation），让 RunLoop 消费信号；
+     *   - 存档后轮询真实 .cst 落盘（最多 5s），确认后才写标记并复制
+     *     真实字节到 dst（UI 的 exists/大小/时间全部真实）；超时返回 false；
+     *   - 读档前先确认真实 .cst 存在，不存在直接返回 false（不发信号，
+     *     不触发核心错误路径）；读档成功后恢复原暂停态。
+     */
     override fun saveState(slot: Int, dst: File): Boolean {
         if (!isLoaded) return false
         return try {
+            val wasPaused = _paused
+            if (wasPaused) {
+                try { AzaharNative.lib.unPauseEmulation() } catch (_: Throwable) {}
+            }
+            val before = realStateFile(slot)
+            val beforeTime = before?.lastModified() ?: 0L
             AzaharNative.lib.saveState(slot)
-            // UI 依赖 stateFile.exists() 判断槽位可读 —— 触一个标记文件
-            dst.parentFile?.mkdirs()
-            if (!dst.exists()) dst.createNewFile()
+            // 轮询核心真实槽位文件落盘/更新（RunLoop 异步消费，同步执行
+            // ZSTD 压缩 + 落盘，大游戏可能秒级）。
+            val deadline = System.currentTimeMillis() + 5000
+            var real: File? = null
+            while (System.currentTimeMillis() < deadline) {
+                real = realStateFile(slot)
+                if (real != null && real.exists() && real.length() > 0 &&
+                    real.lastModified() > beforeTime) break
+                Thread.sleep(100)
+            }
+            if (wasPaused) {
+                try { AzaharNative.lib.pauseEmulation() } catch (_: Throwable) {}
+            }
+            if (real == null || !real.exists() || real.length() == 0L) {
+                android.util.Log.w("AzaharEngine", "saveState($slot): 核心未落盘真实 .cst（可能暂停中或 LLE 开启）")
+                lastErrorText = "存档失败：核心未写入状态文件"
+                return false
+            }
+            // 标记文件 = 真实 .cst 的完整字节拷贝（UI 的槽位列表/大小/时间
+            // 从此真实，读档前置检查也对得上）。
+            try {
+                dst.parentFile?.mkdirs()
+                real.copyTo(dst, overwrite = true)
+            } catch (t: Throwable) {
+                android.util.Log.w("AzaharEngine", "saveState($slot): 标记拷贝失败", t)
+                if (!dst.exists()) dst.createNewFile()
+            }
             true
         } catch (t: Throwable) {
             android.util.Log.w("AzaharEngine", "saveState($slot)", t)
@@ -1118,7 +1192,42 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     override fun loadState(slot: Int, src: File): Boolean {
         if (!isLoaded) return false
         return try {
+            // ★ 前置校验：核心 states 目录必须存在真实 .cst（不看 NesStation
+            //   的标记文件）—— 不存在时直接失败，不发 Load 信号（避免触发
+            //   核心异常路径）。标记文件存在但核心 .cst 缺失（旧版本假标记
+            //   残留）时自动导入：把标记字节回写为核心槽位路径。
+            var real = realStateFile(slot)
+            if (real == null || !real.exists() || real.length() == 0L) {
+                if (src.exists() && src.length() > 0) {
+                    val statesDir = File(userDir(), "states").apply { mkdirs() }
+                    real = File(statesDir, "nesstation_slot%02d.cst".format(slot))
+                    try {
+                        src.copyTo(real, overwrite = true)
+                        android.util.Log.i("AzaharEngine", "loadState($slot): 从标记文件回填核心槽位 $real")
+                    } catch (t: Throwable) {
+                        android.util.Log.w("AzaharEngine", "loadState($slot): 回填失败", t)
+                    }
+                }
+                if (real == null || !real.exists() || real.length() == 0L) {
+                    lastErrorText = "读档失败：槽位 $slot 无核心状态文件"
+                    android.util.Log.w("AzaharEngine", "loadState($slot): 无真实 .cst")
+                    return false
+                }
+            }
+            val wasPaused = _paused
+            if (wasPaused) {
+                try { AzaharNative.lib.unPauseEmulation() } catch (_: Throwable) {}
+            }
+            // 发 Load 信号（RunLoop 在模拟线程内同步反序列化，期间画面
+            // 冻结数秒是正常现象）。失败走 onCoreError(ErrorSavestate)
+            // → 已改为返回 true 继续运行，不再终止模拟。
             AzaharNative.lib.loadState(slot)
+            // 给 RunLoop 一点时间消费信号（读档在下一帧触发），随后恢复
+            // 原暂停态（菜单打开时用户期望仍处于暂停）。
+            try { Thread.sleep(600) } catch (_: InterruptedException) {}
+            if (wasPaused) {
+                try { AzaharNative.lib.pauseEmulation() } catch (_: Throwable) {}
+            }
             true
         } catch (t: Throwable) {
             android.util.Log.w("AzaharEngine", "loadState($slot)", t)

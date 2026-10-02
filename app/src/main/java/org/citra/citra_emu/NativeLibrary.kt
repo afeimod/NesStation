@@ -301,15 +301,28 @@ object NativeLibrary {
      *   竞态修复无效的真正原因）。
      *   现在把错误上报给宿主（UI 弹出原因）并返回 false 干净地终止模拟，
      *   run() 返回后 onPrematureExit 兑底错误提示也会触发。
+     *
+     * ★★ 3DS 即时读档卡死根治修复（本轮）：
+     *   读档失败（槽位无真实 .cst / 版本不匹配）走的是 ErrorSavestate /
+     *   ErrorSavestateBuildMismatch —— 上游 Azahar 对这两类错误的处理是
+     *   "提示后**继续**运行"（EmulationActivity 弹窗返回 true）。
+     *   旧集成一律 return false → run() 循环把 ShutdownRequested 置位 →
+     *   模拟线程退出 → 黑屏/冻结（"读取直接卡死"的直接根因）。
+     *   现在：存档类错误上报后返回 true（游戏继续跑），仅真正致命的错误
+     *   （系统文件缺失等）才返回 false 终止。
      */
     @Keep
     @JvmStatic
     fun onCoreError(error: CoreError?, details: String): Boolean {
         android.util.Log.e("AzaharNative", "Core error: $error / $details")
         NesStationHost.notifyCoreError(error?.name ?: "ErrorUnknown", details)
-        // 返回 false：终止模拟 —— 与参考 APK "无活动 UI 时返回 false" 语义一致，
-        // 避免"继续运行但永远黑屏"的静默故障。
-        return false
+        return when (error) {
+            // 存档/读档失败：非致命 —— 上游语义为"提示后继续模拟"。
+            CoreError.ErrorSavestate,
+            CoreError.ErrorSavestateBuildMismatch -> true
+            // 真正致命的错误：终止模拟（避免黑屏空转）。
+            else -> false
+        }
     }
 
     @Keep

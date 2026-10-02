@@ -1272,15 +1272,35 @@ object CoverFetcher {
     /**
      * 玩家选定候选封面 → 复制为正式封面并写回 RomStore。
      * @return true 写回成功（UI 刷新列表即可看到新封面）。
+     *
+     * ★★ "换封面不生效、需重启"根治修复（本轮）★★
+     * 旧实现覆写**固定路径** covers/<gameId>.png：
+     *   1. coverPath 字符串不变 → RomStore.setCoverPath 的差异守卫跳过写
+     *      入 → 重读出的 GameEntry 与旧对象全字段相等 → Compose 跳过重组；
+     *   2. 即使重组，列表位图缓存键（cacheKey = id|icon|coverPath）与
+     *      LruCache 键都不变 → 命中**旧位图**；
+     *   3. 只有杀进程（内存缓存清空）才会重新解码 —— 症状即"需重启"。
+     * 修复：与自定义图标流程（LibraryScreen 时间戳文件名）同构 ——
+     *   唯一时间戳文件名 cover_<id>_<ts>.png：路径必变 → 数据变化 + 缓存
+     *   键变化 → 自动重组 + 重新解码，全链路自愈；成功后删除旧封面文件
+     *   防止垃圾堆积。
      */
     fun pickCandidate(context: Context, game: GameEntry, candidate: File): Boolean {
         return try {
-            val dest = File(coversDir(context), "${game.id}.png")
+            val oldPath = game.coverPath
+            val dest = File(coversDir(context), "cover_${game.id}_${System.currentTimeMillis()}.png")
             dest.parentFile?.mkdirs()
             java.io.FileInputStream(candidate).use { input ->
                 dest.outputStream().use { input.copyTo(it) }
             }
             RomStore.setCoverPath(context, game.id, dest.absolutePath)
+            // 清理被替换的旧封面文件（固定名历史文件或旧时间戳文件）
+            if (oldPath != null && oldPath != dest.absolutePath) {
+                try {
+                    val old = File(oldPath)
+                    if (old.isFile && old.parentFile == dest.parentFile) old.delete()
+                } catch (_: Throwable) {}
+            }
             // DC：玩家选定后同样同步 flycast boxart 目录
             syncDcBoxart(context, game, dest)
             true

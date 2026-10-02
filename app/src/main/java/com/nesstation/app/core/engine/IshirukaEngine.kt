@@ -386,19 +386,35 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             wiiSet(sec, "Shake/X", "`Button 132`")
             wiiSet(sec, "Shake/Y", "`Button 133`")
             wiiSet(sec, "Shake/Z", "`Button 134`")
-            // ★★ Wii 倾斜体感（本轮新增，需求：“wii体感缺少……没有前后和
-            //   左右倾斜”）★★：Tilt 组四轴绑定。轴号对应
-            //   NativeLibrary.ButtonType：Forward=127 / Backward=128 /
-            //   Left=129 / Right=130。绑定用参考 APK 式**半轴后缀**
-            //   （“Axis N-” / “Axis N+” —— so 内实测序列化格式
-            //   "Device '%s'-Axis %d%c" 支持 +/- 后缀，控件读 0..1 强度）；
-            //   事件侧与引擎摇杆/IR 同号约定：Forward/Left 半轴发负值，
-            //   Backward/Right 发正值（见 pushWiiTilt）。按键事件无法激活
-            //   轴绑定（IR+/− 前车之鉴）——全部经 onGamePadMoveEvent。
-            wiiSet(sec, "Tilt/Forward", "`Axis 127-`")
-            wiiSet(sec, "Tilt/Backward", "`Axis 128+`")
-            wiiSet(sec, "Tilt/Left", "`Axis 129-`")
-            wiiSet(sec, "Tilt/Right", "`Axis 130+`")
+            // ★★ Wii 倾斜/晃动绑定根治修复 ★★
+            //   根因：旧实现把 Tilt 四轴写成半轴后缀表达式（"Axis 127-" 等），
+            //   而本核心（Ishiiruka 5.0 系）的 WiimoteNew.ini 反引号表达式解析器
+            //   只认【全轴表达式】（"Axis N"，带符号推值参与方向合成）——
+            //   参考 APK（Ishiruka_01.APK 的 assets/WiimoteNew.ini，即本
+            //   libishiiruka.so 的配套基准）的 40+ 个轴绑定全部无 +/- 后缀。
+            //   半轴写法导致 Tilt 四绑定悬空 → 按键倾斜与手机体感
+            //   （都汇入 pushWiiTilt 轴事件）全部无效，而 IR/摇杆/普通按键
+            //   （全轴格式）全部正常 —— 与用户反馈完全吻合。
+            //   修复：对齐参考 APK 逐字使用全轴格式，并补齐 Modifier 需以下、
+            //   Swing（晃动/挥动）六轴与 Nunchuk 的 Swing/Tilt 绑定。
+            //   轴号 = NativeLibrary.ButtonType：Tilt F/B/L/R=127/128/129/130，
+            //   Swing F/B/L/R=124/125/122/123（Up/Down=120/121）。
+            wiiSet(sec, "Tilt/Forward", "`Axis 127`")
+            wiiSet(sec, "Tilt/Backward", "`Axis 128`")
+            wiiSet(sec, "Tilt/Left", "`Axis 129`")
+            wiiSet(sec, "Tilt/Right", "`Axis 130`")
+            wiiSet(sec, "Tilt/Modifier", "`Button 131`")
+            wiiSet(sec, "Tilt/Modifier/Range", "50,000000")
+            // ★★ 前后晃动（Swing，用户需求原话“前后晃动(不是倾斜)”）★★：
+            //   与 Tilt 独立的六轴挥动/晃动输入组，参考 APK 同款全轴绑定。
+            //   L3/R3（前晃/后晃）与手机体感的前后方向会同时驱动
+            //   Tilt F/B 与 Swing F/B（兼容只读 Tilt 或只读 Swing 的游戏）。
+            wiiSet(sec, "Swing/Up", "`Axis 120`")
+            wiiSet(sec, "Swing/Down", "`Axis 121`")
+            wiiSet(sec, "Swing/Left", "`Axis 122`")
+            wiiSet(sec, "Swing/Right", "`Axis 123`")
+            wiiSet(sec, "Swing/Forward", "`Axis 124`")
+            wiiSet(sec, "Swing/Backward", "`Axis 125`")
             // 扩展手柄由控制模式决定（P1），且 Nunchuk/Classic 的绑定键名带
             // "Nunchuk/"、"Classic/" 前缀，写在 [WiimoteN] 主段内（参考 APK 结构）。
             // ★ 旧实现写成独立的 [Nunchuk] / [Classic] 段 —— 核心在 [WiimoteN] 段
@@ -413,6 +429,20 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             if (slot == 1) {
                 wiiSet(sec, "Nunchuk/Buttons/C", "`Button 200`")
                 wiiSet(sec, "Nunchuk/Buttons/Z", "`Button 201`")
+                // ★★ Nunchuk Swing/Tilt 绑定补齐（参考 APK 同款全轴格式）★★：
+                //   双节棍模式下带体感的游戏读 Nunchuk 的 Swing/Tilt 组。
+                wiiSet(sec, "Nunchuk/Swing/Up", "`Axis 208`")
+                wiiSet(sec, "Nunchuk/Swing/Down", "`Axis 209`")
+                wiiSet(sec, "Nunchuk/Swing/Left", "`Axis 210`")
+                wiiSet(sec, "Nunchuk/Swing/Right", "`Axis 211`")
+                wiiSet(sec, "Nunchuk/Swing/Forward", "`Axis 212`")
+                wiiSet(sec, "Nunchuk/Swing/Backward", "`Axis 213`")
+                wiiSet(sec, "Nunchuk/Tilt/Forward", "`Axis 215`")
+                wiiSet(sec, "Nunchuk/Tilt/Backward", "`Axis 216`")
+                wiiSet(sec, "Nunchuk/Tilt/Left", "`Axis 217`")
+                wiiSet(sec, "Nunchuk/Tilt/Right", "`Axis 218`")
+                wiiSet(sec, "Nunchuk/Tilt/Modifier", "`Button 219`")
+                wiiSet(sec, "Nunchuk/Tilt/Modifier/Range", "50,000000")
                 wiiSet(sec, "Nunchuk/Stick/Up", "`Axis 203`")
                 wiiSet(sec, "Nunchuk/Stick/Down", "`Axis 204`")
                 wiiSet(sec, "Nunchuk/Stick/Left", "`Axis 205`")
@@ -851,6 +881,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             wiiTiltSensor.fill(0f)
         }
         wiiTiltLast.fill(0f)
+        wiiSwingLast.fill(0f)
     }
 
     // ------------------------------------------------------------------
@@ -866,17 +897,37 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     override fun setHighQualityScaling(enabled: Boolean) {}
 
     /**
-     * 快进：Dolphin 5.0 系无独立快进 API —— 通过 Dolphin.ini [Core] EmulationSpeed
-     * 热写（0 = 不限速，1.0 = 原速；上游 Ishiiruka 支持 EmulationSpeed 键）。
+     * 快进：Dolphin 5.0 系无运行时变速 API（so 导出符号全量扫描无
+     * *Speed*/*Throttle* JNI；EmulationSpeed 是 SConfig 启动期键）。
+     * ★ 修复（旧实现无效的根因）：
+     *   1. 旧实现只调 NativeLibrary.SetConfig —— 该 JNI 写盘路径由 so
+     *      内部 GetUserPath 决定，与核心实际读取的 <userDir>/Config/ 不一致
+     *      （异常又被吞掉）→ 写了个寂寞；
+     *   2. EmulationSpeed 只在 Run() 启动时读一次，运行中改不会重读。
+     *   现改为与其它设置同款的双通道（SetConfig + 直写 INI 合并），
+     *   确保下次启动核心读到 EmulationSpeed=0（不限速）—— UI 侧通过
+     *   [supportsRuntimeFastForward] 反馈“需重进游戏生效”，不再静默无效。
      */
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
         if (!isLoaded) return
         try {
             val value = if (speed > 0) "0" else "1"
-            NativeLibrary.SetConfig("Dolphin.ini", "Core", "EmulationSpeed", value)
+            try { NativeLibrary.SetConfig("Dolphin.ini", "Core", "EmulationSpeed", value) } catch (_: Throwable) {}
+            try {
+                writeIniMerged(
+                    java.io.File(configDir(), "Dolphin.ini"),
+                    mapOf("Core" to mapOf("EmulationSpeed" to value))
+                )
+            } catch (_: Throwable) {}
         } catch (_: Throwable) {}
     }
+
+    /**
+     * 该核心是否支持运行中变速（UI 用：false 时加速按钮给出明确提示
+     * “配置已写入，重新进入游戏后生效”，而不是无反馈的静默无效）。
+     */
+    fun supportsRuntimeFastForward(): Boolean = false
 
     // ------------------------------------------------------------------
     // 输入
@@ -1178,12 +1229,14 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     // ★★ Wii 倾斜体感（Tilt 组四轴：前/后/左/右）★★
     // ----------------------------------------------------------------
 
-    /** 按钮触发的倾斜（L2/R2/L3/R3 位 → 0/1）。索引：[左, 右, 前, 后]。 */
+    /** 按钮触发的倾斜/晃动（L2/R2/L3/R3 位 → 0/1）。索引：[左, 右, 前, 后]。 */
     private val wiiTiltBtn = FloatArray(4)
-    /** 手机体感传感器的倾斜值（0..1）。索引：[左, 右, 前, 后]。 */
+    /** 手机体感传感器的倾斜/晃动值（0..1）。索引：[左, 右, 前, 后]。 */
     @Volatile private var wiiTiltSensor = FloatArray(4)
-    /** 最近一次推送的合成轴值（去重，避免重复发轴事件）。 */
+    /** 最近一次推送的 Tilt 四轴合成值（去重）。 */
     private val wiiTiltLast = FloatArray(4)
+    /** 最近一次推送的 Swing 前后轴合成值（去重）。 */
+    private val wiiSwingLast = FloatArray(2)
     private val wiiTiltLock = Any()
 
     /** setPad1 → 按钮位驱动的倾斜（虚拟按键/实体手柄的 L2/R2/L3/R3）。 */
@@ -1221,11 +1274,15 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     }
 
     /**
-     * 合成按钮 + 传感器输入并推送四轴（仅变化时发事件）。
-     * 符号约定与引擎摇杆/IR 一致：Forward/Left 半轴发负值，
-     * Backward/Right 发正值；绑定为半轴表达式（`Axis N-` / `Axis N+`），
-     * 核心侧取幅值 0..1 作为倾斜强度。轴号：127 前 / 128 后 /
-     * 129 左 / 130 右。
+     * 合成按钮 + 传感器输入并推送轴事件（仅变化时发送）。
+     * ★★ 绑定格式修复后的推送策略（见 writeControllerInis 的根治注释）：★★
+     *   Tilt/Swing 绑定为全轴表达式（`Axis N`，带符号推值），符号约定与
+     *   引擎摇杆/IR 完全一致（已验证可用的同款约定）：
+     *     - 左倾/前方向 → 负值；右倾/后方向 → 正值；
+     *   轴号：Tilt 前/后/左/右 = 127/128/129/130，Swing 前/后 = 124/125。
+     *   前后方向（用户口中的“前后晃动”）**同时**驱动 Tilt F/B 与 Swing
+     *   F/B —— 兼容只读 Tilt 的游戏（Monkey Ball 系）与只读 Swing 的
+     *   游戏（Wii Sports 系挥动类）。
      */
     private fun pushWiiTilt() {
         if (!isLoaded || effectiveMode() == "ngc") return
@@ -1241,8 +1298,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             NativeLibrary.ButtonType.WIIMOTE_TILT_RIGHT      // 130
         )
         val signed = floatArrayOf(
-            -merged[2],   // 前倾 → 负半轴
-            +merged[3],   // 后倾 → 正半轴
+            -merged[2],   // 前倾/前晃 → 负半轴
+            +merged[3],   // 后倾/后晃 → 正半轴
             -merged[0],   // 左倾 → 负半轴
             +merged[1]    // 右倾 → 正半轴
         )
@@ -1250,6 +1307,18 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             if (signed[i] != wiiTiltLast[i]) {
                 wiiTiltLast[i] = signed[i]
                 try { NativeLibrary.onGamePadMoveEvent(dev, ids[i], signed[i]) } catch (_: Throwable) {}
+            }
+        }
+        // ★ 前后晃动（Swing）同强度推送到 Swing F/B 轴（124/125）。
+        val swingIds = intArrayOf(
+            NativeLibrary.ButtonType.WIIMOTE_SWING_FORWARD,  // 124
+            NativeLibrary.ButtonType.WIIMOTE_SWING_BACKWARD // 125
+        )
+        val swingVals = floatArrayOf(-merged[2], +merged[3])
+        for (i in swingIds.indices) {
+            if (swingVals[i] != wiiSwingLast[i]) {
+                wiiSwingLast[i] = swingVals[i]
+                try { NativeLibrary.onGamePadMoveEvent(dev, swingIds[i], swingVals[i]) } catch (_: Throwable) {}
             }
         }
     }

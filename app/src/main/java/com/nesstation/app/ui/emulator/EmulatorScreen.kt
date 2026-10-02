@@ -414,10 +414,9 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
         )
         // NGC/WII（Ishiiruka）— GC 手柄 + Wii Remote 双布局（实体手柄按键双份映射：
         // NGC 模式下 BUTTON_A→GC A；Wii 模式下同一物理键→Wii A，引擎按模式路由）
-        // ★★ Wii 倾斜体感默认键位（本轮，需求：“左右倾斜分别是L2R2，L2是
-        //   向左倾斜，R2向右倾斜；前后可以用按钮L3，R3作为后期自定义”）：
-        //   实体手柄 L2=左倾 / R2=右倾 / L3(左摇杆按下)=前倾 / R3(右摇杆
-        //   按下)=后倾。双节棍 C/Z 改绑 BUTTON_C/Z（旧默认占用 L2/R2 与
+        // ★★ Wii 倾斜/晃动体感默认键位：
+        //   实体手柄 L2=左倾 / R2=右倾 / L3(左摇杆按下)=前晃 / R3(右摇杆
+        //   按下)=后晃（用户需求原话："左右倾斜"+"前后晃动（不是倾斜）"）。双节棍 C/Z 改绑 BUTTON_C/Z（旧默认占用 L2/R2 与
         //   倾斜冲突；可在按键映射页自定义换回）。
         GamePlatform.NGCWII -> listOf(
             KeyActionInternal("ngc_up", KeyEvent.KEYCODE_DPAD_UP),
@@ -1442,14 +1441,30 @@ fun EmulatorScreen(
         return
     }
 
+    // ★★ 3DS 双核心选择（Azahar / Citra MMJ，本轮新增，仿 NDS 模式）★★
+    //   · "azahar"    → AzaharEngine（默认：全功能，联机/即时存档/驱动管理）
+    //   · "citra_mmj" → CitraMmjEngine（高性能老核心，MMJ 专属全设置）
+    // 联机对战入口固定 Azahar（MMJ 为推模型核心，无 frameHook）。
+    var n3dsCoreChoice by remember { mutableStateOf<String?>(null) }
+    if (platform == GamePlatform.N3DS && netplayController == null && n3dsCoreChoice == null) {
+        N3dsCorePickerDialog(
+            gameTitle = game.title,
+            onSelect = { n3dsCoreChoice = it },
+            onCancel = onExit
+        )
+        return
+    }
+
     // DC (Dreamcast / NAOMI) —— libretro Flycast 核心（与 PSX 等核心同一
     // dlopen 模式，进程内引擎 DcEngine，经标准 EmulatorScreen 全链路运行）。
     // 历史注：此前的 Flycast 独立核心在此处提前 return 到
     // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
 
-    val engine = remember(ndsCoreChoice) {
+    val engine = remember(ndsCoreChoice, n3dsCoreChoice) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
             com.nesstation.app.core.engine.DraSticEngine.get()
+        } else if (platform == GamePlatform.N3DS && n3dsCoreChoice == "citra_mmj") {
+            com.nesstation.app.core.engine.CitraMmjEngine.get()
         } else {
             EmulatorEngine.forPlatform(game.platform)
         }
@@ -1941,6 +1956,56 @@ fun EmulatorScreen(
                    padLayout.dcFrameLimit,
                    // 3DS / Azahar options — 改动即时写 config.ini + reloadSettings
                    padLayout.azGraphicsApi, padLayout.azResolution,
+                   // ★ Citra MMJ 专属设置（3DS 双核心之 MMJ 引擎）——
+                   //   改动即时经 setConfig* 下发。
+                   padLayout.mmjResolution,
+                   padLayout.mmjIsNew3ds,
+                   padLayout.mmjUseCpuJit,
+                   padLayout.mmjRegion,
+                   padLayout.mmjUseHwShader,
+                   padLayout.mmjUseShaderJit,
+                   padLayout.mmjAsyncShaderCompile,
+                   padLayout.mmjShaderType,
+                   padLayout.mmjHwGsMode,
+                   padLayout.mmjAccurateMulType,
+                   padLayout.mmjShadowRendering,
+                   padLayout.mmjForceTextureFilter,
+                   padLayout.mmjMagFilter,
+                   padLayout.mmjMinFilter,
+                   padLayout.mmjCustomTextures,
+                   padLayout.mmjPpShaderName,
+                   padLayout.mmjScreenPresentationMode,
+                   padLayout.mmjUseCompatibleMode,
+                   padLayout.mmjUseFmvHack,
+                   padLayout.mmjSkipCpuWrite,
+                   padLayout.mmjSkipSlowDraw,
+                   padLayout.mmjSkipTextureCopy,
+                   padLayout.mmjUseFenceSync,
+                   padLayout.mmjUsePresentThread,
+                   padLayout.mmjUseFrameLimit,
+                   padLayout.mmjFrameLimit,
+                   padLayout.mmjCpuUsageLimit,
+                   padLayout.mmjFactor3d,
+                   padLayout.mmjEnableDspLle,
+                   padLayout.mmjDspLleMultithread,
+                   padLayout.mmjAudioVolume,
+                   padLayout.mmjAudioStretching,
+                   padLayout.mmjAudioOutputType,
+                   padLayout.mmjAudioInputType,
+                   padLayout.mmjMicVolume,
+                   padLayout.mmjSharedFontType,
+                   padLayout.mmjUseVirtualSd,
+                   padLayout.mmjUseGameConfig,
+                   padLayout.mmjCameraType,
+                   padLayout.mmjLayoutOption,
+                   padLayout.mmjLandscapeLayoutOption,
+                   padLayout.mmjLandscapeSwapScreen,
+                   padLayout.mmjPortraitSwapScreen,
+                   padLayout.mmjLandscapeCustomLayout,
+                   padLayout.mmjOverlayScale,
+                   padLayout.mmjOverlayAlpha,
+                   padLayout.mmjOverlayHide,
+                   padLayout.mmjJoystickRange,
                    padLayout.azUseHwShader, padLayout.azUseShaderJit,
                    padLayout.azUseVsync, padLayout.azUseDiskShaderCache,
                    padLayout.azAsyncPresentation, padLayout.azAsyncShaderCompilation,
@@ -3520,7 +3585,8 @@ fun EmulatorScreen(
                             if (ok) {
                                 Toast.makeText(context, "已快速存档 [槽位 $slot]", Toast.LENGTH_SHORT).show()
                             } else {
-                                Toast.makeText(context, "存档失败：核心未能生成即时存档", Toast.LENGTH_SHORT).show()
+                                val reason = engine.lastError().takeIf { it.isNotBlank() } ?: "核心未能生成即时存档"
+                                Toast.makeText(context, "存档失败：$reason", Toast.LENGTH_LONG).show()
                             }
                         } catch (e: Exception) {
                             Toast.makeText(context, "存档失败: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -3625,7 +3691,23 @@ fun EmulatorScreen(
                     onTogglePause = { running = !running },
                     onToggleFastForward = {
                         if (fastForwardSpeed > 0) fastForwardSpeed = 0
-                        else fastForwardSpeed = lastNonZeroFFSpeed
+                        else {
+                            fastForwardSpeed = lastNonZeroFFSpeed
+                            // ★★ ngcwii（Ishiiruka）加速按钮无效修复（诚实反馈）：
+                            //   该核心无运行时变速 API（EmulationSpeed 是启动期
+                            //   键），配置已写入但需重进游戏生效 —— 给用户
+                            //   明确提示，不再静默无效。
+                            val ffEngine = engine
+                            if (platform == GamePlatform.NGCWII &&
+                                (ffEngine as? com.nesstation.app.core.engine.IshirukaEngine)
+                                    ?.supportsRuntimeFastForward() == false) {
+                                Toast.makeText(
+                                    context,
+                                    "ngcwii核心不支持运行中变速：已写入不限速配置，重新进入游戏后生效",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                     },
                     onCycleFFSpeed = { showFFSpeedPicker = true },
                     onScreenshot = {
@@ -3885,6 +3967,7 @@ fun EmulatorScreen(
             SettingsPanel(
                 padLayout = padLayout,
                 platform = platform,
+                engine = engine,
                 onLayoutChange = { newLayout ->
                     padLayout = newLayout
                     applyCoreOptions(engine, newLayout, platform, n3dsSurfaceSize = surfaceSize)
@@ -4573,6 +4656,140 @@ private fun applyCoreOptions(
     }
 }
 
+
+/**
+ * ★ Azahar（3DS）核心选项下发 —— 从 applyCoreOptionsInner 的 N3DS 分支
+ * 抽出（本轮 3DS 双核心改造：MMJ 引擎时走 MMJ 键，Azahar 引擎时走本函数）。
+ * 复合键 "段/键" 直写用户目录 config/config.ini。
+ */
+private fun applyAzaharCoreOptions(
+    engine: EmulatorEngine,
+    layout: PadLayout,
+    n3dsSurfaceSize: androidx.compose.ui.unit.IntSize
+) {
+            val b = { v: String -> if (v == "enabled") "true" else "false" }
+            // ★★★ VK 设备能力校验（"3ds的vk渲染失效……甚至游戏闪退"修复）★★★
+            //   渲染器在 run() 启动时按 graphics_api 分派 Vulkan/OpenGL 窗口；
+            //   设备无 Vulkan 硬件时 adrenotools 初始化失败 → VK 路径
+            //   vkCreateAndroidSurfaceKHR CHECK 失败 → SIGABRT 闪退
+            //   （Java try/catch 拦不住 native abort）。这里前置探测系统
+            //   feature，不支持 VK 的设备强制回落 OpenGL（graphics_api=1）。
+            val hasVulkan = try {
+                com.nesstation.app.NesApp.get()?.packageManager
+                    ?.hasSystemFeature(android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
+                    ?: true
+            } catch (_: Throwable) { true }
+            // ★★ adrenotools 钩子链检查（"azahar 核心选 VK 即闪退无报错"
+            //   根治修复的运行时防御）：libazahar.so 内嵌 adrenotools，VK
+            //   后端初始化时无论是否安装自定义驱动都会从 nativeLibraryDir
+            //   dlopen libhook_impl.so / libmain_hook.so —— 缺失即
+            //   "Failed to load Vulkan driver library" → C++ 异常跨 JNI →
+            //   std::terminate → SIGABRT（Java 拦不住，表现为"无报错闪退"）。
+            //   钩子库已随本轮从 AzaharPlus APK 补入 jniLibs；此处运行时
+            //   再探一次，异常构建（用户手动替换 so）下自动回落 OpenGL。
+            val hookLibsOk = try {
+                val nativeDir = com.nesstation.app.NesApp.get()?.applicationInfo?.nativeLibraryDir
+                nativeDir == null || (
+                    java.io.File(nativeDir, "libhook_impl.so").exists() &&
+                    java.io.File(nativeDir, "libmain_hook.so").exists())
+            } catch (_: Throwable) { true }
+            val api = when (layout.azGraphicsApi) {
+                "software" -> "0"
+                "vulkan" -> if (hasVulkan && hookLibsOk) "2" else {
+                    android.util.Log.w("EmulatorScreen", "VK 回落 OpenGL: hasVulkan=$hasVulkan hookLibsOk=$hookLibsOk")
+                    "1"
+                }
+                else -> "1"
+            }
+            engine.setCoreOption("Renderer/graphics_api", api)
+            engine.setCoreOption("Renderer/use_gles", "true")
+            // ★ 取值即核心语义：0=自动(适配窗口) / 1=1x 原生 / 2..5=倍数
+            //   （旧实现 UI 用 0..4 表示 1x..5x，全部错位一档）。
+            engine.setCoreOption("Renderer/resolution_factor", layout.azResolution)
+            engine.setCoreOption("Renderer/use_hw_shader", b(layout.azUseHwShader))
+            engine.setCoreOption("Renderer/use_shader_jit", b(layout.azUseShaderJit))
+            engine.setCoreOption("Renderer/use_vsync", b(layout.azUseVsync))
+            engine.setCoreOption("Renderer/use_disk_shader_cache", b(layout.azUseDiskShaderCache))
+            engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
+            engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
+            engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
+            // ★★★ 全局滤镜 xbr/hqx 生效（3DS 分支）★★：
+            //   直绘核心无前端后处理链路（setVideoFilter no-op），xbr/hqx
+            //   类全局滤镜通过核心自带的 GPU 纹理滤波器落地：
+            //     texture_filter 4 = xBRZ（与 XBR 同族的边缘导向放大）。
+            //   全局选了放大型滤镜时优先于平台专属设置，退出后恢复用户选择。
+            engine.setCoreOption(
+                "Renderer/texture_filter",
+                if (isGlobalUpscaleFilter(layout.videoFilter)) "4" else layout.azTextureFilter
+            )
+            engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
+            engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
+            engine.setCoreOption("Renderer/use_frame_limit", "true")
+            engine.setCoreOption("Renderer/frame_limit", layout.azFrameLimit)
+            engine.setCoreOption("Renderer/render_3d", layout.azRender3d)
+            engine.setCoreOption("Renderer/factor_3d", layout.azFactor3d)
+            // 自定义纹理 / 预加载：原生读 [Utility] 段（jni/config.cpp
+            // ReadSetting("Utility", custom_textures/preload_textures)），
+            // 旧实现误写 Renderer/ 段导致设置永远不生效。
+            engine.setCoreOption("Utility/custom_textures", b(layout.azCustomTextures))
+            engine.setCoreOption("Utility/preload_textures", b(layout.azPreloadTextures))
+            // ★★ 3DS 双屏独立自定义布局（参考 NDS 双屏实现）★★
+            //   videoScale=="custom"（前端双屏编辑器）或 azLayoutOption=="5"
+            //   （核心设置里选"自定义"）都进入核心 CustomLayout（layout_option=5），
+            //   上/下屏矩形（像素，相对全屏 Surface）写 [Layout] 段 custom_top_*/
+            //   custom_bottom_*；竖屏走 portrait_layout_option=1 + custom_portrait_*。
+            //   3DS 自定义时 GameSurfaceView 铺满全屏（见 effectiveVideoScale），
+            //   核心直接按这些像素矩形排布两屏 —— 上/下屏可完全分开摆放。
+            val n3dsCustom = layout.videoScale == "custom" || layout.azLayoutOption == "5"
+            if (n3dsCustom) {
+                engine.setCoreOption("Layout/layout_option", "5")
+                engine.setCoreOption("Layout/portrait_layout_option", "1")
+                // 像素矩形（Surface 全屏尺寸 × 归一化矩形；surfaceSize 未知时
+                // 用 0 —— 编辑器/重算时会带真实尺寸重写）
+                val sw = n3dsSurfaceSize.width
+                val sh = n3dsSurfaceSize.height
+                fun px(v: Float, max: Int): String =
+                    (if (max > 0) (v * max).toInt().coerceIn(0, 65535) else 0).toString()
+                engine.setCoreOption("Layout/custom_top_x", px(layout.n3dsTopLayoutLeft, sw))
+                engine.setCoreOption("Layout/custom_top_y", px(layout.n3dsTopLayoutTop, sh))
+                engine.setCoreOption("Layout/custom_top_width", px((layout.n3dsTopLayoutRight - layout.n3dsTopLayoutLeft).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_top_height", px((layout.n3dsTopLayoutBottom - layout.n3dsTopLayoutTop).coerceAtLeast(0.01f), sh))
+                engine.setCoreOption("Layout/custom_bottom_x", px(layout.n3dsBottomLayoutLeft, sw))
+                engine.setCoreOption("Layout/custom_bottom_y", px(layout.n3dsBottomLayoutTop, sh))
+                engine.setCoreOption("Layout/custom_bottom_width", px((layout.n3dsBottomLayoutRight - layout.n3dsBottomLayoutLeft).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_bottom_height", px((layout.n3dsBottomLayoutBottom - layout.n3dsBottomLayoutTop).coerceAtLeast(0.01f), sh))
+                engine.setCoreOption("Layout/custom_portrait_top_x", px(layout.n3dsTopLayoutLeftP, sw))
+                engine.setCoreOption("Layout/custom_portrait_top_y", px(layout.n3dsTopLayoutTopP, sh))
+                engine.setCoreOption("Layout/custom_portrait_top_width", px((layout.n3dsTopLayoutRightP - layout.n3dsTopLayoutLeftP).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_portrait_top_height", px((layout.n3dsTopLayoutBottomP - layout.n3dsTopLayoutTopP).coerceAtLeast(0.01f), sh))
+                engine.setCoreOption("Layout/custom_portrait_bottom_x", px(layout.n3dsBottomLayoutLeftP, sw))
+                engine.setCoreOption("Layout/custom_portrait_bottom_y", px(layout.n3dsBottomLayoutTopP, sh))
+                engine.setCoreOption("Layout/custom_portrait_bottom_width", px((layout.n3dsBottomLayoutRightP - layout.n3dsBottomLayoutLeftP).coerceAtLeast(0.01f), sw))
+                engine.setCoreOption("Layout/custom_portrait_bottom_height", px((layout.n3dsBottomLayoutBottomP - layout.n3dsBottomLayoutTopP).coerceAtLeast(0.01f), sh))
+            } else {
+                engine.setCoreOption("Layout/layout_option", layout.azLayoutOption)
+                engine.setCoreOption("Layout/portrait_layout_option", "0")
+            }
+            engine.setCoreOption("Layout/screen_gap", layout.azScreenGap)
+            engine.setCoreOption("Layout/large_screen_proportion", layout.azLargeScreenProportion)
+            // 上/下屏交换：与上游 swapScreens() 相同语义（配置 + 热更）
+            engine.setCoreOption("Layout/swap_screen", b(layout.azSwapScreens))
+            engine.setCoreOption("Core/cpu_clock_percentage", layout.azCpuClock)
+            engine.setCoreOption("Core/use_cpu_jit", b(layout.azUseCpuJit))
+            engine.setCoreOption("System/is_new_3ds", b(layout.azIsNew3ds))
+            // ★ LLE 系统小程序（存档卡死修复）：Azahar 默认 true —— 无真实
+            //   NAND 小程序时游戏触发 applet（存档/错误框/软键盘）会卡死。
+            //   显式下发用户设置（默认 disabled 走 HLE 小程序）。
+            engine.setCoreOption("System/lle_applets", b(layout.azLleApplets))
+            engine.setCoreOption("System/region_value", layout.azRegion)
+            engine.setCoreOption("Audio/audio_emulation", layout.azAudioEmulation)
+            // 原生侧 volume 为 0..1 浮点（GetReal）
+            val vol = (layout.azVolume.toIntOrNull() ?: 100).coerceIn(0, 100)
+            engine.setCoreOption("Audio/volume", (vol / 100.0).toString())
+            engine.setCoreOption("Audio/enable_audio_stretching", b(layout.azAudioStretching))
+            engine.setCoreOption("Audio/enable_realtime_audio", b(layout.azRealtimeAudio))
+}
+
 private fun applyCoreOptionsInner(
     engine: EmulatorEngine,
     layout: PadLayout,
@@ -4580,6 +4797,65 @@ private fun applyCoreOptionsInner(
     n3dsSurfaceSize: androidx.compose.ui.unit.IntSize
 ) {
     when (platform) {
+        // ★★ 3DS（Citra MMJ）—— MMJ 配置键直通（本轮新增）：
+        //   引擎为 CitraMmjEngine 时，MMJ 专属设置字段（mmj*）逐键下发，
+        //   键名 = libmain.so 配置系统真实键（strings 提取）。
+        //   注意：本分支必须在 Azahar 分支之前判定（两者同为 N3DS 平台）。
+        GamePlatform.N3DS -> {
+            if (engine is com.nesstation.app.core.engine.CitraMmjEngine) {
+                engine.setCoreOption("resolution_factor", layout.mmjResolution)
+                engine.setCoreOption("is_new_3ds", if (layout.mmjIsNew3ds == "enabled") "true" else "false")
+                engine.setCoreOption("use_cpu_jit", if (layout.mmjUseCpuJit == "enabled") "true" else "false")
+                engine.setCoreOption("region_value", layout.mmjRegion)
+                engine.setCoreOption("use_hw_shader", if (layout.mmjUseHwShader == "enabled") "true" else "false")
+                engine.setCoreOption("use_shader_jit", if (layout.mmjUseShaderJit == "enabled") "true" else "false")
+                engine.setCoreOption("async_shader_compile", if (layout.mmjAsyncShaderCompile == "enabled") "true" else "false")
+                engine.setCoreOption("shader_type", layout.mmjShaderType)
+                engine.setCoreOption("hw_gs_mode", layout.mmjHwGsMode)
+                engine.setCoreOption("accurate_mul_type", layout.mmjAccurateMulType)
+                engine.setCoreOption("shadow_rendering", if (layout.mmjShadowRendering == "enabled") "true" else "false")
+                engine.setCoreOption("force_texture_filter", if (layout.mmjForceTextureFilter == "enabled") "true" else "false")
+                engine.setCoreOption("mag_filter", layout.mmjMagFilter)
+                engine.setCoreOption("min_filter", layout.mmjMinFilter)
+                engine.setCoreOption("custom_textures", if (layout.mmjCustomTextures == "enabled") "true" else "false")
+                engine.setCoreOption("pp_shader_name", layout.mmjPpShaderName)
+                engine.setCoreOption("screen_presentation_mode", layout.mmjScreenPresentationMode)
+                engine.setCoreOption("use_compatible_mode", if (layout.mmjUseCompatibleMode == "enabled") "true" else "false")
+                engine.setCoreOption("use_fmv_hack", if (layout.mmjUseFmvHack == "enabled") "true" else "false")
+                engine.setCoreOption("skip_cpu_write", if (layout.mmjSkipCpuWrite == "enabled") "true" else "false")
+                engine.setCoreOption("skip_slow_draw", if (layout.mmjSkipSlowDraw == "enabled") "true" else "false")
+                engine.setCoreOption("skip_texture_copy", if (layout.mmjSkipTextureCopy == "enabled") "true" else "false")
+                engine.setCoreOption("use_fence_sync", if (layout.mmjUseFenceSync == "enabled") "true" else "false")
+                engine.setCoreOption("use_present_thread", if (layout.mmjUsePresentThread == "enabled") "true" else "false")
+                engine.setCoreOption("use_frame_limit", if (layout.mmjUseFrameLimit == "enabled") "true" else "false")
+                engine.setCoreOption("frame_limit", layout.mmjFrameLimit)
+                engine.setCoreOption("cpu_usage_limit", layout.mmjCpuUsageLimit)
+                engine.setCoreOption("factor_3d", layout.mmjFactor3d)
+                engine.setCoreOption("enable_dsp_lle", if (layout.mmjEnableDspLle == "enabled") "true" else "false")
+                engine.setCoreOption("dsp_lle_multithread", if (layout.mmjDspLleMultithread == "enabled") "true" else "false")
+                engine.setCoreOption("audio_volume", layout.mmjAudioVolume)
+                engine.setCoreOption("enable_audio_stretching", if (layout.mmjAudioStretching == "enabled") "true" else "false")
+                engine.setCoreOption("audio_output_type", layout.mmjAudioOutputType)
+                engine.setCoreOption("audio_input_type", layout.mmjAudioInputType)
+                engine.setCoreOption("mic_volume", layout.mmjMicVolume)
+                engine.setCoreOption("shared_font_type", layout.mmjSharedFontType)
+                engine.setCoreOption("use_virtual_sd", if (layout.mmjUseVirtualSd == "enabled") "true" else "false")
+                engine.setCoreOption("use_game_config", if (layout.mmjUseGameConfig == "enabled") "true" else "false")
+                engine.setCoreOption("camera_type", layout.mmjCameraType)
+                engine.setCoreOption("layout_option", layout.mmjLayoutOption)
+                engine.setCoreOption("landscape_layout_option", layout.mmjLandscapeLayoutOption)
+                engine.setCoreOption("landscape_swap_screen", if (layout.mmjLandscapeSwapScreen == "enabled") "true" else "false")
+                engine.setCoreOption("portrait_swap_screen", if (layout.mmjPortraitSwapScreen == "enabled") "true" else "false")
+                engine.setCoreOption("landscape_custom_layout", if (layout.mmjLandscapeCustomLayout == "enabled") "true" else "false")
+                engine.setCoreOption("input_overlay_scale", layout.mmjOverlayScale)
+                engine.setCoreOption("input_overlay_alpha", layout.mmjOverlayAlpha)
+                engine.setCoreOption("input_overlay_hide", if (layout.mmjOverlayHide == "enabled") "true" else "false")
+                engine.setCoreOption("input_joystick_range", layout.mmjJoystickRange)
+                return
+            }
+            // Azahar 分支继续（见下方）
+            applyAzaharCoreOptions(engine, layout, n3dsSurfaceSize)
+        }
         GamePlatform.NES -> {
             engine.setCoreOption("fceumm_ntsc_filter", layout.ntscFilter)
             engine.setCoreOption("fceumm_palette", layout.palette)
@@ -5009,120 +5285,6 @@ private fun applyCoreOptionsInner(
             // 能力，非 reicast_* 核心选项。修复"默认 60 帧下部分游戏过快"。
             (engine as? com.nesstation.app.core.engine.DcCoreEngine)
                 ?.setFrameLimit(layout.dcFrameLimit.toIntOrNull() ?: 0)
-        }
-        // 3DS（Azahar）—— "段/键" 复合键直写用户目录 config/config.ini，
-        // enabled/disabled 转为核心布尔 true/false，数字枚举原样透传。
-        // ★★ 全键审计（本轮）：逐键对照 libazahar.so 内嵌默认 ini +
-        //   Azahar 2125.1.2 src/android jni/config.cpp 的 ReadSetting 读取集：
-        //   移除死键（use_skip_duplicate_frames / use_fastinterp —— 上游
-        //   根本没有这两个设置，写了也会被忽略）；补上 lle_applets（存档
-        //   卡死修复）；补上双屏自定义布局（custom_top_* / custom_bottom_*，
-        //   与 NDS 双屏分离布局同体验，核心原生 CustomLayout 生效）。
-        GamePlatform.N3DS -> {
-            val b = { v: String -> if (v == "enabled") "true" else "false" }
-            // ★★★ VK 设备能力校验（"3ds的vk渲染失效……甚至游戏闪退"修复）★★★
-            //   渲染器在 run() 启动时按 graphics_api 分派 Vulkan/OpenGL 窗口；
-            //   设备无 Vulkan 硬件时 adrenotools 初始化失败 → VK 路径
-            //   vkCreateAndroidSurfaceKHR CHECK 失败 → SIGABRT 闪退
-            //   （Java try/catch 拦不住 native abort）。这里前置探测系统
-            //   feature，不支持 VK 的设备强制回落 OpenGL（graphics_api=1）。
-            val hasVulkan = try {
-                com.nesstation.app.NesApp.get()?.packageManager
-                    ?.hasSystemFeature(android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
-                    ?: true
-            } catch (_: Throwable) { true }
-            val api = when (layout.azGraphicsApi) {
-                "software" -> "0"
-                "vulkan" -> if (hasVulkan) "2" else "1"
-                else -> "1"
-            }
-            engine.setCoreOption("Renderer/graphics_api", api)
-            engine.setCoreOption("Renderer/use_gles", "true")
-            // ★ 取值即核心语义：0=自动(适配窗口) / 1=1x 原生 / 2..5=倍数
-            //   （旧实现 UI 用 0..4 表示 1x..5x，全部错位一档）。
-            engine.setCoreOption("Renderer/resolution_factor", layout.azResolution)
-            engine.setCoreOption("Renderer/use_hw_shader", b(layout.azUseHwShader))
-            engine.setCoreOption("Renderer/use_shader_jit", b(layout.azUseShaderJit))
-            engine.setCoreOption("Renderer/use_vsync", b(layout.azUseVsync))
-            engine.setCoreOption("Renderer/use_disk_shader_cache", b(layout.azUseDiskShaderCache))
-            engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
-            engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
-            engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
-            // ★★★ 全局滤镜 xbr/hqx 生效（3DS 分支）★★：
-            //   直绘核心无前端后处理链路（setVideoFilter no-op），xbr/hqx
-            //   类全局滤镜通过核心自带的 GPU 纹理滤波器落地：
-            //     texture_filter 4 = xBRZ（与 XBR 同族的边缘导向放大）。
-            //   全局选了放大型滤镜时优先于平台专属设置，退出后恢复用户选择。
-            engine.setCoreOption(
-                "Renderer/texture_filter",
-                if (isGlobalUpscaleFilter(layout.videoFilter)) "4" else layout.azTextureFilter
-            )
-            engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
-            engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
-            engine.setCoreOption("Renderer/use_frame_limit", "true")
-            engine.setCoreOption("Renderer/frame_limit", layout.azFrameLimit)
-            engine.setCoreOption("Renderer/render_3d", layout.azRender3d)
-            engine.setCoreOption("Renderer/factor_3d", layout.azFactor3d)
-            // 自定义纹理 / 预加载：原生读 [Utility] 段（jni/config.cpp
-            // ReadSetting("Utility", custom_textures/preload_textures)），
-            // 旧实现误写 Renderer/ 段导致设置永远不生效。
-            engine.setCoreOption("Utility/custom_textures", b(layout.azCustomTextures))
-            engine.setCoreOption("Utility/preload_textures", b(layout.azPreloadTextures))
-            // ★★ 3DS 双屏独立自定义布局（参考 NDS 双屏实现）★★
-            //   videoScale=="custom"（前端双屏编辑器）或 azLayoutOption=="5"
-            //   （核心设置里选"自定义"）都进入核心 CustomLayout（layout_option=5），
-            //   上/下屏矩形（像素，相对全屏 Surface）写 [Layout] 段 custom_top_*/
-            //   custom_bottom_*；竖屏走 portrait_layout_option=1 + custom_portrait_*。
-            //   3DS 自定义时 GameSurfaceView 铺满全屏（见 effectiveVideoScale），
-            //   核心直接按这些像素矩形排布两屏 —— 上/下屏可完全分开摆放。
-            val n3dsCustom = layout.videoScale == "custom" || layout.azLayoutOption == "5"
-            if (n3dsCustom) {
-                engine.setCoreOption("Layout/layout_option", "5")
-                engine.setCoreOption("Layout/portrait_layout_option", "1")
-                // 像素矩形（Surface 全屏尺寸 × 归一化矩形；surfaceSize 未知时
-                // 用 0 —— 编辑器/重算时会带真实尺寸重写）
-                val sw = n3dsSurfaceSize.width
-                val sh = n3dsSurfaceSize.height
-                fun px(v: Float, max: Int): String =
-                    (if (max > 0) (v * max).toInt().coerceIn(0, 65535) else 0).toString()
-                engine.setCoreOption("Layout/custom_top_x", px(layout.n3dsTopLayoutLeft, sw))
-                engine.setCoreOption("Layout/custom_top_y", px(layout.n3dsTopLayoutTop, sh))
-                engine.setCoreOption("Layout/custom_top_width", px((layout.n3dsTopLayoutRight - layout.n3dsTopLayoutLeft).coerceAtLeast(0.01f), sw))
-                engine.setCoreOption("Layout/custom_top_height", px((layout.n3dsTopLayoutBottom - layout.n3dsTopLayoutTop).coerceAtLeast(0.01f), sh))
-                engine.setCoreOption("Layout/custom_bottom_x", px(layout.n3dsBottomLayoutLeft, sw))
-                engine.setCoreOption("Layout/custom_bottom_y", px(layout.n3dsBottomLayoutTop, sh))
-                engine.setCoreOption("Layout/custom_bottom_width", px((layout.n3dsBottomLayoutRight - layout.n3dsBottomLayoutLeft).coerceAtLeast(0.01f), sw))
-                engine.setCoreOption("Layout/custom_bottom_height", px((layout.n3dsBottomLayoutBottom - layout.n3dsBottomLayoutTop).coerceAtLeast(0.01f), sh))
-                engine.setCoreOption("Layout/custom_portrait_top_x", px(layout.n3dsTopLayoutLeftP, sw))
-                engine.setCoreOption("Layout/custom_portrait_top_y", px(layout.n3dsTopLayoutTopP, sh))
-                engine.setCoreOption("Layout/custom_portrait_top_width", px((layout.n3dsTopLayoutRightP - layout.n3dsTopLayoutLeftP).coerceAtLeast(0.01f), sw))
-                engine.setCoreOption("Layout/custom_portrait_top_height", px((layout.n3dsTopLayoutBottomP - layout.n3dsTopLayoutTopP).coerceAtLeast(0.01f), sh))
-                engine.setCoreOption("Layout/custom_portrait_bottom_x", px(layout.n3dsBottomLayoutLeftP, sw))
-                engine.setCoreOption("Layout/custom_portrait_bottom_y", px(layout.n3dsBottomLayoutTopP, sh))
-                engine.setCoreOption("Layout/custom_portrait_bottom_width", px((layout.n3dsBottomLayoutRightP - layout.n3dsBottomLayoutLeftP).coerceAtLeast(0.01f), sw))
-                engine.setCoreOption("Layout/custom_portrait_bottom_height", px((layout.n3dsBottomLayoutBottomP - layout.n3dsBottomLayoutTopP).coerceAtLeast(0.01f), sh))
-            } else {
-                engine.setCoreOption("Layout/layout_option", layout.azLayoutOption)
-                engine.setCoreOption("Layout/portrait_layout_option", "0")
-            }
-            engine.setCoreOption("Layout/screen_gap", layout.azScreenGap)
-            engine.setCoreOption("Layout/large_screen_proportion", layout.azLargeScreenProportion)
-            // 上/下屏交换：与上游 swapScreens() 相同语义（配置 + 热更）
-            engine.setCoreOption("Layout/swap_screen", b(layout.azSwapScreens))
-            engine.setCoreOption("Core/cpu_clock_percentage", layout.azCpuClock)
-            engine.setCoreOption("Core/use_cpu_jit", b(layout.azUseCpuJit))
-            engine.setCoreOption("System/is_new_3ds", b(layout.azIsNew3ds))
-            // ★ LLE 系统小程序（存档卡死修复）：Azahar 默认 true —— 无真实
-            //   NAND 小程序时游戏触发 applet（存档/错误框/软键盘）会卡死。
-            //   显式下发用户设置（默认 disabled 走 HLE 小程序）。
-            engine.setCoreOption("System/lle_applets", b(layout.azLleApplets))
-            engine.setCoreOption("System/region_value", layout.azRegion)
-            engine.setCoreOption("Audio/audio_emulation", layout.azAudioEmulation)
-            // 原生侧 volume 为 0..1 浮点（GetReal）
-            val vol = (layout.azVolume.toIntOrNull() ?: 100).coerceIn(0, 100)
-            engine.setCoreOption("Audio/volume", (vol / 100.0).toString())
-            engine.setCoreOption("Audio/enable_audio_stretching", b(layout.azAudioStretching))
-            engine.setCoreOption("Audio/enable_realtime_audio", b(layout.azRealtimeAudio))
         }
         // NGC/WII（Ishiiruka）—— SetConfig(file, section, key, value)
         // 直写 Dolphin.ini / GFX.ini（引擎按 "文件/段/键" 复合键路由）。
@@ -7677,7 +7839,7 @@ fun OnScreenController(
             val (r3Img, r3ImgPressed) = rememberThemeButtonImages(overlayTheme, "r3")
             if (showL3Btn) {
                 ActionButtonCanvas(
-                    "前倾", Color(0xFF95A5A6), btnL3, surfaceSize, opacity, visualState and BTN_L3 != 0,
+                    "前晃", Color(0xFF95A5A6), btnL3, surfaceSize, opacity, visualState and BTN_L3 != 0,
                     pressedColor = themePressedButtonColor(overlayTheme, "l3"),
                     image = l3Img,
                     pressedImage = l3ImgPressed
@@ -7685,7 +7847,7 @@ fun OnScreenController(
             }
             if (showR3Btn) {
                 ActionButtonCanvas(
-                    "后倾", Color(0xFF95A5A6), btnR3, surfaceSize, opacity, visualState and BTN_R3 != 0,
+                    "后晃", Color(0xFF95A5A6), btnR3, surfaceSize, opacity, visualState and BTN_R3 != 0,
                     pressedColor = themePressedButtonColor(overlayTheme, "r3"),
                     image = r3Img,
                     pressedImage = r3ImgPressed
@@ -10406,7 +10568,7 @@ private fun PadLayoutEditor(
             }
             // ★ NGC/WII：L3/R3 = 前倾/后倾体感按钮（通用字段，可拖动/调大小）
             if (isNgcWii && showL3Btn) {
-                EditableRoundBtn("前倾", Color(0xFF95A5A6), btnL3, surfaceSize, selectedBtn == BtnType.L3,
+                EditableRoundBtn("前晃", Color(0xFF95A5A6), btnL3, surfaceSize, selectedBtn == BtnType.L3,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
                         val ny = targetY.coerceIn(0f, 1f)
@@ -10416,7 +10578,7 @@ private fun PadLayoutEditor(
                 )
             }
             if (isNgcWii && showR3Btn) {
-                EditableRoundBtn("后倾", Color(0xFF95A5A6), btnR3, surfaceSize, selectedBtn == BtnType.R3,
+                EditableRoundBtn("后晃", Color(0xFF95A5A6), btnR3, surfaceSize, selectedBtn == BtnType.R3,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
                         val ny = targetY.coerceIn(0f, 1f)
@@ -10923,8 +11085,20 @@ private fun PadLayoutEditor(
                         }
                         currentSize = stick.sizeDp; minSize = 80; maxSize = 220; label = "右摇杆大小"
                     }
-                    BtnType.L3 -> { currentSize = ps2BtnL3.sizeDp; minSize = 24; maxSize = 80; label = "L3大小" }
-                    BtnType.R3 -> { currentSize = ps2BtnR3.sizeDp; minSize = 24; maxSize = 80; label = "R3大小" }
+                    // ★★ L3/R3 大小滑杆修复：NGC/WII 平台下倾斜/晃动键读的是
+                    //   通用 btnL3/btnR3 字段（渲染/命中/编辑器预览均用它），
+                    //   而旧实现读写 PS2 专属 ps2BtnL3/ps2BtnR3 —— 滑杆数值回弹
+                    //   且把 PS2 的坐标一并写进 btnL3（按钮位置漂移）。
+                    BtnType.L3 -> {
+                        currentSize = if (isNgcWii) btnL3.sizeDp else ps2BtnL3.sizeDp
+                        minSize = 24; maxSize = 80
+                        label = if (isNgcWii) "前晃键大小" else "L3大小"
+                    }
+                    BtnType.R3 -> {
+                        currentSize = if (isNgcWii) btnR3.sizeDp else ps2BtnR3.sizeDp
+                        minSize = 24; maxSize = 80
+                        label = if (isNgcWii) "后晃键大小" else "R3大小"
+                    }
                     // 3DS / NGC-WII 专属键尺寸
                     BtnType.ZL -> { currentSize = n3dsBtnZL.sizeDp; minSize = 30; maxSize = 100; label = "ZL大小" }
                     BtnType.ZR -> { currentSize = n3dsBtnZR.sizeDp; minSize = 30; maxSize = 100; label = "ZR大小" }
@@ -10970,6 +11144,9 @@ private fun PadLayoutEditor(
                             BtnType.Y -> btnY
                             BtnType.L2 -> btnL2
                             BtnType.R2 -> btnR2
+                            // ★★ 同 L3/R3 大小滑杆修复：NGC/WII 平台写通用字段。
+                            BtnType.L3 -> if (isNgcWii) btnL3 else ps2BtnL3
+                            BtnType.R3 -> if (isNgcWii) btnR3 else ps2BtnR3
                             BtnType.LSTICK -> when {
                                 isPs2 -> ps2LStick
                                 is3ds -> n3dsLStick
@@ -11617,6 +11794,8 @@ private fun EditablePillBtn(
 private fun SettingsPanel(
     padLayout: PadLayout,
     platform: GamePlatform = GamePlatform.NES,
+    // ★ 3DS 双核心：当前引擎（N3DS 时区分 Azahar / Citra MMJ 面板）。
+    engine: EmulatorEngine? = null,
     onLayoutChange: (PadLayout) -> Unit,
     onClose: () -> Unit,
     onEnterCustomLayout: () -> Unit = {},
@@ -13447,6 +13626,35 @@ private fun SettingsPanel(
             }
             // 3DS（Azahar）专属设置 —— 与主界面 CoreSettingsPanel 同步
             GamePlatform.N3DS -> {
+                // ★ 3DS 双核心：当前为 Citra MMJ 引擎时，本面板的 Azahar 键
+                //   不适用 —— 提示用户 MMJ 全部设置在主设置页（CoreSettingsPanel
+                //   的 "3DS (Citra MMJ)" 分区），并提供 MMJ 常用快捷项。
+                val mmjEngine = engine as? com.nesstation.app.core.engine.CitraMmjEngine
+                if (mmjEngine != null) {
+                    Text("3DS (Citra MMJ) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                    Spacer(Modifier.size(6.dp))
+                    Text("当前核心：Citra MMJ（高性能老核心）。完整设置（48 项）请前往" +
+                        "主界面 设置 → 核心设置 → 3DS (Citra MMJ)；本核心不支持" +
+                        "即时存档（用游戏内存档）与联机。",
+                        color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
+                    Spacer(Modifier.size(6.dp))
+                    Text("快捷设置", color = Color(0xFF8899AA), fontSize = 11.sp)
+                    DropdownSetting("渲染分辨率",
+                        listOf("1" to "1x (原生, 兼容)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x"),
+                        padLayout.mmjResolution
+                    ) { onLayoutChange(padLayout.copy {mmjResolution = it}) }
+                    DropdownSetting("帧率上限",
+                        listOf("50" to "50%", "60" to "60%", "100" to "100% (默认)", "200" to "200%", "300" to "300%", "400" to "400%"),
+                        padLayout.mmjFrameLimit
+                    ) { onLayoutChange(padLayout.copy {mmjFrameLimit = it}) }
+                    SwitchSetting("硬件着色器", "PICA 着色器经 GPU 生成，性能关键",
+                        padLayout.mmjUseHwShader == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjUseHwShader = if (it) "enabled" else "disabled"}) }
+                    SwitchSetting("跳过慢速绘制", "性能 Hack（个别游戏异常时关闭）",
+                        padLayout.mmjSkipSlowDraw == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjSkipSlowDraw = if (it) "enabled" else "disabled"}) }
+                } else {
                 Text("3DS (Azahar) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 Spacer(Modifier.size(6.dp))
@@ -13549,6 +13757,7 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {azCustomTextures = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("预加载纹理", "启动时预载纹理到显存，减少卡顿", padLayout.azPreloadTextures == "enabled"
                 ) { onLayoutChange(padLayout.copy {azPreloadTextures = if (it) "enabled" else "disabled"}) }
+                } // else（Azahar）分支结束 —— MMJ 引擎时走上方 MMJ 快捷设置
             }
             // NGC/WII（Ishiiruka）专属设置 —— 与主界面 CoreSettingsPanel 同步
             GamePlatform.NGCWII -> {
@@ -13572,8 +13781,22 @@ private fun SettingsPanel(
                     listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式, 方向旋转补偿)", ),
                     padLayout.irWiiOrientation
                 ) { onLayoutChange(padLayout.copy {irWiiOrientation = it}) }
+                // ★★ 手机体感模拟开关（游戏内快捷入口，本轮新增）：
+                //   开启后手机加速度计 → 左右倾斜（Tilt L/R）+ 前后晃动
+                //   （Swing F/B + Tilt F/B），与虚拟按键 L2/R2/L3/R3 叠加。
+                //   写 padLayout.wiiMotionSensor 后，EmulatorScreen 顶层的
+                //   DisposableEffect 会自动重启 WiiMotionSensors（即时生效）。
+                SwitchSetting("手机体感模拟",
+                    "倾斜手机 = 左右倾斜，前后晃动 = Wii 挥动（需加速度计）",
+                    padLayout.wiiMotionSensor
+                ) { onLayoutChange(padLayout.copy { wiiMotionSensor = it }) }
 
                 Text("性能 (Core)", color = Color(0xFF8899AA), fontSize = 11.sp)
+                Text("提示：本核心（Ishiiruka）的大部分图形/性能设置为启动期"
+                     + "读取，修改后需重进游戏生效；控制类设置（模式/扩展手柄/"
+                     + "体感）即时生效。",
+                     color = Color(0xFF667788), fontSize = 10.sp)
+                Spacer(Modifier.size(4.dp))
                 DropdownSetting("CPU 核心",
                     listOf("4" to "JIT ARM64 (推荐)", "1" to "JIT64", "0" to "解释器 (慢)"),
                     padLayout.irCpuCore
@@ -13595,7 +13818,10 @@ private fun SettingsPanel(
 
                 Text("图形 (GFX)", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("渲染后端",
-                    listOf("OGL" to "OpenGL (兼容)", "Vulkan" to "Vulkan (性能)", "SW" to "软件渲染"),
+                    // ★ Vulkan 标签修正：本核心（Dolphin 5.0 时代）安卓
+                    //   Vulkan 后端多数设备上远慢于 OGL，不再标"性能/推荐"；
+                    //   且后端为启动期键 —— 修改后需重进游戏生效。
+                    listOf("OGL" to "OpenGL (推荐)", "Vulkan" to "Vulkan (实验性，多数设备较慢)", "SW" to "软件渲染"),
                     padLayout.irBackend
                 ) { onLayoutChange(padLayout.copy {irBackend = it}) }
                 DropdownSetting("内部分辨率 (EFB)",

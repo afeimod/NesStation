@@ -164,6 +164,11 @@
 # 这些原生引用，不 keep 会在 release 构建被裁剪/混淆，库加载即失败。
 # 整个包 keep。
 -keep class org.citra.citra_emu.** { *; }
+# ★ Citra MMJ（weihuoya 分支）vendored 契约 —— 同上：JNI 符号按
+#   Java_org_citra_emu_NativeLibrary_* 名字解析，原生侧 JNI_OnLoad/
+#   GetStaticMethodID 按字符串查找本包类，混淆/裁剪即断链闪退。
+-keep class org.citra.emu.** { *; }
+-keep class com.dsemu.drastic.** { *; }
 
 # ─── Ishiiruka（NGC/WII）核心 JNI 契约 ────────────────────────────────────
 # libishiiruka.so（= 上游 libmain.so，Ishiruka APK 提取）通过 JNI 符号名

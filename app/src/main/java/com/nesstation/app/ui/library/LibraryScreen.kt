@@ -2296,12 +2296,19 @@ private fun FsdGameCover(
     // 现在图标路径变化 → 缓存键变化 → 重新解码；同时移除旧键防止内存累积。
     val cacheKey = "${game.id}|${game.customIconPath ?: ""}|${game.coverPath ?: ""}"
     val staleKey = "${game.id}|"
-    val bmp = remember(cacheKey) {
+    // ★ 兜底加固（换封面立即刷新）：缓存键追加封面文件的 lastModified ——
+    //   即使将来出现"同路径覆写"的回退（pickCandidate 已改时间戳唯一名），
+    //   内容变化也会令 mtime 变化 → 键变化 → 强制重新解码，杜绝旧图残留。
+    val coverStamp = game.coverPath?.let {
+        try { java.io.File(it).lastModified() } catch (_: Throwable) { 0L }
+    } ?: 0L
+    val fullKey = "$cacheKey|$coverStamp"
+    val bmp = remember(fullKey) {
         // 清掉同一游戏旧图标的残留位图
         cache.snapshot().keys
-            .filter { it.startsWith(staleKey) && it != cacheKey }
+            .filter { it.startsWith(staleKey) && it != fullKey }
             .forEach { cache.remove(it) }
-        cache.get(cacheKey) ?: run {
+        cache.get(fullKey) ?: run {
             var b: android.graphics.Bitmap? = null
             val path = try {
                 com.nesstation.app.core.storage.GameIconExtractor.resolveIconPath(context, game)
@@ -2319,7 +2326,7 @@ private fun FsdGameCover(
                     )
                 }
             }
-            cache.put(cacheKey, b!!)
+            cache.put(fullKey, b!!)
             b!!
         }
     }
@@ -3177,7 +3184,10 @@ private fun CandidateCell(
     onError: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    // ★ 双击防抖修复：旧实现 `val picked by remember { mutableStateOf(false) }`
+    //   只读不写 —— picked 永远是 false，防抖形同虚设，快速连点会并发
+    //   触发多次 pickCandidate。改为 var 可写，点击即置 true。
+    var picked by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     val file = cand.file
     val name = cand.name
     Column(
@@ -3185,6 +3195,7 @@ private fun CandidateCell(
             .clip(RoundedCornerShape(10.dp))
             .clickable {
                 if (!picked) {
+                    picked = true
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
                         val ok = runCatching {
                             com.nesstation.app.core.storage.CoverFetcher

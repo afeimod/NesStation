@@ -765,6 +765,58 @@ class PadLayout {
     var azCustomTextures: String = "disabled"       // enabled | disabled (custom_textures 纹理替换)
     var azPreloadTextures: String = "disabled"      // enabled | disabled (preload_textures)
 
+    // === 3DS (Citra MMJ — weihuoya 分支 20250220) core options ===
+    // 键名 = libmain.so 配置系统真实键（strings 提取）；由 CitraMmjEngine
+    // 经 setConfigInteger/Boolean/String 直写核心配置（getConfig/setConfig JNI）。
+    var mmjResolution: String = "1"          // mmj_resolution (渲染分辨率 1x..5x)
+    var mmjIsNew3ds: String = "enabled"      // mmj_is_new_3ds (New 3DS 模式)
+    var mmjUseCpuJit: String = "enabled"     // mmj_use_cpu_jit (CPU JIT)
+    var mmjRegion: String = "-1"             // mmj_region (主机区域 -1 自动/1 日/2 美/3 欧/4 中/5 韩/6 台)
+    var mmjUseHwShader: String = "enabled"   // mmj_use_hw_shader (硬件着色器)
+    var mmjUseShaderJit: String = "enabled"  // mmj_use_shader_jit (着色器 JIT)
+    var mmjAsyncShaderCompile: String = "enabled" // mmj_async_shader_compile (异步着色器编译)
+    var mmjShaderType: String = "0"          // mmj_shader_type (着色器类型 0 自动/1 GLSL/2 SPIR-V/3 兼容)
+    var mmjHwGsMode: String = "0"            // mmj_hw_gs_mode (几何着色器模式 0 关/1 兼容/2 完整)
+    var mmjAccurateMulType: String = "0"     // mmj_accurate_mul_type (精确乘法 0 精确/1 兼容/2 快速)
+    var mmjShadowRendering: String = "disabled" // mmj_shadow_rendering (阴影渲染（几何着色器）)
+    var mmjForceTextureFilter: String = "disabled" // mmj_force_texture_filter (强制纹理过滤)
+    var mmjMagFilter: String = "1"           // mmj_mag_filter (放大过滤 0 最近邻/1 线性)
+    var mmjMinFilter: String = "1"           // mmj_min_filter (缩小过滤 0 最近邻/1 线性)
+    var mmjCustomTextures: String = "disabled" // mmj_custom_textures (自定义纹理)
+    var mmjPpShaderName: String = "(off)"    // mmj_pp_shader_name (后处理着色器名 (off)/Anime4K/bloom 等)
+    var mmjScreenPresentationMode: String = "0" // mmj_screen_presentation_mode (屏幕呈现模式 0 兼容/1 共享/2 硬件缓冲)
+    var mmjUseCompatibleMode: String = "disabled" // mmj_use_compatible_mode (兼容模式)
+    var mmjUseFmvHack: String = "disabled"   // mmj_use_fmv_hack (FMV 视频播放 Hack)
+    var mmjSkipCpuWrite: String = "disabled" // mmj_skip_cpu_write (跳过 CPU 写（性能 Hack）)
+    var mmjSkipSlowDraw: String = "disabled" // mmj_skip_slow_draw (跳过慢速绘制（性能 Hack）)
+    var mmjSkipTextureCopy: String = "disabled" // mmj_skip_texture_copy (跳过纹理拷贝（性能 Hack）)
+    var mmjUseFenceSync: String = "enabled"  // mmj_use_fence_sync (Fence 同步)
+    var mmjUsePresentThread: String = "enabled" // mmj_use_present_thread (呈现线程)
+    var mmjUseFrameLimit: String = "enabled" // mmj_use_frame_limit (启用帧率限制)
+    var mmjFrameLimit: String = "100"        // mmj_frame_limit (帧率限制 %（100=全速）)
+    var mmjCpuUsageLimit: String = "0"       // mmj_cpu_usage_limit (CPU 占用限制 %（0=不限制）)
+    var mmjFactor3d: String = "0"            // mmj_factor_3d (立体 3D 深度 0..100)
+    var mmjEnableDspLle: String = "disabled" // mmj_enable_dsp_lle (DSP LLE 音频（实验）)
+    var mmjDspLleMultithread: String = "disabled" // mmj_dsp_lle_multithread (DSP LLE 多线程)
+    var mmjAudioVolume: String = "100"       // mmj_audio_volume (音量 0..100)
+    var mmjAudioStretching: String = "enabled" // mmj_audio_stretching (音频拉伸)
+    var mmjAudioOutputType: String = "0"     // mmj_audio_output_type (音频输出 0 自动/1 AudioTrack/2 AAudio/3 兼容)
+    var mmjAudioInputType: String = "0"      // mmj_audio_input_type (音频输入 0 自动/1 静态/2 麦克风)
+    var mmjMicVolume: String = "100"         // mmj_mic_volume (麦克风音量 0..100)
+    var mmjSharedFontType: String = "0"      // mmj_shared_font_type (共享字体 0 标准/1 韩文/2 简中/3 繁中)
+    var mmjUseVirtualSd: String = "enabled"  // mmj_use_virtual_sd (虚拟 SD 卡)
+    var mmjUseGameConfig: String = "enabled" // mmj_use_game_config (按游戏配置（config-games.ini）)
+    var mmjCameraType: String = "0"          // mmj_camera_type (摄像头 0 无/1 静态图片/2 前置/3 后置)
+    var mmjLayoutOption: String = "0"        // mmj_layout_option (屏幕布局 0 默认/1 单屏/2 大屏/3 并排/4 自定义)
+    var mmjLandscapeLayoutOption: String = "0" // mmj_landscape_layout_option (横屏布局 0 默认/1 单屏/2 大屏/3 并排/4 自定义)
+    var mmjLandscapeSwapScreen: String = "disabled" // mmj_landscape_swap_screen (横屏交换上下屏)
+    var mmjPortraitSwapScreen: String = "disabled" // mmj_portrait_swap_screen (竖屏交换上下屏)
+    var mmjLandscapeCustomLayout: String = "disabled" // mmj_landscape_custom_layout (横屏自定义布局)
+    var mmjOverlayScale: String = "100"      // mmj_overlay_scale (按键覆盖层缩放 0..200)
+    var mmjOverlayAlpha: String = "100"      // mmj_overlay_alpha (按键覆盖层透明度 0..100)
+    var mmjOverlayHide: String = "disabled"  // mmj_overlay_hide (隐藏按键覆盖层)
+    var mmjJoystickRange: String = "100"     // mmj_joystick_range (摇杆灵敏度范围)
+
     // === NGC/WII (Ishiiruka — Dolphin 优化分支) core options ===
     // 键名/取值对照 Tinob/Ishiiruka Source/Android SettingsFile.java：
     // 引擎以 SetConfig(file, section, key, value) 热写 Dolphin.ini / GFX.ini。
@@ -1518,6 +1570,55 @@ class PadLayout {
         azRealtimeAudio = another.azRealtimeAudio
         azCustomTextures = another.azCustomTextures
         azPreloadTextures = another.azPreloadTextures
+
+        mmjResolution = another.mmjResolution
+        mmjIsNew3ds = another.mmjIsNew3ds
+        mmjUseCpuJit = another.mmjUseCpuJit
+        mmjRegion = another.mmjRegion
+        mmjUseHwShader = another.mmjUseHwShader
+        mmjUseShaderJit = another.mmjUseShaderJit
+        mmjAsyncShaderCompile = another.mmjAsyncShaderCompile
+        mmjShaderType = another.mmjShaderType
+        mmjHwGsMode = another.mmjHwGsMode
+        mmjAccurateMulType = another.mmjAccurateMulType
+        mmjShadowRendering = another.mmjShadowRendering
+        mmjForceTextureFilter = another.mmjForceTextureFilter
+        mmjMagFilter = another.mmjMagFilter
+        mmjMinFilter = another.mmjMinFilter
+        mmjCustomTextures = another.mmjCustomTextures
+        mmjPpShaderName = another.mmjPpShaderName
+        mmjScreenPresentationMode = another.mmjScreenPresentationMode
+        mmjUseCompatibleMode = another.mmjUseCompatibleMode
+        mmjUseFmvHack = another.mmjUseFmvHack
+        mmjSkipCpuWrite = another.mmjSkipCpuWrite
+        mmjSkipSlowDraw = another.mmjSkipSlowDraw
+        mmjSkipTextureCopy = another.mmjSkipTextureCopy
+        mmjUseFenceSync = another.mmjUseFenceSync
+        mmjUsePresentThread = another.mmjUsePresentThread
+        mmjUseFrameLimit = another.mmjUseFrameLimit
+        mmjFrameLimit = another.mmjFrameLimit
+        mmjCpuUsageLimit = another.mmjCpuUsageLimit
+        mmjFactor3d = another.mmjFactor3d
+        mmjEnableDspLle = another.mmjEnableDspLle
+        mmjDspLleMultithread = another.mmjDspLleMultithread
+        mmjAudioVolume = another.mmjAudioVolume
+        mmjAudioStretching = another.mmjAudioStretching
+        mmjAudioOutputType = another.mmjAudioOutputType
+        mmjAudioInputType = another.mmjAudioInputType
+        mmjMicVolume = another.mmjMicVolume
+        mmjSharedFontType = another.mmjSharedFontType
+        mmjUseVirtualSd = another.mmjUseVirtualSd
+        mmjUseGameConfig = another.mmjUseGameConfig
+        mmjCameraType = another.mmjCameraType
+        mmjLayoutOption = another.mmjLayoutOption
+        mmjLandscapeLayoutOption = another.mmjLandscapeLayoutOption
+        mmjLandscapeSwapScreen = another.mmjLandscapeSwapScreen
+        mmjPortraitSwapScreen = another.mmjPortraitSwapScreen
+        mmjLandscapeCustomLayout = another.mmjLandscapeCustomLayout
+        mmjOverlayScale = another.mmjOverlayScale
+        mmjOverlayAlpha = another.mmjOverlayAlpha
+        mmjOverlayHide = another.mmjOverlayHide
+        mmjJoystickRange = another.mmjJoystickRange
         irControlMode = another.irControlMode
         irWiiExtension = another.irWiiExtension
         irWiiOrientation = another.irWiiOrientation
@@ -2582,6 +2683,55 @@ object PadLayoutStore {
             azUseCpuJit = p.getString("az_use_cpu_jit", "enabled") ?: "enabled"
             azIsNew3ds = p.getString("az_is_new_3ds", "enabled") ?: "enabled"
             azLleApplets = p.getString("az_lle_applets", "disabled") ?: "disabled"
+
+            mmjResolution = p.getString("mmj_resolution", "1") ?: "1"
+            mmjIsNew3ds = p.getString("mmj_is_new_3ds", "enabled") ?: "enabled"
+            mmjUseCpuJit = p.getString("mmj_use_cpu_jit", "enabled") ?: "enabled"
+            mmjRegion = p.getString("mmj_region", "-1") ?: "-1"
+            mmjUseHwShader = p.getString("mmj_use_hw_shader", "enabled") ?: "enabled"
+            mmjUseShaderJit = p.getString("mmj_use_shader_jit", "enabled") ?: "enabled"
+            mmjAsyncShaderCompile = p.getString("mmj_async_shader_compile", "enabled") ?: "enabled"
+            mmjShaderType = p.getString("mmj_shader_type", "0") ?: "0"
+            mmjHwGsMode = p.getString("mmj_hw_gs_mode", "0") ?: "0"
+            mmjAccurateMulType = p.getString("mmj_accurate_mul_type", "0") ?: "0"
+            mmjShadowRendering = p.getString("mmj_shadow_rendering", "disabled") ?: "disabled"
+            mmjForceTextureFilter = p.getString("mmj_force_texture_filter", "disabled") ?: "disabled"
+            mmjMagFilter = p.getString("mmj_mag_filter", "1") ?: "1"
+            mmjMinFilter = p.getString("mmj_min_filter", "1") ?: "1"
+            mmjCustomTextures = p.getString("mmj_custom_textures", "disabled") ?: "disabled"
+            mmjPpShaderName = p.getString("mmj_pp_shader_name", "(off)") ?: "(off)"
+            mmjScreenPresentationMode = p.getString("mmj_screen_presentation_mode", "0") ?: "0"
+            mmjUseCompatibleMode = p.getString("mmj_use_compatible_mode", "disabled") ?: "disabled"
+            mmjUseFmvHack = p.getString("mmj_use_fmv_hack", "disabled") ?: "disabled"
+            mmjSkipCpuWrite = p.getString("mmj_skip_cpu_write", "disabled") ?: "disabled"
+            mmjSkipSlowDraw = p.getString("mmj_skip_slow_draw", "disabled") ?: "disabled"
+            mmjSkipTextureCopy = p.getString("mmj_skip_texture_copy", "disabled") ?: "disabled"
+            mmjUseFenceSync = p.getString("mmj_use_fence_sync", "enabled") ?: "enabled"
+            mmjUsePresentThread = p.getString("mmj_use_present_thread", "enabled") ?: "enabled"
+            mmjUseFrameLimit = p.getString("mmj_use_frame_limit", "enabled") ?: "enabled"
+            mmjFrameLimit = p.getString("mmj_frame_limit", "100") ?: "100"
+            mmjCpuUsageLimit = p.getString("mmj_cpu_usage_limit", "0") ?: "0"
+            mmjFactor3d = p.getString("mmj_factor_3d", "0") ?: "0"
+            mmjEnableDspLle = p.getString("mmj_enable_dsp_lle", "disabled") ?: "disabled"
+            mmjDspLleMultithread = p.getString("mmj_dsp_lle_multithread", "disabled") ?: "disabled"
+            mmjAudioVolume = p.getString("mmj_audio_volume", "100") ?: "100"
+            mmjAudioStretching = p.getString("mmj_audio_stretching", "enabled") ?: "enabled"
+            mmjAudioOutputType = p.getString("mmj_audio_output_type", "0") ?: "0"
+            mmjAudioInputType = p.getString("mmj_audio_input_type", "0") ?: "0"
+            mmjMicVolume = p.getString("mmj_mic_volume", "100") ?: "100"
+            mmjSharedFontType = p.getString("mmj_shared_font_type", "0") ?: "0"
+            mmjUseVirtualSd = p.getString("mmj_use_virtual_sd", "enabled") ?: "enabled"
+            mmjUseGameConfig = p.getString("mmj_use_game_config", "enabled") ?: "enabled"
+            mmjCameraType = p.getString("mmj_camera_type", "0") ?: "0"
+            mmjLayoutOption = p.getString("mmj_layout_option", "0") ?: "0"
+            mmjLandscapeLayoutOption = p.getString("mmj_landscape_layout_option", "0") ?: "0"
+            mmjLandscapeSwapScreen = p.getString("mmj_landscape_swap_screen", "disabled") ?: "disabled"
+            mmjPortraitSwapScreen = p.getString("mmj_portrait_swap_screen", "disabled") ?: "disabled"
+            mmjLandscapeCustomLayout = p.getString("mmj_landscape_custom_layout", "disabled") ?: "disabled"
+            mmjOverlayScale = p.getString("mmj_overlay_scale", "100") ?: "100"
+            mmjOverlayAlpha = p.getString("mmj_overlay_alpha", "100") ?: "100"
+            mmjOverlayHide = p.getString("mmj_overlay_hide", "disabled") ?: "disabled"
+            mmjJoystickRange = p.getString("mmj_joystick_range", "100") ?: "100"
             azRegion = p.getString("az_region", "-1") ?: "-1"
             azAudioEmulation = p.getString("az_audio_emulation", "0") ?: "0"
             azVolume = p.getString("az_volume", "100") ?: "100"
@@ -3279,6 +3429,55 @@ object PadLayoutStore {
             putString("az_use_cpu_jit", layout.azUseCpuJit)
             putString("az_is_new_3ds", layout.azIsNew3ds)
             putString("az_lle_applets", layout.azLleApplets)
+
+            putString("mmj_resolution", layout.mmjResolution)
+            putString("mmj_is_new_3ds", layout.mmjIsNew3ds)
+            putString("mmj_use_cpu_jit", layout.mmjUseCpuJit)
+            putString("mmj_region", layout.mmjRegion)
+            putString("mmj_use_hw_shader", layout.mmjUseHwShader)
+            putString("mmj_use_shader_jit", layout.mmjUseShaderJit)
+            putString("mmj_async_shader_compile", layout.mmjAsyncShaderCompile)
+            putString("mmj_shader_type", layout.mmjShaderType)
+            putString("mmj_hw_gs_mode", layout.mmjHwGsMode)
+            putString("mmj_accurate_mul_type", layout.mmjAccurateMulType)
+            putString("mmj_shadow_rendering", layout.mmjShadowRendering)
+            putString("mmj_force_texture_filter", layout.mmjForceTextureFilter)
+            putString("mmj_mag_filter", layout.mmjMagFilter)
+            putString("mmj_min_filter", layout.mmjMinFilter)
+            putString("mmj_custom_textures", layout.mmjCustomTextures)
+            putString("mmj_pp_shader_name", layout.mmjPpShaderName)
+            putString("mmj_screen_presentation_mode", layout.mmjScreenPresentationMode)
+            putString("mmj_use_compatible_mode", layout.mmjUseCompatibleMode)
+            putString("mmj_use_fmv_hack", layout.mmjUseFmvHack)
+            putString("mmj_skip_cpu_write", layout.mmjSkipCpuWrite)
+            putString("mmj_skip_slow_draw", layout.mmjSkipSlowDraw)
+            putString("mmj_skip_texture_copy", layout.mmjSkipTextureCopy)
+            putString("mmj_use_fence_sync", layout.mmjUseFenceSync)
+            putString("mmj_use_present_thread", layout.mmjUsePresentThread)
+            putString("mmj_use_frame_limit", layout.mmjUseFrameLimit)
+            putString("mmj_frame_limit", layout.mmjFrameLimit)
+            putString("mmj_cpu_usage_limit", layout.mmjCpuUsageLimit)
+            putString("mmj_factor_3d", layout.mmjFactor3d)
+            putString("mmj_enable_dsp_lle", layout.mmjEnableDspLle)
+            putString("mmj_dsp_lle_multithread", layout.mmjDspLleMultithread)
+            putString("mmj_audio_volume", layout.mmjAudioVolume)
+            putString("mmj_audio_stretching", layout.mmjAudioStretching)
+            putString("mmj_audio_output_type", layout.mmjAudioOutputType)
+            putString("mmj_audio_input_type", layout.mmjAudioInputType)
+            putString("mmj_mic_volume", layout.mmjMicVolume)
+            putString("mmj_shared_font_type", layout.mmjSharedFontType)
+            putString("mmj_use_virtual_sd", layout.mmjUseVirtualSd)
+            putString("mmj_use_game_config", layout.mmjUseGameConfig)
+            putString("mmj_camera_type", layout.mmjCameraType)
+            putString("mmj_layout_option", layout.mmjLayoutOption)
+            putString("mmj_landscape_layout_option", layout.mmjLandscapeLayoutOption)
+            putString("mmj_landscape_swap_screen", layout.mmjLandscapeSwapScreen)
+            putString("mmj_portrait_swap_screen", layout.mmjPortraitSwapScreen)
+            putString("mmj_landscape_custom_layout", layout.mmjLandscapeCustomLayout)
+            putString("mmj_overlay_scale", layout.mmjOverlayScale)
+            putString("mmj_overlay_alpha", layout.mmjOverlayAlpha)
+            putString("mmj_overlay_hide", layout.mmjOverlayHide)
+            putString("mmj_joystick_range", layout.mmjJoystickRange)
             putString("az_region", layout.azRegion)
             putString("az_audio_emulation", layout.azAudioEmulation)
             putString("az_volume", layout.azVolume)
@@ -3668,7 +3867,11 @@ object PadLayoutStore {
                 "wii_1" to "Wii·1键", "wii_2" to "Wii·2键",
                 "wii_plus" to "Wii·+键", "wii_minus" to "Wii·−键",
                 "wii_home" to "Wii·HOME", "wii_c" to "双节棍·C", "wii_z" to "双节棍·Z",
-                "wii_ir_near" to "Wii·IR−", "wii_ir_far" to "Wii·IR+"
+                "wii_ir_near" to "Wii·IR−", "wii_ir_far" to "Wii·IR+",
+                // ★ 本轮补齐：倾斜/晃动四键（L2/R2/L3/R3）加入显隐列表 ——
+                //   只用实体手柄或纯体感的玩家可隐藏这四个体感按钮。
+                "l2" to "左倾 (L2)", "r2" to "右倾 (R2)",
+                "l3" to "前晃 (L3)", "r3" to "后晃 (R3)"
             )
             else -> emptyList()
         } + listOf("qs" to "即时存档", "ql" to "即时读档")

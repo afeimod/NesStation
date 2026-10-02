@@ -1606,9 +1606,18 @@ fun CoreSettingsPanel(
                 // Azahar 核心选项 —— 引擎以 "段/键" 复合键直写用户目录
                 // config/config.ini 后 reloadSettings()。键名/取值对照
                 // azahar-emu/azahar src/android jni/config.cpp（2125.x）。
+                SettingsSection("3DS (Azahar) · GPU 驱动") {
+                    // ★★ GPU 驱动安装与选择（本轮新增，对齐上游 Azahar）★★：
+                    //   本地导入 adrenotools 驱动 zip（Turnip 等）+ 列表选择 +
+                    //   删除；AzaharEngine 启动时把选中驱动的 libraryName 传给
+                    //   initializeGpuDriver（空 = 系统驱动）。
+                    com.nesstation.app.ui.emulator.AzaharDriverSection()
+                }
                 SettingsSection("3DS (Azahar) · 画面 / 性能") {
                     DropdownRow("图形后端",
-                        listOf("opengl" to "OpenGL (兼容)", "vulkan" to "Vulkan (性能, 推荐)", "software" to "软件渲染 (慢)"),
+                        // ★ VK 标签修正：缺失 adrenotools 钩子链时选 VK 会闪退，
+                        //   钩子库已随本轮补入 jniLibs；仍按实测性能中性标注。
+                        listOf("opengl" to "OpenGL (兼容, 推荐)", "vulkan" to "Vulkan (需钩子库, 已内置)", "software" to "软件渲染 (慢)"),
                         padLayout.azGraphicsApi
                     ) { updateLayout(padLayout.copy {azGraphicsApi = it}) }
                     DropdownRow("内部分辨率",
@@ -1729,6 +1738,219 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (低延迟, 可能卡顿)"),
                         padLayout.azRealtimeAudio
                     ) { updateLayout(padLayout.copy {azRealtimeAudio = it}) }
+                }
+
+                // ★★ Citra MMJ 专属设置（本轮新增，需求原话"全部设置加入
+                //    进去，包括所有设置哦"）—— 48 个 MMJ 配置键全量接入。
+                //    键名 = libmain.so 配置系统真实键（strings 提取）；启动
+                //    3DS 游戏选 "Citra MMJ" 核心时生效（CitraMmjEngine 经
+                //    setConfig* 直写核心配置）。
+                SettingsSection("3DS (Citra MMJ) · 画面 / 性能") {
+                    DropdownRow("渲染分辨率",
+                        listOf("1" to "1x (原生, 兼容)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x (高性能设备)"),
+                        padLayout.mmjResolution
+                    ) { updateLayout(padLayout.copy {mmjResolution = it}) }
+                    DropdownRow("硬件着色器",
+                        listOf("enabled" to "开启 (性能关键, 默认)", "disabled" to "关闭"),
+                        padLayout.mmjUseHwShader
+                    ) { updateLayout(padLayout.copy {mmjUseHwShader = it}) }
+                    DropdownRow("着色器 JIT",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭"),
+                        padLayout.mmjUseShaderJit
+                    ) { updateLayout(padLayout.copy {mmjUseShaderJit = it}) }
+                    DropdownRow("异步着色器编译",
+                        listOf("enabled" to "开启 (后台编译, 默认)", "disabled" to "关闭"),
+                        padLayout.mmjAsyncShaderCompile
+                    ) { updateLayout(padLayout.copy {mmjAsyncShaderCompile = it}) }
+                    DropdownRow("着色器类型 (shader_type)",
+                        listOf("0" to "0 自动 (默认)", "1" to "1 GLSL", "2" to "2 SPIR-V", "3" to "3 兼容"),
+                        padLayout.mmjShaderType
+                    ) { updateLayout(padLayout.copy {mmjShaderType = it}) }
+                    DropdownRow("几何着色器 (hw_gs_mode)",
+                        listOf("0" to "0 关闭 (默认)", "1" to "1 兼容", "2" to "2 完整"),
+                        padLayout.mmjHwGsMode
+                    ) { updateLayout(padLayout.copy {mmjHwGsMode = it}) }
+                    DropdownRow("精确乘法 (accurate_mul_type)",
+                        listOf("0" to "0 精确 (默认)", "1" to "1 兼容", "2" to "2 快速"),
+                        padLayout.mmjAccurateMulType
+                    ) { updateLayout(padLayout.copy {mmjAccurateMulType = it}) }
+                    DropdownRow("阴影渲染 (几何)",
+                        listOf("disabled" to "关闭 (默认, 兼容)", "enabled" to "开启 (需几何着色器)"),
+                        padLayout.mmjShadowRendering
+                    ) { updateLayout(padLayout.copy {mmjShadowRendering = it}) }
+                    DropdownRow("强制纹理过滤",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjForceTextureFilter
+                    ) { updateLayout(padLayout.copy {mmjForceTextureFilter = it}) }
+                    DropdownRow("纹理放大过滤",
+                        listOf("0" to "最近邻 (像素风)", "1" to "线性 (平滑, 默认)"),
+                        padLayout.mmjMagFilter
+                    ) { updateLayout(padLayout.copy {mmjMagFilter = it}) }
+                    DropdownRow("纹理缩小过滤",
+                        listOf("0" to "最近邻", "1" to "线性 (默认)"),
+                        padLayout.mmjMinFilter
+                    ) { updateLayout(padLayout.copy {mmjMinFilter = it}) }
+                    DropdownRow("后处理着色器",
+                        listOf("(off)" to "关闭 (默认)", "Anime4K" to "Anime4K 锐化", "bloom" to "泛光",
+                               "brighten" to "提亮", "cartoon" to "卡通", "film" to "胶片",
+                               "spline36" to "样条缩放", "FXAA" to "FXAA 抗锯齿", "Cel" to "赛璐璐",
+                               "Dot" to "点阵", "SEDI" to "SEDI 边缘导向"),
+                        padLayout.mmjPpShaderName
+                    ) { updateLayout(padLayout.copy {mmjPpShaderName = it}) }
+                    DropdownRow("屏幕呈现模式",
+                        listOf("0" to "0 兼容 (默认)", "1" to "1 共享上下文", "2" to "2 硬件缓冲"),
+                        padLayout.mmjScreenPresentationMode
+                    ) { updateLayout(padLayout.copy {mmjScreenPresentationMode = it}) }
+                    DropdownRow("自定义纹理",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (加载 HD 纹理包)"),
+                        padLayout.mmjCustomTextures
+                    ) { updateLayout(padLayout.copy {mmjCustomTextures = it}) }
+                }
+
+                SettingsSection("3DS (Citra MMJ) · 性能 Hack") {
+                    DropdownRow("兼容模式",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (老设备/花屏时)"),
+                        padLayout.mmjUseCompatibleMode
+                    ) { updateLayout(padLayout.copy {mmjUseCompatibleMode = it}) }
+                    DropdownRow("FMV 视频 Hack",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (过场视频卡顿游戏)"),
+                        padLayout.mmjUseFmvHack
+                    ) { updateLayout(padLayout.copy {mmjUseFmvHack = it}) }
+                    DropdownRow("跳过 CPU 写 (skip_cpu_write)",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速, 兼容性风险)"),
+                        padLayout.mmjSkipCpuWrite
+                    ) { updateLayout(padLayout.copy {mmjSkipCpuWrite = it}) }
+                    DropdownRow("跳过慢速绘制 (skip_slow_draw)",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速, 兼容性风险)"),
+                        padLayout.mmjSkipSlowDraw
+                    ) { updateLayout(padLayout.copy {mmjSkipSlowDraw = it}) }
+                    DropdownRow("跳过纹理拷贝 (skip_texture_copy)",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速, 兼容性风险)"),
+                        padLayout.mmjSkipTextureCopy
+                    ) { updateLayout(padLayout.copy {mmjSkipTextureCopy = it}) }
+                    DropdownRow("Fence 同步",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭 (实验)"),
+                        padLayout.mmjUseFenceSync
+                    ) { updateLayout(padLayout.copy {mmjUseFenceSync = it}) }
+                    DropdownRow("呈现线程",
+                        listOf("enabled" to "开启 (默认, 降延迟)", "disabled" to "关闭"),
+                        padLayout.mmjUsePresentThread
+                    ) { updateLayout(padLayout.copy {mmjUsePresentThread = it}) }
+                    DropdownRow("帧率限制",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭 (不限速, 快进感)"),
+                        padLayout.mmjUseFrameLimit
+                    ) { updateLayout(padLayout.copy {mmjUseFrameLimit = it}) }
+                    DropdownRow("帧率上限",
+                        listOf("50" to "50%", "60" to "60%", "100" to "100% (默认)", "200" to "200%", "300" to "300%", "400" to "400%"),
+                        padLayout.mmjFrameLimit
+                    ) { updateLayout(padLayout.copy {mmjFrameLimit = it}) }
+                    DropdownRow("CPU 占用限制",
+                        listOf("0" to "不限制 (默认)", "25" to "25%", "50" to "50%", "75" to "75%"),
+                        padLayout.mmjCpuUsageLimit
+                    ) { updateLayout(padLayout.copy {mmjCpuUsageLimit = it}) }
+                }
+
+                SettingsSection("3DS (Citra MMJ) · 3D / 布局") {
+                    DropdownRow("立体 3D 深度",
+                        listOf("0" to "0 关 (默认)", "25" to "25%", "50" to "50%", "75" to "75%", "100" to "100%"),
+                        padLayout.mmjFactor3d
+                    ) { updateLayout(padLayout.copy {mmjFactor3d = it}) }
+                    DropdownRow("屏幕布局",
+                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
+                        padLayout.mmjLayoutOption
+                    ) { updateLayout(padLayout.copy {mmjLayoutOption = it}) }
+                    DropdownRow("横屏布局",
+                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
+                        padLayout.mmjLandscapeLayoutOption
+                    ) { updateLayout(padLayout.copy {mmjLandscapeLayoutOption = it}) }
+                    DropdownRow("横屏交换上下屏",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjLandscapeSwapScreen
+                    ) { updateLayout(padLayout.copy {mmjLandscapeSwapScreen = it}) }
+                    DropdownRow("竖屏交换上下屏",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjPortraitSwapScreen
+                    ) { updateLayout(padLayout.copy {mmjPortraitSwapScreen = it}) }
+                    DropdownRow("横屏自定义布局",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (配合 setCustomLayout)"),
+                        padLayout.mmjLandscapeCustomLayout
+                    ) { updateLayout(padLayout.copy {mmjLandscapeCustomLayout = it}) }
+                }
+
+                SettingsSection("3DS (Citra MMJ) · 系统 / 音频") {
+                    DropdownRow("CPU JIT",
+                        listOf("enabled" to "开启 (性能关键, 默认)", "disabled" to "关闭 (慢)"),
+                        padLayout.mmjUseCpuJit
+                    ) { updateLayout(padLayout.copy {mmjUseCpuJit = it}) }
+                    DropdownRow("New 3DS 模式",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭 (老游戏兼容)"),
+                        padLayout.mmjIsNew3ds
+                    ) { updateLayout(padLayout.copy {mmjIsNew3ds = it}) }
+                    DropdownRow("主机区域",
+                        listOf("-1" to "自动 (默认)", "1" to "日本", "2" to "美国", "3" to "欧洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                        padLayout.mmjRegion
+                    ) { updateLayout(padLayout.copy {mmjRegion = it}) }
+                    DropdownRow("DSP 音频模拟",
+                        listOf("disabled" to "HLE (默认, 快)", "enabled" to "LLE (实验, 需 DSP 固件)"),
+                        padLayout.mmjEnableDspLle
+                    ) { updateLayout(padLayout.copy {mmjEnableDspLle = it}) }
+                    DropdownRow("DSP LLE 多线程",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjDspLleMultithread
+                    ) { updateLayout(padLayout.copy {mmjDspLleMultithread = it}) }
+                    DropdownRow("音量", (0..100 step 10).map { it.toString() to "$it%" },
+                        padLayout.mmjAudioVolume
+                    ) { updateLayout(padLayout.copy {mmjAudioVolume = it}) }
+                    DropdownRow("音频拉伸",
+                        listOf("enabled" to "开启 (防爆音, 默认)", "disabled" to "关闭"),
+                        padLayout.mmjAudioStretching
+                    ) { updateLayout(padLayout.copy {mmjAudioStretching = it}) }
+                    DropdownRow("音频输出",
+                        listOf("0" to "0 自动 (默认)", "1" to "1 AudioTrack", "2" to "2 AAudio", "3" to "3 兼容模式"),
+                        padLayout.mmjAudioOutputType
+                    ) { updateLayout(padLayout.copy {mmjAudioOutputType = it}) }
+                    DropdownRow("音频输入",
+                        listOf("0" to "0 自动 (默认)", "1" to "1 静态样本", "2" to "2 麦克风"),
+                        padLayout.mmjAudioInputType
+                    ) { updateLayout(padLayout.copy {mmjAudioInputType = it}) }
+                    DropdownRow("麦克风音量", (0..100 step 10).map { it.toString() to "$it%" },
+                        padLayout.mmjMicVolume
+                    ) { updateLayout(padLayout.copy {mmjMicVolume = it}) }
+                    DropdownRow("共享字体",
+                        listOf("0" to "0 标准 (默认)", "1" to "1 韩文", "2" to "2 简体中文", "3" to "3 繁体中文"),
+                        padLayout.mmjSharedFontType
+                    ) { updateLayout(padLayout.copy {mmjSharedFontType = it}) }
+                    DropdownRow("虚拟 SD 卡",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭"),
+                        padLayout.mmjUseVirtualSd
+                    ) { updateLayout(padLayout.copy {mmjUseVirtualSd = it}) }
+                    DropdownRow("按游戏配置",
+                        listOf("enabled" to "开启 (默认, config-games.ini 兼容补丁)", "disabled" to "关闭"),
+                        padLayout.mmjUseGameConfig
+                    ) { updateLayout(padLayout.copy {mmjUseGameConfig = it}) }
+                    DropdownRow("摄像头",
+                        listOf("0" to "0 无 (默认)", "1" to "1 静态图片", "2" to "2 前置摄像头", "3" to "3 后置摄像头"),
+                        padLayout.mmjCameraType
+                    ) { updateLayout(padLayout.copy {mmjCameraType = it}) }
+                }
+
+                SettingsSection("3DS (Citra MMJ) · 虚拟按键覆盖层") {
+                    DropdownRow("覆盖层缩放",
+                        listOf("50" to "50%", "75" to "75%", "100" to "100% (默认)", "150" to "150%", "200" to "200%"),
+                        padLayout.mmjOverlayScale
+                    ) { updateLayout(padLayout.copy {mmjOverlayScale = it}) }
+                    DropdownRow("覆盖层透明度",
+                        listOf("0" to "0% 全透明", "25" to "25%", "50" to "50%", "75" to "75%", "100" to "100% 不透明 (默认)"),
+                        padLayout.mmjOverlayAlpha
+                    ) { updateLayout(padLayout.copy {mmjOverlayAlpha = it}) }
+                    DropdownRow("隐藏覆盖层",
+                        listOf("disabled" to "显示 (默认)", "enabled" to "隐藏 (纯实体手柄)"),
+                        padLayout.mmjOverlayHide
+                    ) { updateLayout(padLayout.copy {mmjOverlayHide = it}) }
+                    DropdownRow("摇杆灵敏度范围",
+                        listOf("50" to "50 (精确)", "75" to "75", "100" to "100 (默认)", "125" to "125", "150" to "150 (灵敏)"),
+                        padLayout.mmjJoystickRange
+                    ) { updateLayout(padLayout.copy {mmjJoystickRange = it}) }
                 }
             }
             GamePlatform.NGCWII -> item {

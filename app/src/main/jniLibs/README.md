@@ -26,7 +26,12 @@ jniLibs/
 │   ├── libpcsx_rearmed_libretro_android.so  # PCSX-ReARMed (PSX core)
 │   ├── libflycast_libretro_android.so       # Flycast (Dreamcast/NAOMI libretro core)
 │   ├── libdrastic_arm64.so / libdrastic_cpu.so  # DraStic（激烈 NDS 备选核心）
-│   └── libfile_redirect_hook.so 等          # ARMSX2 adrenotools 驱动钩子链（arm64）
+│   ├── libcitra_mmj.so                       # Citra MMJ（3DS 备选核心，= MMJ APK libmain.so）
+│   ├── libazahar.so                          # Azahar（3DS 默认核心，= AzaharPlus libcitra-android.so）
+│   ├── libishiiruka.so                       # Ishiiruka（NGC/Wii 核心，= Ishiiruka APK libmain.so）
+│   └── libhook_impl.so / libmain_hook.so / libfile_redirect_hook.so /
+│       libgsl_alloc_hook.so                  # adrenotools 驱动钩子链（Azahar/ARMSX2 VK 自定义驱动，
+│                                              #   本轮从 AzaharPlus APK 补入 —— 缺失时选 VK 即闪退）
 ├── armeabi-v7a/
 │   ├── libdosbox_pure_libretro_android.so
 │   ├── libfbneo_libretro_android.so

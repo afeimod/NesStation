@@ -67,10 +67,12 @@ interface NgcWiiCoreEngine : EmulatorEngine {
     fun setPointer(nx: Float, ny: Float, pressed: Boolean)
 
     /**
-     * ★★ 手机体感 → Wii 倾斜模拟（本轮新增，需求："并加入手机体感模拟
-     * wii体感"）。值域各方向独立 0..1：left/right/forward/backward。
-     * 引擎与虚拟按键的 L2/R2/L3/R3 倾斜**叠加**后推给核心的
-     * Wiimote Tilt 四轴；NGC 模式下由实现自行忽略。
+     * ★★ 手机体感 → Wii 倾斜/晃动模拟。值域各方向独立 0..1：
+     * left/right/forward/backward。
+     * 引擎与虚拟按键的 L2/R2（左右倾斜）/L3/R3（前后晃动）**叠加**后
+     * 推给核心：left/right → Wiimote Tilt 左右轴；forward/backward →
+     * 同时驱动 Tilt 前后轴与 Swing 前后轴（前后"晃动"语义，兼容只读
+     * Tilt 或只读 Swing 的游戏）。NGC 模式下由实现自行忽略。
      */
     fun setWiiMotionTilt(left: Float, right: Float, forward: Float, backward: Float)
 
