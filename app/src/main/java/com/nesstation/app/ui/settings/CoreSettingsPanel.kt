@@ -1616,7 +1616,9 @@ fun CoreSettingsPanel(
                 SettingsSection("3DS (Azahar) · 画面 / 性能") {
                     DropdownRow("图形后端",
                         // ★ VK 标签修正：缺失 adrenotools 钩子链时选 VK 会闪退，
-                        //   钩子库已随本轮补入 jniLibs；仍按实测性能中性标注。
+                        //   钩子链由 CMake 从 ARMSX2 vendored adrenotools 源码构建
+                        //   （勿放 jniLibs——会与 CMake 输出同名冲突）；仍按实测
+                        //   性能中性标注。
                         listOf("opengl" to "OpenGL (兼容, 推荐)", "vulkan" to "Vulkan (需钩子库, 已内置)", "software" to "软件渲染 (慢)"),
                         padLayout.azGraphicsApi
                     ) { updateLayout(padLayout.copy {azGraphicsApi = it}) }

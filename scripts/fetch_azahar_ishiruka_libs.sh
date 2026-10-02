@@ -18,7 +18,10 @@
 # 两种方式可叠加；完成后 jniLibs/arm64-v8a/ 应出现：
 #   libazahar.so       ← APK 内 libcitra-android.so（Azahar 3DS 核心）
 #   libishiiruka.so    ← APK 内 libmain.so（Ishiiruka NGC/WII 核心）
-#   （及其余依赖库原样拷入，如 libc++_shared.so / adrenotools 钩子链）
+#   （及其余依赖库原样拷入，如 libc++_shared.so；adrenotools 钩子链除外 ——
+#    CMake 已从 ARMSX2 vendored 源码构建同名库，拷入 jniLibs 会与 CMake 输出
+#    同名冲突，mergeJniLibs 报 "2 files found with path" 打包失败，见
+#    app/src/main/jniLibs/README.md）
 #
 # 注意：仅支持 arm64-v8a（上游两个 Android 移植均为 64 位 only）。
 # =============================================================================
@@ -46,10 +49,19 @@ extract_apk() {
         echo "   APK 内实际包含:"; ls "$TMP/$tag/lib/arm64-v8a/" 2>/dev/null || true
         exit 1
     fi
-    # 主库重命名到 NesStation 约定名，其余依赖（libc++_shared 等）原样拷贝
+    # 主库重命名到 NesStation 约定名，其余依赖（libc++_shared 等）原样拷贝；
+    # adrenotools 钩子链除外：CMake 已从 ARMSX2 vendored adrenotools 源码构建
+    # 同名库（仅 arm64-v8a），拷入 jniLibs 会与 CMake 输出同名冲突，
+    # mergeJniLibs 直接报 "2 files found with path 'lib/arm64-v8a/libxxx.so'"
+    # 失败（CI 实测）。运行时无影响：两种来源都解压到 nativeLibraryDir。
+    local skip_re='^(libhook_impl|libmain_hook|libfile_redirect_hook|libgsl_alloc_hook)\.so$'
     cp -v "$TMP/$tag/lib/arm64-v8a/$main_lib" "$JNI_DIR/$new_name"
     for so in "$TMP/$tag/lib/arm64-v8a/"*.so; do
         local base; base="$(basename "$so")"
+        if [[ "$base" =~ $skip_re ]]; then
+            echo "⏭  跳过 $base（CMake 已从 adrenotools 源码构建，放 jniLibs 会同名冲突）"
+            continue
+        fi
         if [[ "$base" != "$main_lib" && ! -f "$JNI_DIR/$base" ]]; then
             cp -v "$so" "$JNI_DIR/$base"
         fi

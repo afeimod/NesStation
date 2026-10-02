@@ -28,10 +28,15 @@ jniLibs/
 │   ├── libdrastic_arm64.so / libdrastic_cpu.so  # DraStic（激烈 NDS 备选核心）
 │   ├── libcitra_mmj.so                       # Citra MMJ（3DS 备选核心，= MMJ APK libmain.so）
 │   ├── libazahar.so                          # Azahar（3DS 默认核心，= AzaharPlus libcitra-android.so）
-│   ├── libishiiruka.so                       # Ishiiruka（NGC/Wii 核心，= Ishiiruka APK libmain.so）
-│   └── libhook_impl.so / libmain_hook.so / libfile_redirect_hook.so /
-│       libgsl_alloc_hook.so                  # adrenotools 驱动钩子链（Azahar/ARMSX2 VK 自定义驱动，
-│                                              #   本轮从 AzaharPlus APK 补入 —— 缺失时选 VK 即闪退）
+│   └── libishiiruka.so                       # Ishiiruka（NGC/Wii 核心，= Ishiiruka APK libmain.so）
+│
+│   ⚠️ adrenotools 钩子链（libhook_impl.so / libmain_hook.so /
+│   libfile_redirect_hook.so / libgsl_alloc_hook.so）**禁止放入本目录** ——
+│   CMake 已从 ARMSX2 vendored adrenotools 源码构建同名库（仅 arm64-v8a），
+│   jniLibs 再放一份预编译会与 CMake 输出同名冲突，mergeJniLibs 直接报
+│   "2 files found with path 'lib/arm64-v8a/libxxx_hook.so'" 失败（CI 实测）。
+│   曾经从 AzaharPlus APK 提取的 4 份预编译已删除，运行时行为不变：
+│   两种来源最终都解压到 nativeLibraryDir，adrenotools 按名 dlopen。
 ├── armeabi-v7a/
 │   ├── libdosbox_pure_libretro_android.so
 │   ├── libfbneo_libretro_android.so
@@ -57,6 +62,7 @@ into the same directories at build time (NOT checked into git):
 | DOS bridge | `libdoscore.so` | `core/jni/dos_*.cpp` |
 | M3G (J2ME 3D) | `libjavam3g.so` | `app/src/main/cpp/m3g/` |
 | Micro3D (J2ME) | `libmicro3d.so` | `app/src/main/cpp/micro3d/` |
+| adrenotools 钩子链 (arm64) | `libhook_impl.so` `libmain_hook.so` `libfile_redirect_hook.so` `libgsl_alloc_hook.so` | `ARMSX2-master/platforms/android/app/src/main/cpp/3rdparty/adrenotools/`（经 `core/cmake/CMakeLists.txt` add_subdirectory 构建，供 Azahar / ARMSX2 / Flycast 的 VK 自定义驱动链运行时 dlopen） |
 
 ## How the dlopen pattern works
 

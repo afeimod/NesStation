@@ -4685,8 +4685,11 @@ private fun applyAzaharCoreOptions(
             //   dlopen libhook_impl.so / libmain_hook.so —— 缺失即
             //   "Failed to load Vulkan driver library" → C++ 异常跨 JNI →
             //   std::terminate → SIGABRT（Java 拦不住，表现为"无报错闪退"）。
-            //   钩子库已随本轮从 AzaharPlus APK 补入 jniLibs；此处运行时
-            //   再探一次，异常构建（用户手动替换 so）下自动回落 OpenGL。
+            //   钩子链由 CMake 从 ARMSX2 vendored adrenotools 源码构建（仅
+            //   arm64-v8a），随 APK 解压到 nativeLibraryDir —— 勿放 jniLibs，
+            //   会与 CMake 输出同名冲突（mergeJniLibs "2 files found with
+            //   path" 失败）。此处运行时再探一次，异常构建（用户手动替换
+            //   so）下自动回落 OpenGL。
             val hookLibsOk = try {
                 val nativeDir = com.nesstation.app.NesApp.get()?.applicationInfo?.nativeLibraryDir
                 nativeDir == null || (
