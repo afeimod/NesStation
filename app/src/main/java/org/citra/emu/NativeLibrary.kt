@@ -1,6 +1,6 @@
 package org.citra.emu
 
-import android.annotation.Keep
+import androidx.annotation.Keep
 import android.content.Context
 import android.content.res.AssetManager
 import android.hardware.HardwareBuffer
