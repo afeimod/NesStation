@@ -129,6 +129,31 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     @Volatile private var surfaceW = 0
     @Volatile private var surfaceH = 0
 
+    /**
+     * ★★ Surface attach 状态门（修复 SurfaceDestroyed use-after-free 崩溃）★★
+     *
+     * 崩溃栈（Redmi/Socrates AQ3A.250226.002 / OS3.0.5.0.VMKCNXM）:
+     * ```
+     * #0 ANativeWindow_release+4 (libandroid.so)
+     * #1 Java_org_citra_emu_NativeLibrary_SurfaceDestroyed+24 (libcitra_mmj.so)
+     * #4 ca.h.A+130   (= CitraMmjEngine.cleanupLocked)
+     * #6 ca.h.unload+6 (= CitraMmjEngine.unload)
+     * ```
+     *
+     * 病因：MMJ 原生 SurfaceDestroyed → ANativeWindow_release **不做幂等检查**
+     * （释放后置空，但若 Java 侧再次调 SurfaceDestroyed 仍会触发对野指针/
+     * 已释放窗口的 release → SIGSEGV at ANativeWindow_release+4）。
+     *
+     * Java 侧的 setSurface(null) / onSurfaceDestroyed() / cleanupLocked() 三处
+     * 都会无条件调 SurfaceDestroyed；EmulatorScreen.surfaceDestroyed 回调里
+     * 又连调 onSurfaceDestroyed()+setSurface(null) 两次 + 退出 unload() 第三次
+     * → 同一个 ANativeWindow 被 release 2~3 次 → 必崩。
+     *
+     * 修复：用本标志守门 —— 只在确实 attached 时才 SurfaceDestroyed，并立即
+     * 重置；SurfaceChanged 成功后置 true。保证一个 attach 周期仅一次 release。
+     */
+    @Volatile private var surfaceAttached: Boolean = false
+
     private var choreographer: Choreographer? = null
     private var frameCallback: Choreographer.FrameCallback? = null
 
@@ -298,7 +323,13 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 lib.SetDisplayInfo(surfaceW, surfaceH, surfaceW, surfaceH, 0, 1f)
             }
         } catch (_: Throwable) {}
-        try { surface?.let { lib.SurfaceChanged(it) } } catch (t: Throwable) {
+        try {
+            // SurfaceChanged 成功 → 同步 surfaceAttached=true（与 setSurface 路径一致）
+            surface?.let {
+                lib.SurfaceChanged(it)
+                surfaceAttached = true
+            }
+        } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "SurfaceChanged failed", t)
         }
         emuThread = thread(name = "CitraMmjNative") {
@@ -349,10 +380,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (!_loaded) return
             val lib = CitraMmjNative.lib
             if (surface != null) {
-                try { lib.SurfaceChanged(surface) } catch (_: Throwable) {}
+                try { lib.SurfaceChanged(surface); surfaceAttached = true } catch (_: Throwable) {}
                 if (emuThread?.isAlive != true) startEmulationLocked()
             } else {
-                try { lib.SurfaceDestroyed() } catch (_: Throwable) {}
+                // ★★ SurfaceDestroyed 守门：仅 attached 时调一次（详见字段注释）
+                //   EmulatorScreen.surfaceDestroyed 连调 onSurfaceDestroyed+setSurface(null)
+                //   + 退出 unload 三处入口都走这里 → 不守门必重复 release → 野指针崩溃
+                if (surfaceAttached) {
+                    try { lib.SurfaceDestroyed() } catch (_: Throwable) {}
+                    surfaceAttached = false
+                }
             }
         }
     }
@@ -393,8 +430,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 emuThread?.join(8000)
             } catch (_: Throwable) {}
             emuThread = null
+            // StopEmulation 后原生侧状态不可知，保守视为已 detach ——
+            // 后续 SurfaceChanged 重新 attach 时会复位 surfaceAttached=true
+            surfaceAttached = false
             val surf = surface ?: return@synchronized
-            try { CitraMmjNative.lib.SurfaceChanged(surf) } catch (_: Throwable) {}
+            try {
+                CitraMmjNative.lib.SurfaceChanged(surf)
+                surfaceAttached = true
+            } catch (_: Throwable) {}
             startEmulationLocked()
         }
     }
@@ -417,7 +460,13 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             } catch (_: Throwable) {}
         }
         emuThread = null
-        try { CitraMmjNative.lib.SurfaceDestroyed() } catch (_: Throwable) {}
+        // ★★ SurfaceDestroyed 守门：仅 attached 时调一次（详见字段注释）。
+        //   旧实现无条件调 → 与 setSurface(null) 重复 → ANativeWindow_release
+        //   野指针崩溃（崩溃栈 ca.h.unload+6 → ca.h.A+130 → SurfaceDestroyed）
+        if (surfaceAttached) {
+            try { CitraMmjNative.lib.SurfaceDestroyed() } catch (_: Throwable) {}
+            surfaceAttached = false
+        }
         surface = null
         _loaded = false
         _paused = false
