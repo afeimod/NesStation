@@ -1204,7 +1204,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      *   的同时甩手机不会抵消。任一来源变化都会重推全部四轴。NGC 模式
      *   忽略（GC 手柄无体感）。
      */
-    fun setWiiMotionTilt(left: Float, right: Float, forward: Float, backward: Float) {
+    override fun setWiiMotionTilt(left: Float, right: Float, forward: Float, backward: Float) {
         if (!isLoaded || effectiveMode() == "ngc") return
         var changed = false
         synchronized(wiiTiltLock) {
