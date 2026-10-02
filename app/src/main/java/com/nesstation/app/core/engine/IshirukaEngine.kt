@@ -898,7 +898,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
 
     /**
      * 快进：Dolphin 5.0 系无运行时变速 API（so 导出符号全量扫描无
-     * *Speed*/*Throttle* JNI；EmulationSpeed 是 SConfig 启动期键）。
+     * *Speed* / *Throttle* JNI；EmulationSpeed 是 SConfig 启动期键）。
      * ★ 修复（旧实现无效的根因）：
      *   1. 旧实现只调 NativeLibrary.SetConfig —— 该 JNI 写盘路径由 so
      *      内部 GetUserPath 决定，与核心实际读取的 <userDir>/Config/ 不一致
