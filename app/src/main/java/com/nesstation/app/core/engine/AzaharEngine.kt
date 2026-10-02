@@ -543,7 +543,9 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 //   <filesDir>/gpu_driver/<id>/，核心据此通过 adrenotools
                 //   加载自定义 Turnip/Adreno 驱动（VK 后端）。
                 val customDriverLibrary = try {
-                    org.citra.citra_emu.utils.GpuDriverHelper.selectedLibraryName(ctx)
+                    // ctx 为 Context?（appContext 可空），selectedLibraryName 形参为非空 Context；
+                    // 与上方 hookLibPath / driverInstallPath / fileRedirectPath 同款 ctx?.let ?: "" 兜底
+                    ctx?.let { org.citra.citra_emu.utils.GpuDriverHelper.selectedLibraryName(it) } ?: ""
                 } catch (_: Throwable) { "" }
                 lib.initializeGpuDriver(hookLibPath, driverInstallPath, customDriverLibrary, fileRedirectPath)
             } catch (_: Throwable) {}
