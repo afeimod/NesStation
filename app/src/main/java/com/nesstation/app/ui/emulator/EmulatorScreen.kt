@@ -7378,6 +7378,12 @@ fun OnScreenController(
                             // GAME_AREA 指针在上方 btnType == null 分支已提前
                             // return，永远到不了这里；补空分支仅为穷举完整性。
                             BtnType.GAME_AREA -> {}
+                            // WII_DPAD/WII_A/WII_B/WII_STICK 为编辑器专属槽位：
+                            // 运行时命中测试把 Wii 控件映射到共享的
+                            // DPAD/A/B（见上方 wiiDpadRect->DPAD 等），
+                            // 这四个值永远到不了这里，补空分支仅为穷举完整性。
+                            BtnType.WII_DPAD, BtnType.WII_A,
+                            BtnType.WII_B, BtnType.WII_STICK -> {}
                         }
                         activePointers[pid] = btnType to (if (turboBits != 0) turboBits else bits)
                         if (stickOnly) {
@@ -7457,6 +7463,10 @@ fun OnScreenController(
                                             }
                                             // 即时存档 / 即时读档无输入位，UP 仅移除指针
                                             BtnType.QUICK_SAVE, BtnType.QUICK_LOAD -> {}
+                                            // 编辑器专属槽位（运行时不会写入 activePointers），
+                                            // UP 仅移除指针即可。
+                                            BtnType.WII_DPAD, BtnType.WII_A,
+                                            BtnType.WII_B, BtnType.WII_STICK -> {}
                                             BtnType.LSTICK -> {
                                                 // 松手：拇指回中 + 清摇杆方向位 + 轴归零
                                                 lStickDirs = 0
