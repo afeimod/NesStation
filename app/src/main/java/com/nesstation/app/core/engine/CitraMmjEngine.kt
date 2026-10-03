@@ -476,11 +476,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         val path = romPath ?: return
         if (emuThread?.isAlive == true) return
         val lib = CitraMmjNative.lib
-        try {
-            if (surfaceW > 0 && surfaceH > 0) {
-                lib.SetDisplayInfo(surfaceW, surfaceH, surfaceW, surfaceH, 0, 1f)
-            }
-        } catch (_: Throwable) {}
+        // ★★ 本轮根治：崩溃栈 pc 0x282234 在 libcitra_mmj.so 的根因。★★
+        //   旧实现在此处（Run 之前、SurfaceChanged 之前、emu 线程未启动）
+        //   调用 lib.SetDisplayInfo(surfaceW, surfaceH, surfaceW, surfaceH, 0, 1f) ——
+        //   MMJ 原生 EmuWindow 状态机在 Run 启动前不接 SetDisplayInfo，
+        //   触发 UNREACHABLE → brk #1 → SIGTRAP（TRAP_BRKPT），
+        //   Java try/catch(Throwable) 无法捕获原生陷阱，直接闪退。
+        //   修复：Run 启动前一律不调 SetDisplayInfo ——
+        //   · 显示几何信息由 onSurfaceChanged 在 emuThread 真正运行后下发；
+        //   · 参考 Azahar 契约（org.citra.citra_emu.NativeLibrary）—— 上游同源
+        //     项目根本不声明 SetDisplayInfo，证明启动期无需该调用。
         try {
             // SurfaceChanged 成功 → 同步 surfaceAttached=true（与 setSurface 路径一致）
             surface?.let {
@@ -608,7 +613,12 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         surfaceW = width
         surfaceH = height
         if (surface != this.surface) { setSurface(surface); return }
-        if (_loaded && width > 0 && height > 0) {
+        // ★★ 本轮根治（同 startEmulationLocked 注释）：在 emuThread 真正运行后
+        //   才调 SetDisplayInfo —— Run 之前原生 EmuWindow 状态机不接，会触发
+        //   UNREACHABLE → SIGTRAP（pc 0x282234）。emuThread?.isAlive 是唯一可靠
+        //   的“核心已启动”指示（running.get() 在 loadRom 中就被置 true，不能区分
+        //   Run 是否已执行）。
+        if (_loaded && width > 0 && height > 0 && emuThread?.isAlive == true) {
             try { CitraMmjNative.lib.SetDisplayInfo(width, height, width, height, 0, 1f) } catch (_: Throwable) {}
         }
     }

@@ -44,6 +44,21 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     private val running = AtomicBoolean(false)
     private var heartbeatThread: Thread? = null
 
+    // ★★ 本轮新增：心跳线程实测节拍滑动窗口（Wii FPS HUD 显示根因修复）★★
+    //   背景：libishiiruka.so 未导出任何 FPS/PerformanceMetrics JNI（nm -D 实测
+    //   只有 IsRunning() 布尔），无法像 PS2 那样直接读核心内部 getFPS ——
+    //   EmulatorScreen 的 fpsDisplay 旧实现 fallback 到心跳计数：心跳线程
+    //   Thread.sleep(16) 固定节拍，counted 永远 ~60，掉帧/快进都看不出来。
+    //   修复：在心跳线程里同步打点 nanoTime()，保留最近 60 个样本，按窗口
+    //   平均间隔反推"实测节拍"。系统空闲时 ~60；CPU 抢占/掉帧时节拍漂移
+    //   下行，HUD 数值能跟随下降 —— 至少给用户一个掉帧信号（远比永远 60 准确）。
+    //   注：这是 CPU 节拍代理，不是原生渲染 FPS —— 真·核心 FPS 仍需开
+    //   GFX.ini/Settings/ShowFPS（核心内置 HUD 会在画面上叠加
+    //   "FPS: %.0f - VPS:%.0f - %.0f%%"）。
+    private val heartbeatTimes = java.util.ArrayDeque<Long>()
+    private val heartbeatLock = Any()
+    @Volatile private var measuredFps: Double = 0.0
+
     @Volatile private var surface: Surface? = null
     @Volatile private var romPath: String? = null
     @Volatile private var userDir: String? = null
@@ -851,6 +866,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                         setPad1(p1); setPad2(p2)
                     }
                     onFrame()
+                    recordHeartbeat()  // ★★ 本轮新增：实测节拍 → measuredFps
                     _netFrame++
                     try { Thread.sleep(16) } catch (_: InterruptedException) { break }
                 }
@@ -1015,6 +1031,11 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             try { t.join(500) } catch (_: InterruptedException) {}
         }
         heartbeatThread = null
+        // ★ 本轮新增：清零 FPS 滑动窗口，避免下一游戏开局残留上一局的节拍样本
+        synchronized(heartbeatLock) {
+            heartbeatTimes.clear()
+            measuredFps = 0.0
+        }
 
         if (emuThread?.isAlive == true) {
             try {
@@ -1062,7 +1083,31 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     override fun videoWidth(): Int = 1280
     override fun videoHeight(): Int = 720
 
-    override fun realtimeFps(): Double = 0.0
+    /**
+     * 实测心跳节拍（滑动窗口）。系统空闲时 ~60，CPU 抢占/掉帧时下行漂移。
+     * 与 PS2 不同（PS2 经 NativeApp.getFPS() 直读核心 PerformanceMetrics），
+     * libishiiruka.so 未导出任何 FPS JNI，本值仅作 CPU 节拍代理 ——
+     * 真·核心渲染 FPS 仍需开 GFX.ini/Settings/ShowFPS（核心内置 HUD）。
+     */
+    override fun realtimeFps(): Double = if (isLoaded) measuredFps else 0.0
+
+    /** 心跳线程每拍调用，保留最近 60 个 nanoTime 样本，反推节拍。 */
+    private fun recordHeartbeat() {
+        val now = System.nanoTime()
+        synchronized(heartbeatLock) {
+            heartbeatTimes.addLast(now)
+            while (heartbeatTimes.size > 60) heartbeatTimes.removeFirst()
+            if (heartbeatTimes.size >= 2) {
+                val first = heartbeatTimes.first()
+                val spanNs = now - first
+                val intervals = heartbeatTimes.size - 1   // N 个点 = N-1 个间隔
+                if (spanNs > 0 && intervals > 0) {
+                    val nsPerBeat = spanNs.toDouble() / intervals
+                    measuredFps = 1_000_000_000.0 / nsPerBeat
+                }
+            }
+        }
+    }
 
     override fun setVideoFilter(filter: Int) {}
     override fun setHighQualityScaling(enabled: Boolean) {}

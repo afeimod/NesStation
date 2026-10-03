@@ -1208,12 +1208,19 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         val statesDir = File(userDir(), "states")
         val files = statesDir.listFiles { f -> f.isFile && f.name.endsWith(".cst") }
             ?: return null
-        val suffix = "_%02d.cst".format(slot)
+        // ★★ 本轮根治：原后缀 "_%02d.cst"（如 "_01.cst"）永远匹配不到
+        //   Azahar 真实命名 "0004000000055F00_version_2005.01.cst"
+        //   （格式串 "{}{:016X}_version_2005.{:02d}.cst"，槽位前是句点
+        //   不是下划线，由 strings libazahar.so 直接确认）→
+        //   saveState 在 5s 轮询窗口里永远找不到落盘文件 → 误报"核心未写入
+        //   状态文件"，UI 显示存档失败，但 .cst 实际已成功写入 states/。
+        //   修复：后缀对齐为 ".%02d.cst"（句点）。
+        val suffix = ".%02d.cst".format(slot)
         // 文件名形如 0004000000055F00_version_2005.01.cst —— 按后缀匹配槽位。
         return files.firstOrNull { it.name.endsWith(suffix) }
             ?: files.firstOrNull {
                 // 宽容：无 _version_ 段的非常规命名（未来版本格式变化）
-                it.name.endsWith(".state.${slot}.cst") || it.name.endsWith("_${slot}.cst")
+                it.name.endsWith(".state.${slot}.cst") || it.name.endsWith(".${slot}.cst")
             }
     }
 
@@ -1291,7 +1298,23 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (real == null || !real.exists() || real.length() == 0L) {
                 if (src.exists() && src.length() > 0) {
                     val statesDir = File(userDir(), "states").apply { mkdirs() }
-                    real = File(statesDir, "nesstation_slot%02d.cst".format(slot))
+                    // ★★ 本轮根治：回填文件名必须对齐核心的命名约定
+                    //   "{}{:016X}_version_2005.{:02d}.cst"（strings libazahar.so
+                    //   直接确认），否则 AzaharNative.lib.loadState(slot) 在
+                    //   原生侧按 titleId+slot 查文件，永远查不到 nesstation_slotNN.cst
+                    //   → 读档信号发出但核心找不到文件 → 静默失败。
+                    //   修复：经 getRunningTitleId() 拿到当前游戏的 16 位 hex
+                    //   titleId，按核心格式串构造文件名。
+                    val backfillName = try {
+                        val titleId = AzaharNative.lib.getRunningTitleId()
+                        "%016X_version_2005.%02d.cst".format(titleId, slot)
+                    } catch (_: Throwable) {
+                        // getRunningTitleId 在核心未启动时返回 0 / 异常 —— 兜底
+                        // 仍用旧名（至少文件能落盘，下轮 loadState 会再次失败但
+                        // 不会更糟）。
+                        "nesstation_slot%02d.cst".format(slot)
+                    }
+                    real = File(statesDir, backfillName)
                     try {
                         src.copyTo(real, overwrite = true)
                         android.util.Log.i("AzaharEngine", "loadState($slot): 从标记文件回填核心槽位 $real")

@@ -2782,7 +2782,7 @@ object PadLayoutStore {
                 it in setOf("nunchuk", "classic", "none") } ?: "nunchuk"
             irWiiOrientation = p.getString("ir_wii_orientation", "vertical")?.takeIf {
                 it in setOf("vertical", "horizontal") } ?: "vertical"
-            wiiMotionSensor = p.getBoolean("wii_motion_sensor", false)
+            wiiMotionSensor = p.getBoolean("wii_motion_sensor", true)
             irCpuCore = p.getString("ir_cpu_core", "4") ?: "4"
             irDualCore = p.getString("ir_dual_core", "enabled") ?: "enabled"
             irOverclockEnable = p.getString("ir_overclock_enable", "disabled") ?: "disabled"
