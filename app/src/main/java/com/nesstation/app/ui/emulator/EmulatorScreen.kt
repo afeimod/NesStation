@@ -2151,22 +2151,31 @@ fun EmulatorScreen(
             if (padLayout.wiiMotionSensor) {
                 val started = com.nesstation.app.core.engine.WiiMotionSensors.start(
                     motionCtx, displayRotation
-                ) { left, right, forward, backward ->
+                ) { state ->
+                    // ★★ V2 全维度体感（倾斜 + 挥动 + 摇晃）直通引擎，
+                    //   解决"手机体感毫无作用"根因：旧版只传 4 个 tilt 值，
+                    //   Wii Sports 这类挥拍游戏读 SWING_U/D/L/R 完全读不到；
+                    //   马里奥赛车 wheelie 这类摇动游戏读 SHAKE_X/Y/Z 也读不到。
+                    //   MotionState 13 维全传，引擎 pushWiiTilt 内部按轴分发。
                     (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
-                        ?.setWiiMotionTilt(left, right, forward, backward)
+                        ?.setWiiMotion(state)
                 }
                 if (!started) {
                     android.util.Log.w("EmulatorScreen", "Wii 手机体感：设备无加速度计，退化为按钮倾斜")
                 }
             } else {
-                // 开关关闭时立即清零传感器输入（按钮倾斜不受影响）
+                // 开关关闭时立即清零传感器输入（按钮倾斜不受影响）。
+                // ★ V2 兼容：传一个全零 MotionState 把所有轴（Tilt+Swing+Shake）都清零。
+                val zeroState = com.nesstation.app.core.engine.WiiMotionSensors.MotionState()
                 (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
-                    ?.setWiiMotionTilt(0f, 0f, 0f, 0f)
+                    ?.setWiiMotion(zeroState)
             }
             onDispose {
                 com.nesstation.app.core.engine.WiiMotionSensors.stop()
+                // ★ V2 兼容：onDispose 也用全零 MotionState 清零全部轴
+                val zeroState = com.nesstation.app.core.engine.WiiMotionSensors.MotionState()
                 (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
-                    ?.setWiiMotionTilt(0f, 0f, 0f, 0f)
+                    ?.setWiiMotion(zeroState)
             }
         }
     }

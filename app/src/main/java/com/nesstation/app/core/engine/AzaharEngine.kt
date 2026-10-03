@@ -59,6 +59,20 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     @Volatile private var saveDir: String? = null
     private var emuThread: Thread? = null
 
+    /**
+     * ★★ Surface attach 状态门（修复 VK 闪退 = 同 CitraMmjEngine 的修复模式）★★
+     *
+     * 病灶：旧 cleanupLocked() 无条件调 lib.surfaceDestroyed() —— 若用户先经
+     * onSurfaceDestroyed()→setSurface(null)→surfaceDestroyed() 已 detach，
+     * unload 时再调一次会让原生 EmuWindow_Android 的 ANativeWindow 指针被
+     * 二次 release，VK 路径 vkCreateAndroidSurfaceKHR CHECK → SIGABRT；
+     * GL 路径只是黑屏。EmulatorScreen.surfaceDestroyed 连调两次 + unload
+     * 第三次 → 同一窗口被 release 2~3 次。
+     *
+     * 修复：用本标志守门，保证一个 attach 周期 surfaceDestroyed 只调一次。
+     */
+    @Volatile private var surfaceAttached: Boolean = false
+
     @Volatile override var isLoaded = false
         private set
 
@@ -624,7 +638,7 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         //   置空，native EmuWindow_Android 构造读到 null → abort）。
         val bootSurface = surface ?: return
         if (!bootSurface.isValid) return
-        try { lib.surfaceChanged(bootSurface) } catch (t: Throwable) {
+        try { lib.surfaceChanged(bootSurface); surfaceAttached = true } catch (t: Throwable) {
             android.util.Log.w("AzaharEngine", "surfaceChanged failed", t)
         }
         if (_ffSpeed > 0) {
@@ -670,9 +684,9 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     } catch (_: Throwable) {}
                     return@thread
                 }
-                try { lib.surfaceChanged(attemptedSurface) } catch (_: Throwable) {}
+                try { lib.surfaceChanged(attemptedSurface); surfaceAttached = true } catch (_: Throwable) {}
             } else {
-                try { lib.surfaceChanged(attemptedSurface) } catch (_: Throwable) {}
+                try { lib.surfaceChanged(attemptedSurface); surfaceAttached = true } catch (_: Throwable) {}
             }
             try {
                 // ★ '!' 前缀 = 原生绝对路径标记（见 startEmulationLocked 注释）。
@@ -806,7 +820,7 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             val lib = AzaharNative.lib
             if (surface != null) {
                 // 与上游 EmulationState.newSurface 相同：先挂 Surface，若线程未启动则启动
-                try { lib.surfaceChanged(surface) } catch (_: Throwable) {}
+                try { lib.surfaceChanged(surface); surfaceAttached = true } catch (_: Throwable) {}
                 if (emuThread?.isAlive != true) startEmulationLocked()
             } else {
                 // ★★★ 3DS 黑屏修复关键路径：surface=null 在 boot 窗口内时，
@@ -814,10 +828,13 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 //   2) **不**让正启动中的 emuThread 读到 null surface ——
                 //      startEmulationLocked 已用 bootSurface 局部变量绕开此问题。
                 //   但若 boot 窗口已结束（nativeRunning=true），可以安全通知销毁。
+                //   ★★ surfaceAttached 守门：避免连调 surfaceDestroyed() 造成二次
+                //   release ANativeWindow → VK 路径 SIGABRT（同 CitraMmjEngine 修复）
                 val nativeRunning = try { lib.isRunning() } catch (_: Throwable) { false }
                 val booting = emuThread?.isAlive == true
-                if (!booting || nativeRunning) {
+                if ((!booting || nativeRunning) && surfaceAttached) {
                     try { lib.surfaceDestroyed() } catch (_: Throwable) {}
+                    surfaceAttached = false
                 }
             }
         }
@@ -918,8 +935,10 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             } catch (_: Throwable) {}
             emuThread = null
             userRequestedStop = false
+            // StopEmulation 后原生侧状态不可知，保守视为已 detach
+            surfaceAttached = false
             val surf = surface ?: return@synchronized
-            try { lib.surfaceChanged(surf) } catch (_: Throwable) {}
+            try { lib.surfaceChanged(surf); surfaceAttached = true } catch (_: Throwable) {}
             startEmulationLocked()
         }
     }
@@ -946,7 +965,13 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         emuThread = null
 
         stopPresentation()
-        try { AzaharNative.lib.surfaceDestroyed() } catch (_: Throwable) {}
+        // ★★ surfaceAttached 守门：仅 attached 时才调一次 surfaceDestroyed()
+        //   避免 onSurfaceDestroyed()+unload() 连调 → 二次 release ANativeWindow
+        //   → VK 路径 vkCreateAndroidSurfaceKHR CHECK 失败 → SIGABRT
+        if (surfaceAttached) {
+            try { AzaharNative.lib.surfaceDestroyed() } catch (_: Throwable) {}
+            surfaceAttached = false
+        }
         surface = null
         lastSurfaceW = 0
         lastSurfaceH = 0

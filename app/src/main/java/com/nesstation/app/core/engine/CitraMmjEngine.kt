@@ -284,10 +284,38 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     android.util.Log.i("CitraMmjEngine", "core message[$type]: $message")
                 }
             }
-            // 目录树 + 用户目录 + 配置管线
+            // ★★ 初始化管线（DraStic 同款严格顺序）：★★
+            //   1. ensureUserDirTree：创建 nand/sdmc/config/sysdata 等基础目录
+            //   2. SetUserPath("!" + userDir)：**必须加 '!' 前缀**，原因同
+            //      AzaharEngine.kt：MMJ 原生 SetUserPath 开头调
+            //      TranslateFilePath(path)→stat(拼接后的路径)，不加 '!' 会让
+            //      路径被拼上 userDir 前缀两次→路径错乱→loadConfig 读不到
+            //      config.ini→默认值→初始化断言失败→SIGTRAP at libcitra_mmj.so
+            //      （崩溃栈 pc 0x282234 在 DefaultDispatch 协程线程，正是本处路径）
+            //   3. loadConfig：在 userPath 生效后读 config.ini
+            //   4. InitGpuDriver：对齐 Azahar 的 initializeGpuDriver 调用，
+            //      避免 VK 后端初始化断言
+            //   5. applyInputConfig + applyCoreOptions + saveConfig：应用用户设置
             ensureUserDirTree()
-            try { lib.SetUserPath(userDir()) } catch (_: Throwable) {}
+            try { lib.SetUserPath("!" + userDir()) } catch (_: Throwable) {}
             try { lib.loadConfig() } catch (_: Throwable) {}
+            // ★★ 新增：GPU 驱动参数初始化（对齐 AzaharEngine 第 530–550 行）。
+            //   不调时部分设备（如 Redmi Socrates）VK 后端初始化会触发原生 CHECK
+            //   → SIGTRAP。传参同 Azahar：hook路径为 nativeLibraryDir/，
+            //   driverInstallPath 为 filesDir/gpu_driver，fileRedirectPath
+            //   为 filesDir/gpu/vk_file_redirect。
+            try {
+                val ctx = appContext
+                val hookLibPath = ctx?.applicationInfo?.nativeLibraryDir?.let { "$it/" } ?: ""
+                val driverInstallPath = ctx?.filesDir?.let {
+                    java.io.File(it, "gpu_driver").apply { mkdirs() }.absolutePath
+                } ?: ""
+                val fileRedirectPath = ctx?.filesDir?.let {
+                    java.io.File(java.io.File(it, "gpu"), "vk_file_redirect")
+                        .apply { mkdirs() }.absolutePath
+                } ?: ""
+                lib.InitGpuDriver(hookLibPath, driverInstallPath, "", fileRedirectPath)
+            } catch (_: Throwable) {}
             // 输入映射 + 用户设置
             applyInputConfig()
             applyCoreOptions()
@@ -333,13 +361,40 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             android.util.Log.w("CitraMmjEngine", "SurfaceChanged failed", t)
         }
         emuThread = thread(name = "CitraMmjNative") {
-            val surf = surface
-            if (surf != null && surf.isValid) {
-                try { lib.SurfaceChanged(surf) } catch (_: Throwable) {}
+            // ★★ DraStic 同款 Surface 有效性检查：绝不能带无效 surface 进入 Run()！
+            //   MMJ 原生 Run() 会调 EmuWindow_Android 构造，读到无效 surface 时
+            //   VK 后端 vkCreateAndroidSurfaceKHR CHECK 失败→SIGTRAP
+            //   （本次崩溃栈 pc 0x282234 在 libcitra_mmj.so 的根因之一）。
+            //   等待最多 3 秒拉取有效 surface，命中则推给 native 并跑；
+            //   超时则放弃本次启动并上报，避免闪退。
+            var attemptedSurface: android.view.Surface? = surface
+            if (attemptedSurface == null || !attemptedSurface.isValid) {
+                var ready = false
+                for (attempt in 1..30) {
+                    try { Thread.sleep(100) } catch (_: InterruptedException) { return@thread }
+                    if (!running.get()) return@thread
+                    val cur = surface
+                    if (cur != null && cur.isValid) {
+                        attemptedSurface = cur
+                        ready = true
+                        break
+                    }
+                }
+                if (!ready) {
+                    lastErrorText = "启动时 Surface 尚未就绪（视图重建中），已放弃本次启动；画面恢复后将自动重启。"
+                    android.util.Log.w("CitraMmjEngine", lastErrorText)
+                    return@thread
+                }
+                try {
+                    lib.SurfaceChanged(attemptedSurface!!)
+                    surfaceAttached = true
+                } catch (_: Throwable) {}
             }
             try {
                 if (_ffSpeed > 0) applyFastForwardConfig()
-                lib.Run(path)
+                // ★ '!' 前缀 = 原生绝对路径标记（同 Azahar）：裸路径会被
+                //   TranslateFilePath 拼到用户目录下变成不存在的路径→黑屏/秒退
+                lib.Run("!$path")
             } catch (t: Throwable) {
                 android.util.Log.e("CitraMmjEngine", "Run() crashed", t)
                 lastErrorText = t.message ?: "Run() crashed"

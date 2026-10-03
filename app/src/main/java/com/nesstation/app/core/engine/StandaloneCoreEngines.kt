@@ -77,6 +77,24 @@ interface NgcWiiCoreEngine : EmulatorEngine {
     fun setWiiMotionTilt(left: Float, right: Float, forward: Float, backward: Float)
 
     /**
+     * ★★ V2 全维度体感（倾斜 + 挥动 + 摇晃）—— WiiMotionSensors.MotionState 直通。
+     *
+     * 比 [setWiiMotionTilt] 多驱动：
+     *  - SWING_UP/DOWN/LEFT/RIGHT（120-123）—— Wii Sports 系挥拍类游戏必读轴；
+     *  - SWING_FORWARD/BACKWARD（124-125）—— 顶边推/拉；
+     *  - SHAKE_X/Y/Z（132-134）—— 抽搐/摇动类游戏（马里奥赛车 wheelie 等）。
+     *
+     * 实现应把所有非零字段与按钮倾斜叠加后一次性推送给核心（避免分批推送
+     * 在核心侧产生半帧状态）。NGC 模式由实现自行忽略。
+     *
+     * 默认实现转调 [setWiiMotionTilt]（保持兼容），新核心引擎（如 IshirukaEngine）
+     * 应覆盖此方法以驱动全部轴。
+     */
+    fun setWiiMotion(state: WiiMotionSensors.MotionState) {
+        setWiiMotionTilt(state.tiltLeft, state.tiltRight, state.tiltForward, state.tiltBackward)
+    }
+
+    /**
      * 控制模式："ngc" / "wii" / "auto"。
      */
     var controlMode: String

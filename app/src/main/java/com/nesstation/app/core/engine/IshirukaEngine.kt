@@ -1237,6 +1237,20 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     private val wiiTiltLast = FloatArray(4)
     /** 最近一次推送的 Swing 前后轴合成值（去重）。 */
     private val wiiSwingLast = FloatArray(2)
+    /**
+     * ★★ V2 体感扩展：手机传感器全维度挥动/摇晃值。
+     *
+     * swingSensor[0..3] = swingUp/Down/Left/Right；swingSensor[4..5] = swingForward/Backward；
+     * shakeSensor[0..2] = shakeX/Y/Z。
+     *
+     * 通过 [setWiiMotion]（MotionState sink）写入；[pushWiiTilt] 推送时同时
+     * 把这些值送进对应的 SWING_*/SHAKE_* 轴（120-125, 132-134）。
+     */
+    @Volatile private var swingSensor = FloatArray(6)
+    @Volatile private var shakeSensor = FloatArray(3)
+    /** 最近推送的 SWING U/D/L/R 与 SHAKE 三轴合成值（去重）。 */
+    private val wiiSwingFullLast = FloatArray(4)   // U/D/L/R
+    private val wiiShakeLast = FloatArray(3)
     private val wiiTiltLock = Any()
 
     /** setPad1 → 按钮位驱动的倾斜（虚拟按键/实体手柄的 L2/R2/L3/R3）。 */
@@ -1274,51 +1288,140 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     }
 
     /**
+     * ★★ V2 手机体感全维度输入（倾斜 + 挥动 + 摇晃）★★
+     *
+     * 与 [setWiiMotionTilt] 不同，本方法从 [WiiMotionSensors.MotionState] 拆出
+     * 13 个独立轴后逐项写入传感器缓存，随后调 [pushWiiTilt] 一次性推送全部轴。
+     * 解决旧版“手机体感毫无作用”根因：V1 只推 TILT_F/B/L/R + SWING_F/B 五根轴，
+     * Wii Sports 挥拍类游戏读的是 SWING_U/D/L/R（120-123），上挥拍/侧挥拍
+     * 全部读不到；马里奥赛车 wheelie 这类摇动游戏读 SHAKE_X/Y/Z（132-134），
+     * 同样读不到。本方法补齐这两个轴组。
+     */
+    override fun setWiiMotion(state: WiiMotionSensors.MotionState) {
+        if (!isLoaded || effectiveMode() == "ngc") return
+        var changed = false
+        synchronized(wiiTiltLock) {
+            // Tilt 四轴：与旧 setWiiMotionTilt 同路径写入
+            val tilt = floatArrayOf(
+                state.tiltLeft.coerceIn(0f, 1f),
+                state.tiltRight.coerceIn(0f, 1f),
+                state.tiltForward.coerceIn(0f, 1f),
+                state.tiltBackward.coerceIn(0f, 1f)
+            )
+            for (i in 0 until 4) {
+                if (tilt[i] != wiiTiltSensor[i]) changed = true
+                wiiTiltSensor[i] = tilt[i]
+            }
+            // ★ V2 新增：SWING 六轴 (Up/Down/Left/Right/Forward/Backward)
+            val swing = floatArrayOf(
+                state.swingUp, state.swingDown,
+                state.swingLeft, state.swingRight,
+                state.swingForward, state.swingBackward
+            )
+            for (i in 0 until 6) {
+                if (swing[i] != swingSensor[i]) changed = true
+                swingSensor[i] = swing[i]
+            }
+            // ★ V2 新增：SHAKE 三轴 (X/Y/Z)
+            val shake = floatArrayOf(state.shakeX, state.shakeY, state.shakeZ)
+            for (i in 0 until 3) {
+                if (shake[i] != shakeSensor[i]) changed = true
+                shakeSensor[i] = shake[i]
+            }
+        }
+        if (changed) pushWiiTilt()
+    }
+
+    /**
      * 合成按钮 + 传感器输入并推送轴事件（仅变化时发送）。
      * ★★ 绑定格式修复后的推送策略（见 writeControllerInis 的根治注释）：★★
-     *   Tilt/Swing 绑定为全轴表达式（`Axis N`，带符号推值），符号约定与
+     *   Tilt/Swing/Shake 绑定为全轴表达式（`Axis N`，带符号推值），符号约定与
      *   引擎摇杆/IR 完全一致（已验证可用的同款约定）：
      *     - 左倾/前方向 → 负值；右倾/后方向 → 正值；
-     *   轴号：Tilt 前/后/左/右 = 127/128/129/130，Swing 前/后 = 124/125。
+     *   轴号：Tilt 前/后/左/右 = 127/128/129/130，Swing 全向 = 120-125，
+     *         Shake X/Y/Z = 132/133/134。
      *   前后方向（用户口中的“前后晃动”）**同时**驱动 Tilt F/B 与 Swing
      *   F/B —— 兼容只读 Tilt 的游戏（Monkey Ball 系）与只读 Swing 的
      *   游戏（Wii Sports 系挥动类）。
+     *   ★★ V2 新增：同时推送 SWING_UP/DOWN/LEFT/RIGHT（120-123）与
+     *      SHAKE_X/Y/Z（132-134）—— 旧版只推 SWING_F/B，是“手机体感毫无作用”
+     *      的根因（如 Wii Sports 网球的上挥拍/侧挥拍读的是 120-123）。
      */
     private fun pushWiiTilt() {
         if (!isLoaded || effectiveMode() == "ngc") return
         val dev = NativeLibrary.TouchScreenDevice
         val merged = FloatArray(4)
+        val swingMerged = FloatArray(6)   // U/D/L/R/F/B
+        val shakeMerged = FloatArray(3)  // X/Y/Z
         synchronized(wiiTiltLock) {
             for (i in 0 until 4) merged[i] = (wiiTiltBtn[i] + wiiTiltSensor[i]).coerceIn(0f, 1f)
+            for (i in 0 until 6) swingMerged[i] = swingSensor[i]
+            for (i in 0 until 3) shakeMerged[i] = shakeSensor[i]
         }
-        val ids = intArrayOf(
+        // ---- Tilt 四轴 (127/128/129/130) ----
+        val tiltIds = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_TILT_FORWARD,   // 127
             NativeLibrary.ButtonType.WIIMOTE_TILT_BACKWARD,  // 128
             NativeLibrary.ButtonType.WIIMOTE_TILT_LEFT,      // 129
             NativeLibrary.ButtonType.WIIMOTE_TILT_RIGHT      // 130
         )
-        val signed = floatArrayOf(
+        val tiltSigned = floatArrayOf(
             -merged[2],   // 前倾/前晃 → 负半轴
             +merged[3],   // 后倾/后晃 → 正半轴
             -merged[0],   // 左倾 → 负半轴
             +merged[1]    // 右倾 → 正半轴
         )
-        for (i in ids.indices) {
-            if (signed[i] != wiiTiltLast[i]) {
-                wiiTiltLast[i] = signed[i]
-                try { NativeLibrary.onGamePadMoveEvent(dev, ids[i], signed[i]) } catch (_: Throwable) {}
+        for (i in tiltIds.indices) {
+            if (tiltSigned[i] != wiiTiltLast[i]) {
+                wiiTiltLast[i] = tiltSigned[i]
+                try { NativeLibrary.onGamePadMoveEvent(dev, tiltIds[i], tiltSigned[i]) } catch (_: Throwable) {}
             }
         }
-        // ★ 前后晃动（Swing）同强度推送到 Swing F/B 轴（124/125）。
+        // ---- Swing 全六轴 (124/125/120/121/122/123) ----
+        // 顺序: F/B/U/D/L/R
         val swingIds = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_SWING_FORWARD,  // 124
-            NativeLibrary.ButtonType.WIIMOTE_SWING_BACKWARD // 125
+            NativeLibrary.ButtonType.WIIMOTE_SWING_BACKWARD, // 125
+            NativeLibrary.ButtonType.WIIMOTE_SWING_UP,      // 120
+            NativeLibrary.ButtonType.WIIMOTE_SWING_DOWN,    // 121
+            NativeLibrary.ButtonType.WIIMOTE_SWING_LEFT,    // 122
+            NativeLibrary.ButtonType.WIIMOTE_SWING_RIGHT    // 123
         )
-        val swingVals = floatArrayOf(-merged[2], +merged[3])
-        for (i in swingIds.indices) {
+        // ★ Swing F/B 与 Tilt F/B 叠加（旧逻辑保留），同时补上 U/D/L/R
+        val swingVals = floatArrayOf(
+            -merged[2],                          // F: 前推
+            +merged[3],                          // B: 后拉
+            -swingMerged[0],                     // U: 上挥 → 负半轴
+            +swingMerged[1],                     // D: 下挥 → 正半轴
+            -swingMerged[2],                     // L: 左挥 → 负半轴
+            +swingMerged[3]                      // R: 右挥 → 正半轴
+        )
+        // F/B 走旧去重索引（0/1），U/D/L/R 走 wiiSwingFullLast（0..3）
+        for (i in 0..1) {
             if (swingVals[i] != wiiSwingLast[i]) {
                 wiiSwingLast[i] = swingVals[i]
                 try { NativeLibrary.onGamePadMoveEvent(dev, swingIds[i], swingVals[i]) } catch (_: Throwable) {}
+            }
+        }
+        for (i in 2..5) {
+            val j = i - 2
+            if (swingVals[i] != wiiSwingFullLast[j]) {
+                wiiSwingFullLast[j] = swingVals[i]
+                try { NativeLibrary.onGamePadMoveEvent(dev, swingIds[i], swingVals[i]) } catch (_: Throwable) {}
+            }
+        }
+        // ---- Shake 三轴 (132/133/134) ----
+        // Swing F/B 的甩手部分（前后晃动）会同时表现出 Shake Z 方向扰动 ——
+        // 为了避免冗余推送，这里仅在 shakeMerged 非零时才推。
+        val shakeIds = intArrayOf(
+            NativeLibrary.ButtonType.WIIMOTE_SHAKE_X,  // 132
+            NativeLibrary.ButtonType.WIIMOTE_SHAKE_Y,  // 133
+            NativeLibrary.ButtonType.WIIMOTE_SHAKE_Z   // 134
+        )
+        for (i in 0..2) {
+            if (shakeMerged[i] != wiiShakeLast[i]) {
+                wiiShakeLast[i] = shakeMerged[i]
+                try { NativeLibrary.onGamePadMoveEvent(dev, shakeIds[i], shakeMerged[i]) } catch (_: Throwable) {}
             }
         }
     }
