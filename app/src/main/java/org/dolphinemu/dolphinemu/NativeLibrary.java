@@ -172,6 +172,17 @@ public final class NativeLibrary
          */
         public static native void ReloadWiimoteConfig();
 
+        /**
+         * SYSCONF 设置读写（NesStation 集成补丁新增声明；so 导出符号实测）。
+         * 数组布局（原 Ishiruka APK EmulationActivity 反编译核实）：
+         * [0]Screensaver [1]Language [2]Widescreen(IPL.AR) [3]ProgressiveScan
+         * [4]PAL60 [5]SensorBarPosition [6]SensorBarSensitivity
+         * [7]SpeakerVolume [8]WiimoteMotor。
+         * 用于 Wii 宽屏信号（宽屏修正抽搐根治：主机级 16:9 优先于矩阵 hack）。
+         */
+        public static native int[] getSysconfSettings();
+        public static native void setSysconfSettings(int[] settings);
+
         // ------------------------------------------------------------------
         // Java 兜底（so 未导出这些符号；保留旧 API 形状防 UnsatisfiedLinkError）
         // ------------------------------------------------------------------

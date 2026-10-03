@@ -834,7 +834,7 @@ class PadLayout {
     // ★★ 手机体感模拟 Wii 体感（本轮新增，需求：“并加入手机体感模拟
     //    wii体感”）：开启后加速度计 → Wii Tilt 四轴（与 L2/R2/L3/R3
     //    按钮倾斜叠加）。无传感器设备自动退化。
-    var wiiMotionSensor: Boolean = false            // true = 手机体感模拟 Wii 倾斜
+    var wiiMotionSensor: Boolean = true             // true = 手机体感模拟 Wii 倾斜（★★ 默认开启：需求原话“无法使用手机体感（陀螺仪）模拟”；实测 Android 读加速度计/陀螺仪无需任何 permission，旧默认 false 加上无提示 = “无法使用”。无传感器的设备 WiiMotionSensors.start() 返回 false 自动退化，不影响无体感硬件的机型）
     var irCpuCore: String = "4"                     // "0" 解释器 | "4" JIT ARM64 (CPUCore)
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
     var irOverclockEnable: String = "disabled"      // enabled | disabled (OverclockEnable)

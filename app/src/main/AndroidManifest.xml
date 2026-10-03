@@ -53,8 +53,13 @@
     <uses-feature android:name="android.hardware.location" android:required="false" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
-    <!-- ★ Wii 手机体感模拟（可选，无加速度计的设备/TV 自动退化） -->
+    <!-- ★ Wii 手机体感模拟（可选，无加速度计/陀螺仪的设备/TV 自动退化）。
+         声明全部用到的传感器硬件，required=false 保证兼容面。读取传感器
+         本身无需任何 permission（用户反馈"疑似缺少权限声明"，实测缺失的
+         是 feature 声明 + 旧版体感开关默认关闭 + Nunchuk 轴未推送）。 -->
     <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
 
     <application
         android:name=".NesApp"

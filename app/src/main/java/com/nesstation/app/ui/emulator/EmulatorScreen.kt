@@ -522,7 +522,7 @@ private fun defaultActionToBits(action: KeyActionInternal, lBit: Int, rBit: Int)
 // this pad overlay's fillMaxSize pointerInput Box sits ABOVE the game view
 // (AndroidView sibling), so without forwarding the game view would NEVER
 // receive any touch event while the pad is visible.
-private enum class BtnType { DPAD, A, B, TURBO_A, TURBO_B, START, SELECT, L, R, X, Y, L2, R2, L3, R3, LSTICK, RSTICK, ZL, ZR, Z, HOME, WII_1, WII_2, WII_PLUS, WII_MINUS, WII_C, WII_Z, IR_NEAR, IR_FAR, COMBO, QUICK_SAVE, QUICK_LOAD, GAME_AREA }
+private enum class BtnType { DPAD, A, B, TURBO_A, TURBO_B, START, SELECT, L, R, X, Y, L2, R2, L3, R3, LSTICK, RSTICK, ZL, ZR, Z, HOME, WII_1, WII_2, WII_PLUS, WII_MINUS, WII_C, WII_Z, IR_NEAR, IR_FAR, COMBO, QUICK_SAVE, QUICK_LOAD, GAME_AREA, WII_DPAD, WII_A, WII_B, WII_STICK }
 
 // Bit masks for NES/SNES/GBA controller
 // NES/GB/GBC: A B SEL STA U D L R (8 buttons)
@@ -10388,6 +10388,16 @@ private fun PadLayoutEditor(
             // NGC/WII：GC Z + Wii 全套
             BtnType.Z -> if (isPortrait) padLayout.copy {this.ngcBtnZP = newLayout} else padLayout.copy {this.ngcBtnZ = newLayout}
             BtnType.HOME -> if (isPortrait) padLayout.copy {this.wiiBtnHomeP = newLayout} else padLayout.copy {this.wiiBtnHome = newLayout}
+            // ★★ Wii 编辑器选中/缩放根治（用户反馈"方向键和摇杆无法选中改变
+            //   大小"）：新增 4 个 Wii 专属 BtnType，updateBtn/尺寸滑条/编辑器
+            //   预览三处全部读写 wii* 字段 —— 旧实现 wiiDpad 选中后复用
+            //   BtnType.DPAD 的滑条分支（读写的却是 ngcDpad = GC 十字键），
+            //   摇杆/A/B/1/2/+/- 则 isSelected 硬编码 false + onSelect 空实现，
+            //   永远无法被选中调整大小。
+            BtnType.WII_DPAD -> if (isPortrait) padLayout.copy {this.wiiDpadP = newLayout} else padLayout.copy {this.wiiDpad = newLayout}
+            BtnType.WII_A -> if (isPortrait) padLayout.copy {this.wiiBtnAP = newLayout} else padLayout.copy {this.wiiBtnA = newLayout}
+            BtnType.WII_B -> if (isPortrait) padLayout.copy {this.wiiBtnBP = newLayout} else padLayout.copy {this.wiiBtnB = newLayout}
+            BtnType.WII_STICK -> if (isPortrait) padLayout.copy {this.wiiLStickP = newLayout} else padLayout.copy {this.wiiLStick = newLayout}
             BtnType.WII_1 -> if (isPortrait) padLayout.copy {this.wiiBtn1P = newLayout} else padLayout.copy {this.wiiBtn1 = newLayout}
             BtnType.WII_2 -> if (isPortrait) padLayout.copy {this.wiiBtn2P = newLayout} else padLayout.copy {this.wiiBtn2 = newLayout}
             BtnType.WII_PLUS -> if (isPortrait) padLayout.copy {this.wiiBtnPlusP = newLayout} else padLayout.copy {this.wiiBtnPlus = newLayout}
@@ -10715,72 +10725,53 @@ private fun PadLayoutEditor(
                 }
                 if (showWiiDpad) {
                     EditableDpad(
-                        wiiDpad, surfaceSize, selectedBtn == BtnType.DPAD,
+                        wiiDpad, surfaceSize, selectedBtn == BtnType.WII_DPAD,
                         onMove = { targetX, targetY ->
                             val nx = targetX.coerceIn(0f, 1f)
                             val ny = targetY.coerceIn(0f, 1f)
-                            // Wii 十字键拖动写 wiiDpad 字段（独立于 GC 十字键）
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiDpadP = wiiDpad.copy(x = nx, y = ny)}
-                                else padLayout.copy {this.wiiDpad = wiiDpad.copy(x = nx, y = ny)}
-                            )
+                            // ★ 选中/缩放修复：Wii 十字键改用专属 WII_DPAD 槽位
+                            //   （旧实现复用 BtnType.DPAD → 滑条读写的是 GC 的
+                            //   ngcDpad 字段 → Wii 十字键改大小永远无效）。
+                            updateBtn(BtnType.WII_DPAD, wiiDpad.copy(x = nx, y = ny))
                         },
-                        onSelect = { selectedBtn = BtnType.DPAD }
+                        onSelect = { selectedBtn = BtnType.WII_DPAD }
                     )
                 }
                 if (showWiiA) {
-                    EditableRoundBtn("Wii·A", Color(0xFFE74C3C), wiiBtnA, surfaceSize, false,
+                    EditableRoundBtn("Wii·A", Color(0xFFE74C3C), wiiBtnA, surfaceSize, selectedBtn == BtnType.WII_A,
                         onMove = { tx, ty ->
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiBtnAP = wiiBtnA.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                                else padLayout.copy {this.wiiBtnA = wiiBtnA.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            )
-                        }, onSelect = {})
+                            updateBtn(BtnType.WII_A, wiiBtnA.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WII_A })
                 }
                 if (showWiiB) {
-                    EditableRoundBtn("Wii·B", Color(0xFFE67E22), wiiBtnB, surfaceSize, false,
+                    EditableRoundBtn("Wii·B", Color(0xFFE67E22), wiiBtnB, surfaceSize, selectedBtn == BtnType.WII_B,
                         onMove = { tx, ty ->
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiBtnBP = wiiBtnB.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                                else padLayout.copy {this.wiiBtnB = wiiBtnB.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            )
-                        }, onSelect = {})
+                            updateBtn(BtnType.WII_B, wiiBtnB.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WII_B })
                 }
                 if (showWii1) {
-                    EditableRoundBtn("Wii·1", Color(0xFF2ECC71), wiiBtn1, surfaceSize, false,
+                    EditableRoundBtn("Wii·1", Color(0xFF2ECC71), wiiBtn1, surfaceSize, selectedBtn == BtnType.WII_1,
                         onMove = { tx, ty ->
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiBtn1P = wiiBtn1.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                                else padLayout.copy {this.wiiBtn1 = wiiBtn1.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            )
-                        }, onSelect = {})
+                            updateBtn(BtnType.WII_1, wiiBtn1.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WII_1 })
                 }
                 if (showWii2) {
-                    EditableRoundBtn("Wii·2", Color(0xFF3498DB), wiiBtn2, surfaceSize, false,
+                    EditableRoundBtn("Wii·2", Color(0xFF3498DB), wiiBtn2, surfaceSize, selectedBtn == BtnType.WII_2,
                         onMove = { tx, ty ->
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiBtn2P = wiiBtn2.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                                else padLayout.copy {this.wiiBtn2 = wiiBtn2.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            )
-                        }, onSelect = {})
+                            updateBtn(BtnType.WII_2, wiiBtn2.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WII_2 })
                 }
                 if (showWiiPlus) {
-                    EditablePillBtn("Wii·+", wiiBtnPlus, surfaceSize, false,
+                    EditablePillBtn("Wii·+", wiiBtnPlus, surfaceSize, selectedBtn == BtnType.WII_PLUS,
                         onMove = { tx, ty ->
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiBtnPlusP = wiiBtnPlus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                                else padLayout.copy {this.wiiBtnPlus = wiiBtnPlus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            )
-                        }, onSelect = {})
+                            updateBtn(BtnType.WII_PLUS, wiiBtnPlus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WII_PLUS })
                 }
                 if (showWiiMinus) {
-                    EditablePillBtn("Wii·−", wiiBtnMinus, surfaceSize, false,
+                    EditablePillBtn("Wii·−", wiiBtnMinus, surfaceSize, selectedBtn == BtnType.WII_MINUS,
                         onMove = { tx, ty ->
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiBtnMinusP = wiiBtnMinus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                                else padLayout.copy {this.wiiBtnMinus = wiiBtnMinus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            )
-                        }, onSelect = {})
+                            updateBtn(BtnType.WII_MINUS, wiiBtnMinus.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WII_MINUS })
                 }
                 if (showWiiHome) {
                     EditablePillBtn("HOME", wiiBtnHome, surfaceSize, selectedBtn == BtnType.HOME,
@@ -10833,13 +10824,13 @@ private fun PadLayoutEditor(
                 if (ngcWiiNunchuk || ngcWiiClassic) {
                     EditableRoundBtn(
                         if (ngcWiiClassic) "左摇杆" else "双节棍摇杆",
-                        Color(0xFFFFD66B), wiiLStick, surfaceSize, false,
+                        Color(0xFFFFD66B), wiiLStick, surfaceSize, selectedBtn == BtnType.WII_STICK,
                         onMove = { tx, ty ->
-                            onLayoutChange(
-                                if (isPortrait) padLayout.copy {this.wiiLStickP = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                                else padLayout.copy {this.wiiLStick = wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f))}
-                            )
-                        }, onSelect = {})
+                            // ★ 选中/缩放修复：双节棍摇杆改用专属 WII_STICK 槽位
+                            //   （旧实现 isSelected=false + onSelect 空 → 永远无法
+                            //   选中，且滑条 LSTICK 分支读写的是 GC 主摇杆字段）。
+                            updateBtn(BtnType.WII_STICK, wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WII_STICK })
                 }
             }
             // PS2 专属可编辑控件：双摇杆（常驻）+ L3/R3
@@ -11116,6 +11107,13 @@ private fun PadLayoutEditor(
                     BtnType.ZR -> { currentSize = n3dsBtnZR.sizeDp; minSize = 30; maxSize = 100; label = "ZR大小" }
                     BtnType.Z -> { currentSize = ngcBtnZ.sizeDp; minSize = 30; maxSize = 90; label = "Z键大小" }
                     BtnType.HOME -> { currentSize = wiiBtnHome.sizeDp; minSize = 24; maxSize = 100; label = "HOME大小" }
+                    // ★★ Wii 专属控件尺寸滑条补齐（配合 WII_DPAD/WII_A/WII_B/
+                    //   WII_STICK 新槽位；旧实现这些控件无法选中 → 滑条分支
+                    //   永远不可达）。★★
+                    BtnType.WII_DPAD -> { currentSize = wiiDpad.sizeDp; minSize = 80; maxSize = 220; label = "Wii十字键大小" }
+                    BtnType.WII_A -> { currentSize = wiiBtnA.sizeDp; minSize = 40; maxSize = 120; label = "Wii A键大小" }
+                    BtnType.WII_B -> { currentSize = wiiBtnB.sizeDp; minSize = 40; maxSize = 120; label = "Wii B键大小" }
+                    BtnType.WII_STICK -> { currentSize = wiiLStick.sizeDp; minSize = 80; maxSize = 220; label = "双节棍摇杆大小" }
                     BtnType.WII_1 -> { currentSize = wiiBtn1.sizeDp; minSize = 30; maxSize = 100; label = "Wii 1大小" }
                     BtnType.WII_2 -> { currentSize = wiiBtn2.sizeDp; minSize = 30; maxSize = 100; label = "Wii 2大小" }
                     BtnType.WII_PLUS -> { currentSize = wiiBtnPlus.sizeDp; minSize = 24; maxSize = 100; label = "Wii +大小" }
@@ -11178,6 +11176,10 @@ private fun PadLayoutEditor(
                             BtnType.ZR -> n3dsBtnZR
                             BtnType.Z -> ngcBtnZ
                             BtnType.HOME -> wiiBtnHome
+                            BtnType.WII_DPAD -> wiiDpad
+                            BtnType.WII_A -> wiiBtnA
+                            BtnType.WII_B -> wiiBtnB
+                            BtnType.WII_STICK -> wiiLStick
                             BtnType.WII_1 -> wiiBtn1
                             BtnType.WII_2 -> wiiBtn2
                             BtnType.WII_PLUS -> wiiBtnPlus

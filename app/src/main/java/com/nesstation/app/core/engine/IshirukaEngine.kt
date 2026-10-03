@@ -250,6 +250,79 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     /** 用户请求的 Wii 主机语言（-1 = 未设置；loadRom 前重放补丁）。 */
     @Volatile private var pendingWiiLanguage: Int = -1
 
+    /** ★ 通用 SYSCONF BIGBYTE 条目补丁（IPL.LNG / IPL.AR 等）。
+     *   复用 [patchSysconfLanguage] 的字节布局：
+     *   [type=0x01][nameLen:2 BE][name][data:1]。找不到条目时静默跳过。 */
+    private fun patchSysconfBigByte(sysconf: File, name: String, value: Int) {
+        val data = sysconf.readBytes()
+        if (data.size < 0x40 || data[0].toInt() != 'S'.code || data[1].toInt() != 'C'.code) return
+        val nameBytes = name.toByteArray(Charsets.US_ASCII)
+        val prefix = ByteArray(3 + nameBytes.size)
+        prefix[0] = 0x01
+        prefix[1] = ((nameBytes.size shr 8) and 0xFF).toByte()
+        prefix[2] = (nameBytes.size and 0xFF).toByte()
+        nameBytes.copyInto(prefix, 3)
+        outer@ for (i in 0..data.size - prefix.size - 1) {
+            for (j in prefix.indices) {
+                if (data[i + j] != prefix[j]) continue@outer
+            }
+            val valueOffset = i + prefix.size
+            if (data[valueOffset].toInt() == value) return
+            data[valueOffset] = value.toByte()
+            val tmp = File(sysconf.parentFile, "SYSCONF.tmp")
+            tmp.writeBytes(data)
+            if (!tmp.renameTo(sysconf)) {
+                tmp.copyTo(sysconf, overwrite = true)
+                tmp.delete()
+            }
+            return
+        }
+        android.util.Log.w("IshirukaEngine", "SYSCONF entry not found: $name")
+    }
+
+    /**
+     * ★★ Wii 宽屏信号（SYSCONF IPL.AR = 1/0）★★ —— “宽屏修正抽搐”根治。
+     *
+     * 抽搐根因：旧实现只开 GFX 的 wideScreenHack（投影矩阵 patch），它
+     * 按帧拦截游戏矩阵调用 —— 游戏切换场景/内置 16:9 模式时 patch 命中
+     * 与否来回翻转 → 画面一会儿 16:9 修正一会儿 4:3。
+     *
+     * 修复：Wii 游戏改走【主机级 16:9 信号】（SYSCONF IPL.AR=1），带
+     * 原生 16:9 的游戏（绝大多数 Wii 游戏）读到后自行切到宽屏渲染，
+     * 稳定无抽搐；GC 游戏没有 SYSCONF，才回退到 wideScreenHack。
+     * 两路互斥，杜绝双重修正。
+     */
+    private fun patchSysconfWidescreen(widescreen: Boolean) {
+        val value = if (widescreen) 1 else 0
+        val userSysconf = File(File(File(userDir(), "Wii"), "shared2"), "SYSCONF")
+        val sysRoot = appContext?.let { File(File(File(it.filesDir, "ishiiruka"), "sys"), "Wii") }
+        val sysSysconf = sysRoot?.let { File(File(it, "shared2"), "SYSCONF") }
+        var patched = false
+        if (userSysconf.isFile) {
+            try { patchSysconfBigByte(userSysconf, "IPL.AR", value); patched = true } catch (t: Throwable) {
+                android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch (user) failed", t)
+            }
+        }
+        if (sysSysconf != null && sysSysconf.isFile) {
+            try { patchSysconfBigByte(sysSysconf, "IPL.AR", value); patched = true } catch (t: Throwable) {
+                android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch (sys) failed", t)
+            }
+        }
+        // 同步走一遍原生 JNI 通道（getSysconfSettings/setSysconfSettings
+        // 布局：[0]屏保 [1]语言 [2]宽屏 [3]逐行 [4]PAL60 [5]感应条位置
+        // [6]感应条灵敏度 [7]扬声器音量 [8]马达）—— 双保险。
+        try {
+            val cur = org.dolphinemu.dolphinemu.NativeLibrary.getSysconfSettings()
+            if (cur != null && cur.size >= 9) {
+                cur[2] = if (widescreen) 1 else 0
+                org.dolphinemu.dolphinemu.NativeLibrary.setSysconfSettings(cur)
+            }
+        } catch (_: Throwable) {}
+        if (!patched) {
+            android.util.Log.w("IshirukaEngine", "SYSCONF not found for widescreen patch (will apply on next boot)")
+        }
+    }
+
     private fun patchSysconfFile(sysconf: File, language: Int) {
         val data = sysconf.readBytes()
         // SYSCONF 头验证（"SCv0"）
@@ -594,7 +667,41 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 }
                 return
             }
+            // ★★ 宽屏修正重路由（"一会儿16:9修正一会儿4:3修正"抽搐根治）★★
+            //   Wii 游戏：SYSCONF IPL.AR=1（主机级 16:9 信号）+ wideScreenHack
+            //   显式 False —— 原生宽屏游戏（绝大多数 Wii 游戏）读到主机信号
+            //   自行切 16:9 渲染，稳定无抽搐（矩阵 patch 按帧拦截游戏矩阵
+            //   调用，场景切换时命中与否来回翻转 = 抽搐的直接来源）。
+            //   GC 游戏：无 SYSCONF，保持矩阵 hack（唯一手段）。
+            //   两路互斥，避免双重修正；关闭时两路全复位。
+            "GFX.ini/Settings/wideScreenHack" -> {
+                val enable = value.equals("true", true) || value.equals("1", true)
+                val hackValue: String
+                if (enable && !isGameCubeGame()) {
+                    try { patchSysconfWidescreen(true) } catch (t: Throwable) {
+                        android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch failed", t)
+                    }
+                    hackValue = "False"
+                } else {
+                    if (isLoaded && !isGameCubeGame()) {
+                        try { patchSysconfWidescreen(false) } catch (_: Throwable) {}
+                    }
+                    hackValue = if (enable) "True" else "False"
+                }
+                coreOptions[key] = hackValue
+                if (isRunning2()) {
+                    try { NativeLibrary.SetConfig("GFX.ini", "Settings", "wideScreenHack", hackValue) } catch (_: Throwable) {}
+                    try {
+                        writeIniMerged(
+                            java.io.File(configDir(), "GFX.ini"),
+                            mapOf("Settings" to mapOf("wideScreenHack" to hackValue))
+                        )
+                    } catch (_: Throwable) {}
+                }
+                return
+            }
         }
+        val changed = coreOptions[key] != value
         coreOptions[key] = value
         val parts = key.split('/', limit = 3)
         if (parts.size == 3 && isRunning2()) {
@@ -623,6 +730,38 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                     } catch (_: Throwable) {}
                 }
             }
+        }
+        // ★★ “设置应立即生效而不是退出后生效”（本轮根治）★★
+        //   三档处理：
+        //   1) 内存直写（即时）：音量（SConfig.m_Volume@+0x260，音频混音
+        //      线程每周期现读，改了立刻变，与 m_EmulationSpeed 同款机制）；
+        //   2) 软重启保进度（约 2-5s 黑屏）：启动期读取的设置（分辨率/
+        //      MSAA/超频/CPU核心等）—— SaveState(slot8)→Stop→Run(读新
+        //      INI)→LoadState，游戏进度无损；600ms 防抖合并设置面板的批量
+        //      下发，且仅当值真的变化时触发（coreOptions 旧值比对）；
+        //   3) 保持“重进游戏生效”：渲染后端切换（重建 EGL/Vulkan 上下文
+        //      风险高，不自动重启）。
+        if (isRunning2() && changed) when (key) {
+            "Dolphin.ini/DSP/Volume" -> {
+                val vol = value.toIntOrNull()?.coerceIn(0, 100) ?: return
+                try { pokeSConfigInt(VOLUME_OFFSET, vol) } catch (_: Throwable) {}
+            }
+            "Dolphin.ini/Core/CPUCore", "Dolphin.ini/Core/CPUThread",
+            "Dolphin.ini/Core/OverclockEnable", "Dolphin.ini/Core/Overclock",
+            "Dolphin.ini/Core/Fastmem", "Dolphin.ini/Core/JITFollowBranch",
+            "Dolphin.ini/Core/DSPHLE", "Dolphin.ini/Core/AudioLatency",
+            "Dolphin.ini/Core/AudioStretch", "Dolphin.ini/Core/VSync",
+            "Dolphin.ini/Core/SelectedLanguage", "Dolphin.ini/Core/OverrideGCLang",
+            "GFX.ini/Settings/InternalResolution", "GFX.ini/Settings/MSAA",
+            "GFX.ini/Settings/WaitForShadersBeforeStarting",
+            "GFX.ini/Settings/ShowFPS",
+            "GFX.ini/Enhancements/MaxAnisotropy",
+            "GFX.ini/Enhancements/PostProcessingShader",
+            "GFX.ini/Hacks/EFBToTextureEnable", "GFX.ini/Hacks/EFBScaledCopy",
+            "GFX.ini/Hacks/EFBAccessEnable", "GFX.ini/Hacks/ImmediateXFBEnable",
+            "GFX.ini/Hacks/XFBToTextureEnable" -> scheduleSoftRestart()
+            // 渲染后端（GFXBackend/VideoBackendIndex）：不自动软重启 ——
+            //   切后端会重建渲染窗口/上下文，自动化风险高，保持提示重进。
         }
     }
 
@@ -738,6 +877,23 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             val surf = surface
             if (surf != null && surf.isValid) {
                 try { NativeLibrary.SurfaceChanged(surf) } catch (_: Throwable) {}
+            }
+            // ★★ 快进重放（软重启/重进后内存速度会回读 INI 的 1.0）：Run()
+            //    内部 SConfig 初始化完成后由后台任务把 _ffSpeed 重新写入
+            //    m_EmulationSpeed（会话级状态跨 reset 保持）。每 100ms 重试
+            //    至成功或 10s 超时（boot 慢的 Wii 游戏覆盖到）。
+            if (_ffSpeed > 0) {
+                val ffTarget = _ffSpeed.toFloat()
+                thread(name = "IshiFfwdReapply", isDaemon = true) {
+                    try {
+                        for (i in 0..100) {
+                            Thread.sleep(100)
+                            if (try { NativeLibrary.IsRunning() } catch (_: Throwable) { false }) {
+                                if (pokeEmulationSpeed(ffTarget)) return@thread
+                            }
+                        }
+                    } catch (_: InterruptedException) {}
+                }
             }
             try {
                 NativeLibrary.Run(path)
@@ -879,9 +1035,20 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         synchronized(wiiTiltLock) {
             wiiTiltBtn.fill(0f)
             wiiTiltSensor.fill(0f)
+            swingSensor.fill(0f)
+            shakeSensor.fill(0f)
         }
         wiiTiltLast.fill(0f)
         wiiSwingLast.fill(0f)
+        // ★ 去重缓存全部复位（“左右倾斜偶尔失灵”的叠加成因之一）：旧实现
+        //   漏了 wiiSwingFullLast/wiiShakeLast/Nunchuk 镜像缓存 —— 换游戏后
+        //   原生侧轴值已归零而引擎缓存还持有旧值，相同值推途被跳过 →
+        //   首次按键无反应（“偶尔失灵”）。全部清零保证每次会话干净起步。
+        wiiSwingFullLast.fill(0f)
+        wiiShakeLast.fill(0f)
+        wiiNunchukSwingLast.fill(0f)
+        wiiNunchukTiltLast.fill(0f)
+        wiiNunchukShakeLast.fill(0f)
     }
 
     // ------------------------------------------------------------------
@@ -897,20 +1064,31 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     override fun setHighQualityScaling(enabled: Boolean) {}
 
     /**
-     * 快进：Dolphin 5.0 系无运行时变速 API（so 导出符号全量扫描无
-     * *Speed* / *Throttle* JNI；EmulationSpeed 是 SConfig 启动期键）。
-     * ★ 修复（旧实现无效的根因）：
-     *   1. 旧实现只调 NativeLibrary.SetConfig —— 该 JNI 写盘路径由 so
-     *      内部 GetUserPath 决定，与核心实际读取的 <userDir>/Config/ 不一致
-     *      （异常又被吞掉）→ 写了个寂寞；
-     *   2. EmulationSpeed 只在 Run() 启动时读一次，运行中改不会重读。
-     *   现改为与其它设置同款的双通道（SetConfig + 直写 INI 合并），
-     *   确保下次启动核心读到 EmulationSpeed=0（不限速）—— UI 侧通过
-     *   [supportsRuntimeFastForward] 反馈“需重进游戏生效”，不再静默无效。
+     * ★★ 快进（运行时变速，内存直写根治）★★
+     *
+     * 原理（libishiiruka.so BuildId 9aa1cc68f0c7… 反汇编逐一核实）：
+     *   - 节流回调（Throttle @ so+0x14E5A4）**每个节流周期现读**
+     *     SConfig::m_EmulationSpeed（[SConfig+0x208]）做速度决策；
+     *   - SConfig 实例经 .data 槽位（load_bias+0x800E48）两级解引用可得：
+     *     *(0x800E48) = 实例指针存放地址（R_AARCH64_RELATIVE → 0x80B048），
+     *     *(0x80B048) = SConfig 实例（Meyers 单例，核心启动后非空）；
+     *   - 因此运行中直接改写这 4 字节 float（ARM64 对齐写原子）：
+     *     0.0=不限速 / 1.0=正常 / N.0=N 倍速 —— 下一节流周期（≤1ms）即生效。
+     *
+     * 安全措施：
+     *   1. BuildId 指纹校验（so 内 .note.gnu.build-id），版本不符自动禁用；
+     *   2. 两级指针判空 + 当前值域 sanity（[0,8] 且非 NaN）才允许写；
+     *   3. 经 /proc/self/mem 写自身（无权限问题、无 hidden-API 反射）；
+     *   4. 快进是会话级状态：不持久化 INI，退出/重进自动恢复 1.0（核心
+     *      启动时从 INI 读回）。
+     * 校验不过时回退“写 INI + 重进游戏生效”的旧通道。
      */
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
         if (!isLoaded) return
+        val target = if (speed > 0) speed.toFloat() else 1.0f
+        if (pokeEmulationSpeed(target)) return
+        // 回退：写配置（下次启动核心读到 EmulationSpeed 生效）
         try {
             val value = if (speed > 0) "0" else "1"
             try { NativeLibrary.SetConfig("Dolphin.ini", "Core", "EmulationSpeed", value) } catch (_: Throwable) {}
@@ -923,11 +1101,233 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         } catch (_: Throwable) {}
     }
 
+    /** 该 so 的构建指纹（nm/readelf 实测），内存补丁仅在此版本启用。 */
+    private val ISHI_BUILD_ID = "9aa1cc68f0c7c917b27cbb643e859c2842c066c4"
+
+    /** SConfig 实例槽位（.data，相对 so 加载基址；R_AARCH64_RELATIVE→0x80B048）。 */
+    private val SCONFIG_SLOT_OFFSET = 0x800E48L
+
+    /** m_EmulationSpeed 在 SConfig 实例内的偏移（LoadSettings@0xD6D80 与 Throttle@0x14E5A4 双向核实）。 */
+    private val EMU_SPEED_OFFSET = 0x208L
+
+    /** SConfig::m_Volume（int，0-100；LoadSettings“Volume”分支 @0xD77FC 输出地址实测，
+     *  与 JNI 侧音量增减路径 0x2E3A30/0x2E3A70 的 [SConfig+0x260] 读写一致）。 */
+    private val VOLUME_OFFSET = 0x260L
+
+    /** 软重启专用存档槽位（避开用户常规 1-3 槽）。 */
+    private val SOFT_RESTART_SLOT = 8
+
+    @Volatile private var memPatchVerified = false
+    @Volatile private var memPatchDisabled = false
+
     /**
      * 该核心是否支持运行中变速（UI 用：false 时加速按钮给出明确提示
      * “配置已写入，重新进入游戏后生效”，而不是无反馈的静默无效）。
+     * 主动触发指纹校验（有缓存），首次点击前即可返回真实状态。
      */
-    fun supportsRuntimeFastForward(): Boolean = false
+    fun supportsRuntimeFastForward(): Boolean = ensureMemPatchVerified()
+
+    /** /proc/self/mem 读 long（小端）。地址非法返回 0。 */
+    private fun readLongLe(mem: java.io.RandomAccessFile, addr: Long): Long {
+        val b = ByteArray(8)
+        mem.seek(addr)
+        mem.readFully(b)
+        var v = 0L
+        for (i in 7 downTo 0) v = (v shl 8) or (b[i].toLong() and 0xFF)
+        return v
+    }
+
+    /** /proc/self/mem 读 float（小端）。 */
+    private fun readFloatLe(mem: java.io.RandomAccessFile, addr: Long): Float {
+        val b = ByteArray(4)
+        mem.seek(addr)
+        mem.readFully(b)
+        val bits = (b[3].toLong() and 0xFF).toInt().shl(24) or
+                ((b[2].toLong() and 0xFF).toInt() shl 16) or
+                ((b[1].toLong() and 0xFF).toInt() shl 8) or
+                (b[0].toLong() and 0xFF).toInt()
+        return Float.fromBits(bits)
+    }
+
+    /** /proc/self/mem 写 float（小端 4 字节）。 */
+    private fun writeFloatLe(mem: java.io.RandomAccessFile, addr: Long, v: Float) {
+        val bits = v.toRawBits()
+        mem.seek(addr)
+        mem.write(byteArrayOf(
+            (bits and 0xFF).toByte(),
+            (bits shr 8 and 0xFF).toByte(),
+            (bits shr 16 and 0xFF).toByte(),
+            (bits shr 24 and 0xFF).toByte()
+        ))
+    }
+
+    /** 首次调用时校验 so 指纹（BuildId）并缓存；失败置 memPatchDisabled。 */
+    private fun ensureMemPatchVerified(): Boolean {
+        if (memPatchVerified) return true
+        if (memPatchDisabled) return false
+        return try {
+            var soPath: String? = null
+            var bias = -1L
+            java.io.File("/proc/self/maps").forEachLine { line ->
+                if (soPath == null && line.contains("libishiiruka.so")) {
+                    bias = line.substringBefore('-').toLong(16)
+                    soPath = line.substringAfterLast(' ').trim()
+                }
+            }
+            val path = soPath
+            if (path.isNullOrEmpty() || bias < 0) {
+                memPatchDisabled = true
+                return false
+            }
+            // .note.gnu.build-id：读 so 前 0x400 字节搜 20 字节指纹（GNU note 头 16 字节）
+            val idBytes = ISHI_BUILD_ID.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            val head = ByteArray(0x400)
+            java.io.FileInputStream(path).use { it.read(head) }
+            outer@ for (i in 0..head.size - idBytes.size) {
+                for (j in idBytes.indices) {
+                    if (head[i + j] != idBytes[j]) continue@outer
+                }
+                memPatchVerified = true
+                return true
+            }
+            memPatchDisabled = true
+            android.util.Log.w("IshirukaEngine", "libishiiruka.so BuildId mismatch: mem-patch disabled")
+            false
+        } catch (t: Throwable) {
+            android.util.Log.w("IshirukaEngine", "verify libishiiruka.so failed", t)
+            memPatchDisabled = true
+            false
+        }
+    }
+
+    /** 直写 SConfig::m_EmulationSpeed（小端 float）。成功 true。 */
+    private fun pokeEmulationSpeed(speed: Float): Boolean {
+        if (!ensureMemPatchVerified()) return false
+        return try {
+            java.io.RandomAccessFile("/proc/self/mem", "rw").use { mem ->
+                // 重新解析 maps（每次调用时 so 基址可能不同，代价可忽略——低频操作）
+                var bias = -1L
+                java.io.File("/proc/self/maps").forEachLine { line ->
+                    if (bias < 0 && line.contains("libishiiruka.so")) {
+                        bias = line.substringBefore('-').toLong(16)
+                    }
+                }
+                if (bias < 0) return false
+                val slot = readLongLe(mem, bias + SCONFIG_SLOT_OFFSET)
+                if (slot == 0L) return false
+                val sconfig = readLongLe(mem, slot)
+                if (sconfig == 0L) return false
+                val cur = readFloatLe(mem, sconfig + EMU_SPEED_OFFSET)
+                if (cur.isNaN() || cur < 0f || cur > 8f) return false   // sanity：非合理初值拒绝写
+                writeFloatLe(mem, sconfig + EMU_SPEED_OFFSET, speed)
+                true
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("IshirukaEngine", "pokeEmulationSpeed failed", t)
+            false
+        }
+    }
+
+    /** 直写 SConfig 的 int 字段（音量等）。地址解析失败/值域异常返回 false。 */
+    private fun pokeSConfigInt(fieldOffset: Long, value: Int): Boolean {
+        if (!ensureMemPatchVerified()) return false
+        if (value < 0 || value > 100000) return false
+        return try {
+            java.io.RandomAccessFile("/proc/self/mem", "rw").use { mem ->
+                var bias = -1L
+                java.io.File("/proc/self/maps").forEachLine { line ->
+                    if (bias < 0 && line.contains("libishiiruka.so")) {
+                        bias = line.substringBefore('-').toLong(16)
+                    }
+                }
+                if (bias < 0) return false
+                val slot = readLongLe(mem, bias + SCONFIG_SLOT_OFFSET)
+                if (slot == 0L) return false
+                val sconfig = readLongLe(mem, slot)
+                if (sconfig == 0L) return false
+                val addr = sconfig + fieldOffset
+                // sanity：现值应为合理 int（音量 0-100；其它字段 < 10^6）
+                val curBytes = ByteArray(4)
+                mem.seek(addr); mem.readFully(curBytes)
+                val cur = (curBytes[3].toInt() and 0xFF shl 24) or (curBytes[2].toInt() and 0xFF shl 16) or
+                        (curBytes[1].toInt() and 0xFF shl 8) or (curBytes[0].toInt() and 0xFF)
+                if (cur < 0 || cur > 100000) return false
+                mem.seek(addr)
+                mem.write(byteArrayOf(
+                    (value and 0xFF).toByte(),
+                    (value shr 8 and 0xFF).toByte(),
+                    (value shr 16 and 0xFF).toByte(),
+                    (value shr 24 and 0xFF).toByte()
+                ))
+                true
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("IshirukaEngine", "pokeSConfigInt failed", t)
+            false
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 软重启（设置即时生效通道）
+    // ------------------------------------------------------------------
+
+    /** 软重启防抖 Handler（主线程 postDelayed）。 */
+    private val softRestartHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val softRestartRunnable = Runnable { doSoftRestart() }
+
+    /** 防抖 600ms：设置面板一次下发几十个键，只合并为一次软重启。 */
+    private fun scheduleSoftRestart() {
+        softRestartHandler.removeCallbacks(softRestartRunnable)
+        softRestartHandler.postDelayed(softRestartRunnable, 600)
+    }
+
+    /**
+     * ★★ 软重启（保进度应用启动期设置）★★
+     * SaveState(slot8) → StopEmulation → Run（读新 INI）→ 等核心就绪 →
+     * LoadState(slot8)。用户感知约 2-5 秒黑屏，游戏进度/状态无损。
+     * 失败路径：存档/恢复异常时打日志保留——最坏情况游戏从头 boot
+     * （与用户手动重启一致），不会崩溃。
+     */
+    private fun doSoftRestart() {
+        if (!isLoaded || !isRunning2()) return
+        thread(name = "IshiSoftRestart") {
+            try {
+                NativeLibrary.SaveState(SOFT_RESTART_SLOT, true)
+            } catch (t: Throwable) {
+                android.util.Log.w("IshirukaEngine", "soft-restart SaveState failed, skip restart", t)
+                return@thread
+            }
+            // 停止
+            synchronized(lifecycleLock) {
+                if (!isLoaded) return@thread
+                try {
+                    NativeLibrary.StopEmulation()
+                    emuThread?.join(8000)
+                } catch (_: Throwable) {}
+                emuThread = null
+                val surf = surface ?: return@thread
+                try { NativeLibrary.SurfaceChanged(surf) } catch (_: Throwable) {}
+                startEmulationLocked()
+            }
+            // 等核心跑起来再恢复状态（boot 收尾 + LoadState 就绪）
+            for (i in 0..60) {
+                Thread.sleep(250)
+                if (!isLoaded) return@thread
+                val running = try { NativeLibrary.IsRunning() } catch (_: Throwable) { false }
+                if (running) {
+                    Thread.sleep(1500)   // boot 收尾（标题加载/着色器预热）
+                    try { NativeLibrary.LoadState(SOFT_RESTART_SLOT) } catch (t: Throwable) {
+                        android.util.Log.w("IshirukaEngine", "soft-restart LoadState failed", t)
+                    }
+                    // 用户改设置时处于暂停 → 重启后保持暂停（不意外抢跑）
+                    if (_paused) {
+                        try { NativeLibrary.PauseEmulation() } catch (_: Throwable) {}
+                    }
+                    return@thread
+                }
+            }
+        }
+    }
 
     // ------------------------------------------------------------------
     // 输入
@@ -1254,6 +1654,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     /** 最近推送的 SWING U/D/L/R 与 SHAKE 三轴合成值（去重）。 */
     private val wiiSwingFullLast = FloatArray(4)   // U/D/L/R
     private val wiiShakeLast = FloatArray(3)
+    /** 双节棍镜像轴去重缓存（见 pushWiiTilt 尾部的镜像注释）。 */
+    private val wiiNunchukSwingLast = FloatArray(6)  // F/B/U/D/L/R
+    private val wiiNunchukTiltLast = FloatArray(4)   // F/B/L/R
+    private val wiiNunchukShakeLast = FloatArray(3)
     private val wiiTiltLock = Any()
 
     /** setPad1 → 按钮位驱动的倾斜（虚拟按键/实体手柄的 L2/R2/L3/R3）。 */
@@ -1425,6 +1829,61 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             if (shakeMerged[i] != wiiShakeLast[i]) {
                 wiiShakeLast[i] = shakeMerged[i]
                 try { NativeLibrary.onGamePadMoveEvent(dev, shakeIds[i], shakeMerged[i]) } catch (_: Throwable) {}
+            }
+        }
+
+        // ★★ 双节棍轴镜像（“前后晃动无作用 / 手机体感毫无作用”的根治修复）★★
+        //
+        // 根因：默认扩展是双节棍（Nunchuk），但体感类游戏（Wii Sports 拳击 /
+        // 马里奥赛车甩车头 / Zelda 挥剑等）读的是 WiimoteNew.ini 里
+        // [Wiimote1] 段的 Nunchuk/Swing/* 与 Nunchuk/Tilt/* 输入组（轴
+        // 208-213 / 215-218）—— 而旧实现只推 Wiimote 的 Tilt/Swing 轴
+        // （120-130），Nunchuk 输入组永远是零 → 前后晃动按钮和手机体感
+        // 在双节棍游戏里全部无作用。
+        //
+        // 修复：双节棍模式下把同一份体感镜像到 Nunchuk 的 Swing/Tilt 六轴 +
+        // Shake 三键（220-222 是 Button 绑定，MoveEvent 值 >0.5 即按下）。
+        // 经典手柄无体感，不镜像。
+        if (effectiveWiiExtension() == "nunchuk") {
+            // Nunchuk Swing 六轴：F/B/U/D/L/R = 212/213/208/209/210/211
+            val nSwingIds = intArrayOf(
+                NativeLibrary.ButtonType.NUNCHUK_SWING_FORWARD,  // 212
+                NativeLibrary.ButtonType.NUNCHUK_SWING_BACKWARD, // 213
+                NativeLibrary.ButtonType.NUNCHUK_SWING_UP,       // 208
+                NativeLibrary.ButtonType.NUNCHUK_SWING_DOWN,     // 209
+                NativeLibrary.ButtonType.NUNCHUK_SWING_LEFT,     // 210
+                NativeLibrary.ButtonType.NUNCHUK_SWING_RIGHT     // 211
+            )
+            for (i in nSwingIds.indices) {
+                if (swingVals[i] != wiiNunchukSwingLast[i]) {
+                    wiiNunchukSwingLast[i] = swingVals[i]
+                    try { NativeLibrary.onGamePadMoveEvent(dev, nSwingIds[i], swingVals[i]) } catch (_: Throwable) {}
+                }
+            }
+            // Nunchuk Tilt 四轴：F/B/L/R = 215/216/217/218（与 Wiimote Tilt 同符号约定）
+            val nTiltIds = intArrayOf(
+                NativeLibrary.ButtonType.NUNCHUK_TILT_FORWARD,   // 215
+                NativeLibrary.ButtonType.NUNCHUK_TILT_BACKWARD,  // 216
+                NativeLibrary.ButtonType.NUNCHUK_TILT_LEFT,      // 217
+                NativeLibrary.ButtonType.NUNCHUK_TILT_RIGHT      // 218
+            )
+            for (i in nTiltIds.indices) {
+                if (tiltSigned[i] != wiiNunchukTiltLast[i]) {
+                    wiiNunchukTiltLast[i] = tiltSigned[i]
+                    try { NativeLibrary.onGamePadMoveEvent(dev, nTiltIds[i], tiltSigned[i]) } catch (_: Throwable) {}
+                }
+            }
+            // Nunchuk Shake 三键（Button 绑定，>0.5 = 按下）
+            val nShakeIds = intArrayOf(
+                NativeLibrary.ButtonType.NUNCHUK_SHAKE_X,  // 220
+                NativeLibrary.ButtonType.NUNCHUK_SHAKE_Y,  // 221
+                NativeLibrary.ButtonType.NUNCHUK_SHAKE_Z   // 222
+            )
+            for (i in 0..2) {
+                if (shakeMerged[i] != wiiNunchukShakeLast[i]) {
+                    wiiNunchukShakeLast[i] = shakeMerged[i]
+                    try { NativeLibrary.onGamePadMoveEvent(dev, nShakeIds[i], shakeMerged[i]) } catch (_: Throwable) {}
+                }
             }
         }
     }

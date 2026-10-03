@@ -205,16 +205,65 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         } catch (_: Throwable) {}
     }
 
+    /**
+     * ★★ MMJ 配置键白名单（反汇编 libcitra_mmj.so 字面量池逐一核实）★★
+     *
+     * MMJ 核心的 setConfigInteger/Boolean/String JNI 内部是“键→枚举”switch：
+     * 传入【不在白名单里的键】会落入 UNREACHABLE() → brk #1 → SIGTRAP 崩溃
+     * （即用户崩溃栈 #00 pc 0x282234，BuildId 14a21e39…完全对应）。
+     * 旧实现把 button_a/b/x/y/l/r 写进 applyInputConfig —— 这 6 个键在 so
+     * 里根本不存在（原 MMJ APK 的 A/B/X/Y/L/R 只能经 InputEvent 索引通道
+     * 下发：A=0/B=1/X=2/Y=3/L=8/R=9，与本项目 IDX_* 常量一致），启动即闪退。
+     * 此处按类型维护三张白名单，任何未知键在 Java 层拦下并打日志，
+     * 保证未来 UI 新增键名错误时只丢功能不闪退。
+     */
+    private val MMJ_INT_KEYS = setOf(
+        // 输入映射（KeyEvent/MoveEvent 通道）—— button_a/b/x/y/l/r 有意缺席！
+        "button_start", "button_select", "button_zl", "button_zr", "button_home",
+        "button_up", "button_down", "button_left", "button_right",
+        "button_debug",
+        "circle_pad_down", "circle_pad_up", "circle_pad_right", "circle_pad_left",
+        "c_stick_down", "c_stick_up", "c_stick_right", "c_stick_left",
+        "combo_key_0", "combo_key_1", "combo_key_2",
+        // 画面/性能
+        "resolution_factor", "shader_type", "hw_gs_mode", "accurate_mul_type",
+        "mag_filter", "min_filter", "screen_presentation_mode", "factor_3d",
+        "layout_option", "landscape_layout_option", "frame_limit", "cpu_usage_limit",
+        // 系统/音频
+        "region_value", "audio_output_type", "audio_input_type", "audio_volume",
+        "mic_volume", "shared_font_type", "camera_type",
+        // 输入法 overlay
+        "input_overlay_scale", "input_overlay_alpha", "input_joystick_range",
+        "input_joystick_deadzone"
+    )
+    private val MMJ_BOOL_KEYS = setOf(
+        "is_new_3ds", "use_cpu_jit", "use_hw_shader", "use_shader_jit",
+        "async_shader_compile", "shadow_rendering", "force_texture_filter",
+        "custom_textures", "use_compatible_mode", "use_fmv_hack", "skip_cpu_write",
+        "skip_slow_draw", "skip_texture_copy", "use_fence_sync", "use_present_thread",
+        "use_frame_limit", "enable_dsp_lle", "dsp_lle_multithread",
+        "enable_audio_stretching", "use_virtual_sd", "use_game_config",
+        "landscape_swap_screen", "portrait_swap_screen", "landscape_custom_layout",
+        "input_overlay_hide", "input_overlay_feedback", "input_joystick_relative"
+    )
+    private val MMJ_STRING_KEYS = setOf("pp_shader_name")
+
+    /** 键是否属于指定类型的白名单（未知键 → false，调用方应跳过写入）。 */
+    private fun isKnownMmjKey(key: String, isInt: Boolean, isBool: Boolean): Boolean = when {
+        isInt -> key in MMJ_INT_KEYS
+        isBool -> key in MMJ_BOOL_KEYS
+        else -> key in MMJ_STRING_KEYS
+    }
+
     /** 输入映射配置（自选 id 写入 MMJ 配置键）。 */
     private fun applyInputConfig() {
         val lib = CitraMmjNative.lib
         fun i(key: String, value: Int) { try { lib.setConfigInteger(key, value) } catch (_: Throwable) {} }
-        i("button_a", MMJ_ID_A)
-        i("button_b", MMJ_ID_B)
-        i("button_x", MMJ_ID_X)
-        i("button_y", MMJ_ID_Y)
-        i("button_l", MMJ_ID_L)
-        i("button_r", MMJ_ID_R)
+        // ★★ 闪退根治（崩溃栈 #00 pc 0x282234 = so 内 UNREACHABLE 陷阱）：★★
+        //   button_a/b/x/y/l/r 六键在本核心字面量池中不存在（nm/strings 逐一
+        //   核实），setConfigInteger(未知键) 直接 brk #1 → SIGTRAP。
+        //   A/B/X/Y/L/R 一律经 InputEvent 索引通道下发（setPad1 的 IDX_* 路径，
+        //   索引值与原 MMJ APK overlay 完全一致），配置层只写真实存在的键。
         i("button_start", MMJ_ID_START)
         i("button_select", MMJ_ID_SELECT)
         i("button_zl", MMJ_ID_ZL)
@@ -235,10 +284,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         i("c_stick_left", MMJ_AXIS_CSTICK_X + MMJ_NEG)
     }
 
-    /** 应用全部 coreOptions（MMJ 配置键 → setConfig*）。 */
+    /** 应用全部 coreOptions（MMJ 配置键 → setConfig*；白名单外的键跳过防闪退）。 */
     private fun applyCoreOptions() {
         val lib = CitraMmjNative.lib
         for ((key, value) in coreOptions) {
+            if (!isKnownMmjKey(key, value.toIntOrNull() != null,
+                    value.equals("true", true) || value.equals("false", true))) {
+                android.util.Log.w("CitraMmjEngine", "skip unknown MMJ config key: $key")
+                continue
+            }
             try {
                 when {
                     value.equals("true", true) || value.equals("false", true) ->
@@ -577,12 +631,19 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     override fun setCoreOption(key: String, value: String) {
         coreOptions[key] = value
         if (_loaded) {
+            val isInt = value.toIntOrNull() != null
+            val isBool = value.equals("true", true) || value.equals("false", true)
+            // ★ 白名单拦截：未知键写入会触发核心 brk #1 崩溃（详见白名单注释），
+            //   运行中下发前同样过滤。
+            if (!isKnownMmjKey(key, isInt, isBool)) {
+                android.util.Log.w("CitraMmjEngine", "skip unknown MMJ config key: $key")
+                return
+            }
             try {
                 val lib = CitraMmjNative.lib
                 when {
-                    value.equals("true", true) || value.equals("false", true) ->
-                        lib.setConfigBoolean(key, value.equals("true", true))
-                    value.toIntOrNull() != null -> lib.setConfigInteger(key, value.toInt())
+                    isBool -> lib.setConfigBoolean(key, value.equals("true", true))
+                    isInt -> lib.setConfigInteger(key, value.toInt())
                     else -> lib.setConfigString(key, value)
                 }
                 lib.saveConfig()

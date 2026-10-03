@@ -56,6 +56,18 @@ object WiiMotionSensors {
     /** 摇晃满强度阈值。 */
     private const val SHAKE_FULL = 12.0f
 
+    /** ★ 静止重校准：判定"近静止"的角速度上限（rad/s）。 */
+    private const val STATIONARY_GYRO = 0.06f
+
+    /** ★ 静止重校准：判定"近静止"的线性加速度幅值上限（m/s²）。 */
+    private const val STATIONARY_ACCEL = 0.35f
+
+    /** ★ 静止重校准：需持续静止的时长（ms）后重新采集基准重力。
+     *   防漂移（用户反馈"左右倾斜有时候会失灵"的成因之一：开启时基准被
+     *   手部动作污染 / 持握角度变化后旧基准不再代表中性位 → 偏移越积越大
+     *   → 某一方向被永久占满死区外的幅度，反向达不到阈值 = 失灵）。 */
+    private const val RECENTER_HOLD_MS = 600L
+
     /**
      * 体感状态（每次事件回调后输出，11 维）。
      *
@@ -95,6 +107,9 @@ object WiiMotionSensors {
 
     /** 上一帧陀螺角速度（用于摇动检测的导数计算）。 */
     private val lastGyro = FloatArray(3)
+
+    /** ★ 静止重校准状态：近静止持续时长（计时起点 ms）。 */
+    private var stationarySinceMs = 0L
 
     @Volatile private var calibrated = false
     @Volatile private var hasLinearAccel = false
@@ -172,8 +187,9 @@ object WiiMotionSensors {
             else -> { gxS = gx; gyS = gy }
         }
         val gzS = gz
-        // ★ 调优：alpha 0.35（旧版 0.15）→ 响应延迟 ~80ms，告别"偶尔生效"
-        val alpha = 0.35f
+        // ★ 调优：alpha 0.45（旧版 0.35）→ 响应延迟 ~60ms，进一步降低
+        //   "偶尔生效"感；仍保留足够滤波抑制手抖噪声。
+        val alpha = 0.45f
         smoothed[0] = alpha * gxS + (1 - alpha) * smoothed[0]
         smoothed[1] = alpha * gyS + (1 - alpha) * smoothed[1]
         smoothed[2] = alpha * gzS + (1 - alpha) * smoothed[2]
@@ -182,7 +198,25 @@ object WiiMotionSensors {
             baseGravity[1] = smoothed[1]
             baseGravity[2] = smoothed[2]
             calibrated = true
+            stationarySinceMs = 0L
             return
+        }
+        // ★ 静止重校准（防漂移）：加速度接近纯重力（总幅值 ≈ 9.8±0.35）
+        //   且持续 ≥ RECENTER_HOLD_MS 时，把当前低通重力采为新基准 ——
+        //   手持姿势变化后松开几秒即自动回中，无需重开关。
+        val mag = kotlin.math.sqrt(gxS * gxS + gyS * gyS + gzS * gzS)
+        val nearStationary = kotlin.math.abs(mag - 9.81f) < STATIONARY_ACCEL
+        if (nearStationary) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (stationarySinceMs == 0L) stationarySinceMs = now
+            if (now - stationarySinceMs >= RECENTER_HOLD_MS) {
+                baseGravity[0] = smoothed[0]
+                baseGravity[1] = smoothed[1]
+                baseGravity[2] = smoothed[2]
+                stationarySinceMs = now
+            }
+        } else {
+            stationarySinceMs = 0L
         }
         // 倾斜：相对基准的重力分量差
         fun clean(v: Float): Float {
@@ -272,6 +306,10 @@ object WiiMotionSensors {
             else -> { rxS = rx; ryS = ry }
         }
         val rzS = rz
+        // ★ 陀螺近静止检测也参与重校准门控（角速度低 = 设备真静止，
+        //   不只是加速度碰巧接近 g）。
+        val gyroMag = kotlin.math.sqrt(rxS * rxS + ryS * ryS + rzS * rzS)
+        if (gyroMag > STATIONARY_GYRO) stationarySinceMs = 0L
         // 角速度突变 = 摇动（比纯加速度更可靠：甩手时角速度峰值明显）
         val dx = rxS - lastGyro[0]
         val dy = ryS - lastGyro[1]
@@ -322,6 +360,7 @@ object WiiMotionSensors {
         calibrated = false
         hasLinearAccel = false
         hasGyro = false
+        stationarySinceMs = 0L
     }
 
     fun isRunning(): Boolean = listener != null

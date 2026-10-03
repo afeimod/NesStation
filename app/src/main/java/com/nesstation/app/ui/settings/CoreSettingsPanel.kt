@@ -1971,12 +1971,13 @@ fun CoreSettingsPanel(
                         listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式)"),
                         padLayout.irWiiOrientation
                     ) { updateLayout(padLayout.copy {irWiiOrientation = it}) }
-                    // ★★ 手机体感模拟 Wii 倾斜（本轮新增，需求："并加入手机
-                    //    体感模拟wii体感"）：加速度计 → Wii Tilt 四轴，与
-                    //    L2/R2/L3/R3 按钮倾斜叠加。开启时以当前握持角为基准
-                    //    （相对倾斜）。无传感器的设备自动退化。
+                    // ★★ 手机体感模拟 Wii 体感（本轮新增，需求："并加入手机
+                    //    体感模拟wii体感"）：加速度计+陀螺仪 → Wii Tilt/Swing/Shake
+                    //    全维度（与 L2/R2/L3/R3 按钮倾斜叠加）。开启时以当前
+                    //    握持角为基准（相对倾斜），静止 0.6s 自动重校准防漂移。
+                    //    无传感器的设备自动退化。默认开启。
                     DropdownRow("手机体感模拟",
-                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (重力感应模拟倾斜)"),
+                        listOf("disabled" to "关闭", "enabled" to "开启 (默认·重力+陀螺仪模拟体感)"),
                         if (padLayout.wiiMotionSensor) "enabled" else "disabled"
                     ) { updateLayout(padLayout.copy {wiiMotionSensor = it == "enabled"}) }
                     Text(
