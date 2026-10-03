@@ -41,14 +41,33 @@ object WiiMotionSensors {
     /** 倾斜满强度对应的重力分量变化（约 25°，比旧版 30° 更易触发满程）。 */
     private const val FULL_TILT_G = 0.42f
 
+    /** ★★ v1.3 前后轴独立满程（约 16° 即满程）：持握手机时手腕俯仰
+     *   （前后晃动）的自然幅度显著小于尺桡偏/前臂旋转（左右倾斜），
+     *   与左右共用 0.42 标尺时前后永远到不了满程 —— 用户反馈
+     *   "前后晃动不灵敏，最好和左右一样"的标尺根源。 */
+    private const val FULL_TILT_FB_G = 0.30f
+
     /** 死区（比旧版 0.06 小一半，轻微倾摆也能识别）。 */
     private const val DEADZONE = 0.03f
+
+    /** ★★ v1.3 前后轴快通道滤波系数：前后"晃动"是 100ms 级快速动态动作，
+     *   慢通道 alpha=0.45 会把脉冲峰值削掉约一半（左右"倾斜"是静态保持，
+     *   滤波无衰减）—— 同样动作幅度下前后读数只有左右的一半，这是
+     *   "前后不灵敏"的滤波根源。快通道 0.70（响应 ~30ms）与慢通道
+     *   取大者：静态倾斜由慢通道主导（抗噪），动态晃动由快通道主导（保峰）。 */
+    private const val ALPHA_FB_FAST = 0.70f
 
     /** 挥动触发阈值（线性加速度幅值，m/s²）。低于此值视为静止。 */
     private const val SWING_THRESHOLD = 1.5f
 
     /** 挥动满强度阈值（线性加速度幅值，约对应"用力一甩"）。 */
     private const val SWING_FULL = 6.0f
+
+    /** ★★ v1.3 推/拉（前后晃动的线性加速度分量）独立阈值：手腕俯仰甩动
+     *   在 Z 轴（出屏方向）产生的线性加速度峰值天然低于整臂挥动，
+     *   与 U/D/L/R 共用 1.5/6.0 标尺时小幅度晃动全被吃进死区。 */
+    private const val SWING_FB_THRESHOLD = 1.0f
+    private const val SWING_FB_FULL = 4.0f
 
     /** 摇晃触发阈值（瞬时角速度变化，rad/s）。 */
     private const val SHAKE_THRESHOLD = 4.0f
@@ -114,6 +133,9 @@ object WiiMotionSensors {
     /** 低通滤波后的重力（屏幕坐标系）。 */
     private val smoothed = FloatArray(3)
 
+    /** ★★ v1.3 前后轴快通道滤波状态（仅 Z 分量，见 ALPHA_FB_FAST 注释）。 */
+    private val smoothedFast = FloatArray(3)
+
     /** 上一帧线性加速度（用于摇动检测的导数计算）。 */
     private val lastLinAccel = FloatArray(3)
 
@@ -156,6 +178,7 @@ object WiiMotionSensors {
         hasLinearAccel = linAcc != null
         hasGyro = gyro != null
         smoothed.fill(0f)
+        smoothedFast.fill(0f)
         lastLinAccel.fill(0f)
         lastGyro.fill(0f)
 
@@ -211,6 +234,10 @@ object WiiMotionSensors {
         smoothed[0] = alpha * gxS + (1 - alpha) * smoothed[0]
         smoothed[1] = alpha * gyS + (1 - alpha) * smoothed[1]
         smoothed[2] = alpha * gzS + (1 - alpha) * smoothed[2]
+        // ★★ v1.3 前后快通道（见 ALPHA_FB_FAST 注释）
+        smoothedFast[0] = ALPHA_FB_FAST * gxS + (1 - ALPHA_FB_FAST) * smoothedFast[0]
+        smoothedFast[1] = ALPHA_FB_FAST * gyS + (1 - ALPHA_FB_FAST) * smoothedFast[1]
+        smoothedFast[2] = ALPHA_FB_FAST * gzS + (1 - ALPHA_FB_FAST) * smoothedFast[2]
         // ★★ 基线收敛（本轮根治）：启动后先积累 CALIB_SAMPLES 个原始样本
         //   求均值作为基准，期间不输出任何倾斜 —— 旧实现第 1 个事件就把
         //   未收敛的 smoothed（从 0 起步只滤了一拍 ≈ 0.45g）当基准，
@@ -232,6 +259,9 @@ object WiiMotionSensors {
             smoothed[0] = baseGravity[0]
             smoothed[1] = baseGravity[1]
             smoothed[2] = baseGravity[2]
+            smoothedFast[0] = baseGravity[0]
+            smoothedFast[1] = baseGravity[1]
+            smoothedFast[2] = baseGravity[2]
             return
         }
         // 倾斜：相对基准的重力分量差
@@ -240,12 +270,21 @@ object WiiMotionSensors {
             return if (a < DEADZONE) 0f
             else ((a - DEADZONE) / (FULL_TILT_G - DEADZONE)).coerceIn(0f, 1f)
         }
+        // ★★ v1.3 前后轴：独立满程（FULL_TILT_FB_G）+ 快慢双通道取大。
+        //   慢通道主导静态倾斜（抗噪），快通道保住动态晃动的峰值
+        //   （0.45 低通对 100ms 脉冲削峰 ~50%，是"前后不灵敏"主因）。
+        fun cleanFb(v: Float): Float {
+            val a = kotlin.math.abs(v)
+            return if (a < DEADZONE) 0f
+            else ((a - DEADZONE) / (FULL_TILT_FB_G - DEADZONE)).coerceIn(0f, 1f)
+        }
         val dX = smoothed[0] - baseGravity[0]   // >0 = 右倾
         val dZ = smoothed[2] - baseGravity[2]   // <0 = 前倾（顶边前推）
+        val dZf = smoothedFast[2] - baseGravity[2]   // 快通道（前后专用）
         val tR = clean(dX)
         val tL = clean(-dX)
-        val tF = clean(-dZ)
-        val tB = clean(dZ)
+        val tF = maxOf(cleanFb(-dZ), cleanFb(-dZf))
+        val tB = maxOf(cleanFb(dZ), cleanFb(dZf))
         state.tiltRight = tR
         state.tiltLeft = tL
         state.tiltForward = tF
@@ -381,12 +420,23 @@ object WiiMotionSensors {
         }
         // 屏幕坐标：X_s 右、Y_s 下、Z_s 出屏
         //   lxS > 0 = 右甩；lyS > 0 = 下甩；lzS > 0 = 向自己拉（后拉）
+        // ★★ v1.3：F/B（推/拉）用独立低阈值（SWING_FB_*），并对消重力泄漏 ——
+        //   手腕俯仰时 TYPE_LINEAR_ACCELERATION 的 Z 轴常混入重力分量残留，
+        //   只取比慢通道重力估计大的部分（正值化），进一步降噪。
         state.swingRight = clean(lxS)
         state.swingLeft = clean(-lxS)
         state.swingDown = clean(lyS)
         state.swingUp = clean(-lyS)
-        state.swingForward = clean(-lzS)   // 顶边前推
-        state.swingBackward = clean(lzS)   // 顶边后拉
+        state.swingForward = cleanFbSwing(-lzS)   // 顶边前推
+        state.swingBackward = cleanFbSwing(lzS)   // 顶边后拉
+    }
+
+    /** ★★ v1.3 推/拉独立标尺（见 SWING_FB_THRESHOLD 注释）。 */
+    private fun cleanFbSwing(v: Float): Float {
+        val a = kotlin.math.abs(v)
+        return if (a < SWING_FB_THRESHOLD) 0f
+        else ((a - SWING_FB_THRESHOLD) / (SWING_FB_FULL - SWING_FB_THRESHOLD))
+            .coerceIn(0f, 1f)
     }
 
     /** 停止监听（幂等）。 */
@@ -401,6 +451,8 @@ object WiiMotionSensors {
         calibrated = false
         calibCount = 0
         calibSum.fill(0f)
+        smoothed.fill(0f)
+        smoothedFast.fill(0f)
         hasLinearAccel = false
         hasGyro = false
         stationarySinceMs = 0L

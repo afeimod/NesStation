@@ -1068,38 +1068,37 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     override fun setHighQualityScaling(enabled: Boolean) {}
 
     /**
-     * ★★ 快进（运行时变速，内存直写根治）★★
+     * ★★ 快进（运行时变速）★★ —— v1.3 JNI 直写根治
      *
-     * 原理（libishiiruka.so BuildId 9aa1cc68f0c7… 反汇编逐一核实）：
-     *   - 节流回调（Throttle @ so+0x14E5A4）**每个节流周期现读**
-     *     SConfig::m_EmulationSpeed（[SConfig+0x208]）做速度决策；
-     *   - SConfig 实例经 .data 槽位（load_bias+0x800E48）两级解引用可得：
-     *     *(0x800E48) = 实例指针存放地址（R_AARCH64_RELATIVE → 0x80B048），
-     *     *(0x80B048) = SConfig 实例（Meyers 单例，核心启动后非空）；
-     *   - 因此运行中直接改写这 4 字节 float（ARM64 对齐写原子）：
-     *     0.0=不限速 / 1.0=正常 / N.0=N 倍速 —— 下一节流周期（≤1ms）即生效。
+     * 通道优先级（三级回退，逐级降级保证任何环境不劣化）：
+     *   1. ★ so 二进制补丁 JNI（主通道，v1.3）：scripts/ishi_speed_patch.py 把
+     *      jniLibs 的 libishiiruka.so 死符号 SetScaledDensity(float)（连同
+     *      GetGameAspectRatio/GetGameDisplayScale 头部，全工程零调用）改造为
+     *      "解引用 SConfig 单例槽(.data 0x800E48→0x80B048) → str s0,[实例+0x208]"
+     *      的直写器。Android 9+ SELinux 禁开 /proc/self/mem（用户实测 EACCES，
+     *      mem-poke 全灭），而 JNI 在自身进程内合法写内存 —— 这是新系统上
+     *      唯一可靠的运行时通道。生效延迟 ≤1 个节流周期（Throttle 现读）。
+     *   2. mem-poke（旧系统兜底）：/proc/self/mem 直写（Android 8- 可用，
+     *      带 BuildId 指纹 + 两级判空 + sanity + 回读校验）。
+     *   3. INI 通道（保底）：写 Dolphin.ini EmulationSpeed，重启游戏生效。
      *
-     * 安全措施：
-     *   1. BuildId 指纹校验（so 内 .note.gnu.build-id），版本不符自动禁用；
-     *   2. 两级指针判空 + 当前值域 sanity（[0,8] 且非 NaN）才允许写；
-     *   3. 经 /proc/self/mem 写自身（无权限问题、无 hidden-API 反射）；
-     *   4. 快进是会话级状态：不持久化 INI，退出/重进自动恢复 1.0（核心
-     *      启动时从 INI 读回）。
-     * 校验不过时回退“写 INI + 重进游戏生效”的旧通道。
+     * 快进是会话级状态：不持久化 INI，退出/重进自动恢复 1.0。
      */
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
         startFfwdKeeper()
         if (!isLoaded) return
         val target = if (speed > 0) speed.toFloat() else 1.0f
-        // ★ 关快进时同时清节流禁用标志（若此前走的是二级机制回退，
+        // ★ 关快进时同时清节流禁用标志（若此前走的是三级机制回退，
         //   不清除会永久不限速）
         if (speed <= 0) pokeThrottleDisableFlag(false)
+        // 1) so 补丁 JNI 直写（v1.3 主通道）
+        if (pokeSpeedJni(target)) return
+        // 2) mem-poke（旧系统兜底）
         if (pokeEmulationSpeed(target)) return
-        // ★ 二级机制：直写节流禁用标志（Throttle 门 @0xe3f1c 读 .bss 0x80B050，
-        //   置 1 = 无条件不限速）。速度槽写失败时用它兼得快进效果。
+        // 3) 节流禁用标志直写（mem 可写但速度槽写失败时兼得快进效果）
         if (speed > 0 && pokeThrottleDisableFlag(true)) return
-        // 回退：写配置（下次启动核心读到 EmulationSpeed 生效）
+        // 4) 回退：写配置（下次启动核心读到 EmulationSpeed 生效）
         try {
             val value = if (speed > 0) "0" else "1"
             try { NativeLibrary.SetConfig("Dolphin.ini", "Core", "EmulationSpeed", value) } catch (_: Throwable) {}
@@ -1112,29 +1111,36 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         } catch (_: Throwable) {}
         if (speed > 0) {
             android.util.Log.w("IshirukaEngine",
-                "fast-forward mem-poke unavailable (target=$target); INI fallback written")
+                "fast-forward runtime channels unavailable (target=$target); INI fallback written")
         }
     }
 
-    /** ★★ 快进保活线程（本轮新增）：快进期间每 400ms 校验一次内存里的
-     *   m_EmulationSpeed —— 任何路径（设置重载/软重启/核心重读 INI）把它
-     *   拉回 1.0 时立即重写。自愈式保障"快进不会被后台静默关掉"。 */
+    /** ★★ 快进保活线程：快进期间每 400ms 维持一次目标速度 —— 任何路径
+     *   （设置重载/软重启/核心重读 INI）把它拉回 1.0 时立即重写。
+     *   v1.3：JNI 通道无读回接口，改为无条件幂等重写（成本=一次 JNI 调用）；
+     *   mem-poke 通道保留读回比对（漂移才重写）。 */
     @Volatile private var ffwdKeeperThread: Thread? = null
 
     private fun startFfwdKeeper() {
         if (_ffSpeed <= 0 || !isLoaded) { ffwdKeeperThread = null; return }
         if (ffwdKeeperThread?.isAlive == true) return
         val target = _ffSpeed.toFloat()
+        val jniMode = ensureSpeedPatchVerified()
         ffwdKeeperThread = thread(name = "IshiFfwdKeeper", isDaemon = true) {
             try {
                 while (_ffSpeed > 0 && isLoaded) {
                     Thread.sleep(400)
                     if (_ffSpeed <= 0 || !isLoaded) break
-                    // 读当前值，漂移才重写（pokeEmulationSpeed 内部自校验）
                     try {
-                        val cur = readEmulationSpeed()
-                        if (cur != null && kotlin.math.abs(cur - target) > 0.01f) {
-                            pokeEmulationSpeed(target)
+                        if (jniMode) {
+                            // JNI 通道：无条件幂等重写（无读接口）
+                            pokeSpeedJni(target)
+                        } else {
+                            // mem 通道：读当前值，漂移才重写
+                            val cur = readEmulationSpeed()
+                            if (cur != null && kotlin.math.abs(cur - target) > 0.01f) {
+                                pokeEmulationSpeed(target)
+                            }
                         }
                     } catch (_: Throwable) {}
                 }
@@ -1164,9 +1170,87 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     /**
      * 该核心是否支持运行中变速（UI 用：false 时加速按钮给出明确提示
      * “配置已写入，重新进入游戏后生效”，而不是无反馈的静默无效）。
-     * 主动触发指纹校验（有缓存），首次点击前即可返回真实状态。
+     * v1.3：so 补丁 JNI 通道或 mem-poke 通道任一可用即 true。
      */
-    fun supportsRuntimeFastForward(): Boolean = ensureMemPatchVerified()
+    fun supportsRuntimeFastForward(): Boolean =
+        ensureSpeedPatchVerified() || ensureMemPatchVerified()
+
+    // ------------------------------------------------------------------
+    // ★★ v1.3：so 速度补丁 JNI 通道（主通道）★★
+    // ------------------------------------------------------------------
+
+    /** libishiiruka.so 速度补丁指纹（scripts/ishi_speed_patch.py 写入的
+     *  0xD00E8 起 36 字节；小端指令序列，与 so 文件字节逐一对应）。 */
+    private val SPEED_PATCH_BYTES = byteArrayOf(
+        0x88.toByte(), 0x39, 0x00, 0x90.toByte(),   // adrp x8, 0x800000
+        0x08, 0x25, 0x47, 0xF9.toByte(),            // ldr  x8, [x8, #0xe48]
+        0x09, 0x01, 0x40, 0xF9.toByte(),            // ldr  x9, [x8]
+        0x89, 0x00, 0x00, 0xB4.toByte(),            // cbz  x9, +0x10
+        0x20, 0x09, 0x02, 0xBD.toByte(),            // str  s0, [x9, #0x208]
+        0x20, 0x00, 0x80, 0x52,                     // movz w0, #1
+        0xC0.toByte(), 0x03, 0x5F, 0xD6.toByte(),   // ret
+        0x00, 0x00, 0x80, 0x52,                     // fail: movz w0, #0
+        0xC0.toByte(), 0x03, 0x5F, 0xD6.toByte()    // ret
+    )
+
+    /** .text 内 SetScaledDensity 的文件偏移（PT_LOAD 换算：该 so 此区间 VA==offset）。 */
+    private val SPEED_PATCH_FILE_OFFSET = 0xD00E8L
+
+    @Volatile private var speedPatchVerified = false
+    @Volatile private var speedPatchChecked = false
+
+    /**
+     * 校验运行中的 libishiiruka.so 是否带速度补丁（读 so 文件指纹，结果缓存）。
+     * 命中后 SetScaledDensity(float) JNI 即为 m_EmulationSpeed 直写器；
+     * 未命中（上游更新了 so / 用户单独替换核心库）则本通道关闭，自动
+     * 走 mem-poke / INI 回退 —— 与上游行为兼容，永不劣化。
+     */
+    private fun ensureSpeedPatchVerified(): Boolean {
+        if (speedPatchChecked) return speedPatchVerified
+        synchronized(this) {
+            if (speedPatchChecked) return speedPatchVerified
+            speedPatchChecked = true
+            speedPatchVerified = try {
+                var soPath: String? = null
+                java.io.File("/proc/self/maps").forEachLine { line ->
+                    if (soPath == null && line.contains("libishiiruka.so")) {
+                        soPath = line.substringAfterLast(' ').trim()
+                    }
+                }
+                val path = soPath
+                if (path.isNullOrEmpty()) {
+                    false
+                } else {
+                    java.io.RandomAccessFile(path, "r").use { raf ->
+                        val buf = ByteArray(SPEED_PATCH_BYTES.size)
+                        raf.seek(SPEED_PATCH_FILE_OFFSET)
+                        raf.readFully(buf)
+                        buf.contentEquals(SPEED_PATCH_BYTES)
+                    }
+                }
+            } catch (_: Throwable) { false }
+            if (!speedPatchVerified) {
+                android.util.Log.w("IshirukaEngine",
+                    "speed patch not detected in libishiiruka.so; JNI fast-forward disabled (mem/INI fallback)")
+            }
+            speedPatchVerified
+        }
+    }
+
+    /**
+     * JNI 直写 SConfig::m_EmulationSpeed（so 补丁通道）。
+     * 返回 1（核心已启动且写入成功）才认为 true；0 = 核心未启动（实例空），
+     * 交由调用方走后续通道。
+     */
+    private fun pokeSpeedJni(speed: Float): Boolean {
+        if (!ensureSpeedPatchVerified()) return false
+        return try {
+            NativeLibrary.setEmulationSpeedPatched(speed) == 1
+        } catch (t: Throwable) {
+            android.util.Log.w("IshirukaEngine", "pokeSpeedJni failed", t)
+            false
+        }
+    }
 
     /** /proc/self/mem 读 long（小端）。地址非法返回 0。 */
     private fun readLongLe(mem: java.io.RandomAccessFile, addr: Long): Long {
@@ -1927,10 +2011,16 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             NativeLibrary.ButtonType.WIIMOTE_SWING_LEFT,    // 122
             NativeLibrary.ButtonType.WIIMOTE_SWING_RIGHT    // 123
         )
-        // ★ Swing F/B 与 Tilt F/B 叠加（旧逻辑保留），同时补上 U/D/L/R
+        // ★ Swing F/B：v1.3 修复 —— 旧实现只用 Tilt F/B（重力分量）驱动，
+        //   swingSensor 的 swingForward/Backward（线性加速度 Z 轴推/拉，
+        //   swingMerged[4]/[5]）被完全忽略 —— 推/拉手机这一最直接的
+        //   "前后晃动"信号根本没进核心。现改为 Tilt（姿态）+ Swing（瞬时
+        //   推力）合成：静态前倾走 Tilt 分量，快速推拉走 Swing 分量，
+        //   二者叠加截断 —— 与"左右倾斜（静态）+ 左右挥动（动态）"
+        //   的既有行为对齐。
         val swingVals = floatArrayOf(
-            -merged[2],                          // F: 前推
-            +merged[3],                          // B: 后拉
+            (-merged[2] - swingMerged[4]).coerceIn(-1f, 1f),  // F: 前倾 + 前推
+            (+merged[3] + swingMerged[5]).coerceIn(-1f, 1f),  // B: 后仰 + 后拉
             -swingMerged[0],                     // U: 上挥 → 负半轴
             +swingMerged[1],                     // D: 下挥 → 正半轴
             -swingMerged[2],                     // L: 左挥 → 负半轴

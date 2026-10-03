@@ -202,7 +202,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         )) {
             try { File(root, rel).mkdirs() } catch (_: Throwable) {}
         }
-        // 密钥/字体种子：复用 Azahar 已放置的 sysdata（aes_keys.txt 等）。
+        // ★★ v1.3：系统文件种子（“启动游戏闪退”根治）—— 见 seedMmjSystemAssets。
+        seedMmjSystemAssets()
+        // 密钥/字体种子：复用 Azahar 已放置的 sysdata（aes_keys.txt 等，兜底通道）。
         try {
             val azSysdata = File(File(appContext!!.filesDir, "azahar"), "sysdata")
             val dst = File(root, "sysdata")
@@ -214,6 +216,69 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 }
             }
         } catch (_: Throwable) {}
+    }
+
+    /**
+     * ★★ v1.3：MMJ 系统文件种子 —— “Citra MMJ 启动游戏闪退”的根治修复 ★★
+     *
+     * 根因（原版 Citra_MMJ_20250220.apk 反编译 + so 字符串实证）：MMJ 原生
+     * 核心启动游戏时从**用户目录**读 3DS 必需系统文件 ——
+     *   - sysdata/aes_keys.txt（ROM 解密密钥，加密 ROM 必需）
+     *   - sysdata/cbf_*.bcfnt（系统共享字体，游戏内文字渲染必需）
+     *   - nand/...（系统标题 0004009b/00010402 + config savegame
+     *     00010017 —— Citra 引导期强制读取）
+     *   - sdmc/3ds/dspfirm.cdc（DSP 固件，音频）
+     *   - config/config-games.ini（per-game 兼容配置）
+     * 原版 APK 的 d1.a.E(Context) 在启动时把这些内容从 APK assets 释放到
+     * 用户目录（overwrite=FALSE 幂等）；NesStation 集成只建了空目录 ——
+     * 核心启动即读不到系统文件 → 原生断言 → SIGABRT/SIGTRAP 闪退。
+     *
+     * 修复：把原版 assets 的必需集打进 app/src/main/assets/mmj/**（sysdata/
+     * nand/sdmc/config/shaders，25 文件 ~13MB），loadRom 时递归释放到
+     * <filesDir>/citra_mmj/ 对应位置。已存在且非空的文件跳过（对齐原版
+     * overwrite=FALSE 语义，二次启动零拷贝、纯 list 遍历）。
+     */
+    private fun seedMmjSystemAssets() {
+        val ctx = appContext ?: return
+        try {
+            val am = ctx.assets
+            val root = File(ctx.filesDir, "citra_mmj")
+            var copied = 0
+            fun walk(assetDir: String, outDir: File) {
+                val entries = try { am.list(assetDir) } catch (_: Throwable) { null } ?: return
+                if (entries.isEmpty()) return
+                try { outDir.mkdirs() } catch (_: Throwable) {}
+                for (name in entries) {
+                    val assetPath = if (assetDir.isEmpty()) name else "$assetDir/$name"
+                    val outFile = File(outDir, name)
+                    val children = try { am.list(assetPath) } catch (_: Throwable) { null }
+                    if (!children.isNullOrEmpty()) {
+                        walk(assetPath, outFile)
+                    } else {
+                        // 幂等：已存在且非空跳过（原版 overwrite=FALSE 语义）
+                        if (outFile.isFile && outFile.length() > 0L) continue
+                        try {
+                            am.open(assetPath).use { ins ->
+                                java.io.FileOutputStream(outFile).use { fos ->
+                                    ins.copyTo(fos)
+                                }
+                            }
+                            copied++
+                        } catch (t: Throwable) {
+                            android.util.Log.w("CitraMmjEngine",
+                                "seed asset failed: $assetPath", t)
+                        }
+                    }
+                }
+            }
+            walk("mmj", root)
+            if (copied > 0) {
+                android.util.Log.i("CitraMmjEngine",
+                    "seeded $copied MMJ system files (first launch)")
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "seedMmjSystemAssets failed", t)
+        }
     }
 
     /**

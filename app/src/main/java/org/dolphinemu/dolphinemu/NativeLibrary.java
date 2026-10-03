@@ -183,6 +183,33 @@ public final class NativeLibrary
         public static native int[] getSysconfSettings();
         public static native void setSysconfSettings(int[] settings);
 
+        /**
+         * ★★ NesStation 二进制补丁：运行时变速写入器（v1.3 快进根治）★★
+         *
+         * 符号 SetScaledDensity 原实现只是写 .data 里的屏幕密度全局
+         * （adrp x8,0x802000; str s0,[x8,#8]; ret，12 字节，全工程零调用）。
+         * jniLibs 里的 libishiiruka.so 已被 scripts/ishi_speed_patch.py 原地
+         * 改造（连同死符号 GetGameAspectRatio/GetGameDisplayScale 头部共 36
+         * 字节）：解引用 .data 槽 0x800E48 → 0x80B048 的 SConfig 单例，
+         * 把 float 参数直写 [实例+0x208] = SConfig::m_EmulationSpeed
+         * （Throttle 每节流周期现读，≤1ms 生效）。返回 1=写入成功，
+         * 0=核心未启动（实例空守卫）。
+         *
+         * 为什么走 JNI 而非 /proc/self/mem：Android 9+ SELinux 禁止应用
+         * 打开 /proc/self/mem（EACCES，用户实测日志），mem-poke 通道在新
+         * 系统全灭；JNI 直调在自身进程内合法写内存，无权限问题。
+         * 前置条件：引擎侧 ensureSpeedPatchVerified() 校验 so 文件指纹
+         * （0xD00E8 处补丁字节序列），未打补丁的 so 上本方法只是无害的
+         * 密度写入（返回值不可信），引擎不得在未校验时把它当速度通道。
+         */
+        public static native int SetScaledDensity(float emulationSpeed);
+
+        /** 语义别名（见上）—— 引擎统一经此入口做运行时变速。 */
+        public static int setEmulationSpeedPatched(float emulationSpeed)
+        {
+                return SetScaledDensity(emulationSpeed);
+        }
+
         // ------------------------------------------------------------------
         // Java 兜底（so 未导出这些符号；保留旧 API 形状防 UnsatisfiedLinkError）
         // ------------------------------------------------------------------
