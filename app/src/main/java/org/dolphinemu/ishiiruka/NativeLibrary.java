@@ -280,6 +280,20 @@ public final class NativeLibrary
         }
 
         /**
+         * NesStation 集成补丁（运行时变速写入器，转发到符号宿主类）。
+         *
+         * 引擎层（IshirukaEngine#pokeSpeedJni）在 ensureSpeedPatchVerified()
+         * 校验 so 指纹通过后，经此入口直写 SConfig::m_EmulationSpeed ——
+         * 真正的原生符号 SetScaledDensity 由
+         * Java_org_dolphinemu_dolphinemu_NativeLibrary_SetScaledDensity 绑定，
+         * 此处仅做签名形状兼容与转发。返回 1=写入成功，0=核心未启动。
+         */
+        public static int setEmulationSpeedPatched(float emulationSpeed)
+        {
+            return org.dolphinemu.dolphinemu.NativeLibrary.setEmulationSpeedPatched(emulationSpeed);
+        }
+
+        /**
          * 查询游戏平台类型：0 = GameCube，1 = Wii 光盘，2 = WiiWare/ELF。
          * （MainAndroid.cpp GetPlatform —— NesStation 用于自动切换 NGC/Wii 控制布局）
          */

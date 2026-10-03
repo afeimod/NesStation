@@ -1185,11 +1185,11 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         0x88.toByte(), 0x39, 0x00, 0x90.toByte(),   // adrp x8, 0x800000
         0x08, 0x25, 0x47, 0xF9.toByte(),            // ldr  x8, [x8, #0xe48]
         0x09, 0x01, 0x40, 0xF9.toByte(),            // ldr  x9, [x8]
-        0x89, 0x00, 0x00, 0xB4.toByte(),            // cbz  x9, +0x10
+        0x89.toByte(), 0x00, 0x00, 0xB4.toByte(),   // cbz  x9, +0x10
         0x20, 0x09, 0x02, 0xBD.toByte(),            // str  s0, [x9, #0x208]
-        0x20, 0x00, 0x80, 0x52,                     // movz w0, #1
+        0x20, 0x00, 0x80.toByte(), 0x52,            // movz w0, #1
         0xC0.toByte(), 0x03, 0x5F, 0xD6.toByte(),   // ret
-        0x00, 0x00, 0x80, 0x52,                     // fail: movz w0, #0
+        0x00, 0x00, 0x80.toByte(), 0x52,            // fail: movz w0, #0
         0xC0.toByte(), 0x03, 0x5F, 0xD6.toByte()    // ret
     )
 
@@ -1207,8 +1207,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      */
     private fun ensureSpeedPatchVerified(): Boolean {
         if (speedPatchChecked) return speedPatchVerified
-        synchronized(this) {
-            if (speedPatchChecked) return speedPatchVerified
+        return synchronized(this) {
+            if (speedPatchChecked) return@synchronized speedPatchVerified
             speedPatchChecked = true
             speedPatchVerified = try {
                 var soPath: String? = null
