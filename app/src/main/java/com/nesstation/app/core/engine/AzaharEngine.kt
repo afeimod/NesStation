@@ -1305,13 +1305,23 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     //   → 读档信号发出但核心找不到文件 → 静默失败。
                     //   修复：经 getRunningTitleId() 拿到当前游戏的 16 位 hex
                     //   titleId，按核心格式串构造文件名。
-                    val backfillName = try {
-                        val titleId = AzaharNative.lib.getRunningTitleId()
-                        "%016X_version_2005.%02d.cst".format(titleId, slot)
-                    } catch (_: Throwable) {
-                        // getRunningTitleId 在核心未启动时返回 0 / 异常 —— 兜底
-                        // 仍用旧名（至少文件能落盘，下轮 loadState 会再次失败但
-                        // 不会更糟）。
+                    //
+                    //   ★★ 防御加固（与 IshiirukaEngine#patchSysconfWidescreen
+                    //   同款根因）：getRunningTitleId 在 System 单例未就绪时会
+                    //   解引用 null → SIGSEGV（原生陷阱 try/catch 接不住）。
+                    //   仅当 emuThread 真在跑时才走 JNI；否则用兜底名落盘
+                    //   （下次 loadState 在核心跑起来后会经 realStateFile 找到
+                    //   Azahar 自写的 .cst，不会重复走回填路径）。
+                    val backfillName = if (emuThread?.isAlive == true) {
+                        try {
+                            val titleId = AzaharNative.lib.getRunningTitleId()
+                            "%016X_version_2005.%02d.cst".format(titleId, slot)
+                        } catch (_: Throwable) {
+                            "nesstation_slot%02d.cst".format(slot)
+                        }
+                    } else {
+                        android.util.Log.w("AzaharEngine",
+                            "loadState($slot) backfill: emuThread not alive, using fallback name")
                         "nesstation_slot%02d.cst".format(slot)
                     }
                     real = File(statesDir, backfillName)

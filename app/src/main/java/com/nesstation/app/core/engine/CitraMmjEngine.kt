@@ -488,9 +488,27 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         //     项目根本不声明 SetDisplayInfo，证明启动期无需该调用。
         try {
             // SurfaceChanged 成功 → 同步 surfaceAttached=true（与 setSurface 路径一致）
-            surface?.let {
-                lib.SurfaceChanged(it)
-                surfaceAttached = true
+            // ★★ 本轮根治（pc 0x282234 在 libcitra_mmj.so 的第 2 个触发点）★★
+            //   开发者既有注释（下行 503-509）已自指认：MMJ 原生 SurfaceChanged
+            //   内部调 vkCreateAndroidSurfaceKHR，传入**对象存在但底层已失效**
+            //   的 Surface（视图重建 / SurfaceHolder 销毁但 Java 侧仍持有引用）
+            //   会触发 VK 后端 CHECK → SIGTRAP（brk #1）at pc 0x282234，正是
+            //   用户反馈"MMJ 启动游戏闪退"的栈点（DefaultDispatch 线程，
+            //   BuildId 14a21e39...）。
+            //   emu 线程侧已有 surface.isValid 守卫（下方 line 510-533），
+            //   但 IO 协程侧这里的 SurfaceChanged 没有同款守卫 —— 上轮
+            //   移除 SetDisplayInfo 后用户仍崩，因为崩点是这里。
+            //   修复：与 emu 线程同款 isValid 守卫。无效 surface 直接跳过
+            //   （不调 SurfaceChanged，surfaceAttached=false），让 emu 线程
+            //   的等待循环（line 510-528）拉到有效 surface 后再推给 native。
+            surface?.let { s ->
+                if (s.isValid) {
+                    lib.SurfaceChanged(s)
+                    surfaceAttached = true
+                } else {
+                    android.util.Log.w("CitraMmjEngine",
+                        "SurfaceChanged skipped: surface valid=false (will retry on emu thread)")
+                }
             }
         } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "SurfaceChanged failed", t)
@@ -588,7 +606,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (!_loaded) return
             val lib = CitraMmjNative.lib
             if (surface != null) {
-                try { lib.SurfaceChanged(surface); surfaceAttached = true } catch (_: Throwable) {}
+                // ★★ 同 startEmulationLocked 守卫：无效 surface 进 SurfaceChanged
+                //   会触发 VK 后端 vkCreateAndroidSurfaceKHR CHECK → SIGTRAP at
+                //   pc 0x282234（详见 startEmulationLocked 注释）。
+                if (surface.isValid) {
+                    try { lib.SurfaceChanged(surface); surfaceAttached = true } catch (_: Throwable) {}
+                } else {
+                    android.util.Log.w("CitraMmjEngine",
+                        "setSurface: surface valid=false, defer SurfaceChanged to emu thread")
+                }
                 if (emuThread?.isAlive != true) startEmulationLocked()
             } else {
                 // ★★ SurfaceDestroyed 守门：仅 attached 时调一次（详见字段注释）

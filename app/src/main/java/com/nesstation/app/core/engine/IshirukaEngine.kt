@@ -323,16 +323,32 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch (sys) failed", t)
             }
         }
-        // 同步走一遍原生 JNI 通道（getSysconfSettings/setSysconfSettings
-        // 布局：[0]屏保 [1]语言 [2]宽屏 [3]逐行 [4]PAL60 [5]感应条位置
-        // [6]感应条灵敏度 [7]扬声器音量 [8]马达）—— 双保险。
-        try {
-            val cur = org.dolphinemu.dolphinemu.NativeLibrary.getSysconfSettings()
-            if (cur != null && cur.size >= 9) {
-                cur[2] = if (widescreen) 1 else 0
-                org.dolphinemu.dolphinemu.NativeLibrary.setSysconfSettings(cur)
-            }
-        } catch (_: Throwable) {}
+        // ★★ 同步原生 JNI 通道（getSysconfSettings/setSysconfSettings
+        //   布局：[0]屏保 [1]语言 [2]宽屏 [3]逐行 [4]PAL60 [5]感应条位置
+        //   [6]感应条灵敏度 [7]扬声器音量 [8]马达）—— 双保险。★★
+        //
+        //   ★★ 本轮根治：getSysconfSettings 在 SConfig 单例为 null 时解引用
+        //   null+0x18 → SIGSEGV（fault addr 0x18）。SConfig 仅在核心 Run 起来
+        //   后才初始化。但本方法被 setCoreOption("GFX.ini/Settings/wideScreenHack")
+        //   调用 —— 而 setCoreOption 又被 EmulatorScreen 的 LaunchedEffect
+        //   在 padLayout 变化时（含游戏加载阶段、用户改设置面板）触发，
+        //   这些时机核心尚未启动 → SIGSEGV 闪退（崩点
+        //   Java_org_dolphinemu_dolphinemu_NativeLibrary_getSysconfSettings，
+        //   fault addr 0x18，主线程协程）。
+        //   修复：仅当核心真实运行（isLoaded && emuThread 真在跑）时才走 JNI
+        //   推送；否则只走文件补丁（patchSysconfBigByte，纯 I/O 无 JNI），
+        //   下次启动游戏时核心会读到被改过的 SYSCONF 文件 —— 与"下次启动
+        //   生效"的语义一致，永不闪退。try/catch 对原生 SIGSEGV 无效，不能
+        //   依赖异常兜底。
+        if (isLoaded && emuThread?.isAlive == true) {
+            try {
+                val cur = org.dolphinemu.dolphinemu.NativeLibrary.getSysconfSettings()
+                if (cur != null && cur.size >= 9) {
+                    cur[2] = if (widescreen) 1 else 0
+                    org.dolphinemu.dolphinemu.NativeLibrary.setSysconfSettings(cur)
+                }
+            } catch (_: Throwable) {}
+        }
         if (!patched) {
             android.util.Log.w("IshirukaEngine", "SYSCONF not found for widescreen patch (will apply on next boot)")
         }
