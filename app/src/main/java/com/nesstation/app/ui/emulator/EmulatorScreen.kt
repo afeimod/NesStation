@@ -2010,6 +2010,7 @@ fun EmulatorScreen(
                    padLayout.azUseVsync, padLayout.azUseDiskShaderCache,
                    padLayout.azAsyncPresentation, padLayout.azAsyncShaderCompilation,
                    padLayout.azAccurateMultiplication, padLayout.azLleApplets,
+                   padLayout.azShadowRendering,
                    padLayout.azTextureFilter, padLayout.azTextureSampling,
                    padLayout.azIntegerScaling, padLayout.azFrameLimit,
                    padLayout.azRender3d, padLayout.azFactor3d,
@@ -4725,6 +4726,11 @@ private fun applyAzaharCoreOptions(
             engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
             engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
             engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
+            // ★ 阴影渲染（几何，MMJ 兼容键）：AzaharPlus 2125 核心未读取此键
+            //   （阴影由着色器管线恒定渲染，无独立开关——反汇编 150 个
+            //   SettingKeys 无 shadow 键）；写入 config.ini 无害且前向兼容，
+            //   与 Citra MMJ 核心的 shadow_rendering 键同语义。
+            engine.setCoreOption("Renderer/shadow_rendering", b(layout.azShadowRendering))
             // ★★★ 全局滤镜 xbr/hqx 生效（3DS 分支）★★：
             //   直绘核心无前端后处理链路（setVideoFilter no-op），xbr/hqx
             //   类全局滤镜通过核心自带的 GPU 纹理滤波器落地：

@@ -68,6 +68,18 @@ object WiiMotionSensors {
      *   → 某一方向被永久占满死区外的幅度，反向达不到阈值 = 失灵）。 */
     private const val RECENTER_HOLD_MS = 600L
 
+    /** ★★ 基线收敛采样数（本轮根治）：启动后先积累 K 个原始样本求均值
+     *   作为基准，期间不输出任何倾斜 —— 旧实现第 1 个事件就用只滤了一拍
+     *   （alpha=0.45，从 0 起步）的 smoothed 当基准，滤波器收敛期间
+     *   smoothed-base 漂移高达 0.55g > FULL_TILT_G(0.42) → 开局 0.5~1s
+     *   假性满幅倾斜把游戏输入饱和占死（"按钮按好久才生效"的根因）。 */
+    private const val CALIB_SAMPLES = 12
+
+    /** ★★ 重校准门控：当前四向倾斜输出全部低于此值才允许重采基准 ——
+     *   防止基准“追赶”用户正在保持的倾斜（旧实现只要静止 600ms 就重采，
+     *   用户持续左倾时基准被拉向左倾 → 输出逐渐衰减 → "偶尔失效"）。 */
+    private const val RECENTER_MAX_OUTPUT = 0.10f
+
     /**
      * 体感状态（每次事件回调后输出，11 维）。
      *
@@ -111,6 +123,10 @@ object WiiMotionSensors {
     /** ★ 静止重校准状态：近静止持续时长（计时起点 ms）。 */
     private var stationarySinceMs = 0L
 
+    /** ★★ 基线收敛状态：已积累的原始样本数与累计和（本轮根治）。 */
+    private var calibCount = 0
+    private val calibSum = FloatArray(3)
+
     @Volatile private var calibrated = false
     @Volatile private var hasLinearAccel = false
     @Volatile private var hasGyro = false
@@ -135,6 +151,8 @@ object WiiMotionSensors {
         val gyro = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         sensorManager = sm
         calibrated = false
+        calibCount = 0
+        calibSum.fill(0f)
         hasLinearAccel = linAcc != null
         hasGyro = gyro != null
         smoothed.fill(0f)
@@ -193,20 +211,55 @@ object WiiMotionSensors {
         smoothed[0] = alpha * gxS + (1 - alpha) * smoothed[0]
         smoothed[1] = alpha * gyS + (1 - alpha) * smoothed[1]
         smoothed[2] = alpha * gzS + (1 - alpha) * smoothed[2]
+        // ★★ 基线收敛（本轮根治）：启动后先积累 CALIB_SAMPLES 个原始样本
+        //   求均值作为基准，期间不输出任何倾斜 —— 旧实现第 1 个事件就把
+        //   未收敛的 smoothed（从 0 起步只滤了一拍 ≈ 0.45g）当基准，
+        //   收敛期间 smoothed-base 漂移高达 0.55g > FULL_TILT_G →
+        //   开局假性满幅倾斜，把游戏输入饱和占死（按钮“按好久才生效”
+        //   与传感器假倾斜与按钮对向对消（“偶尔失效”）的双重根源）。
         if (!calibrated) {
-            baseGravity[0] = smoothed[0]
-            baseGravity[1] = smoothed[1]
-            baseGravity[2] = smoothed[2]
+            calibSum[0] += gxS; calibSum[1] += gyS; calibSum[2] += gzS
+            calibCount++
+            if (calibCount < CALIB_SAMPLES) {
+                return   // 未收敛：不输出、不参与重校准
+            }
+            baseGravity[0] = calibSum[0] / calibCount
+            baseGravity[1] = calibSum[1] / calibCount
+            baseGravity[2] = calibSum[2] / calibCount
             calibrated = true
             stationarySinceMs = 0L
+            // 收敛后首个事件：把滤波器也预热到真实重力，避免首拍跳变
+            smoothed[0] = baseGravity[0]
+            smoothed[1] = baseGravity[1]
+            smoothed[2] = baseGravity[2]
             return
         }
-        // ★ 静止重校准（防漂移）：加速度接近纯重力（总幅值 ≈ 9.8±0.35）
-        //   且持续 ≥ RECENTER_HOLD_MS 时，把当前低通重力采为新基准 ——
-        //   手持姿势变化后松开几秒即自动回中，无需重开关。
+        // 倾斜：相对基准的重力分量差
+        fun clean(v: Float): Float {
+            val a = kotlin.math.abs(v)
+            return if (a < DEADZONE) 0f
+            else ((a - DEADZONE) / (FULL_TILT_G - DEADZONE)).coerceIn(0f, 1f)
+        }
+        val dX = smoothed[0] - baseGravity[0]   // >0 = 右倾
+        val dZ = smoothed[2] - baseGravity[2]   // <0 = 前倾（顶边前推）
+        val tR = clean(dX)
+        val tL = clean(-dX)
+        val tF = clean(-dZ)
+        val tB = clean(dZ)
+        state.tiltRight = tR
+        state.tiltLeft = tL
+        state.tiltForward = tF
+        state.tiltBackward = tB
+        // ★★ 静止重校准（防漂移，本轮加固）：
+        //   1) 加速度接近纯重力（总幅值 ≈ 9.8±0.35）且持续 ≥ RECENTER_HOLD_MS；
+        //   2) ★ 新增门控：当前四向输出全部 < RECENTER_MAX_OUTPUT ——
+        //      用户正在保持倾斜时绝不重采基准（防基准追赶导致的
+        //      “持续倾斜逐渐衰减/反向失灵”）；
+        //   3) ★ 新增缓冲：重采后 500ms 内不再次重采（防高频抖动）。
         val mag = kotlin.math.sqrt(gxS * gxS + gyS * gyS + gzS * gzS)
         val nearStationary = kotlin.math.abs(mag - 9.81f) < STATIONARY_ACCEL
-        if (nearStationary) {
+        if (nearStationary && tL < RECENTER_MAX_OUTPUT && tR < RECENTER_MAX_OUTPUT &&
+            tF < RECENTER_MAX_OUTPUT && tB < RECENTER_MAX_OUTPUT) {
             val now = android.os.SystemClock.uptimeMillis()
             if (stationarySinceMs == 0L) stationarySinceMs = now
             if (now - stationarySinceMs >= RECENTER_HOLD_MS) {
@@ -218,18 +271,6 @@ object WiiMotionSensors {
         } else {
             stationarySinceMs = 0L
         }
-        // 倾斜：相对基准的重力分量差
-        fun clean(v: Float): Float {
-            val a = kotlin.math.abs(v)
-            return if (a < DEADZONE) 0f
-            else ((a - DEADZONE) / (FULL_TILT_G - DEADZONE)).coerceIn(0f, 1f)
-        }
-        val dX = smoothed[0] - baseGravity[0]   // >0 = 右倾
-        val dZ = smoothed[2] - baseGravity[2]   // <0 = 前倾（顶边前推）
-        state.tiltRight = clean(dX)
-        state.tiltLeft = clean(-dX)
-        state.tiltForward = clean(-dZ)
-        state.tiltBackward = clean(dZ)
 
         // ★ 无线性加速度传感器时：从加速度计高通得到挥动估计（fallback）
         if (!hasLinearAccel) {
@@ -358,6 +399,8 @@ object WiiMotionSensors {
         listener = null
         sensorManager = null
         calibrated = false
+        calibCount = 0
+        calibSum.fill(0f)
         hasLinearAccel = false
         hasGyro = false
         stationarySinceMs = 0L

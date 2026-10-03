@@ -734,6 +734,11 @@ class PadLayout {
     var azAsyncPresentation: String = "enabled"     // enabled | disabled (async_presentation)
     var azAsyncShaderCompilation: String = "enabled" // enabled | disabled (async_shader_compilation)
     var azAccurateMultiplication: String = "disabled" // enabled | disabled (shaders_accurate_mul)
+    /** 阴影渲染（几何）：MMJ 兼容键 shadow_rendering。AzaharPlus 2125 核心
+     *   未读取此键（阴影由着色器管线恒定渲染）——写入无害且前向兼容
+     *   （后续核心版本若接入 MMJ 系 hack 即生效）；Citra MMJ 核心同名键实时生效。
+     *   默认关闭（用户要求）。 */
+    var azShadowRendering: String = "disabled" // enabled | disabled (shadow_rendering)
     var azSkipDuplicateFrames: String = "disabled"  // enabled | disabled (use_skip_duplicate_frames)
     var azTextureFilter: String = "0"               // "0".."5" (texture_filter: 无/Anime4K/双三次/ScaleForce/xBRZ/MMPX)
     var azTextureSampling: String = "0"             // "0".."2" (texture_sampling: 游戏/最近邻/线性)
@@ -1548,6 +1553,7 @@ class PadLayout {
         azAsyncPresentation = another.azAsyncPresentation
         azAsyncShaderCompilation = another.azAsyncShaderCompilation
         azAccurateMultiplication = another.azAccurateMultiplication
+        azShadowRendering = another.azShadowRendering
         azSkipDuplicateFrames = another.azSkipDuplicateFrames
         azTextureFilter = another.azTextureFilter
         azTextureSampling = another.azTextureSampling
@@ -2668,6 +2674,7 @@ object PadLayoutStore {
             azAsyncPresentation = p.getString("az_async_presentation", "enabled") ?: "enabled"
             azAsyncShaderCompilation = p.getString("az_async_shader_compilation", "enabled") ?: "enabled"
             azAccurateMultiplication = p.getString("az_accurate_multiplication", "disabled") ?: "disabled"
+            azShadowRendering = p.getString("az_shadow_rendering", "disabled") ?: "disabled"
             azSkipDuplicateFrames = p.getString("az_skip_duplicate_frames", "disabled") ?: "disabled"
             azTextureFilter = p.getString("az_texture_filter", "0") ?: "0"
             azTextureSampling = p.getString("az_texture_sampling", "0") ?: "0"
@@ -3414,6 +3421,7 @@ object PadLayoutStore {
             putString("az_async_presentation", layout.azAsyncPresentation)
             putString("az_async_shader_compilation", layout.azAsyncShaderCompilation)
             putString("az_accurate_multiplication", layout.azAccurateMultiplication)
+            putString("az_shadow_rendering", layout.azShadowRendering)
             putString("az_skip_duplicate_frames", layout.azSkipDuplicateFrames)
             putString("az_texture_filter", layout.azTextureFilter)
             putString("az_texture_sampling", layout.azTextureSampling)

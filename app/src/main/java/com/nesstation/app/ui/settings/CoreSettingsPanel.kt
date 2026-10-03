@@ -1655,6 +1655,10 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别游戏需要)"),
                         padLayout.azAccurateMultiplication
                     ) { updateLayout(padLayout.copy {azAccurateMultiplication = it}) }
+                    DropdownRow("阴影渲染 (几何)",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (MMJ 兼容键·与 MMJ 核心同语义)"),
+                        padLayout.azShadowRendering
+                    ) { updateLayout(padLayout.copy {azShadowRendering = it}) }
                     DropdownRow("纹理过滤",
                         listOf("0" to "无", "1" to "Anime4K", "2" to "双三次", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
                         padLayout.azTextureFilter

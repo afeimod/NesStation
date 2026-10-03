@@ -73,6 +73,27 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      */
     @Volatile private var surfaceAttached: Boolean = false
 
+    /**
+     * ★★★ 启动窗口门（“surface is nullptr”闪退根治，本轮）★★★
+     *
+     * 反汇编实证（libazahar.so BuildId 0758b08c…）：
+     *  - run() 在 +0x218 读全局 g_surface（0x261d4f0），+0x22c 即构造
+     *    EmuWindow_Android_GL/Vulkan —— 构造函数对 null surface 直接
+     *    LOG_CRITICAL("surface is nullptr", emu_window.cpp:66) 并留下
+     *    core_context=NULL 的半构造对象，随后 DoneCurrent() 虚调用空指针
+     *    解引用 → SIGABRT（用户崩溃栈 #00 DoneCurrent+4 精确命中）；
+     *  - surfaceDestroyed JNI 唯一能把 g_surface 置 NULL 的入口；
+     *  - isRunning() = !stopFlag：run() 入口置位、核心进主循环(+0xa0c)
+     *    才清零 —— 语义上“启动窗口内恒 false”本可用于门控，但旧代码
+     *    在 emuThread 赋值完成前的窗口里读到 null → booting=false →
+     *    守卫放行 surfaceDestroyed → g_surface=NULL → 崩。
+     *
+     * 本标志覆盖整个“surfaceChanged→run()窗口构造完成”周期（VK 路径含
+     * 驱动加载，可达数百毫秒），期间 setSurface(null)/onSurfaceChanged/
+     * cleanup 一律不得调 surfaceDestroyed。
+     */
+    @Volatile private var nativeBooting = false
+
     @Volatile override var isLoaded = false
         private set
 
@@ -638,18 +659,26 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         //   置空，native EmuWindow_Android 构造读到 null → abort）。
         val bootSurface = surface ?: return
         if (!bootSurface.isValid) return
+        // ★ 先置启动门，再推 surface —— 本轮修复：窗口构造完成前
+        //   任何路径都不得 surfaceDestroyed（见 nativeBooting 注释）。
+        nativeBooting = true
         try { lib.surfaceChanged(bootSurface); surfaceAttached = true } catch (t: Throwable) {
             android.util.Log.w("AzaharEngine", "surfaceChanged failed", t)
         }
         if (_ffSpeed > 0) {
             try { lib.setTemporaryFrameLimit(100.0 * _ffSpeed) } catch (_: Throwable) {}
         }
-        emuThread = thread(name = "AzaharNative") {
+        // ★★ 赋值竞态根治：先创建不启动的线程并赋值 emuThread，再 start()。
+        //   旧写法 emuThread = thread{...} 在赋值完成前，setSurface(null)
+        //   读到 emuThread==null → booting=false → 放行 surfaceDestroyed
+        //   → g_surface=NULL → 新线程随即 run() 构造窗口读到 null → 崩。
+        //   start=false 消除了“线程已跑、字段未赋”的窗口。
+        val bootThread = thread(start = false, name = "AzaharNative", isDaemon = true) {
             // ★ 用启动时捕获的 bootSurface，不再读 volatile this.surface ——
-            //   彻底消除"thread 启动到 surfaceChanged 之间 setSurface(null)
-            //   把字段置空"的竞态窗口。
+            //   彻底消除“thread 启动到 surfaceChanged 之间 setSurface(null)
+            //   把字段置空”的竞态窗口。
             //   若 Compose 重组销毁了原 SurfaceView，bootSurface 仍可能
-            //   isValid=false —— 这种情况下 run() 会进入"surface is nullptr"
+            //   isValid=false —— 这种情况下 run() 会进入“surface is nullptr”
             //   abort；为兜底这种情况，循环重试最多 5 次拉取当前 surface，
             //   命中即推给 native 并 break，避免永久黑屏。
             var attemptedSurface = bootSurface
@@ -659,7 +688,7 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 var ready = false
                 for (attempt in 1..30) {
                     Thread.sleep(100)
-                    if (!running.get()) return@thread
+                    if (!running.get()) { nativeBooting = false; return@thread }
                     val cur = surface
                     if (cur != null && cur.isValid) {
                         attemptedSurface = cur
@@ -675,6 +704,7 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     //   只是黑屏，VK 路径直接闪退 —— “vk 用不了会闪退”根因）。
                     //   这里放弃本次启动并上报；SurfaceView 重建后 setSurface()
                     //   会重新拉起 startEmulationLocked，不会卡死。
+                    nativeBooting = false
                     lastErrorText = "启动时 Surface 尚未就绪（视图重建中），已放弃本次启动；\n画面恢复后将自动重启。"
                     try {
                         onPrematureExit?.invoke(
@@ -696,6 +726,9 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             } catch (t: Throwable) {
                 android.util.Log.e("AzaharEngine", "run() crashed", t)
                 lastErrorText = t.message ?: "run() crashed"
+            } finally {
+                // run() 返回（含异常）即退出启动窗口
+                nativeBooting = false
             }
             // run() 自然返回（未被用户停止）且核心从未报过错误 → 同样属于
             // 提前退出，上报（覆盖核心不调 exitEmulationActivity 的路径）。
@@ -734,6 +767,10 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 try { onPrematureExit?.invoke(diag) } catch (_: Throwable) {}
             }
         }
+        // ★★ 先赋值再启动（赋值竞态根治，见上方注释）：此刻 nativeBooting
+        //   已置位，即便 start() 前有 setSurface(null) 也只会被启动门拦下。
+        emuThread = bootThread
+        bootThread.start()
         startPresentation()
 
         // ★ 3DS 黑屏修复：核心完成 System::Init 后刷新一次帧缓冲布局。
@@ -753,6 +790,9 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                             AzaharNative.lib.isRunning()
                         } catch (_: Throwable) { false }
                         if (isRunning2() && nativeRunning) {
+                            // ★ 核心进入主循环（run+0xa0c 清 stop 标志）= 启动窗口
+                            //   结束 —— 解除启动门，此后 destroy+changed 对安全。
+                            nativeBooting = false
                             // ★ surface 竞态终极保险：核心刚跑起来（EmuWindow 已
                             //   构造、原生 running 标志已置位）时，把**当前**
                             //   surface 再推给核心一次 —— 原生 surfaceChanged
@@ -830,9 +870,14 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 //   但若 boot 窗口已结束（nativeRunning=true），可以安全通知销毁。
                 //   ★★ surfaceAttached 守门：避免连调 surfaceDestroyed() 造成二次
                 //   release ANativeWindow → VK 路径 SIGABRT（同 CitraMmjEngine 修复）
+                //   ★★★ 本轮加固：nativeBooting 启动门 —— isRunning() 在
+                //   emuThread 赋值完成前的窗口里不可靠（旧代码在此读到 false
+                //   放行 surfaceDestroyed → g_surface=NULL → run() 构造窗口
+                //   读到 null → "surface is nullptr" SIGABRT）。启动门覆盖
+                //   从 surfaceChanged 到 run() 返回/核心就绪的完整周期。
                 val nativeRunning = try { lib.isRunning() } catch (_: Throwable) { false }
-                val booting = emuThread?.isAlive == true
-                if ((!booting || nativeRunning) && surfaceAttached) {
+                val booting = nativeBooting || (emuThread?.isAlive == true && !nativeRunning)
+                if (!booting && surfaceAttached) {
                     try { lib.surfaceDestroyed() } catch (_: Throwable) {}
                     surfaceAttached = false
                 }
@@ -884,7 +929,7 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             //   启动期改记 pendingSurfaceResize，由 azahar-layout-ensure
             //   线程在核心就绪后补做（见 startEmulationLocked）。
             val nativeRunning = try { lib.isRunning() } catch (_: Throwable) { false }
-            val booting = emuThread?.isAlive == true && !nativeRunning
+            val booting = nativeBooting || (emuThread?.isAlive == true && !nativeRunning)
             if (booting) {
                 pendingSurfaceResize.set(true)
             } else {
@@ -961,14 +1006,33 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 AzaharNative.lib.stopEmulation()
                 emuThread?.join(8000)
             } catch (_: Throwable) {}
+            // ★★ 启动窗口内的 stopEmulation 会被 run+0xa0c 无条件清掉的
+            //   停止标志吞掉（反汇编实证）→ join 超时时核心可能仍在
+            //   boot/主循环。此情形下绝不能 surfaceDestroyed —— 否则
+            //   仍在构造/使用窗口的 run() 读到 g_surface=NULL →
+            //   "surface is nullptr" SIGABRT（本轮修复）。
+            if (emuThread?.isAlive == true) {
+                // 核心已进主循环的话再停一次（第一次落在 boot 窗口被吞）
+                try { AzaharNative.lib.stopEmulation() } catch (_: Throwable) {}
+                emuThread?.join(4000)
+            }
+            if (emuThread?.isAlive == true) {
+                android.util.Log.w("AzaharEngine",
+                    "emuThread still alive after stop; skip surfaceDestroyed to avoid null-window abort")
+            }
         }
+        // ★ 必须在置 null 前捕获存活状态（置 null 后 isAlive 恒 false）
+        val threadStillAlive = emuThread?.isAlive == true
         emuThread = null
+        nativeBooting = false
 
         stopPresentation()
         // ★★ surfaceAttached 守门：仅 attached 时才调一次 surfaceDestroyed()
         //   避免 onSurfaceDestroyed()+unload() 连调 → 二次 release ANativeWindow
         //   → VK 路径 vkCreateAndroidSurfaceKHR CHECK 失败 → SIGABRT
-        if (surfaceAttached) {
+        //   ★★ 且仅当模拟线程确已退出才调 —— 线程仍活时（重试仍超时）
+        //   宁可泄漏一次窗口也不能崩。
+        if (surfaceAttached && !threadStillAlive) {
             try { AzaharNative.lib.surfaceDestroyed() } catch (_: Throwable) {}
             surfaceAttached = false
         }

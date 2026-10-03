@@ -154,6 +154,17 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      */
     @Volatile private var surfaceAttached: Boolean = false
 
+    /**
+     * ★★★ 启动窗口门（本轮，与 AzaharEngine 同款根治）★★★
+     *
+     * SurfaceChanged → Run() 内 EmuWindow 构造完成之间，SurfaceDestroyed
+     * 会把原生全局窗口置 NULL → Run() 构造窗口读到 null → 原生 abort。
+     * 本标志覆盖整个启动窗口（含核心 boot 的全部时长），期间
+     * setSurface(null) / cleanup 一律不得调 SurfaceDestroyed。
+     * 清除时机：Run() 返回（finally）或各早退路径。
+     */
+    @Volatile private var nativeBooting = false
+
     private var choreographer: Choreographer? = null
     private var frameCallback: Choreographer.FrameCallback? = null
 
@@ -414,7 +425,17 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "SurfaceChanged failed", t)
         }
-        emuThread = thread(name = "CitraMmjNative") {
+        // ★★★ 启动门（本轮，与 AzaharEngine 同款根治）：SurfaceChanged 到
+        //   Run() 窗口构造完成之间，SurfaceDestroyed 会把原生全局窗口置
+        //   NULL → Run() 构造 EmuWindow 读到 null → 原生 abort。旧实现
+        //   setSurface(null) 对此完全无守卫 —— 启动期任何视图重建（横竖
+        //   屏切换/加载动画切换）都会触发闪退。nativeBooting 覆盖整个
+        //   启动窗口，期间一律不调 SurfaceDestroyed。
+        nativeBooting = true
+        // ★★ 赋值竞态根治：先创建不启动的线程并赋值，再 start() ——
+        //   消除“线程已跑、字段未赋”窗口里 setSurface(null) 读到
+        //   emuThread==null 导致守卫失效的问题。
+        val bootThread = thread(start = false, name = "CitraMmjNative", isDaemon = true) {
             // ★★ DraStic 同款 Surface 有效性检查：绝不能带无效 surface 进入 Run()！
             //   MMJ 原生 Run() 会调 EmuWindow_Android 构造，读到无效 surface 时
             //   VK 后端 vkCreateAndroidSurfaceKHR CHECK 失败→SIGTRAP
@@ -425,8 +446,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (attemptedSurface == null || !attemptedSurface.isValid) {
                 var ready = false
                 for (attempt in 1..30) {
-                    try { Thread.sleep(100) } catch (_: InterruptedException) { return@thread }
-                    if (!running.get()) return@thread
+                    try { Thread.sleep(100) } catch (_: InterruptedException) { nativeBooting = false; return@thread }
+                    if (!running.get()) { nativeBooting = false; return@thread }
                     val cur = surface
                     if (cur != null && cur.isValid) {
                         attemptedSurface = cur
@@ -435,6 +456,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     }
                 }
                 if (!ready) {
+                    nativeBooting = false
                     lastErrorText = "启动时 Surface 尚未就绪（视图重建中），已放弃本次启动；画面恢复后将自动重启。"
                     android.util.Log.w("CitraMmjEngine", lastErrorText)
                     return@thread
@@ -452,8 +474,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             } catch (t: Throwable) {
                 android.util.Log.e("CitraMmjEngine", "Run() crashed", t)
                 lastErrorText = t.message ?: "Run() crashed"
+            } finally {
+                // Run() 返回（含异常）即退出启动窗口
+                nativeBooting = false
             }
         }
+        // ★★ 先赋值再启动（赋值竞态根治）：此刻启动门已置位，即便 start()
+        //   前有 setSurface(null) 也只会被门拦下。
+        emuThread = bootThread
+        bootThread.start()
         startPresentation()
     }
 
@@ -495,7 +524,13 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 // ★★ SurfaceDestroyed 守门：仅 attached 时调一次（详见字段注释）
                 //   EmulatorScreen.surfaceDestroyed 连调 onSurfaceDestroyed+setSurface(null)
                 //   + 退出 unload 三处入口都走这里 → 不守门必重复 release → 野指针崩溃
-                if (surfaceAttached) {
+                //   ★★★ 启动门（本轮根治）：Run() boot 窗口内绝不能
+                //   SurfaceDestroyed —— 原生全局窗口被置 NULL 后，Run()
+                //   构造 EmuWindow 读到 null → 原生 abort。核心已跑起来
+                //   （IsRunning）或无启动在途时才正常销毁。
+                val nativeRunning = try { lib.IsRunning() } catch (_: Throwable) { false }
+                val booting = nativeBooting || (emuThread?.isAlive == true && !nativeRunning)
+                if (!booting && surfaceAttached) {
                     try { lib.SurfaceDestroyed() } catch (_: Throwable) {}
                     surfaceAttached = false
                 }
@@ -567,12 +602,24 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 CitraMmjNative.lib.StopEmulation()
                 emuThread?.join(8000)
             } catch (_: Throwable) {}
+            // ★ 启动窗口内的 stop 可能被吞（与 Azahar 同型）：重试一次，
+            //   仍存活则绝不 SurfaceDestroyed（宁可泄漏也不闪退）。
+            if (emuThread?.isAlive == true) {
+                try { CitraMmjNative.lib.StopEmulation() } catch (_: Throwable) {}
+                emuThread?.join(4000)
+            }
+            if (emuThread?.isAlive == true) {
+                android.util.Log.w("CitraMmjEngine",
+                    "emuThread still alive after stop; skip SurfaceDestroyed to avoid null-window abort")
+            }
         }
+        // ★ 必须在置 null 前捕获存活状态（置 null 后 isAlive 恒 false）
+        val threadStillAlive = emuThread?.isAlive == true
         emuThread = null
-        // ★★ SurfaceDestroyed 守门：仅 attached 时调一次（详见字段注释）。
-        //   旧实现无条件调 → 与 setSurface(null) 重复 → ANativeWindow_release
-        //   野指针崩溃（崩溃栈 ca.h.unload+6 → ca.h.A+130 → SurfaceDestroyed）
-        if (surfaceAttached) {
+        nativeBooting = false
+        // ★★ SurfaceDestroyed 守门：仅 attached 且模拟线程确已退出才调 ——
+        //   线程仍活时（重试仍超时）宁可泄漏一次窗口也不能崩。
+        if (surfaceAttached && !threadStillAlive) {
             try { CitraMmjNative.lib.SurfaceDestroyed() } catch (_: Throwable) {}
             surfaceAttached = false
         }

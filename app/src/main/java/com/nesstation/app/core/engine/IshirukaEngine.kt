@@ -882,6 +882,7 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             //    内部 SConfig 初始化完成后由后台任务把 _ffSpeed 重新写入
             //    m_EmulationSpeed（会话级状态跨 reset 保持）。每 100ms 重试
             //    至成功或 10s 超时（boot 慢的 Wii 游戏覆盖到）。
+            //    ★ 本轮：重放成功后拉起保活线程（见 startFfwdKeeper）。
             if (_ffSpeed > 0) {
                 val ffTarget = _ffSpeed.toFloat()
                 thread(name = "IshiFfwdReapply", isDaemon = true) {
@@ -889,7 +890,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                         for (i in 0..100) {
                             Thread.sleep(100)
                             if (try { NativeLibrary.IsRunning() } catch (_: Throwable) { false }) {
-                                if (pokeEmulationSpeed(ffTarget)) return@thread
+                                if (pokeEmulationSpeed(ffTarget)) {
+                                    startFfwdKeeper()
+                                    return@thread
+                                }
                             }
                         }
                     } catch (_: InterruptedException) {}
@@ -1085,9 +1089,16 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      */
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
+        startFfwdKeeper()
         if (!isLoaded) return
         val target = if (speed > 0) speed.toFloat() else 1.0f
+        // ★ 关快进时同时清节流禁用标志（若此前走的是二级机制回退，
+        //   不清除会永久不限速）
+        if (speed <= 0) pokeThrottleDisableFlag(false)
         if (pokeEmulationSpeed(target)) return
+        // ★ 二级机制：直写节流禁用标志（Throttle 门 @0xe3f1c 读 .bss 0x80B050，
+        //   置 1 = 无条件不限速）。速度槽写失败时用它兼得快进效果。
+        if (speed > 0 && pokeThrottleDisableFlag(true)) return
         // 回退：写配置（下次启动核心读到 EmulationSpeed 生效）
         try {
             val value = if (speed > 0) "0" else "1"
@@ -1099,6 +1110,36 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 )
             } catch (_: Throwable) {}
         } catch (_: Throwable) {}
+        if (speed > 0) {
+            android.util.Log.w("IshirukaEngine",
+                "fast-forward mem-poke unavailable (target=$target); INI fallback written")
+        }
+    }
+
+    /** ★★ 快进保活线程（本轮新增）：快进期间每 400ms 校验一次内存里的
+     *   m_EmulationSpeed —— 任何路径（设置重载/软重启/核心重读 INI）把它
+     *   拉回 1.0 时立即重写。自愈式保障"快进不会被后台静默关掉"。 */
+    @Volatile private var ffwdKeeperThread: Thread? = null
+
+    private fun startFfwdKeeper() {
+        if (_ffSpeed <= 0 || !isLoaded) { ffwdKeeperThread = null; return }
+        if (ffwdKeeperThread?.isAlive == true) return
+        val target = _ffSpeed.toFloat()
+        ffwdKeeperThread = thread(name = "IshiFfwdKeeper", isDaemon = true) {
+            try {
+                while (_ffSpeed > 0 && isLoaded) {
+                    Thread.sleep(400)
+                    if (_ffSpeed <= 0 || !isLoaded) break
+                    // 读当前值，漂移才重写（pokeEmulationSpeed 内部自校验）
+                    try {
+                        val cur = readEmulationSpeed()
+                        if (cur != null && kotlin.math.abs(cur - target) > 0.01f) {
+                            pokeEmulationSpeed(target)
+                        }
+                    } catch (_: Throwable) {}
+                }
+            } catch (_: InterruptedException) {}
+        }
     }
 
     /** 该 so 的构建指纹（nm/readelf 实测），内存补丁仅在此版本启用。 */
@@ -1200,7 +1241,11 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         }
     }
 
-    /** 直写 SConfig::m_EmulationSpeed（小端 float）。成功 true。 */
+    /** 直写 SConfig::m_EmulationSpeed（小端 float）。成功 true。
+     *  ★★ 本轮加固：写入后回读校验 —— /proc/self/mem 打开/寻址/写入在个别
+     *   设备上可能静默失败，旧实现盲写后即返回 true，快进失效无任何线索。
+     *   现在分阶段记录失败原因（打开失败/槽位空/sanity 拒绝/回读不一致）
+     *   并在回读不一致时返回 false 以触发下一级回退。 */
     private fun pokeEmulationSpeed(speed: Float): Boolean {
         if (!ensureMemPatchVerified()) return false
         return try {
@@ -1212,18 +1257,90 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                         bias = line.substringBefore('-').toLong(16)
                     }
                 }
-                if (bias < 0) return false
+                if (bias < 0) {
+                    android.util.Log.w("IshirukaEngine", "poke: libishiiruka.so not in maps")
+                    return false
+                }
                 val slot = readLongLe(mem, bias + SCONFIG_SLOT_OFFSET)
-                if (slot == 0L) return false
+                if (slot == 0L) {
+                    android.util.Log.w("IshirukaEngine", "poke: SConfig slot null (core not booted?)")
+                    return false
+                }
                 val sconfig = readLongLe(mem, slot)
-                if (sconfig == 0L) return false
+                if (sconfig == 0L) {
+                    android.util.Log.w("IshirukaEngine", "poke: SConfig instance null")
+                    return false
+                }
                 val cur = readFloatLe(mem, sconfig + EMU_SPEED_OFFSET)
-                if (cur.isNaN() || cur < 0f || cur > 8f) return false   // sanity：非合理初值拒绝写
+                if (cur.isNaN() || cur < 0f || cur > 8f) {
+                    android.util.Log.w("IshirukaEngine", "poke: sanity rejected cur=$cur")
+                    return false   // sanity：非合理初值拒绝写
+                }
                 writeFloatLe(mem, sconfig + EMU_SPEED_OFFSET, speed)
+                // ★ 回读校验：确认写逃真落盘
+                val back = readFloatLe(mem, sconfig + EMU_SPEED_OFFSET)
+                if (kotlin.math.abs(back - speed) > 0.001f) {
+                    android.util.Log.w("IshirukaEngine", "poke: write verify failed (back=$back want=$speed)")
+                    return false
+                }
                 true
             }
         } catch (t: Throwable) {
             android.util.Log.w("IshirukaEngine", "pokeEmulationSpeed failed", t)
+            false
+        }
+    }
+
+    /** 只读当前 m_EmulationSpeed（保活线程漂移检测用；失败 null）。 */
+    private fun readEmulationSpeed(): Float? {
+        if (!ensureMemPatchVerified()) return null
+        return try {
+            java.io.RandomAccessFile("/proc/self/mem", "r").use { mem ->
+                var bias = -1L
+                java.io.File("/proc/self/maps").forEachLine { line ->
+                    if (bias < 0 && line.contains("libishiiruka.so")) {
+                        bias = line.substringBefore('-').toLong(16)
+                    }
+                }
+                if (bias < 0) return null
+                val slot = readLongLe(mem, bias + SCONFIG_SLOT_OFFSET)
+                if (slot == 0L) return null
+                val sconfig = readLongLe(mem, slot)
+                if (sconfig == 0L) return null
+                readFloatLe(mem, sconfig + EMU_SPEED_OFFSET)
+            }
+        } catch (_: Throwable) { null }
+    }
+
+    /** ★★ 二级机制：直写节流禁用标志（.bss 0x80B050，Throttle@0x14e5e4
+     *   经 0xe3f1c 读此字节；置 1 = 节流完全旁路 = 不限速）。用于速度槽
+     *   写入失败时的兼容快进。写入后同样回读校验。 */
+    private val THROTTLE_DISABLE_FLAG_OFFSET = 0x80B050L
+
+    private fun pokeThrottleDisableFlag(disable: Boolean): Boolean {
+        if (!ensureMemPatchVerified()) return false
+        return try {
+            java.io.RandomAccessFile("/proc/self/mem", "rw").use { mem ->
+                var bias = -1L
+                java.io.File("/proc/self/maps").forEachLine { line ->
+                    if (bias < 0 && line.contains("libishiiruka.so")) {
+                        bias = line.substringBefore('-').toLong(16)
+                    }
+                }
+                if (bias < 0) return false
+                val addr = bias + THROTTLE_DISABLE_FLAG_OFFSET
+                mem.seek(addr)
+                mem.write(if (disable) byteArrayOf(1) else byteArrayOf(0))
+                mem.seek(addr)
+                val back = mem.read()
+                if ((back == 1) != disable) {
+                    android.util.Log.w("IshirukaEngine", "throttle-flag poke verify failed: $back")
+                    return false
+                }
+                true
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("IshirukaEngine", "pokeThrottleDisableFlag failed", t)
             false
         }
     }
@@ -1761,7 +1878,23 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val swingMerged = FloatArray(6)   // U/D/L/R/F/B
         val shakeMerged = FloatArray(3)  // X/Y/Z
         synchronized(wiiTiltLock) {
-            for (i in 0 until 4) merged[i] = (wiiTiltBtn[i] + wiiTiltSensor[i]).coerceIn(0f, 1f)
+            // ★★ 对向轴互斥（本轮根治："倾斜按钮偶尔失效"）：
+            //   Tilt 左/右（前/后同理）是**两根独立半轴**（129/130），游戏把
+            //   两侧读数做差合成方向 —— 传感器假性/持续的反向输出会把
+            //   按钮的正向输出对消掉（按钮右倾 1.0 + 传感器左倾 1.0 =
+            //   游戏读到的净方向为 0）。按钮是确定性输入：任一侧按钮激活
+            //   时，对向的传感器分量直接屏蔽，保证按钮方向永远全额生效。
+            //   无按钮时保持原叠加语义（按钮+传感器求和截断）。
+            val btnL = wiiTiltBtn[0] > 0f; val btnR = wiiTiltBtn[1] > 0f
+            val btnF = wiiTiltBtn[2] > 0f; val btnB = wiiTiltBtn[3] > 0f
+            merged[0] = if (btnR) wiiTiltBtn[0]
+                        else (wiiTiltBtn[0] + wiiTiltSensor[0]).coerceIn(0f, 1f)   // 左
+            merged[1] = if (btnL) wiiTiltBtn[1]
+                        else (wiiTiltBtn[1] + wiiTiltSensor[1]).coerceIn(0f, 1f)   // 右
+            merged[2] = if (btnB) wiiTiltBtn[2]
+                        else (wiiTiltBtn[2] + wiiTiltSensor[2]).coerceIn(0f, 1f)   // 前
+            merged[3] = if (btnF) wiiTiltBtn[3]
+                        else (wiiTiltBtn[3] + wiiTiltSensor[3]).coerceIn(0f, 1f)   // 后
             for (i in 0 until 6) swingMerged[i] = swingSensor[i]
             for (i in 0 until 3) shakeMerged[i] = shakeSensor[i]
         }
