@@ -233,7 +233,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      * 用户目录（overwrite=FALSE 幂等）；NesStation 集成只建了空目录 ——
      * 核心启动即读不到系统文件 → 原生断言 → SIGABRT/SIGTRAP 闪退。
      *
-     * 修复：把原版 assets 的必需集打进 app/src/main/assets/mmj/**（sysdata/
+     * 修复：把原版 assets 的必需集打进 app/src/main/assets/mmj 目录（sysdata/
      * nand/sdmc/config/shaders，25 文件 ~13MB），loadRom 时递归释放到
      * <filesDir>/citra_mmj/ 对应位置。已存在且非空的文件跳过（对齐原版
      * overwrite=FALSE 语义，二次启动零拷贝、纯 list 遍历）。
