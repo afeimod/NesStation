@@ -334,7 +334,10 @@ object WiiMotionSensors {
         context: Context,
         displayRotation: Int,
         sink: (left: Float, right: Float, forward: Float, backward: Float) -> Unit
-    ): Boolean = start(context, displayRotation) { s ->
+    ): Boolean = start(context, displayRotation) { s: MotionState ->
+        // ★ 显式标注 lambda 参数类型为 MotionState，确保 Kotlin 重载解析唯一指向
+        //   上方 (MotionState) -> Unit 版 start，避免与 (Float, Float, Float, Float) -> Unit
+        //   版产生歧义（4 参 vs 1 参按 arity 已可区分，但显式标注更稳）。
         sink(s.tiltLeft, s.tiltRight, s.tiltForward, s.tiltBackward)
     }
 }

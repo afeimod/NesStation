@@ -1244,7 +1244,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      * shakeSensor[0..2] = shakeX/Y/Z。
      *
      * 通过 [setWiiMotion]（MotionState sink）写入；[pushWiiTilt] 推送时同时
-     * 把这些值送进对应的 SWING_*/SHAKE_* 轴（120-125, 132-134）。
+     * 把这些值送进对应的 SWING 系列与 SHAKE 系列轴（120-125, 132-134）。
+     * 注：注释文本中不要写裸的星斜线组合，否则 KDoc 会把该序列当作
+     * 注释终止符提前闭合，造成与此前本文件同款的 "Expecting member
+     * declaration" 编译错误。
      */
     @Volatile private var swingSensor = FloatArray(6)
     @Volatile private var shakeSensor = FloatArray(3)
