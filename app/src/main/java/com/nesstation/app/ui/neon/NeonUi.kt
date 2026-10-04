@@ -12,19 +12,19 @@ import com.nesstation.app.core.storage.PadLayoutStore
 /**
  * ★★ Neon 3D 新 UI（完全重制版）—— 全局风格状态 + 设计令牌 ★★
  *
- * 总设置「外观 → 主界面风格」切换 FSD 经典 / Neon 3D 新UI。
+ * 总设置「外观 → 主界面风格」切换 FSD 经典 / Neon 3D 新UI（★默认）。
  * 本对象是可观察的全局单例（同 AppBackgroundState 模式）：设置页改风格
  * 后主页 / 游戏库 / 设置页立即响应，无需等待路由重建。
  *
- *   "fsd"  → FSD 经典桌面（Xbox 360 Freestyle Dash 磁贴流，原风格不动）
- *   "neon" → Neon 3D 游戏站（本包全新实现，与 FSD 零共享组件）：
+ *   "neon" → Neon 3D 游戏站（本包全新实现，与 FSD 零共享组件，★默认）：
  *              · 主页    —— 顶部菜单行 + 中央 3D 封面流（不含核心列表）
  *              · 游戏库  —— 左侧核心列表 + 每核心 3D 封面滚动（NeonFlow）
  *              · 总设置  —— 左侧分类导航 + Neon 面板
+ *   "fsd"  → FSD 经典桌面（Xbox 360 Freestyle Dash 磁贴流，原风格不动）
  */
 object NeonUi {
-    /** 当前风格（"fsd" | "neon"）；首次读取前由 ensureLoaded 从持久化填充。 */
-    var style by mutableStateOf("fsd")
+    /** 当前风格（"neon" | "fsd"，★默认 neon）；首次读取前由 ensureLoaded 从持久化填充。 */
+    var style by mutableStateOf("neon")
         private set
 
     @Volatile
@@ -35,14 +35,15 @@ object NeonUi {
         if (inited) return
         synchronized(this) {
             if (inited) return
-            style = PadLayoutStore.load(ctx).homeUiStyle.let { if (it == "neon") "neon" else "fsd" }
+            // 仅显式存过 "fsd" 保持 FSD；无键/非法值 → 默认 neon
+            style = PadLayoutStore.load(ctx).homeUiStyle.let { if (it == "fsd") "fsd" else "neon" }
             inited = true
         }
     }
 
     /** 设置页切换入口：更新全局状态并立即持久化。 */
     fun set(ctx: Context, value: String) {
-        val v = if (value == "neon") "neon" else "fsd"
+        val v = if (value == "fsd") "fsd" else "neon"
         style = v
         inited = true
         PadLayoutStore.save(ctx, PadLayoutStore.load(ctx).copy { homeUiStyle = v })

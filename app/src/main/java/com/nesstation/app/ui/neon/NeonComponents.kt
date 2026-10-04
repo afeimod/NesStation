@@ -1,5 +1,7 @@
 package com.nesstation.app.ui.neon
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -52,6 +54,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -180,6 +183,52 @@ fun NeonBackdrop(modifier: Modifier = Modifier) {
 // 封面
 // =====================================================================
 
+/** 封面缓存键：id + 自定义图标/封面路径 + 封面文件时间戳（与旧实现完全同键）。 */
+private fun neonCoverCacheKey(game: GameEntry): String {
+    val coverStamp = game.coverPath?.let {
+        try { java.io.File(it).lastModified() } catch (_: Throwable) { 0L }
+    } ?: 0L
+    return "${game.id}|${game.customIconPath ?: ""}|${game.coverPath ?: ""}|$coverStamp"
+}
+
+/**
+ * 解析游戏封面位图（customIconPath → coverPath → GameIconExtractor 回退生成），
+ * 共享 LruCache 防重复解码；[NeonCoverImage] / [NeonCoverBackdrop] 共用同一条链。
+ */
+fun neonResolveCoverBitmap(
+    context: android.content.Context,
+    game: GameEntry,
+    cache: android.util.LruCache<String, android.graphics.Bitmap>
+): android.graphics.Bitmap {
+    val fullKey = neonCoverCacheKey(game)
+    cache.get(fullKey)?.let { return it }
+    var b: android.graphics.Bitmap? = null
+    val path = try {
+        com.nesstation.app.core.storage.GameIconExtractor.resolveIconPath(context, game)
+    } catch (_: Exception) { null }
+    if (path != null) {
+        try {
+            b = android.graphics.BitmapFactory.decodeFile(path)
+        } catch (_: Exception) { b = null }
+    }
+    if (b == null) {
+        try {
+            b = com.nesstation.app.core.storage.GameIconExtractor
+                .generateFallbackCover(game, 320, 420)
+        } catch (_: Exception) {
+            b = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888)
+        }
+    }
+    cache.put(fullKey, b!!)
+    return b!!
+}
+
+/** 透明底文字描影样式：无黑块也能在任何封面/倒影上读清。 */
+fun neonShadowTextStyle(
+    color: Color = Color(0xF2000000),
+    blurRadius: Float = 12f
+): TextStyle = TextStyle(shadow = Shadow(color = color, blurRadius = blurRadius))
+
 /**
  * Neon 封面图 —— 与 FsdGameCover 同源的位图解析链
  * （customIconPath → coverPath → GameIconExtractor 回退生成），
@@ -191,33 +240,8 @@ fun NeonCoverImage(
     cache: android.util.LruCache<String, android.graphics.Bitmap>
 ) {
     val context = LocalContext.current
-    val cacheKey = "${game.id}|${game.customIconPath ?: ""}|${game.coverPath ?: ""}"
-    val coverStamp = game.coverPath?.let {
-        try { java.io.File(it).lastModified() } catch (_: Throwable) { 0L }
-    } ?: 0L
-    val fullKey = "$cacheKey|$coverStamp"
-    val bmp = remember(fullKey) {
-        cache.get(fullKey) ?: run {
-            var b: android.graphics.Bitmap? = null
-            val path = try {
-                com.nesstation.app.core.storage.GameIconExtractor.resolveIconPath(context, game)
-            } catch (_: Exception) { null }
-            if (path != null) {
-                try {
-                    b = android.graphics.BitmapFactory.decodeFile(path)
-                } catch (_: Exception) { b = null }
-            }
-            if (b == null) {
-                try {
-                    b = com.nesstation.app.core.storage.GameIconExtractor
-                        .generateFallbackCover(game, 320, 420)
-                } catch (_: Exception) {
-                    b = android.graphics.Bitmap.createBitmap(4, 4, android.graphics.Bitmap.Config.ARGB_8888)
-                }
-            }
-            cache.put(fullKey, b!!)
-            b!!
-        }
+    val bmp = remember(neonCoverCacheKey(game)) {
+        neonResolveCoverBitmap(context, game, cache)
     }
     Image(
         bitmap = bmp.asImageBitmap(),
@@ -225,6 +249,69 @@ fun NeonCoverImage(
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize()
     )
+}
+
+/**
+ * ★ 游戏封面全屏背景（未设置全局背景时的动态背景）：
+ * 浏览/切换选中游戏时，把当前游戏封面整幅铺满屏幕作背景
+ * （[Crossfade] 平滑淡入淡出），叠上下加深的压暗层保证前景
+ * 文字 / 3D 封面永远可读；无选中游戏时回退 [NeonBackdrop]。
+ * 与 [NeonCoverImage] 共享同一条解析链与 LruCache（选中卡已解码
+ * → 背景零额外解码开销）。
+ */
+@Composable
+fun NeonCoverBackdrop(
+    game: GameEntry?,
+    cache: android.util.LruCache<String, android.graphics.Bitmap>,
+    modifier: Modifier = Modifier
+) {
+    if (game == null) {
+        NeonBackdrop(modifier)
+        return
+    }
+    val context = LocalContext.current
+    val bmp = remember(neonCoverCacheKey(game)) {
+        neonResolveCoverBitmap(context, game, cache)
+    }
+    Box(modifier = modifier.fillMaxSize()) {
+        Crossfade(
+            targetState = bmp,
+            animationSpec = tween(durationMillis = 420),
+            label = "neon-cover-backdrop"
+        ) { b ->
+            Image(
+                bitmap = b.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        // 压暗层：整体半透 + 顶/底更深（顶栏与底部信息区文字可读性）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color(0xCC02040C),
+                        0.30f to Color(0x8C030512),
+                        0.62f to Color(0x99030614),
+                        1f to Color(0xE602030A)
+                    )
+                )
+        )
+        // 保留 Neon 标志性底部地平线微光（衬托封面流倒影）
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(2.dp)
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(Color.Transparent, Neon.AccentDim.copy(alpha = 0.55f), Color.Transparent)
+                    )
+                )
+        )
+    }
 }
 
 /**

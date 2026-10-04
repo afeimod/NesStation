@@ -40,9 +40,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,7 +112,8 @@ fun NeonHomeScreen(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (!AppBackgroundState.active) NeonBackdrop()
+        // ★ 未设置全局背景时：背景 = 当前选中游戏封面全图（随选中切换淡入淡出）
+        if (!AppBackgroundState.active) NeonCoverBackdrop(currentGame, coverCache)
 
         Column(modifier = Modifier.fillMaxSize()) {
             // ===== 顶部品牌条 =====
@@ -132,6 +133,9 @@ fun NeonHomeScreen(
                     NeonChip("退出", Icons.AutoMirrored.Rounded.Logout, Neon.Red, onExit)
                 )
             )
+
+            val isPortrait = LocalConfiguration.current.orientation ==
+                android.content.res.Configuration.ORIENTATION_PORTRAIT
 
             // ===== 主视觉 3D 封面流 =====
             Box(
@@ -156,12 +160,46 @@ fun NeonHomeScreen(
                         Spacer(Modifier.height(18.dp))
                         NeonPrimaryButton("进入游戏库", Icons.Rounded.GridView, onOpenLibrary)
                     }
+                } else if (isPortrait) {
+                    // ---- 竖屏：封面流铺满 + 信息区叠加底部（透明底不遮封面）----
+                    NeonFlow(
+                        count = flowGames.size,
+                        selectedIndex = selIdx,
+                        onIndexChange = { selectedIndex = it },
+                        onItemClick = { idx -> flowGames.getOrNull(idx)?.let(onOpenGame) },
+                        onItemLongClick = { idx -> flowGames.getOrNull(idx)?.let(::toggleFavorite) },
+                        grabFocusOnLaunch = true,
+                        showReflection = true,
+                        verticalShift = 8.dp,   // 竖屏空间充裕，轻下移
+                        modifier = Modifier.fillMaxSize()
+                    ) { i ->
+                        NeonCoverCard(
+                            game = flowGames[i],
+                            cache = coverCache,
+                            glow = if (i == selIdx) 1f else 0f,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    currentGame?.let { game ->
+                        NeonGameInfoPanel(
+                            game = game,
+                            onPlay = { onOpenGame(game) },
+                            onOpenLibrary = onOpenLibrary,
+                            onToggleFavorite = { toggleFavorite(game) },
+                            compact = false,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 8.dp)
+                        )
+                    }
                 } else {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    // ---- 横屏：封面流居左原尺寸 + 信息栏立右侧（PS5 风格，透明底）----
+                    Row(modifier = Modifier.fillMaxSize()) {
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
                                 .weight(1f)
+                                .fillMaxHeight()
                         ) {
                             NeonFlow(
                                 count = flowGames.size,
@@ -171,29 +209,28 @@ fun NeonHomeScreen(
                                 onItemLongClick = { idx -> flowGames.getOrNull(idx)?.let(::toggleFavorite) },
                                 grabFocusOnLaunch = true,
                                 showReflection = true,
-                                verticalShift = 16.dp,   // ★ 封面流整体下移，不遮挡菜单行
+                                verticalShift = 14.dp,   // ★ 下移不缩小，避开菜单行
                                 modifier = Modifier.fillMaxSize()
                             ) { i ->
-                                val g = flowGames[i]
                                 NeonCoverCard(
-                                    game = g,
+                                    game = flowGames[i],
                                     cache = coverCache,
                                     glow = if (i == selIdx) 1f else 0f,
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
                         }
-
-                        // ===== 选中游戏信息区 =====
                         currentGame?.let { game ->
                             NeonGameInfoPanel(
                                 game = game,
                                 onPlay = { onOpenGame(game) },
                                 onOpenLibrary = onOpenLibrary,
                                 onToggleFavorite = { toggleFavorite(game) },
+                                compact = true,
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 34.dp)
+                                    .width(300.dp)
+                                    .fillMaxHeight()
+                                    .padding(end = 14.dp, top = 10.dp, bottom = 10.dp)
                             )
                         }
                     }
@@ -292,51 +329,48 @@ private fun NeonMenuRow(items: List<NeonChip>) {
     }
 }
 
-/** 选中游戏信息面板：大标题 + 平台徽章 + 游玩数据 + 操作按钮。
- *  ★ 底部渐变遮罩：封面倒影无论怎么延伸都被压暗，游戏名/按钮永远清晰在前。 */
+/**
+ * 选中游戏信息面板（★ 透明底无黑块：文字描影直接叠在封面/倒影上，
+ *  永远绘制在封面流之后 = 游戏名在封面之前；游戏名不再过大）。
+ *  [compact]=true 横屏右侧竖排栏（PS5 风格）；false 竖屏底部横排。
+ */
 @Composable
 private fun NeonGameInfoPanel(
     game: GameEntry,
     onPlay: () -> Unit,
     onOpenLibrary: () -> Unit,
     onToggleFavorite: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
 ) {
     val title = game.customTitle?.takeIf { it.isNotBlank() } ?: game.title
-    Box(
-        modifier = modifier
-            .padding(bottom = 8.dp)
-            .background(
-                Brush.verticalGradient(
-                    0f to Color(0xB3050712),
-                    0.4f to Color(0xE6050712),
-                    1f to Color(0xF5050712)
+    if (compact) {
+        // ---- 横屏：右侧竖排（透明底 + 描影）----
+        Column(
+            modifier = modifier,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    color = Neon.TextHi,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = neonShadowTextStyle(),
+                    modifier = Modifier.weight(1f)
                 )
-            )
-    ) {
-        Column(modifier = Modifier.padding(top = 6.dp)) {
-        // 大标题 + 收藏星
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                title,
-                color = Neon.TextHi,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Black,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-            Spacer(Modifier.width(10.dp))
-            Text(
-                if (game.isFavorite) "★" else "☆",
-                color = Neon.Gold,
-                fontSize = 20.sp,
-                modifier = Modifier.clickable(onClick = onToggleFavorite)
-            )
-        }
-        Spacer(Modifier.height(5.dp))
-        // 平台徽章 + 游玩信息
-        Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (game.isFavorite) "★" else "☆",
+                    color = Neon.Gold,
+                    fontSize = 18.sp,
+                    modifier = Modifier.clickable(onClick = onToggleFavorite)
+                )
+            }
+            Spacer(Modifier.height(9.dp))
+            // 平台徽章
             Box(
                 modifier = Modifier
                     .background(Neon.Accent.copy(alpha = 0.14f), neonChamfer(0.5f))
@@ -345,27 +379,83 @@ private fun NeonGameInfoPanel(
             ) {
                 Text(game.platform.displayName, color = Neon.Accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.height(9.dp))
             Text(
                 "最近 ${neonFormatLastPlayed(game.lastPlayedAt)}",
-                color = Neon.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                color = Neon.Text, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                style = neonShadowTextStyle()
             )
-            Spacer(Modifier.width(10.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
                 "时长 ${neonFormatPlayTime(game.playTimeMs)}",
-                color = Neon.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                color = Neon.Text, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                style = neonShadowTextStyle()
             )
-        }
-        Spacer(Modifier.height(11.dp))
-        // 操作按钮
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Spacer(Modifier.height(16.dp))
             NeonPrimaryButton(
                 text = if (game.lastPlayedAt > 0L) "继续游戏" else "开始游戏",
                 icon = Icons.Rounded.PlayArrow,
                 onClick = onPlay
             )
+            Spacer(Modifier.height(9.dp))
             NeonGhostButton("游戏库", Icons.Rounded.GridView, onOpenLibrary)
         }
+    } else {
+        // ---- 竖屏：底部横排（透明底 + 描影，无黑块渐变）----
+        Column(modifier = modifier) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    color = Neon.TextHi,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = neonShadowTextStyle(),
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    if (game.isFavorite) "★" else "☆",
+                    color = Neon.Gold,
+                    fontSize = 20.sp,
+                    modifier = Modifier.clickable(onClick = onToggleFavorite)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            // 平台徽章 + 游玩信息
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .background(Neon.Accent.copy(alpha = 0.14f), neonChamfer(0.5f))
+                        .border(1.dp, Neon.AccentDim, neonChamfer(0.5f))
+                        .padding(horizontal = 9.dp, vertical = 3.dp)
+                ) {
+                    Text(game.platform.displayName, color = Neon.Accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "最近 ${neonFormatLastPlayed(game.lastPlayedAt)}",
+                    color = Neon.Text, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                    style = neonShadowTextStyle()
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "时长 ${neonFormatPlayTime(game.playTimeMs)}",
+                    color = Neon.Text, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                    style = neonShadowTextStyle()
+                )
+            }
+            Spacer(Modifier.height(11.dp))
+            // 操作按钮（自带实底，倒影上也可读）
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                NeonPrimaryButton(
+                    text = if (game.lastPlayedAt > 0L) "继续游戏" else "开始游戏",
+                    icon = Icons.Rounded.PlayArrow,
+                    onClick = onPlay
+                )
+                NeonGhostButton("游戏库", Icons.Rounded.GridView, onOpenLibrary)
+            }
         }
     }
 }

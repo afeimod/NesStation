@@ -446,10 +446,10 @@ class PadLayout {
     // 与 homeTileIcons 分键存储，互不影响；仅对已设置自定义图标的磁贴有意义。
     var homeTileIconAlphas: String = ""
     // === 主界面风格（总设置切换）===
-    //   "fsd"  → FSD 经典桌面（Xbox 360 Freestyle Dash 磁贴流，默认）
-    //   "neon" → Neon 新UI（图3赛博主页 + 图1平台总游戏库 + 图2弧形封面墙）
+    //   "neon" → Neon 3D 新UI（图3赛博主页 + 图1平台总游戏库 + 图2弧形封面墙，★默认）
+    //   "fsd"  → FSD 经典桌面（Xbox 360 Freestyle Dash 磁贴流）
     // HomeScreen/LibraryScreen 读取本字段分发两种风格；设置页「外观 → 主界面风格」切换。
-    var homeUiStyle: String = "fsd"
+    var homeUiStyle: String = "neon"
     var ndsSwapscreenMode: String = "Toggle"            // Toggle | Hold (换屏按钮模式)
     var ndsMicInput: String = "Blow Noise"              // Blow Noise | White Noise (麦克风输入类型)
     var ndsLanguage: String = "English"                  // Japanese | English | French | German | Italian | Spanish
@@ -2500,10 +2500,11 @@ object PadLayoutStore {
             homeBackgroundIsVideo = p.getBoolean("home_bg_is_video", false)
             homeTileIcons = p.getString("home_tile_icons", "") ?: ""
             homeTileIconAlphas = p.getString("home_tile_icon_alphas", "") ?: ""
-            // 主界面风格：老版本无此键 → 默认 fsd；非法值一律回退 fsd
-            homeUiStyle = p.getString("home_ui_style", "fsd")?.let {
-                if (it == "neon") "neon" else "fsd"
-            } ?: "fsd"
+            // 主界面风格：无键/非法值 → 默认 neon（Neon 3D 为默认主题）；
+            // 仅显式存过 "fsd" 的老用户保持 FSD（自己的选择不被覆盖）
+            homeUiStyle = p.getString("home_ui_style", null)
+                ?.let { if (it == "fsd") "fsd" else "neon" }
+                ?: "neon"
             ndsTopLayoutLeft = p.getFloat(KEY_NDS_TOP_LEFT, ndsTopLayoutLeft)
             ndsTopLayoutTop = p.getFloat(KEY_NDS_TOP_TOP, ndsTopLayoutTop)
             ndsTopLayoutRight = p.getFloat(KEY_NDS_TOP_RIGHT, ndsTopLayoutRight)

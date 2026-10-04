@@ -469,7 +469,8 @@ fun NeonLibraryScreen(
     val modeSub = when (mode) { "fav" -> "FAVORITES"; "recent" -> "RECENT"; else -> "GAME LIBRARY" }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (!AppBackgroundState.active) NeonBackdrop()
+        // ★ 未设置全局背景时：背景 = 当前选中游戏封面全图（随选中切换淡入淡出）
+        if (!AppBackgroundState.active) NeonCoverBackdrop(currentGame, coverCache)
 
         Column(modifier = Modifier.fillMaxSize()) {
             // ===== 顶栏：返回 + 标题 + 工具栏 =====
@@ -581,47 +582,44 @@ fun NeonLibraryScreen(
                             )
                         }
                     } else {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f)
-                            ) {
-                                NeonFlow(
-                                    count = displayGames.size,
-                                    selectedIndex = selIdx,
-                                    onIndexChange = { selectedIndex = it },
-                                    onItemClick = { idx -> displayGames.getOrNull(idx)?.let(onOpenGame) },
-                                    onItemLongClick = { idx ->
-                                        displayGames.getOrNull(idx)?.let { longPressGame = it }
-                                    },
-                                    grabFocusOnLaunch = true,
-                                    showReflection = true,
-                                    verticalShift = 20.dp,   // ★ 封面流整体下移，不遮挡顶栏
-                                    itemWidth = if (isPortrait) 150.dp else 178.dp,
-                                    itemHeight = if (isPortrait) 200.dp else 238.dp,
-                                    modifier = Modifier.fillMaxSize()
-                                ) { i ->
-                                    NeonCoverCard(
-                                        game = displayGames[i],
-                                        cache = coverCache,
-                                        glow = if (i == selIdx) 1f else 0f,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                            }
+                        // ★ 封面流铺满整个右侧区域（原尺寸不缩小，仅下移避开顶栏）；
+                        //   倒影可沉入底部信息条下方渐隐
+                        NeonFlow(
+                            count = displayGames.size,
+                            selectedIndex = selIdx,
+                            onIndexChange = { selectedIndex = it },
+                            onItemClick = { idx -> displayGames.getOrNull(idx)?.let(onOpenGame) },
+                            onItemLongClick = { idx ->
+                                displayGames.getOrNull(idx)?.let { longPressGame = it }
+                            },
+                            grabFocusOnLaunch = true,
+                            showReflection = true,
+                            // ★ 下移不缩小：整体下沉避开上方文本，尺寸不变
+                            verticalShift = if (isPortrait) 12.dp else 26.dp,
+                            itemWidth = if (isPortrait) 150.dp else 178.dp,
+                            itemHeight = if (isPortrait) 200.dp else 238.dp,
+                            modifier = Modifier.fillMaxSize()
+                        ) { i ->
+                            NeonCoverCard(
+                                game = displayGames[i],
+                                cache = coverCache,
+                                glow = if (i == selIdx) 1f else 0f,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
 
-                            // ===== 信息条：标题 + 平台 + N of M =====
-                            currentGame?.let { game ->
-                                NeonLibraryInfoBar(
-                                    game = game,
-                                    index = selIdx + 1,
-                                    total = displayGames.size,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 20.dp, vertical = 4.dp)
-                                )
-                            }
+                        // ===== 信息条：叠加在封面流之上（后绘制 = 永远在前），
+                        //   透明底 + 文字描影：不遮封面、无黑块 =====
+                        currentGame?.let { game ->
+                            NeonLibraryInfoBar(
+                                game = game,
+                                index = selIdx + 1,
+                                total = displayGames.size,
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 22.dp, vertical = 10.dp)
+                            )
                         }
                     }
                 }
@@ -960,7 +958,8 @@ private fun NeonCoreSidebar(
     }
 }
 
-/** 封面流下方信息条：切角横幅（标题+平台）+ N of M 计数。 */
+/** 封面流底部信息条（★ 透明底无黑块：文字描影直接叠在封面/倒影上，
+ *  后绘制永远在封面之前；游戏名 13sp 小巧不拓场面）。 */
 @Composable
 private fun NeonLibraryInfoBar(
     game: GameEntry,
@@ -974,52 +973,38 @@ private fun NeonLibraryInfoBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // 标题横幅（★近实底：封面/倒影无论怎么溢出，游戏名始终在其之前清晰可见）
+        // 游戏名：透明底 + 描影（★ 不再包黑块横幅）
+        Text(
+            title,
+            color = Neon.TextHi,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = neonShadowTextStyle(),
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        // 平台徽章（青色小标）
         Box(
             modifier = Modifier
-                .weight(1f, fill = false)
-                .background(Color(0xF2050712), neonChamfer(0.28f))
-                .border(1.dp, Neon.Line, neonChamfer(0.28f))
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Text(
-                    title,
-                    color = Neon.TextHi,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Box(
-                    modifier = Modifier
-                        .background(Neon.Accent.copy(alpha = 0.14f), neonChamfer(0.5f))
-                        .border(1.dp, Neon.AccentDim, neonChamfer(0.5f))
-                        .padding(horizontal = 7.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        game.platform.displayName,
-                        color = Neon.Accent, fontSize = 9.sp, fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.weight(1f))
-        // N of M 计数
-        Box(
-            modifier = Modifier
-                .background(Color(0xE6050712), neonChamfer(0.5f))
-                .border(1.dp, Neon.Line, neonChamfer(0.5f))
-                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .background(Neon.Accent.copy(alpha = 0.16f), neonChamfer(0.5f))
+                .border(1.dp, Neon.AccentDim, neonChamfer(0.5f))
+                .padding(horizontal = 7.dp, vertical = 2.dp)
         ) {
             Text(
-                "$index of $total",
-                color = Neon.Accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                game.platform.displayName,
+                color = Neon.Accent, fontSize = 9.sp, fontWeight = FontWeight.Bold
             )
         }
+        Spacer(Modifier.weight(1f))
+        // N of M 计数：透明底 + 描影（★ 去黑块）
+        Text(
+            "$index of $total",
+            color = Neon.Accent,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            style = neonShadowTextStyle()
+        )
     }
 }
 
