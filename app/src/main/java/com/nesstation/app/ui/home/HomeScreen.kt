@@ -10,13 +10,13 @@ import com.nesstation.app.ui.neon.NeonHomeScreen
 import com.nesstation.app.ui.neon.NeonUi
 
 /**
- * 主页 —— 风格分发器（本轮新增 Neon 风格切换）。
+ * 主页 —— 风格分发器。
  *
  * 总设置「外观 → 主界面风格」二选一：
- *   - FSD 经典：Xbox 360 Freestyle Dash 磁贴桌面（[FsdHomeScreen]）
- *   - Neon 新UI：赛博街机厅风格（[NeonHomeScreen]，图3 参考稿）——
- *     左侧 Hero 预览 + 右侧分区菜单 + 底部手柄提示栏，
- *     菜单含 全部游戏/收藏/最近/各平台/在线/对战(4P)/SWF/设置/关于/退出。
+ *   - FSD 经典：Xbox 360 Freestyle Dash 磁贴桌面（[FsdHomeScreen]，原风格不变）
+ *   - Neon 3D：完全重制的新UI（[NeonHomeScreen]）——
+ *     顶部菜单行 + 中央 3D 封面流 + 游戏信息区。
+ *     ★ 主页【不含】核心列表 —— 核心列表在游戏库页（NeonLibraryScreen）。
  *
  * TV 模式不走本分发（TvNavHost 使用 TvHomeScreen）。
  */
@@ -33,7 +33,9 @@ fun HomeScreen(
     onExit: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenFavorites: () -> Unit = {},
-    onOpenHistory: () -> Unit = {}
+    onOpenHistory: () -> Unit = {},
+    onOpenGame: (GameEntry) -> Unit = {},
+    onGamesChanged: () -> Unit = {}
 ) {
     val context = LocalContext.current
     NeonUi.ensureLoaded(context)
@@ -41,17 +43,18 @@ fun HomeScreen(
     if (NeonUi.isNeon) {
         NeonHomeScreen(
             games = games,
-            onOpenAllGames = onOpenLibrary,
+            onOpenLibrary = onOpenLibrary,
             onOpenFavorites = onOpenFavorites,
             onOpenHistory = onOpenHistory,
-            onOpenPlatform = { p -> onOpenPlatform(p) },
             onOpenOnlineGames = onOpenOnlineGames,
             onOpenBattle = onOpenBattle,
             onOpenSwf = onOpenSwf,
             onOpenSettings = onOpenSettings,
             onOpenAbout = onOpenAbout,
             onExit = onExit,
-            modifier = modifier
+            modifier = modifier,
+            onOpenGame = onOpenGame,
+            onGamesChanged = onGamesChanged
         )
     } else {
         FsdHomeScreen(

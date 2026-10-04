@@ -100,8 +100,6 @@ import com.nesstation.app.ui.fsd.FsdBreadcrumb
 import com.nesstation.app.ui.fsd.FsdButtonHint
 import com.nesstation.app.ui.fsd.FsdButtonHints
 import com.nesstation.app.ui.fsd.FsdCoverFlow
-import com.nesstation.app.ui.neon.NeonCoverWall
-import com.nesstation.app.ui.neon.NeonUi
 import com.nesstation.app.ui.fsd.FsdCounter
 import com.nesstation.app.ui.fsd.FsdTitleBanner
 import com.nesstation.app.ui.fsd.FsdToolButton
@@ -1257,11 +1255,8 @@ fun LibraryScreen(
     }
 
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
-    // ★ Neon 风格（本轮）：总设置切换主界面风格后，游戏库主体呈现同步切换
-    //   （图2 弧形封面墙 ↔ FSD 封面流）；工具栏/平台标签/搜索/导入/长按菜单
-    //   两套风格共用（菜单补全，功能零缺失）。
-    NeonUi.ensureLoaded(context)
-    val neonStyle = NeonUi.isNeon
+    // ★ Neon 模式下本页不再使用（Neon 游戏库 = NeonLibraryScreen）；
+    //   本页仅服务 FSD 经典风格，主体始终为 FSD 封面流。
     val allGames = importedGames.distinctBy { it.id }
     val platformGames = allGames.filter { it.platform == selectedPlatform }
     // When searching, search across ALL platforms for better discoverability
@@ -1480,35 +1475,20 @@ fun LibraryScreen(
                         )
                     }
                 } else {
-                    if (neonStyle) {
-                        // ★ Neon 弧形封面墙（图2 参考稿）：2.5D 透视网格，
-                        //   中心卡片大而亮、边缘旋转缩小变暗；点击启动、
-                        //   长按选项菜单、D-pad 聚点导航与现有链路全兼容。
-                        NeonCoverWall(
-                            games = displayGames,
-                            coverCache = coverCache,
-                            selectedIndex = selIdx,
-                            onSelectionChange = { selectedIndex = it },
-                            onOpenGame = onOpenGame,
-                            onLongPress = { longPressGame = it },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        FsdCoverFlow(
-                            count = displayGames.size,
-                            selectedIndex = selIdx,
-                            onIndexChange = { selectedIndex = it },
-                            onItemClick = { idx -> displayGames.getOrNull(idx)?.let(onOpenGame) },
-                            onItemLongClick = { idx ->
-                                displayGames.getOrNull(idx)?.let { longPressGame = it }
-                            },
-                            grabFocusOnLaunch = true,
-                            // 关闭倒影：每个封面少组合一次完整磁贴子树，封面流滚动更顺滑
-                            showReflection = false,
-                            modifier = Modifier.fillMaxSize()
-                        ) { i ->
-                            FsdGameCover(displayGames[i], coverCache)
-                        }
+                    FsdCoverFlow(
+                        count = displayGames.size,
+                        selectedIndex = selIdx,
+                        onIndexChange = { selectedIndex = it },
+                        onItemClick = { idx -> displayGames.getOrNull(idx)?.let(onOpenGame) },
+                        onItemLongClick = { idx ->
+                            displayGames.getOrNull(idx)?.let { longPressGame = it }
+                        },
+                        grabFocusOnLaunch = true,
+                        // 关闭倒影：每个封面少组合一次完整磁贴子树，封面流滚动更顺滑
+                        showReflection = false,
+                        modifier = Modifier.fillMaxSize()
+                    ) { i ->
+                        FsdGameCover(displayGames[i], coverCache)
                     }
 
                     // 底部左：按键提示
@@ -1965,8 +1945,10 @@ private fun probeReadable(file: java.io.File): Boolean {
 /**
  * Recursively scan a SAF folder URI for ROM files using DocumentsContract.
  * Traverses subdirectories up to [maxDepth] levels deep.
+ *
+ * ★ internal：与 Neon 游戏库（NeonLibraryScreen）共享同一套导入判定链。
  */
-private fun scanUriForRomsRecursive(
+internal fun scanUriForRomsRecursive(
     context: android.content.Context,
     treeUri: Uri,
     folderUri: Uri,
@@ -2484,8 +2466,10 @@ private fun extractFolderNameFromTreeUri(treeUri: Uri): String {
  *
  * Works with content:// URIs that contain UTF-8 percent-encoded Chinese
  * characters — DocumentsContract handles the encoding transparently.
+ *
+ * ★ internal：与 Neon 游戏库（NeonLibraryScreen）共享。
  */
-private fun findDosLauncherInSafTree(
+internal fun findDosLauncherInSafTree(
     context: android.content.Context,
     treeUri: Uri
 ): Uri? {

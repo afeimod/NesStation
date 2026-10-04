@@ -63,8 +63,8 @@ object Routes {
     const val HOME = "home"
     // 带可选 platform 查询参数：主页平台磁贴可直接深链到对应平台的封面流
     const val LIBRARY = "library?platform={platform}"
-    // ★ Neon 新UI（本轮）：总游戏库（图1 平台总览选择页）
-    const val ALL_GAMES = "all_games"
+    // ★ Neon 新UI 游戏库（核心列表 + 3D 封面滚动）；mode: all | fav | recent
+    const val ALL_GAMES = "all_games?mode={mode}"
     const val FAVORITES = "favorites"
     const val HISTORY = "history"
     const val SETTINGS = "settings"
@@ -80,6 +80,7 @@ object Routes {
     const val SWF_PLAYER = "swf_player/{swfPath}"
     fun library(platform: GamePlatform? = null): String =
         if (platform == null) "library" else "library?platform=${platform.name}"
+    fun allGames(mode: String = "all"): String = "all_games?mode=$mode"
     fun emulator(id: String) = "emulator/$id"
     fun swfPlayer(path: String) = "swf_player/${java.net.URLEncoder.encode(path, "UTF-8")}"
     fun webGame(url: String, uaMode: String) =
@@ -334,10 +335,10 @@ private fun PhoneNavHost(
             HomeScreen(
                 games = games,
                 onOpenLibrary = {
-                    // ★ Neon 风格下「全部游戏」进入总游戏库（图1 平台总览页）；
-                    //   FSD 风格保持原行为（直接进游戏库封面流）
+                    // ★ Neon 风格下「游戏库」进入 Neon 游戏库（核心列表 +
+                    //   3D 封面滚动）；FSD 风格保持原行为（直接进游戏库封面流）
                     if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
-                        nav.navigate(Routes.ALL_GAMES)
+                        nav.navigate(Routes.allGames())
                     } else {
                         nav.navigate(Routes.library())
                     }
@@ -349,16 +350,42 @@ private fun PhoneNavHost(
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                 onOpenAbout = { nav.navigate(Routes.ABOUT) },
                 onExit = { nav.context.let { (it as? android.app.Activity)?.finishAffinity() } },
-                onOpenFavorites = { nav.navigate(Routes.FAVORITES) },
-                onOpenHistory = { nav.navigate(Routes.HISTORY) }
+                onOpenFavorites = {
+                    if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                        nav.navigate(Routes.allGames("fav"))
+                    } else {
+                        nav.navigate(Routes.FAVORITES)
+                    }
+                },
+                onOpenHistory = {
+                    if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                        nav.navigate(Routes.allGames("recent"))
+                    } else {
+                        nav.navigate(Routes.HISTORY)
+                    }
+                },
+                onOpenGame = openGame,
+                onGamesChanged = reloadGames
             )
         }
-        // ★ Neon 总游戏库（图1）：平台总览 → 点击平台进入该平台游戏库（图2 墙）
-        composable(Routes.ALL_GAMES) {
-            com.nesstation.app.ui.neon.NeonAllGamesScreen(
+        // ★ Neon 游戏库（核心列表 + 每核心 3D 封面滚动）：mode all|fav|recent
+        composable(
+            Routes.ALL_GAMES,
+            arguments = listOf(
+                navArgument("mode") {
+                    type = NavType.StringType
+                    defaultValue = "all"
+                }
+            )
+        ) { entry ->
+            val mode = entry.arguments?.getString("mode") ?: "all"
+            com.nesstation.app.ui.neon.NeonLibraryScreen(
                 games = games,
+                mode = mode,
+                onOpenGame = openGame,
                 onBack = { nav.popBackStack() },
-                onOpenPlatform = { p -> nav.navigate(Routes.library(p)) }
+                onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
+                onGamesChanged = reloadGames
             )
         }
         composable(Routes.BATTLE) {
@@ -482,28 +509,58 @@ private fun PhoneNavHost(
             AboutScreen(onBack = { nav.popBackStack() })
         }
         composable(Routes.FAVORITES) {
-            LibraryScreen(
-                games = games.filter { it.isFavorite },
-                onOpenGame = openGame,
-                onBack = { nav.popBackStack() },
-                onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
-                onGamesChanged = reloadGames
-            )
+            if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                com.nesstation.app.ui.neon.NeonLibraryScreen(
+                    games = games.filter { it.isFavorite },
+                    mode = "fav",
+                    onOpenGame = openGame,
+                    onBack = { nav.popBackStack() },
+                    onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
+                    onGamesChanged = reloadGames
+                )
+            } else {
+                LibraryScreen(
+                    games = games.filter { it.isFavorite },
+                    onOpenGame = openGame,
+                    onBack = { nav.popBackStack() },
+                    onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
+                    onGamesChanged = reloadGames
+                )
+            }
         }
         composable(Routes.HISTORY) {
-            LibraryScreen(
-                games = games,
-                onOpenGame = openGame,
-                onBack = { nav.popBackStack() },
-                onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
-                onGamesChanged = reloadGames
-            )
+            if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                com.nesstation.app.ui.neon.NeonLibraryScreen(
+                    games = games,
+                    mode = "recent",
+                    onOpenGame = openGame,
+                    onBack = { nav.popBackStack() },
+                    onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
+                    onGamesChanged = reloadGames
+                )
+            } else {
+                LibraryScreen(
+                    games = games,
+                    onOpenGame = openGame,
+                    onBack = { nav.popBackStack() },
+                    onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
+                    onGamesChanged = reloadGames
+                )
+            }
         }
         composable(Routes.SETTINGS) {
-            SettingsScreen(
-                onBack = { nav.popBackStack() },
-                onOpenKeyMap = { nav.navigate(Routes.KEYMAP) }
-            )
+            // ★ Neon 新UI 模式使用重制的 Neon 设置页；FSD 模式保持原设置页
+            if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                com.nesstation.app.ui.neon.NeonSettingsScreen(
+                    onBack = { nav.popBackStack() },
+                    onOpenKeyMap = { nav.navigate(Routes.KEYMAP) }
+                )
+            } else {
+                SettingsScreen(
+                    onBack = { nav.popBackStack() },
+                    onOpenKeyMap = { nav.navigate(Routes.KEYMAP) }
+                )
+            }
         }
         composable(Routes.KEYMAP) {
             KeyMapScreen(onBack = { nav.popBackStack() })

@@ -60,6 +60,7 @@ import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.PadLayoutStore
 import com.nesstation.app.ui.components.AppBackgroundState
 import com.nesstation.app.ui.components.PixelBackdrop
+import com.nesstation.app.ui.neon.Neon
 import com.nesstation.app.ui.neon.NeonUi
 
 @Composable
@@ -425,14 +426,15 @@ fun SettingsScreen(
                     // === 外观（全局背景 + 主界面风格） ===
                     item {
                         SettingsSection("外观") {
-                            // ★★ 主界面风格切换（本轮新增）：FSD 经典 ↔ Neon 新UI。
-                            //   Neon：图3 赛博主页 + 图1 平台总游戏库 + 图2 弧形封面墙；
+                            // ★★ 主界面风格切换：FSD 经典 ↔ Neon 3D 新UI。
+                            //   Neon：主页（无核心列表）+ 游戏库（核心列表+
+                            //   3D 封面滚动）+ 总设置 全套重制新UI；
                             //   FSD：Xbox 360 Freestyle Dash 磁贴桌面（原风格不变）。
                             //   选择后立即生效（NeonUi 全局可观察状态），返回主页即见。
                             DropdownRow("主界面风格",
                                 listOf(
                                     "fsd" to "FSD 经典 (Xbox360 磁贴桌面)",
-                                    "neon" to "Neon 街机厅 (新UI·赛博风)"
+                                    "neon" to "Neon 3D 游戏站 (新UI)"
                                 ),
                                 NeonUi.style
                             ) {
@@ -518,11 +520,20 @@ fun SettingsScreen(
 
 @Composable
 internal fun SettingsSection(title: String, content: @Composable () -> Unit) {
-    // 自定义背景(图片/视频)激活时改用半透明深色玻璃卡片，让背景透出来而不是被
-    // 0.65 白色挡住；文字同步改亮色保证可读。默认壁纸时维持原白底深字观感。
+    // 自定义背景(图片/视频)激活时改用半透明深色玻璃卡片；★ Neon 新UI 模式下
+    // 同样使用 Neon 深色玻璃卡（核心设置子页经此自动统一 Neon 风格）。
     val onCustomBg = AppBackgroundState.active
-    val cardBg = if (onCustomBg) Color.Black.copy(alpha = 0.42f) else Color.White.copy(alpha = 0.65f)
-    val titleColor = if (onCustomBg) Color.White else Color(0xFF1E2A3A)
+    val neon = NeonUi.isNeon
+    val cardBg = when {
+        neon -> Color(0xE60A1020)
+        onCustomBg -> Color.Black.copy(alpha = 0.42f)
+        else -> Color.White.copy(alpha = 0.65f)
+    }
+    val titleColor = when {
+        neon -> Neon.Text
+        onCustomBg -> Color.White
+        else -> Color(0xFF1E2A3A)
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, color = titleColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(start = 8.dp, bottom = 4.dp))
@@ -547,11 +558,23 @@ internal fun SettingsRow(
     val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val onCustomBg = AppBackgroundState.active
-    val rowBg = if (focused) {
-        if (onCustomBg) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.85f)
-    } else Color.Transparent
-    val titleColor = if (onCustomBg) Color.White else Color(0xFF1E2A3A)
-    val subtitleColor = if (onCustomBg) Color.White.copy(alpha = 0.72f) else Color(0xFF4A5568)
+    val neon = NeonUi.isNeon
+    val rowBg = when {
+        focused && neon -> Neon.BgPanelHi
+        focused && onCustomBg -> Color.White.copy(alpha = 0.14f)
+        focused -> Color.White.copy(alpha = 0.85f)
+        else -> Color.Transparent
+    }
+    val titleColor = when {
+        neon -> Neon.TextHi
+        onCustomBg -> Color.White
+        else -> Color(0xFF1E2A3A)
+    }
+    val subtitleColor = when {
+        neon -> Neon.TextDim
+        onCustomBg -> Color.White.copy(alpha = 0.72f)
+        else -> Color(0xFF4A5568)
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -583,10 +606,19 @@ internal fun DropdownRow(
     val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     val onCustomBg = AppBackgroundState.active
-    val rowBg = if (focused) {
-        if (onCustomBg) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.85f)
-    } else Color.Transparent
-    val labelColor = if (onCustomBg) Color.White else Color(0xFF1E2A3A)
+    val neon = NeonUi.isNeon
+    val rowBg = when {
+        focused && neon -> Neon.BgPanelHi
+        focused && onCustomBg -> Color.White.copy(alpha = 0.14f)
+        focused -> Color.White.copy(alpha = 0.85f)
+        else -> Color.Transparent
+    }
+    val labelColor = when {
+        neon -> Neon.TextHi
+        onCustomBg -> Color.White
+        else -> Color(0xFF1E2A3A)
+    }
+    val valueColor = if (neon) Neon.Accent else Color(0xFFE74C3C)
 
     Row(
         modifier = Modifier
@@ -599,7 +631,7 @@ internal fun DropdownRow(
     ) {
         Text(label, color = labelColor, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
         Box {
-            Text(selectedLabel, color = Color(0xFFE74C3C), fontSize = 13.sp)
+            Text(selectedLabel, color = valueColor, fontSize = 13.sp)
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { (value, text) ->
                     DropdownMenuItem(text = { Text(text, fontSize = 13.sp) }, onClick = { onSelect(value); expanded = false })
@@ -610,8 +642,16 @@ internal fun DropdownRow(
 }
 
 @Composable internal fun Arrow() = Icon(Icons.Rounded.ChevronRight, contentDescription = null,
-    tint = if (AppBackgroundState.active) Color.White.copy(alpha = 0.72f) else Color(0xFF4A5568),
+    tint = when {
+        NeonUi.isNeon -> Neon.TextDim
+        AppBackgroundState.active -> Color.White.copy(alpha = 0.72f)
+        else -> Color(0xFF4A5568)
+    },
     modifier = Modifier.size(18.dp))
-@Composable private fun ValueText(v: String) = Text(v,
-    color = if (AppBackgroundState.active) Color.White.copy(alpha = 0.72f) else Color(0xFF4A5568),
+@Composable internal fun ValueText(v: String) = Text(v,
+    color = when {
+        NeonUi.isNeon -> Neon.Text
+        AppBackgroundState.active -> Color.White.copy(alpha = 0.72f)
+        else -> Color(0xFF4A5568)
+    },
     fontSize = 12.sp)

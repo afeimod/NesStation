@@ -751,7 +751,7 @@ fun CoreSettingsPanel(
                     // 按键映射：虚拟手柄按键 → 手机任意按键
                     Text(
                         "按键映射 (虚拟按键 → 手机按键)：把手柄 A/B/X/Y、START、SELECT 和方向键映射到手机的数字键、方向键、软键等任意按键。",
-                        color = Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF8899AA), fontSize = 11.sp, lineHeight = 15.sp
                     )
                     JAVA_MAPPABLE_BUTTONS.forEach { (buttonId, buttonLabel) ->
                         val currentCode = javaButtonKeyMapGet(padLayout.javaButtonKeyMap, buttonId)
@@ -781,14 +781,14 @@ fun CoreSettingsPanel(
                         "「屏幕排列」由前端视图层实现，对两个核心都生效；" +
                         "画面缩放、滤镜、遮罩等画质设置在「设置 → 画面」中全局配置。" +
                         "下方两个专属区域的设置互相独立：选哪个核心运行，就只读取对应区域的值。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp,
                         lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                     Text(
                         "存档方式为全局设置（所有核心通用），位于「设置 → 存储 → 存档方式」" +
                         "（NDS 写 .sav 兼容官方 melonDS，其他核心写 .srm）。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp,
                         lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
@@ -845,7 +845,7 @@ fun CoreSettingsPanel(
                             "★ 选择 xBR/HQx 放大滤镜时，内部分辨率会话内自动按 1x 运行" +
                             "以保证滤镜生效（滤镜优先，此设置原样保留，滤镜关闭后恢复）；" +
                             "若画面未立即变化，重进游戏后必生效。",
-                            color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                            color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                         )
                         DropdownRow("OpenGL 多边形优化",
@@ -920,7 +920,7 @@ fun CoreSettingsPanel(
                         "需重进游戏生效；高清模式自动使用 GL 显示路径。低端设备若帧率下降可关闭。" +
                         "★ 与放大滤镜（xBR/HQx 系）可同时生效：高清会话下原生对帧池做 2:1 降采样供滤镜使用，" +
                         "两个特性无需二选一。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                     DropdownRow("显示方式",
@@ -932,7 +932,7 @@ fun CoreSettingsPanel(
                         "GL 加速：原生 renderFrame 直接把帧池上传为 GPU 纹理绘制，" +
                         "零位图拷贝、支持高清纹理与双线性缩放；EGL 异常时自动回退画布。" +
                         "画布：传统位图路径，兼容性兜底。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                     DropdownRow("画面平滑滤波",
@@ -965,7 +965,7 @@ fun CoreSettingsPanel(
                     Text(
                         "原版提示：提升 3D 重度游戏的性能，但部分游戏可能出现画面异常" +
                         "（如双屏互换）；遇到渲染问题请关闭本选项。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                     // 16 位渲染 = config bit23（_GlUse16Bit）
@@ -998,7 +998,7 @@ fun CoreSettingsPanel(
                         "3D 游戏按 16 行/段分段光栅化，线程数决定并行度。若 3D 画面只显示" +
                         "顶部一条（其余黑屏），请保持「自动」或调高线程数 —— 原版从不以 " +
                         "0/单线程低并行度启动。修改后重进游戏完全生效。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                     // 快进速率 = config bits12-15（_FfwdSpeed，原版默认 200%）
@@ -1117,7 +1117,7 @@ fun CoreSettingsPanel(
                         "存档跟随全局设置：电池存档固定为裸 .sav，位置由「设置 → 存储 → 存档方式」决定" +
                         "（统一存档目录 = saves/<gameId>.sav；核心自带位置 = ROM 同目录同名）。" +
                         "与 melonDS 核心共用同一份游戏存档，切换核心进度不丢（旧 .dsv 存档进游戏时自动迁移）。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp, lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                     Text(
@@ -1125,7 +1125,7 @@ fun CoreSettingsPanel(
                         "melonDS 核心完全忽略（反之亦然，两套核心互不读取对方设置）。" +
                         "大部分选项运行中修改即时生效；高清渲染 / 线程数 / Slot2 需重进游戏。" +
                         "全部默认值 = 原版 DraStic 出厂设置。",
-                        color = Color(0xFF4A5568), fontSize = 11.sp,
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 11.sp,
                         lineHeight = 15.sp,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                     )
@@ -1202,7 +1202,7 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {pscxClock = it}) }
                     Text(
                         "超频可减少部分游戏慢动作，但过高容易死机/花屏；一般保持「自动」。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownRow("跳帧类型",
                         listOf("disabled" to "关闭", "auto" to "自动",
                                "auto_threshold" to "自动(按阈值)", "fixed_interval" to "固定间隔"),
@@ -1225,7 +1225,7 @@ fun CoreSettingsPanel(
                     }
                     Text(
                         "跳帧可在弱设备上保证声音流畅（避免缓冲欠载的爆音），代价是画面不连贯。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownRow("小数帧率(PAL 准确速度)",
                         listOf("auto" to "自动", "enabled" to "强制开", "disabled" to "禁用"),
                         padLayout.pscxFractionalFps
@@ -1304,7 +1304,7 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {pscxPad2Type = it}) }
                     Text(
                         "DualShock 模式面向需要摇杆的游戏 (如 Ape Escape)；切换后需重进游戏。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownRow("震动反馈",
                         listOf("enabled" to "开启", "disabled" to "关闭"),
                         padLayout.pscxVibration
@@ -1478,7 +1478,7 @@ fun CoreSettingsPanel(
                         "ps2/pcsx2/bios/ 目录 (旧版 ps2/bios/ 的文件会自动迁移)。\n" +
                         "支持镜像: .iso / .chd / .cso / .zso / .cue+bin / .gz / .mdf / .mds / " +
                         ".nrg / .elf；MDF/MDS 组合镜像在 PS2 平台页导入会自动识别。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                     Psx2BiosImportSection()
                 }
             }
@@ -1599,7 +1599,7 @@ fun CoreSettingsPanel(
                         "awbios.zip ...) 已内置在 assets/dc/，首次启动自动识别部署到 " +
                         "filesDir/dc/。NAOMI / AtomisWave 游戏 (.zip) 与 DC 光盘游戏" +
                         " (.gdi/.cdi/.cue/.chd/.iso) 均无需手动导入 BIOS。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
             }
             GamePlatform.N3DS -> item {
@@ -1985,7 +1985,7 @@ fun CoreSettingsPanel(
                         "无扩展 + 横持 → NES 式十字键 + A/B/1/2 + L/R 摇晃 + HOME + IR±（体感/红外齐全）。" +
                         "体感四键：L2=左倾 / R2=右倾 / L3=前倾 / R3=后倾（实体键位可在按键映射页自定义），" +
                         "开启手机体感后重力感应与按钮叠加。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 SettingsSection("NGC/WII (Ishiiruka) · 性能 / 图形") {
                     DropdownRow("CPU 核心",
@@ -2115,7 +2115,7 @@ fun CoreSettingsPanel(
                     Text(
                         "提示：Wii 游戏 IR 指针 = 触摸游戏画面（绝对指向）；IR−/IR+ 调进深；" +
                         "摇晃 = L/R 键（wii 模式）。GameCube 游戏自动使用 GC 手柄布局。",
-                        color = Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
             }
         }
