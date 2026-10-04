@@ -49,9 +49,11 @@ import kotlin.math.roundToInt
  *   - 选中封面居中放大、正对用户、青色辉光（卡片由 [content] 自绘，推荐 NeonCoverCard）
  *   - 两侧封面沿「弧形导轨」排布：Y 轴透视旋转（±[tiltDegrees]）、逐级缩小变暗、
  *     越远越下沉（模拟封面立在弧形轨道上向远处延伸的 3D 纵深）
- *   - 每个封面下方带垂直翻转倒影（渐隐到深空底色）
+ *   - 每个封面下方带垂直翻转倒影（渐隐到深空底色，高度 [reflectionRatio] 比例）
  *   - 左右拖拽跟手 + fling 惯性；点击侧边封面居中；点击中间封面触发 [onItemClick]
  *   - D-pad 左右移动 + OK 激活 + Y 选项（TV / 蓝牙手柄）
+ *   - ★ 整体下移 + 高度自适应：[verticalShift] 让封面流重心下沉，不遮挡顶栏文字；
+ *     横屏/矮容器时按可用高度整体缩小（fitScale），保证卡片永不越过容器上缘。
  *
  * 交互健壮性继承自 FsdCoverFlow 的实战修复：
  *   - 回调/列表长度经 rememberUpdatedState 实时读取（手势闭包不捕获过期索引）
@@ -76,6 +78,8 @@ fun NeonFlow(
     scalePerStep: Float = 0.19f,
     centerScale: Float = 1.12f,
     showReflection: Boolean = true,
+    reflectionRatio: Float = 0.28f,
+    verticalShift: Dp = 16.dp,
     visibleHalfWindow: Int = 5,
     grabFocusOnLaunch: Boolean = false,
     content: @Composable (Int) -> Unit
@@ -103,7 +107,17 @@ fun NeonFlow(
         var shadowSel by remember { mutableIntStateOf(selectedIndex) }
         LaunchedEffect(selectedIndex) { shadowSel = selectedIndex }
 
-        val stepPx = with(LocalDensity.current) { (itemWidth + gap).toPx() }
+        // ★ 高度自适应 + 整体下移：内容列（卡片 + 倒影）比可用高度高时
+        //   整体等比缩小（步长同步缩，防缩小后卡片水平重叠）；再加固定
+        //   下移量，封面永不越过容器上缘去遮挡顶栏/搜索框文字。
+        //   矮容器（横屏 TV 等）自动变小，高容器（竖屏手机）保持原尺寸。
+        val reflectH = if (showReflection) itemHeight * reflectionRatio else 0.dp
+        val columnH = itemHeight + reflectH
+        val fitScale = if (maxHeight > 0.dp) {
+            (((maxHeight - verticalShift - 10.dp) / columnH)).coerceIn(0.45f, 1f)
+        } else 1f
+        val stepPx = with(LocalDensity.current) { (itemWidth + gap).toPx() * fitScale }
+        val shiftPx = with(LocalDensity.current) { verticalShift.toPx() }
         var dragAccum by remember { mutableFloatStateOf(0f) }
 
         // 实时拖拽跟手：拖动中封面直接随手指平移，松手残余偏移平滑归零
@@ -211,11 +225,11 @@ fun NeonFlow(
                             val pos = i - animated
                             val aPos = abs(pos)
                             translationX = pos * stepPx + dragPx
-                            // 弧形轨道：离中心越远越下沉 + 轻微下沉曲线
-                            translationY = aPos * aPos * 7f + aPos * 4f
-                            // 缩放：中心放大、两侧逐级缩小
+                            // ★ 整体下移（不遮挡上方文字）+ 弧形轨道越远越下沉
+                            translationY = shiftPx + aPos * aPos * 5.5f + aPos * 3f
+                            // 缩放：中心放大、两侧逐级缩小（× fitScale 高度自适应）
                             val sideScale = (1f - scalePerStep * aPos).coerceAtLeast(0.5f)
-                            val s = if (aPos < 0.5f) centerScale else sideScale
+                            val s = (if (aPos < 0.5f) centerScale else sideScale) * fitScale
                             scaleX = s
                             scaleY = s
                             // 透视旋转：侧边封面像 CoverFlow 一样向内立起
@@ -247,7 +261,7 @@ fun NeonFlow(
                         Box(
                             modifier = Modifier
                                 .width(itemWidth)
-                                .height(itemHeight * 0.34f)
+                                .height(itemHeight * reflectionRatio)
                                 .graphicsLayer {
                                     scaleY = -1f
                                     this.alpha = 0.24f

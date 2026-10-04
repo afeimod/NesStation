@@ -2554,9 +2554,10 @@ private fun findDosLauncherInLocalFolder(folder: File): File? {
 // （分辨率/缩放/帧率/触摸/透明度/输入模式等）。没有专属配置时以全局
 // 默认值作为起点，保存后生成专属配置；「恢复全局默认」删除专属配置。
 // 配置在下次进入游戏时生效（游戏内设置面板则即时生效）。
+// ★ internal：与 Neon 游戏库（NeonLibraryScreen）共用同一弹窗。
 // ===========================================================================
 @Composable
-private fun JavaGameSettingsDialog(
+internal fun JavaGameSettingsDialog(
     game: GameEntry,
     onDismiss: () -> Unit
 ) {
@@ -2948,7 +2949,7 @@ private fun decodeCoverBitmap(path: String, maxDim: Int = 512): android.graphics
 }
 
 @androidx.compose.runtime.Composable
-private fun CoverCandidateDialog(
+internal fun CoverCandidateDialog(
     game: com.nesstation.app.core.model.GameEntry,
     onDismiss: () -> Unit,
     onPicked: () -> Unit,

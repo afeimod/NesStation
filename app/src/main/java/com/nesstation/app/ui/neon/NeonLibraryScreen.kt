@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.UploadFile
@@ -44,6 +45,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,9 +65,13 @@ import androidx.compose.ui.window.Dialog
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.ArcadeTitleMapper
+import com.nesstation.app.core.storage.CoverFetcher
+import com.nesstation.app.core.storage.JavaGameStore
 import com.nesstation.app.core.storage.PlatformDetector
 import com.nesstation.app.core.storage.RomStore
 import com.nesstation.app.ui.components.AppBackgroundState
+import com.nesstation.app.ui.library.CoverCandidateDialog
+import com.nesstation.app.ui.library.JavaGameSettingsDialog
 import com.nesstation.app.ui.library.ROM_EXTENSIONS
 import com.nesstation.app.ui.library.findDosLauncherInSafTree
 import com.nesstation.app.ui.library.scanUriForRomsRecursive
@@ -112,7 +118,14 @@ fun NeonLibraryScreen(
     var pendingRenameGame by remember { mutableStateOf<GameEntry?>(null) }
     var renameText by remember { mutableStateOf("") }
     var pendingDeleteGame by remember { mutableStateOf<GameEntry?>(null) }
+    var pendingJavaSettingsGame by remember { mutableStateOf<GameEntry?>(null) }
+    var pendingIconGame by remember { mutableStateOf<GameEntry?>(null) }
+    var pendingCoverGame by remember { mutableStateOf<GameEntry?>(null) }
+    var pendingClearSaveGame by remember { mutableStateOf<GameEntry?>(null) }
     var selectedIndex by remember { mutableIntStateOf(0) }
+    // ★ 获取封面：批量下载当前核心缺失封面（与 FSD 游戏库同一套 CoverFetcher）
+    var coverFetching by remember { mutableStateOf(false) }
+    var coverProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
     // ---- 数据 ----
     val modeGames = remember(games, mode) {
@@ -361,6 +374,94 @@ fun NeonLibraryScreen(
         }
     }
 
+    // ★ 自定义图标：SAF 选图 → 拷贝到内部目录 → RomStore.setCustomIcon
+    //   （与 FSD 游戏库长按菜单「自定义图标」同一套链路）
+    val iconPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        val game = pendingIconGame
+        if (uris.isEmpty() || game == null) {
+            pendingIconGame = null
+            return@rememberLauncherForActivityResult
+        }
+        val uri = uris.first()
+        try {
+            val iconsDir = File(context.filesDir, "icons").apply { mkdirs() }
+            val iconFile = File(iconsDir, "icon_${game.id}_${System.currentTimeMillis()}.png")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                iconFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            RomStore.setCustomIcon(context, game.id, iconFile.absolutePath)
+            onGamesChanged()
+            statusMsg = "已设置自定义图标"
+        } catch (e: Exception) {
+            statusMsg = "图标设置失败：${e.message}"
+        }
+        pendingIconGame = null
+    }
+
+    /** ★ 获取封面：批量下载当前核心（全部=整库）缺失封面，进度实时显示在按钮上。 */
+    fun fetchCoversManual() {
+        if (coverFetching) return
+        coverFetching = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                val target = if (searching) modeGames
+                else modeGames.filter { selectedCore == null || it.platform == selectedCore }
+                val fetched = CoverFetcher.fetchAllMissing(
+                    context, target, onlyMissing = true, limit = 400,
+                    onProgress = { done, total -> coverProgress = done to total }
+                )
+                if (fetched > 0) {
+                    withContext(Dispatchers.Main) {
+                        statusMsg = "已获取 $fetched 个游戏封面"
+                        onGamesChanged()
+                    }
+                } else {
+                    val s = CoverFetcher.lastBatchStats
+                    withContext(Dispatchers.Main) {
+                        statusMsg = if (s.attempted == 0) {
+                            "没有需要下载封面的游戏\n\n" + CoverFetcher.lastPendingInfo +
+                                "\n（已有封面/自定义图标的条目不重复下载）"
+                        } else {
+                            "未下载到新封面\n\n" + s.summary() +
+                                "\n\n完整诊断已写入：\nAndroid/data/com.nesstation.app/files/cover_debug.log"
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                withContext(Dispatchers.Main) { statusMsg = "封面获取失败：${t.message}" }
+            } finally {
+                coverFetching = false
+                coverProgress = null
+            }
+        }
+    }
+
+    // ★ 封面自动补齐：首次进入每个核心页时后台静默拉取该核心缺失封面
+    //   （每核心一次，会话内不重复；JAVA 用本地图标、全部/搜索态不自动跑）
+    val coverAutoDone = remember { mutableStateListOf<GamePlatform>() }
+    LaunchedEffect(selectedCore, searching) {
+        val core = selectedCore ?: return@LaunchedEffect
+        if (searching) return@LaunchedEffect
+        if (core == GamePlatform.JAVA) return@LaunchedEffect
+        if (core in coverAutoDone) return@LaunchedEffect
+        coverAutoDone.add(core)
+        if (coverFetching) return@LaunchedEffect
+        val platformGames = modeGames.filter { it.platform == core }
+        if (platformGames.isEmpty()) return@LaunchedEffect
+        val fetched = withContext(Dispatchers.IO) {
+            try {
+                CoverFetcher.fetchAllMissing(context, platformGames, limit = 200)
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                0
+            }
+        }
+        if (fetched > 0) onGamesChanged()
+    }
+
     // ---- 布局 ----
     val isPortrait = LocalConfiguration.current.orientation ==
         android.content.res.Configuration.ORIENTATION_PORTRAIT
@@ -421,6 +522,15 @@ fun NeonLibraryScreen(
                         }
                     }
                 }
+                Spacer(Modifier.width(7.dp))
+                // ★ 获取封面：批量下载当前核心缺失封面（与 FSD 游戏库同款）
+                NeonToolbarButton(
+                    icon = Icons.Rounded.Image,
+                    label = if (coverFetching) {
+                        "封面 ${coverProgress?.first ?: 0}/${coverProgress?.second ?: 0}"
+                    } else "获取封面",
+                    tint = if (coverFetching) Neon.Accent else Neon.Text
+                ) { fetchCoversManual() }
                 Spacer(Modifier.width(7.dp))
                 NeonToolbarButton(Icons.Rounded.Home, "主页", tint = Neon.Accent, onClick = onHome)
                 Spacer(Modifier.width(4.dp))
@@ -487,6 +597,7 @@ fun NeonLibraryScreen(
                                     },
                                     grabFocusOnLaunch = true,
                                     showReflection = true,
+                                    verticalShift = 20.dp,   // ★ 封面流整体下移，不遮挡顶栏
                                     itemWidth = if (isPortrait) 150.dp else 178.dp,
                                     itemHeight = if (isPortrait) 200.dp else 238.dp,
                                     modifier = Modifier.fillMaxSize()
@@ -576,12 +687,30 @@ fun NeonLibraryScreen(
         )
     }
 
-    // 长按选项菜单（Neon 深色弹窗）
+    // 长按选项菜单（Neon 深色弹窗）★ 与 FSD 游戏库长按菜单完全对齐（8 项）
     longPressGame?.let { game ->
         NeonGameOptionsMenu(
             game = game,
             onDismiss = { longPressGame = null },
             onPlay = { longPressGame = null; onOpenGame(game) },
+            onGameSettings = {
+                longPressGame = null
+                if (game.platform == GamePlatform.JAVA) {
+                    // Java 游戏：本游戏专属设置（分辨率/缩放/帧率/触摸/透明度等）
+                    pendingJavaSettingsGame = game
+                } else {
+                    onOpenGame(game)
+                }
+            },
+            onCustomIcon = {
+                longPressGame = null
+                pendingIconGame = game
+                runCatching { iconPickerLauncher.launch(arrayOf("image/*")) }
+            },
+            onPickCover = {
+                longPressGame = null
+                pendingCoverGame = game
+            },
             onToggleFavorite = {
                 longPressGame = null
                 try {
@@ -594,9 +723,78 @@ fun NeonLibraryScreen(
                 pendingRenameGame = game
                 renameText = game.customTitle?.takeIf { it.isNotBlank() } ?: game.title
             },
+            onClear3dsSave = {
+                longPressGame = null
+                pendingClearSaveGame = game
+            },
             onDelete = {
                 longPressGame = null
                 pendingDeleteGame = game
+            }
+        )
+    }
+
+    // Java 游戏专属设置弹窗（与 FSD 游戏库共用同一组件）
+    pendingJavaSettingsGame?.let { game ->
+        JavaGameSettingsDialog(
+            game = game,
+            onDismiss = { pendingJavaSettingsGame = null }
+        )
+    }
+
+    // 封面候选选择弹窗（手动输入关键词搜索 + 模糊匹配，点选即设为正式封面）
+    pendingCoverGame?.let { game ->
+        CoverCandidateDialog(
+            game = game,
+            onDismiss = { pendingCoverGame = null },
+            onPicked = {
+                pendingCoverGame = null
+                onGamesChanged()
+                statusMsg = "封面已更新"
+            },
+            onError = { pendingCoverGame = null }
+        )
+    }
+
+    // 3DS 存档清除确认弹窗（建档卡死急救，Azahar sdmc title 存档目录）
+    pendingClearSaveGame?.let { game ->
+        AlertDialog(
+            onDismissRequest = { pendingClearSaveGame = null },
+            title = { Text("清除 3DS 存档", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "删除「${game.customTitle?.takeIf { it.isNotBlank() } ?: game.title}」的 3DS 存档数据？\n\n" +
+                        "· 只删除 Azahar sdmc 里该游戏的存档（title/…/data），" +
+                        "游戏本体与其它游戏不受影响；\n" +
+                        "· 下次进入该游戏会重新建档（部分游戏建档卡死时的急救手段）；\n" +
+                        "· 此操作不可撤销，现有存档进度将丢失。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val g = game
+                    pendingClearSaveGame = null
+                    scope.launch(Dispatchers.IO) {
+                        val repair = com.nesstation.app.core.storage.AzaharSaveDataRepair
+                        // 先从 ROM（NCCH 头 / 已安装路径）解析 Title ID
+                        val tid = repair.parseTitleId(context, g.romPath)
+                        val ok = tid != null && repair.clearGameSaveData(context, tid)
+                        withContext(Dispatchers.Main) {
+                            statusMsg = if (tid == null) {
+                                "未能从该游戏文件解析 Title ID（${g.romPath?.substringAfterLast('/') ?: "?"}），" +
+                                    "无法定位存档目录。"
+                            } else if (ok) {
+                                "已清除「${g.customTitle?.takeIf { it.isNotBlank() } ?: g.title}」的 3DS 存档" +
+                                    "（Title ID $tid）。下次进入将重新建档。"
+                            } else {
+                                "该游戏当前没有可清除的存档数据（Title ID $tid）。"
+                            }
+                        }
+                    }
+                }) { Text("清除", color = Neon.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearSaveGame = null }) { Text("取消") }
             }
         )
     }
@@ -621,12 +819,11 @@ fun NeonLibraryScreen(
             confirmButton = {
                 TextButton(onClick = {
                     val t = renameText.trim()
-                    if (t.isNotEmpty()) {
-                        try {
-                            RomStore.setCustomTitle(context, game.id, t)
-                            onGamesChanged()
-                        } catch (_: Exception) { }
-                    }
+                    try {
+                        // 空白 = 恢复默认标题（与 FSD 游戏库行为一致）
+                        RomStore.setCustomTitle(context, game.id, t.takeIf { it.isNotEmpty() })
+                        onGamesChanged()
+                    } catch (_: Exception) { }
                     pendingRenameGame = null
                 }) { Text("保存") }
             },
@@ -647,7 +844,13 @@ fun NeonLibraryScreen(
             confirmButton = {
                 TextButton(onClick = {
                     try {
-                        RomStore.remove(context, game.id)
+                        // Java 游戏走 JavaGameStore（连带删除 JAR/配置），
+                        // 其余走 RomStore（只移库记录）
+                        if (game.platform == GamePlatform.JAVA) {
+                            JavaGameStore.deleteGame(context, game)
+                        } else {
+                            RomStore.remove(context, game.id)
+                        }
                         onGamesChanged()
                     } catch (_: Exception) { }
                     pendingDeleteGame = null
@@ -771,11 +974,11 @@ private fun NeonLibraryInfoBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // 标题横幅
+        // 标题横幅（★近实底：封面/倒影无论怎么溢出，游戏名始终在其之前清晰可见）
         Box(
             modifier = Modifier
                 .weight(1f, fill = false)
-                .background(Color(0xCC0A1020), neonChamfer(0.28f))
+                .background(Color(0xF2050712), neonChamfer(0.28f))
                 .border(1.dp, Neon.Line, neonChamfer(0.28f))
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
@@ -808,7 +1011,7 @@ private fun NeonLibraryInfoBar(
         // N of M 计数
         Box(
             modifier = Modifier
-                .background(Color(0x9905070E), neonChamfer(0.5f))
+                .background(Color(0xE6050712), neonChamfer(0.5f))
                 .border(1.dp, Neon.Line, neonChamfer(0.5f))
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
@@ -820,14 +1023,18 @@ private fun NeonLibraryInfoBar(
     }
 }
 
-/** 长按游戏的操作菜单（Neon 深色切角弹窗）。 */
+/** 长按游戏的操作菜单（Neon 深色切角弹窗）——与 FSD 游戏库长按菜单完全对齐（8 项）。 */
 @Composable
 private fun NeonGameOptionsMenu(
     game: GameEntry,
     onDismiss: () -> Unit,
     onPlay: () -> Unit,
+    onGameSettings: () -> Unit,
+    onCustomIcon: () -> Unit,
+    onPickCover: () -> Unit,
     onToggleFavorite: () -> Unit,
     onRename: () -> Unit,
+    onClear3dsSave: () -> Unit,
     onDelete: () -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -858,8 +1065,19 @@ private fun NeonGameOptionsMenu(
                         .weight(1f, fill = false)
                 ) {
                     NeonMenuOption("开始游戏") { onDismiss(); onPlay() }
+                    NeonMenuOption("游戏设置") { onDismiss(); onGameSettings() }
+                    NeonMenuOption("自定义图标") { onDismiss(); onCustomIcon() }
+                    // 封面候选选择：中文名/模糊命名搜不到满意封面时手动搜索指定
+                    NeonMenuOption("选择封面") { onDismiss(); onPickCover() }
                     NeonMenuOption(if (game.isFavorite) "取消收藏" else "收藏") { onDismiss(); onToggleFavorite() }
                     NeonMenuOption("重命名") { onDismiss(); onRename() }
+                    // 3DS 存档急救（建档卡死兑底）：删除 Azahar sdmc 里该游戏的
+                    // title 存档目录，下次进游戏重新完整建档
+                    if (game.platform == GamePlatform.N3DS) {
+                        NeonMenuOption("清除3DS存档（建档卡死急救）", danger = true) {
+                            onDismiss(); onClear3dsSave()
+                        }
+                    }
                     NeonMenuOption("删除游戏", danger = true) { onDismiss(); onDelete() }
                 }
                 Box(

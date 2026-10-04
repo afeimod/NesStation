@@ -40,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -170,6 +171,7 @@ fun NeonHomeScreen(
                                 onItemLongClick = { idx -> flowGames.getOrNull(idx)?.let(::toggleFavorite) },
                                 grabFocusOnLaunch = true,
                                 showReflection = true,
+                                verticalShift = 16.dp,   // ★ 封面流整体下移，不遮挡菜单行
                                 modifier = Modifier.fillMaxSize()
                             ) { i ->
                                 val g = flowGames[i]
@@ -290,7 +292,8 @@ private fun NeonMenuRow(items: List<NeonChip>) {
     }
 }
 
-/** 选中游戏信息面板：大标题 + 平台徽章 + 游玩数据 + 操作按钮。 */
+/** 选中游戏信息面板：大标题 + 平台徽章 + 游玩数据 + 操作按钮。
+ *  ★ 底部渐变遮罩：封面倒影无论怎么延伸都被压暗，游戏名/按钮永远清晰在前。 */
 @Composable
 private fun NeonGameInfoPanel(
     game: GameEntry,
@@ -300,7 +303,18 @@ private fun NeonGameInfoPanel(
     modifier: Modifier = Modifier
 ) {
     val title = game.customTitle?.takeIf { it.isNotBlank() } ?: game.title
-    Column(modifier = modifier.padding(bottom = 8.dp)) {
+    Box(
+        modifier = modifier
+            .padding(bottom = 8.dp)
+            .background(
+                Brush.verticalGradient(
+                    0f to Color(0xB3050712),
+                    0.4f to Color(0xE6050712),
+                    1f to Color(0xF5050712)
+                )
+            )
+    ) {
+        Column(modifier = Modifier.padding(top = 6.dp)) {
         // 大标题 + 收藏星
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -351,6 +365,7 @@ private fun NeonGameInfoPanel(
                 onClick = onPlay
             )
             NeonGhostButton("游戏库", Icons.Rounded.GridView, onOpenLibrary)
+        }
         }
     }
 }
