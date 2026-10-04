@@ -31,7 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.Gamepad
 import androidx.compose.material.icons.rounded.Info
@@ -573,8 +573,10 @@ private fun NeonSettingsRow(
             }
         }
         if (showArrow) {
+            // 注：icons 1.6.8 的 ChevronRight 无 AutoMirrored 变体（ArrowBack 才有），
+            // 直接用 Rounded.ChevronRight。
             Icon(
-                Icons.AutoMirrored.Rounded.ChevronRight, null,
+                Icons.Rounded.ChevronRight, null,
                 tint = Neon.TextDim, modifier = Modifier.size(18.dp)
             )
         }
@@ -637,14 +639,21 @@ private fun NeonDropdownRow(
             Text(selectedLabel, color = Neon.Accent, fontSize = 13.sp)
             DropdownMenu(
                 expanded = expanded,
-                onDismissRequest = { expanded = false },
-                containerColor = Color(0xF20A1020)
+                onDismissRequest = { expanded = false }
             ) {
-                options.forEach { (value, text) ->
-                    DropdownMenuItem(
-                        text = { Text(text, fontSize = 13.sp, color = Neon.Text) },
-                        onClick = { onSelect(value); expanded = false }
-                    )
+                // material3 1.2.1 的 DropdownMenu 尚无 containerColor 参数（1.3.0 才加），
+                // 用内容层深色底实现同效果（系统浅色主题下也保持 Neon 深色菜单）。
+                Column(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xF20A1020))
+                ) {
+                    options.forEach { (value, text) ->
+                        DropdownMenuItem(
+                            text = { Text(text, fontSize = 13.sp, color = Neon.Text) },
+                            onClick = { onSelect(value); expanded = false }
+                        )
+                    }
                 }
             }
         }

@@ -50,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -228,7 +229,7 @@ fun NeonCoverImage(
 
 /**
  * 3D 封面卡（NeonFlow / 横向行共用）：
- * 3:4 封面 + 切角描边 + 选中青色辉光（spotColor 点光阴影，API 28+ 生效）
+ * 3:4 封面 + 切角描边 + 选中青色辉光（spotShadowColor 点光阴影，API 28+ 生效）
  * + 收藏星标。[glow] 0f..1f 控制辉光强度（选中=1）。
  */
 @Composable
@@ -240,13 +241,16 @@ fun NeonCoverCard(
 ) {
     Box(
         modifier = modifier.graphicsLayer {
-            if (glow > 0.01f) {
-                // 选中辉光：青色点光阴影 + 轻微浮起（API 28+ 彩色，以下版本黑色柔和阴影）
-                shadowElevation = 18f * glow
-                spotColor = Neon.Accent
-                ambientColor = Neon.AccentDim
-                translationZ = 6f * glow
-            }
+            // 选中辉光：青色点光阴影 + 轻微浮起（API 28+ 彩色，以下版本黑色柔和阴影）。
+            // Compose 1.6 的 GraphicsLayerScope 属性名为 spotShadowColor/ambientShadowColor
+            // （并非 Modifier.shadow 的 spotColor/ambientColor 参数名），且无 translationZ，
+            // 浮起效果用 translationY 实现。全部绘制阶段赋值，零重组。
+            val g = glow.coerceIn(0f, 1f)
+            shape = neonChamfer(0.10f)
+            shadowElevation = 18f * g
+            spotShadowColor = Neon.Accent
+            ambientShadowColor = Neon.AccentDim
+            translationY = -6f * g
         }
     ) {
         // 封面本体
@@ -347,9 +351,9 @@ fun NeonTiltRowCard(
 fun NeonToolbarButton(
     icon: ImageVector,
     label: String,
-    onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    tint: Color = Neon.Text
+    tint: Color = Neon.Text,
+    onClick: () -> Unit          // 末位 = 支持尾随 lambda 调用写法
 ) {
     val interaction = remember { MutableInteractionSource() }
     Column(

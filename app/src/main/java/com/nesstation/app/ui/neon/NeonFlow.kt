@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -25,7 +26,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
@@ -223,8 +223,8 @@ fun NeonFlow(
                             cameraDistance = 9f * density   // 近相机 = 强透视
                             // 逐级变暗
                             alpha = (1f - fadePerStep * aPos).coerceIn(0.30f, 1f)
-                            // 中心卡片浮起（辉光由卡片自绘）
-                            if (aPos < 0.5f) translationZ = 12f
+                            // 中心卡片的辉光/浮起由 NeonCoverCard 自绘
+                            // （spotShadowColor 点光 + translationY，无 translationZ）
                         }
                         .combinedClickable(
                             onClick = {
@@ -233,12 +233,11 @@ fun NeonFlow(
                             onLongClick = { currentOnItemLongClick(i) }
                         )
                 ) {
-                    // 封面主体
+                    // 封面主体（不裁剪：选中卡的辉光阴影/浮起需要溢出卡片范围）
                     Box(
                         modifier = Modifier
                             .width(itemWidth)
                             .height(itemHeight)
-                            .clipToBounds()
                     ) {
                         content(i)
                     }
