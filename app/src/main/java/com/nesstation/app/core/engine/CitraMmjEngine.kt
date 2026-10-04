@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * ★★ Citra MMJ（3DS）核心引擎 —— NesStation 集成（本轮新增）★★
+ * ★★ Citra MMJ（3DS）核心引擎 —— NesStation 集成 ★★
  *
  * 需求原话："源码里我上传了一个citra的apk.zip，将它集成在3ds核心里用于
  * 选择核心，就像nds的激烈核心一样，全部设置加入进去"。
@@ -19,24 +19,33 @@ import kotlin.concurrent.thread
  * Citra_MMJ_20250220.apk 的 libmain.so）+ 原包名 JNI 契约
  * （org.citra.emu.NativeLibrary）+ 引擎类驱动生命周期。
  *
- * 架构（推模型，与 AzaharEngine 同构）：
- *  1. [loadRom]：建用户目录树（<filesDir>/azahar/，与 Azahar 共用）→ SetUserPath →
- *     loadConfig → 应用 MMJ 设置（coreOptions）+ 输入映射配置 →
- *     SurfaceChanged → 专用线程 Run(path)（阻塞直至退出）；
+ * ★★★ 架构（本轮重构，逐项对齐原版 APK 反编译实证）★★★
+ *
+ * 启动序列（= 原版 MainActivity.d1.a.R → EmulationActivity.C0）：
+ *  1. [loadRom]：建用户目录树（<filesDir>/azahar/，与 Azahar 共用）+
+ *     种子系统文件（assets/mmj：nand/sdmc/sysdata/config/shaders）→
+ *     用户设置合并写入 config/config-mmj.ini → SetUserPath(裸路径) →
+ *     loadConfig → SurfaceChanged → 专用线程 Run(裸路径)（阻塞直至退出）；
  *  2. Choreographer 帧回调驱动 doFrame（呈现）；
  *  3. 暂停/恢复 PauseEmulation/ResumeEmulation；停止 StopEmulation。
  *
- * 输入（so 反汇编实证的输入管理器模型）：
- *  - 输入管理器把 KeyEvent/MoveEvent/InputEvent 的 key 与**配置键的值**
- *    匹配后分发（配置键：button_a/b/x/y/l/r/start/select/zl/zr/home/
- *    up/down/left/right、circle_pad_*、c_stick_*）；
- *  - 本引擎在启动前把这些配置键写入自选 id（MMJ_ID_*），按键统一经
- *    KeyEvent(id, 1/0) 下发；
- *  - 摇杆经 MoveEvent(轴码, 带符号值)（负值 → 核心按 key+0x1000 匹配
- *    反向槽 —— circle_pad_up = 轴码+0x1000，circle_pad_down = 轴码）；
- *  - 兜底：A/B/X/Y/L/R/十字键同时经 InputEvent(小索引, value) 下发
- *    （覆盖表索引通道，双通道确保至少一条命中）；
- *  - 底屏触摸经 TouchEvent（action 位掩码：1=按下 / 2=抬起 / 4=移动）。
+ * 配置（★★闪退根治 —— 见 MMJ_INI_SECTION 注释的根因定论★★）：
+ *  - setConfig 系/getConfig 系 JNI 各有硬编码分发器，合计只接受 8 个键
+ *    （combo_key_0/1/2、input_overlay_alpha/scale、input_overlay_feedback/
+ *    hide、input_joystick_relative），其它键 brk #1 → SIGTRAP；
+ *  - 因此全部用户设置走 ini 文件（原版设置 UI 同款机制）：合并写入
+ *    <userDir>/config/config-mmj.ini，loadConfig() 读取；
+ *  - 唯一的运行期 JNI 配置调用：setConfigBoolean("input_overlay_hide",
+ *    true)（合法键，强制关闭 MMJ 自带 overlay —— NesStation 用自己的
+ *    Compose 遮罩）。
+ *
+ * 输入（原版 InputOverlay 同款，零配置免闪退）：
+ *  - 数字键全部经 InputEvent(固定索引, 1f/0f)：A=0 B=1 X=2 Y=3 十字键=4..7
+ *    L=8 R=9 start=10 select=11 home=12 zl=14 zr=15；
+ *  - 摇杆经 InputEvent(索引, 模拟值)：圆盘 X=21 Y=22，C 摇杆 X=23 Y=24
+ *    （Y 轴 +1=向上 —— 原版 overlay k() 实证，下发前对屏幕坐标取反）；
+ *  - 底屏触摸经 TouchEvent（action 位掩码：1=按下 / 2=抬起 / 4=移动）；
+ *  - 物理手柄由 NesStation 统一映射进 setPad1/setAnalogAxes（同通道）。
  *
  * 即时存档：MMJ so 未导出 SaveState/LoadState JNI（nm 实测），saveState
  * 诚实返回 false 并给出说明（UI 提示改用 Azahar 核心）。
@@ -44,31 +53,22 @@ import kotlin.concurrent.thread
 class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     companion object {
-        // ---- 自选输入 id（写入 MMJ 配置键；启动前经 setConfigInteger 固化） ----
-        // 按键（KeyEvent 通道）
-        private const val MMJ_ID_A = 1001
-        private const val MMJ_ID_B = 1002
-        private const val MMJ_ID_X = 1003
-        private const val MMJ_ID_Y = 1004
-        private const val MMJ_ID_L = 1005
-        private const val MMJ_ID_R = 1006
-        private const val MMJ_ID_START = 1007
-        private const val MMJ_ID_SELECT = 1008
-        private const val MMJ_ID_ZL = 1009
-        private const val MMJ_ID_ZR = 1010
-        private const val MMJ_ID_HOME = 1011
-        private const val MMJ_ID_UP = 1012
-        private const val MMJ_ID_DOWN = 1013
-        private const val MMJ_ID_LEFT = 1014
-        private const val MMJ_ID_RIGHT = 1015
-        // 摇杆轴（MoveEvent 通道；负向槽 = 轴码 + 0x1000）
-        private const val MMJ_AXIS_CPAD_Y = 3000   // +下 / -上（circle_pad_down=3000, up=7096）
-        private const val MMJ_AXIS_CPAD_X = 3002   // +右 / -左
-        private const val MMJ_AXIS_CSTICK_Y = 3004
-        private const val MMJ_AXIS_CSTICK_X = 3006
-        private const val MMJ_NEG = 0x1000
-
-        // InputEvent 兜底通道的小索引（citra Android overlay 约定）
+        // ------------------------------------------------------------------
+        // ★★ InputEvent 固定索引通道（本轮根治重构）★★
+        //
+        // 输入一律走 InputEvent(index, value) —— 与原版 Citra_MMJ_20250220.apk
+        // 的 InputOverlay（org.citra.emu.overlay.InputOverlay / a.java / b.java）
+        // 完全同款：overlay 构造表 new a("button_a", 0) / new a("dpad", 4) /
+        // new a("joystick", 21) / new a("c_stick", 23) 反编译实证——
+        //   - 单键类（overlay/a.java h()/e()）：InputEvent(ownIndex, 1.0f/0.0f)
+        //   - 四键类（overlay/b.java l()）：InputEvent(base+0..3, 1.0f/0.0f) 数字化
+        //   - 摇杆类（overlay/b.java k()）：InputEvent(base+0, x) / (base+1, y) 模拟量
+        //
+        // 旧的 KeyEvent(自选id)/MoveEvent(自选轴码) 双通道已整体移除：那套设计
+        // 需要先用 setConfigInteger 把 button_*/circle_pad_* 写成自选 id —— 而
+        // MMJ 的 setConfigInteger 分发器只接受 input_overlay_alpha/scale 两个键，
+        // 其它键一律 brk #1（SIGTRAP 闪退，详见下方 ini 架构注释）。
+        // ------------------------------------------------------------------
         private const val IDX_A = 0
         private const val IDX_B = 1
         private const val IDX_X = 2
@@ -81,6 +81,17 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         private const val IDX_R = 9
         private const val IDX_START = 10
         private const val IDX_SELECT = 11
+        private const val IDX_HOME = 12      // 原版 overlay：new a("button_home", 12)
+        private const val IDX_ZL = 14        // 原版 overlay：new a("button_zl", 14)
+        private const val IDX_ZR = 15        // 原版 overlay：new a("button_zr", 15)
+        // 摇杆（joystick=21 / c_stick=23；k() 模拟量通道，X=base+0，Y=base+1）
+        // ★ Y 约定与 Android 屏幕坐标相反：原版 k() 触摸上 1/3 → fArr[1]=+1 →
+        //   InputEvent(22, +1) = 圆盘向上。NesStation 的 setAnalogAxes 是屏幕
+        //   坐标（上=负），下发前取反。
+        private const val IDX_CPAD_X = 21
+        private const val IDX_CPAD_Y = 22
+        private const val IDX_CSTICK_X = 23
+        private const val IDX_CSTICK_Y = 24
 
         // 项目位布局（EmulatorScreen 直传：A=bit0, B=bit1, Select=2, Start=3,
         // U/D/L/R=4..7, X=8, Y=9, L=10, R=11；扩展位 ZL=16, ZR=17, HOME=19）
@@ -283,122 +294,181 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     /**
-     * ★★ MMJ 配置键白名单（反汇编 libcitra_mmj.so 字面量池逐一核实）★★
+     * ★★★ 配置架构（本轮根治重构，对齐原版 APK 实证行为）★★★
      *
-     * MMJ 核心的 setConfigInteger/Boolean/String JNI 内部是“键→枚举”switch：
-     * 传入【不在白名单里的键】会落入 UNREACHABLE() → brk #1 → SIGTRAP 崩溃
-     * （即用户崩溃栈 #00 pc 0x282234，BuildId 14a21e39…完全对应）。
-     * 旧实现把 button_a/b/x/y/l/r 写进 applyInputConfig —— 这 6 个键在 so
-     * 里根本不存在（原 MMJ APK 的 A/B/X/Y/L/R 只能经 InputEvent 索引通道
-     * 下发：A=0/B=1/X=2/Y=3/L=8/R=9，与本项目 IDX_* 常量一致），启动即闪退。
-     * 此处按类型维护三张白名单，任何未知键在 Java 层拦下并打日志，
-     * 保证未来 UI 新增键名错误时只丢功能不闪退。
+     * 【闪退根因 —— so 反汇编最终定论】
+     * MMJ 的 setConfig 系/getConfig 系 JNI 不是通用键值存储！每个类型各有一个
+     * 硬编码分发器（libcitra_mmj.so 反汇编实证）：
+     *   - setConfigString   → sub_281d10：仅接受 combo_key_0/1/2
+     *   - setConfigInteger  → sub_28208c：仅接受 input_overlay_alpha/scale
+     *   - setConfigBoolean  → sub_282238：仅接受 input_overlay_feedback/
+     *                          input_overlay_hide/input_joystick_relative
+     * 分发器把传入键名与 BSS 运行时初始化的 std::string 表逐个比对，全部
+     * 不匹配 → UNREACHABLE → brk #1 → SIGTRAP（pc 0x282234，与用户崩溃栈
+     * 完全一致）。旧实现经 setConfigInteger 写 button_start/circle_pad_*、
+     * 经 setConfigBoolean 写 resolution_factor/is_new_3ds 等 40+ 键 ——
+     * 第一键即触发 brk，无法被 Java try/catch 捕获，进程直接闪退。
+     * （旧白名单按 so 字面量池编制 —— 那些键名确实存在于设置表，但只用于
+     *  ini 文件读写，与 JNI 分发器的接受集是两回事。）
+     *
+     * 【原版 APK 的真实配置流（反编译实证）】
+     * 原版的设置 UI（Y0/i.java）用 Java ini 库（Z0 包）【直接读写】
+     * <userDir>/config/config-mmj.ini（so 字符串实证 "config/config-mmj.ini"），
+     * 核心经 loadConfig() 读该文件。sections（原版设置编辑器逐一实证）：
+     *   [Renderer]  resolution_factor/use_hw_shader/accurate_mul_type/
+     *               pp_shader_name/frame_limit/custom_textures/factor_3d/
+     *               use_fence_sync/layout_option/show_fps/use_frame_limit
+     *   [Debug]     shader_type/use_present_thread/cpu_usage_limit + 性能 hack 族
+     *               (hw_gs_mode、use_fmv_hack、skip_ 三兄弟、
+     *                force_texture_filter、async_shader_compile、
+     *                use_compatible_mode、shadow_rendering)
+     *   [Core]      is_new_3ds/use_cpu_jit/region_value/language/
+     *               shared_font_type/use_game_config/use_virtual_sd
+     *   [Audio]     audio_output_type/audio_input_type/enable_audio_stretching/
+     *               audio_volume/mic_volume/enable_dsp_lle/dsp_lle_multithread
+     *   [Camera]    camera_type
+     *   [Controls]  overlay/布局族（input_overlay_*、input_joystick_*、
+     *               landscape/portrait_swap_screen、landscape_custom_layout、
+     *               landscape_layout_option 等，设置表结构体段名实证）
+     * NesStation 沿用同一机制：把用户设置合并写入 ini → loadConfig() 读取。
+     * 键名不在下表 → 只记日志跳过（ini 未知键本来就会被核心忽略，双保险）。
      */
-    private val MMJ_INT_KEYS = setOf(
-        // 输入映射（KeyEvent/MoveEvent 通道）—— button_a/b/x/y/l/r 有意缺席！
-        "button_start", "button_select", "button_zl", "button_zr", "button_home",
-        "button_up", "button_down", "button_left", "button_right",
-        "button_debug",
-        "circle_pad_down", "circle_pad_up", "circle_pad_right", "circle_pad_left",
-        "c_stick_down", "c_stick_up", "c_stick_right", "c_stick_left",
-        "combo_key_0", "combo_key_1", "combo_key_2",
-        // 画面/性能
-        "resolution_factor", "shader_type", "hw_gs_mode", "accurate_mul_type",
-        "mag_filter", "min_filter", "screen_presentation_mode", "factor_3d",
-        "layout_option", "landscape_layout_option", "frame_limit", "cpu_usage_limit",
-        // 系统/音频
-        "region_value", "audio_output_type", "audio_input_type", "audio_volume",
-        "mic_volume", "shared_font_type", "camera_type",
-        // 输入法 overlay
-        "input_overlay_scale", "input_overlay_alpha", "input_joystick_range",
-        "input_joystick_deadzone"
+    private val MMJ_INI_SECTION: Map<String, String> = mapOf(
+        // [Renderer] —— 原版设置编辑器 k2() 实证
+        "layout_option" to "Renderer", "show_fps" to "Renderer",
+        "resolution_factor" to "Renderer", "use_hw_shader" to "Renderer",
+        "accurate_mul_type" to "Renderer", "pp_shader_name" to "Renderer",
+        "frame_limit" to "Renderer", "custom_textures" to "Renderer",
+        "factor_3d" to "Renderer", "use_fence_sync" to "Renderer",
+        "use_frame_limit" to "Renderer",
+        "mag_filter" to "Renderer", "min_filter" to "Renderer",
+        // [Debug] —— k2() 实证 + 设置表相邻条目（性能 hack 族）
+        "shader_type" to "Debug", "use_present_thread" to "Debug",
+        "cpu_usage_limit" to "Debug", "hw_gs_mode" to "Debug",
+        "use_fmv_hack" to "Debug", "skip_slow_draw" to "Debug",
+        "skip_cpu_write" to "Debug", "skip_texture_copy" to "Debug",
+        "force_texture_filter" to "Debug", "async_shader_compile" to "Debug",
+        "use_compatible_mode" to "Debug", "shadow_rendering" to "Debug",
+        // [Core] —— k2() 实证
+        "use_game_config" to "Core", "is_new_3ds" to "Core",
+        "use_cpu_jit" to "Core", "region_value" to "Core",
+        "language" to "Core", "shared_font_type" to "Core",
+        "use_virtual_sd" to "Core", "use_shader_jit" to "Core",
+        // [Audio] —— k2() 实证
+        "audio_output_type" to "Audio", "enable_audio_stretching" to "Audio",
+        "audio_input_type" to "Audio", "audio_volume" to "Audio",
+        "mic_volume" to "Audio", "enable_dsp_lle" to "Audio",
+        "dsp_lle_multithread" to "Audio",
+        // [Camera] —— k2() 实证
+        "camera_type" to "Camera",
+        // [Controls] —— 设置表结构体段名实证（overlay/布局族）
+        "input_overlay_scale" to "Controls", "input_overlay_alpha" to "Controls",
+        "input_overlay_hide" to "Controls", "input_overlay_feedback" to "Controls",
+        "input_joystick_relative" to "Controls", "input_joystick_range" to "Controls",
+        "input_joystick_deadzone" to "Controls",
+        "landscape_swap_screen" to "Controls", "portrait_swap_screen" to "Controls",
+        "landscape_custom_layout" to "Controls", "portrait_custom_layout" to "Controls",
+        "landscape_layout_option" to "Controls", "screen_presentation_mode" to "Controls"
     )
-    private val MMJ_BOOL_KEYS = setOf(
-        "is_new_3ds", "use_cpu_jit", "use_hw_shader", "use_shader_jit",
-        "async_shader_compile", "shadow_rendering", "force_texture_filter",
-        "custom_textures", "use_compatible_mode", "use_fmv_hack", "skip_cpu_write",
-        "skip_slow_draw", "skip_texture_copy", "use_fence_sync", "use_present_thread",
-        "use_frame_limit", "enable_dsp_lle", "dsp_lle_multithread",
-        "enable_audio_stretching", "use_virtual_sd", "use_game_config",
-        "landscape_swap_screen", "portrait_swap_screen", "landscape_custom_layout",
-        "input_overlay_hide", "input_overlay_feedback", "input_joystick_relative"
-    )
-    private val MMJ_STRING_KEYS = setOf("pp_shader_name")
 
-    /** 键是否属于指定类型的白名单（未知键 → false，调用方应跳过写入）。 */
-    private fun isKnownMmjKey(key: String, isInt: Boolean, isBool: Boolean): Boolean = when {
-        isInt -> key in MMJ_INT_KEYS
-        isBool -> key in MMJ_BOOL_KEYS
-        else -> key in MMJ_STRING_KEYS
-    }
-
-    /** 输入映射配置（自选 id 写入 MMJ 配置键）。 */
-    private fun applyInputConfig() {
-        val lib = CitraMmjNative.lib
-        fun i(key: String, value: Int) { try { lib.setConfigInteger(key, value) } catch (_: Throwable) {} }
-        // ★★ 闪退根治（崩溃栈 #00 pc 0x282234 = so 内 UNREACHABLE 陷阱）：★★
-        //   button_a/b/x/y/l/r 六键在本核心字面量池中不存在（nm/strings 逐一
-        //   核实），setConfigInteger(未知键) 直接 brk #1 → SIGTRAP。
-        //   A/B/X/Y/L/R 一律经 InputEvent 索引通道下发（setPad1 的 IDX_* 路径，
-        //   索引值与原 MMJ APK overlay 完全一致），配置层只写真实存在的键。
-        i("button_start", MMJ_ID_START)
-        i("button_select", MMJ_ID_SELECT)
-        i("button_zl", MMJ_ID_ZL)
-        i("button_zr", MMJ_ID_ZR)
-        i("button_home", MMJ_ID_HOME)
-        i("button_up", MMJ_ID_UP)
-        i("button_down", MMJ_ID_DOWN)
-        i("button_left", MMJ_ID_LEFT)
-        i("button_right", MMJ_ID_RIGHT)
-        // 摇杆轴（负向槽 = 轴码 + 0x1000 —— 输入管理器对负值的匹配规则）
-        i("circle_pad_down", MMJ_AXIS_CPAD_Y)
-        i("circle_pad_up", MMJ_AXIS_CPAD_Y + MMJ_NEG)
-        i("circle_pad_right", MMJ_AXIS_CPAD_X)
-        i("circle_pad_left", MMJ_AXIS_CPAD_X + MMJ_NEG)
-        i("c_stick_down", MMJ_AXIS_CSTICK_Y)
-        i("c_stick_up", MMJ_AXIS_CSTICK_Y + MMJ_NEG)
-        i("c_stick_right", MMJ_AXIS_CSTICK_X)
-        i("c_stick_left", MMJ_AXIS_CSTICK_X + MMJ_NEG)
-        // ★★ 虚拟按键覆盖层硬关闭（本轮需求：独立设置里多余的覆盖层项已删，
-        //   MMJ 自带 overlay 永远关闭 —— NesStation 用自己的 Compose 遮罩
-        //   （总设置「屏幕手柄」+「遮罩主题」统一控制），且 MMJ overlay 资源
-        //   缺失时调起会触发 UNREACHABLE 闪退。无论任何路径都不再下发
-        //   input_overlay_scale/alpha/joystick_range（白名单外无意义）。
-        try { lib.setConfigBoolean("input_overlay_hide", true) } catch (_: Throwable) {}
-    }
-
-    /** 应用全部 coreOptions（MMJ 配置键 → setConfig*；白名单外的键跳过防闪退）。 */
-    private fun applyCoreOptions() {
-        val lib = CitraMmjNative.lib
-        for ((key, value) in coreOptions) {
-            // ★★ 本轮根治（pc 0x282234 在 libcitra_mmj.so 的根因之一）★★
-            //   NesStation 自带 Compose 虚拟按键遮罩 —— MMJ 自带 overlay
-            //   必须永远关闭。原 MMJ APK 实测（Citra_MMJ_20250220.apk.zip
-            //   全文件枚举）assets/ 下零张 overlay 图（PNG/JPG/BMP 全无），
-            //   但 MMJ 原生层在 input_overlay_hide=false 时仍会尝试调起
-            //   overlay 渲染分支（按 input-layout.ini 程序式绘制），
-            //   该分支在没有配套 overlay 资源 / 在 Surface 尚未就绪时
-            //   触发 UNREACHABLE → brk #1 → SIGTRAP at pc 0x282234
-            //   （DefaultDispatch 线程，BuildId 14a21e39...）。
-            //   修复：无视 UI 传入值，input_overlay_hide 永远强制 true。
-            //   这是 NesStation 的硬约束（自有遮罩 + 无 MMJ overlay 资源），
-            //   UI 的开关只对 NesStation 自身的遮罩有效（见 PadLayoutStore）。
-            val effectiveValue = if (key == "input_overlay_hide") "true" else value
-            if (!isKnownMmjKey(key, effectiveValue.toIntOrNull() != null,
-                    effectiveValue.equals("true", true) || effectiveValue.equals("false", true))) {
-                android.util.Log.w("CitraMmjEngine", "skip unknown MMJ config key: $key")
-                continue
-            }
-            try {
-                when {
-                    effectiveValue.equals("true", true) || effectiveValue.equals("false", true) ->
-                        lib.setConfigBoolean(key, effectiveValue.equals("true", true))
-                    effectiveValue.toIntOrNull() != null ->
-                        lib.setConfigInteger(key, effectiveValue.toInt())
-                    else -> lib.setConfigString(key, effectiveValue)
+    /**
+     * 把 coreOptions 合并写入 <userDir>/config/config-mmj.ini。
+     *
+     * 合并语义（对齐原版 Java ini 编辑器）：保留文件中已有的一切条目（包括
+     * 原生 saveConfig 写回的键、per-game 兼容键），只覆盖本引擎下发的键；
+     * 文件不存在则新建。input_overlay_hide 永远强制 true（NesStation 自带
+     * Compose 遮罩，MMJ 自带 overlay 无资源且会闪退，必须关闭）。
+     *
+     * @param extra 额外覆盖项（如快进的 use_frame_limit/frame_limit）
+     */
+    private fun writeMmjIniLocked(extra: Map<String, String> = emptyMap()) {
+        val root = userDir()
+        val iniFile = File(root, "config/config-mmj.ini")
+        try {
+            iniFile.parentFile?.mkdirs()
+            // 1) 解析现有文件（保持段序/键序/未知条目）
+            val sections = LinkedHashMap<String, LinkedHashMap<String, String>>()
+            if (iniFile.isFile) {
+                try {
+                    java.io.BufferedReader(java.io.FileReader(iniFile)).use { br ->
+                        var cur = "\u0000root"   // 段前的裸键挂到虚拟根（正常不会出现）
+                        sections[cur] = LinkedHashMap()
+                        br.forEachLine { raw ->
+                            val line = raw.trim()
+                            if (line.isEmpty() || line.startsWith("//") || line.startsWith("#")) {
+                                // 注释/空行不保留（重写后由内容自描述）
+                                return@forEachLine
+                            }
+                            if (line.startsWith("[") && line.endsWith("]")) {
+                                cur = line.substring(1, line.length - 1).trim()
+                                sections.getOrPut(cur) { LinkedHashMap() }
+                            } else {
+                                val eq = line.indexOf('=')
+                                if (eq > 0) {
+                                    val k = line.substring(0, eq).trim()
+                                    val v = line.substring(eq + 1).trim()
+                                    sections.getOrPut(cur) { LinkedHashMap() }[k] = v
+                                }
+                            }
+                        }
+                    }
+                } catch (t: Throwable) {
+                    android.util.Log.w("CitraMmjEngine", "parse config-mmj.ini failed, rewrite", t)
                 }
-            } catch (_: Throwable) {}
+            }
+            // 2) 应用覆盖项（input_overlay_hide 硬编码 true）
+            val overrides = LinkedHashMap<String, String>()
+            for ((k, v) in coreOptions) overrides[k] = v
+            overrides.putAll(extra)
+            overrides["input_overlay_hide"] = "true"
+            var applied = 0
+            for ((key, value) in overrides) {
+                val section = MMJ_INI_SECTION[key]
+                if (section == null) {
+                    android.util.Log.w("CitraMmjEngine", "skip unknown MMJ ini key: $key")
+                    continue
+                }
+                sections.getOrPut(section) { LinkedHashMap() }[key] = value
+                applied++
+            }
+            // 3) 写回
+            val sb = StringBuilder()
+            for ((section, kv) in sections) {
+                if (kv.isEmpty()) continue
+                if (section != "\u0000root") sb.append('[').append(section).append("]\n")
+                for ((k, v) in kv) sb.append(k).append('=').append(v).append('\n')
+                sb.append('\n')
+            }
+            java.io.FileWriter(iniFile).use { it.write(sb.toString()) }
+            android.util.Log.i("CitraMmjEngine",
+                "config-mmj.ini written ($applied overrides, ${sections.size} sections)")
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "writeMmjIni failed", t)
         }
+    }
+
+    /** 读 ini 里某键当前值（swapScreens 等需要读-改-写的场景）。 */
+    private fun readMmjIniValue(key: String): String? {
+        val iniFile = File(userDir(), "config/config-mmj.ini")
+        val section = MMJ_INI_SECTION[key] ?: return null
+        if (!iniFile.isFile) return null
+        return try {
+            var result: String? = null
+            java.io.BufferedReader(java.io.FileReader(iniFile)).use { br ->
+                var inSection = false
+                while (true) {
+                    val raw = br.readLine() ?: break
+                    val line = raw.trim()
+                    if (line.startsWith("[") && line.endsWith("]")) {
+                        inSection = line.substring(1, line.length - 1).trim() == section
+                    } else if (inSection && line.startsWith("$key=")) {
+                        result = line.substring(key.length + 1).trim()
+                        break
+                    }
+                }
+            }
+            result
+        } catch (_: Throwable) { null }
     }
 
     // ------------------------------------------------------------------
@@ -434,42 +504,43 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     android.util.Log.i("CitraMmjEngine", "core message[$type]: $message")
                 }
             }
-            // ★★ 初始化管线（DraStic 同款严格顺序）：★★
-            //   1. ensureUserDirTree：创建 nand/sdmc/config/sysdata 等基础目录
-            //   2. SetUserPath("!" + userDir)：**必须加 '!' 前缀**，原因同
-            //      AzaharEngine.kt：MMJ 原生 SetUserPath 开头调
-            //      TranslateFilePath(path)→stat(拼接后的路径)，不加 '!' 会让
-            //      路径被拼上 userDir 前缀两次→路径错乱→loadConfig 读不到
-            //      config.ini→默认值→初始化断言失败→SIGTRAP at libcitra_mmj.so
-            //      （崩溃栈 pc 0x282234 在 DefaultDispatch 协程线程，正是本处路径）
-            //   3. loadConfig：在 userPath 生效后读 config.ini
-            //   4. InitGpuDriver：对齐 Azahar 的 initializeGpuDriver 调用，
-            //      避免 VK 后端初始化断言
-            //   5. applyInputConfig + applyCoreOptions + saveConfig：应用用户设置
+            // ★★★ 初始化管线（本轮重构，逐步对齐原版 APK 的启动序列）★★★
+            //
+            // 原版 Citra_MMJ_20250220.apk（反编译实证）：
+            //   MainActivity → d1.a.R(ctx)：
+            //     ① userDir = getExternalFilesDir/citra-emu（SAF 模式）
+            //     ② NativeLibrary.SetUserPath(【裸路径，无任何前缀】)
+            //     ③ 后台拷贝 assets（nand/sdmc/sysdata/config/shaders）
+            //   EmulationActivity → C0()：
+            //     ④ NativeLibrary.SurfaceChanged(surface)
+            //     ⑤ 新线程 NativeLibrary.Run(【裸路径，无任何前缀】)
+            //
+            // 旧实现的两大路径错误（本轮修复）：
+            //   A. '!' 前缀 —— 那是 Azahar（org.citra.citra_emu）的
+            //      TranslateFilePath 约定。MMJ（org.citra.emu，weihuoya 分支）
+            //      的 SetUserPath/Run 反汇编实证【直接消费字符串，无前缀处理】：
+            //      SetUserPath("!dir") 会让用户目录字面量变成 "!..." →
+            //      nand/sdmc/sysdata/config 全部读不到；Run("!path") →
+            //      ROM 找不到 → "Invalid ROM Format" 提前返回（黑屏/秒退）。
+            //   B. InitGpuDriver —— 原版 Java 侧【从不调用】（仅声明）。
+            //      该调用只是把 4 个字符串存进全局变量（反汇编实证），原版
+            //      这些全局保持空串 = 不安装 GPU 钩子 = 系统驱动直跑。
+            //      我们的 APK 没有 libhook_impl.so 等 5 个配套库，主动设置
+            //      hookLibDir 反而有让渲染后端尝试加载缺失钩子库的风险 ——
+            //      删除调用，与原版完全一致。
+            //
+            // 顺序：
+            //   1. ensureUserDirTree：建目录树 + 种子系统文件（assets/mmj）
+            //   2. writeMmjIniLocked：用户设置合并写入 config/config-mmj.ini
+            //   3. SetUserPath(userDir)：裸路径（原生侧自动补尾部 '/'）
+            //   4. loadConfig：从 ini 读全部设置（含 input_overlay_hide=true）
+            //   5. setConfigBoolean("input_overlay_hide", true)：分发器接受集
+            //      内的合法键（belt & braces，防止旧 ini 残留 false 值竞态）
             ensureUserDirTree()
-            try { lib.SetUserPath("!" + userDir()) } catch (_: Throwable) {}
+            writeMmjIniLocked()
+            try { lib.SetUserPath(userDir()) } catch (_: Throwable) {}
             try { lib.loadConfig() } catch (_: Throwable) {}
-            // ★★ 新增：GPU 驱动参数初始化（对齐 AzaharEngine 第 530–550 行）。
-            //   不调时部分设备（如 Redmi Socrates）VK 后端初始化会触发原生 CHECK
-            //   → SIGTRAP。传参同 Azahar：hook路径为 nativeLibraryDir/，
-            //   driverInstallPath 为 filesDir/gpu_driver，fileRedirectPath
-            //   为 filesDir/gpu/vk_file_redirect。
-            try {
-                val ctx = appContext
-                val hookLibPath = ctx?.applicationInfo?.nativeLibraryDir?.let { "$it/" } ?: ""
-                val driverInstallPath = ctx?.filesDir?.let {
-                    java.io.File(it, "gpu_driver").apply { mkdirs() }.absolutePath
-                } ?: ""
-                val fileRedirectPath = ctx?.filesDir?.let {
-                    java.io.File(java.io.File(it, "gpu"), "vk_file_redirect")
-                        .apply { mkdirs() }.absolutePath
-                } ?: ""
-                lib.InitGpuDriver(hookLibPath, driverInstallPath, "", fileRedirectPath)
-            } catch (_: Throwable) {}
-            // 输入映射 + 用户设置
-            applyInputConfig()
-            applyCoreOptions()
-            try { lib.saveConfig() } catch (_: Throwable) {}
+            try { lib.setConfigBoolean("input_overlay_hide", true) } catch (_: Throwable) {}
         } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "init failed", t)
         }
@@ -575,10 +646,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 } catch (_: Throwable) {}
             }
             try {
-                if (_ffSpeed > 0) applyFastForwardConfig()
-                // ★ '!' 前缀 = 原生绝对路径标记（同 Azahar）：裸路径会被
-                //   TranslateFilePath 拼到用户目录下变成不存在的路径→黑屏/秒退
-                lib.Run("!$path")
+                if (_ffSpeed > 0) {
+                    // ★ 快进状态在 Run 前落盘并重读 ini —— 本次会话即不限速
+                    //   （loadRom 的 loadConfig 早于此，需重读才能带上快进键）。
+                    applyFastForwardConfig()
+                    try { lib.loadConfig() } catch (_: Throwable) {}
+                }
+                // ★ 裸路径直传（原版实证：Run(intent 的 GamePath 原样字符串）。
+                //   '!' 前缀是 Azahar 的约定，MMJ 原生无此前缀处理 —— 加了
+                //   反而让核心找不到 ROM → "Invalid ROM Format" 提前退出。
+                lib.Run(path)
             } catch (t: Throwable) {
                 android.util.Log.e("CitraMmjEngine", "Run() crashed", t)
                 lastErrorText = t.message ?: "Run() crashed"
@@ -669,7 +746,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         if (_loaded && width > 0 && height > 0 && emuThread?.isAlive == true) {
             val coreRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
             if (coreRunning) {
-                try { CitraMmjNative.lib.SetDisplayInfo(width, height, width, height, 0, 1f) } catch (_: Throwable) {}
+                // ★ 参数语义修正（原版 EmulationActivity.N0() 反编译实证）：
+                //   SetDisplayInfo(safeInsetLeft, safeInsetTop, safeInsetRight,
+                //                   safeInsetBottom, rotation, scaledDensity)
+                //   旧实现把 (w,h,w,h) 当前四个参数传 = 挖孔屏安全边距全错。
+                //   本引擎无 Display 引用，保守传 0 边距 + 0 旋转 + 1.0 密度
+                //   （无挖孔设备上与原版行为等价；overlay 已隐藏，密度仅用于
+                //   overlay 缩放，1.0 无副作用）。
+                try { CitraMmjNative.lib.SetDisplayInfo(0, 0, 0, 0, 0, 1f) } catch (_: Throwable) {}
             }
         }
     }
@@ -774,22 +858,22 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     /**
-     * 快进：写 frame_limit / use_frame_limit 配置（MMJ 无运行时变速 JNI；
-     * use_frame_limit=false = 不限速）。写配置 + saveConfig —— MMJ 的帧率
-     * 限制在模拟循环内生效（若核心仅在启动读取，效果同"下次启动生效"，
-     * 与设置面板提示一致）。
+     * 快进：写 frame_limit / use_frame_limit 到 ini（MMJ 无运行时变速 JNI；
+     * use_frame_limit=false = 不限速）。核心启动时读 ini 生效 —— 快进
+     * 效果同"下次启动生效"（与设置面板提示一致）。
+     *
+     * ★ 旧实现经 setConfigBoolean("use_frame_limit")/setConfigInteger(
+     *   "frame_limit") 下发 —— 两键都不在 JNI 分发器接受集内 → brk #1
+     *   SIGTRAP 闪退。改为 ini 文件写入（原版设置编辑器同款机制）。
      */
     private fun applyFastForwardConfig() {
-        try {
-            val lib = CitraMmjNative.lib
-            if (_ffSpeed > 0) {
-                lib.setConfigBoolean("use_frame_limit", false)
-            } else {
-                lib.setConfigBoolean("use_frame_limit", true)
-                lib.setConfigInteger("frame_limit", 100)
-            }
-            lib.saveConfig()
-        } catch (_: Throwable) {}
+        synchronized(lifecycleLock) {
+            if (!_loaded) return
+            writeMmjIniLocked(
+                if (_ffSpeed > 0) mapOf("use_frame_limit" to "false")
+                else mapOf("use_frame_limit" to "true", "frame_limit" to "100")
+            )
+        }
     }
 
     // ------------------------------------------------------------------
@@ -798,29 +882,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     /**
      * MMJ 配置键直通（key = MMJ 配置键名，如 "resolution_factor" /
-     * "use_hw_shader"）。运行中写入即时经 setConfig* 生效（MMJ 的
-     * 配置为核心运行时读取的内存映射）；同时缓存供下次启动前重放。
+     * "use_hw_shader"）。设置持久化到 config/config-mmj.ini，下次启动
+     * loadConfig 读取生效；运行中变更立即写盘（多数键核心下次启动生效）。
+     *
+     * ★ 绝不经 setConfig* JNI 下发（分发器仅接受 8 键，其余 brk #1 闪退，
+     *   详见 MMJ_INI_SECTION 注释）。
      */
     override fun setCoreOption(key: String, value: String) {
         coreOptions[key] = value
-        if (_loaded) {
-            val isInt = value.toIntOrNull() != null
-            val isBool = value.equals("true", true) || value.equals("false", true)
-            // ★ 白名单拦截：未知键写入会触发核心 brk #1 崩溃（详见白名单注释），
-            //   运行中下发前同样过滤。
-            if (!isKnownMmjKey(key, isInt, isBool)) {
-                android.util.Log.w("CitraMmjEngine", "skip unknown MMJ config key: $key")
-                return
-            }
-            try {
-                val lib = CitraMmjNative.lib
-                when {
-                    isBool -> lib.setConfigBoolean(key, value.equals("true", true))
-                    isInt -> lib.setConfigInteger(key, value.toInt())
-                    else -> lib.setConfigString(key, value)
-                }
-                lib.saveConfig()
-            } catch (_: Throwable) {}
+        if (_loaded && MMJ_INI_SECTION.containsKey(key)) {
+            synchronized(lifecycleLock) { writeMmjIniLocked() }
         }
     }
 
@@ -831,46 +902,37 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     // 输入
     // ------------------------------------------------------------------
 
+    /**
+     * 按键（数字通道）—— 只走 InputEvent 固定索引（原版 overlay 同款）。
+     *
+     * 索引表（原版 InputOverlay 构造表反编译实证）：
+     *   A=0 B=1 X=2 Y=3 | 十字键 up=4 down=5 left=6 right=7 | L=8 R=9 |
+     *   start=10 select=11 home=12 | zl=14 zr=15
+     *
+     * ★ 旧的 KeyEvent(自选id) 通道已删除：那套需要先用 setConfigInteger 把
+     *   button_* 键写成自选 id —— setConfigInteger 分发器只接受
+     *   input_overlay_alpha/scale 两键，button_* 一律 brk #1 → SIGTRAP
+     *   （"MMJ 启动游戏闪退"的根因之一）。InputEvent 通道零配置、与原版
+     *   虚拟按键完全等价，且覆盖 home/zl/zr 全键位。
+     */
     override fun setPad1(bits: Int) {
         if (!_loaded) return
         val lib = CitraMmjNative.lib
         fun pressed(bit: Int) = bits and bit != 0
-        // 双通道：KeyEvent(自选配置 id) + InputEvent(小索引兜底)
-        val keyEvents = listOf(
-            MMJ_ID_A to (bits and BIT_A != 0),
-            MMJ_ID_B to (bits and BIT_B != 0),
-            MMJ_ID_X to (bits and BIT_X != 0),
-            MMJ_ID_Y to (bits and BIT_Y != 0),
-            MMJ_ID_L to (bits and BIT_L != 0),
-            MMJ_ID_R to (bits and BIT_R != 0),
-            MMJ_ID_START to (bits and BIT_START != 0),
-            MMJ_ID_SELECT to (bits and BIT_SELECT != 0),
-            MMJ_ID_ZL to (bits and BIT_ZL != 0),
-            MMJ_ID_ZR to (bits and BIT_ZR != 0),
-            MMJ_ID_UP to (bits and BIT_UP != 0),
-            MMJ_ID_DOWN to (bits and BIT_DOWN != 0),
-            MMJ_ID_LEFT to (bits and BIT_LEFT != 0),
-            MMJ_ID_RIGHT to (bits and BIT_RIGHT != 0)
+        val idxEvents = intArrayOf(
+            IDX_A, IDX_B, IDX_X, IDX_Y,
+            IDX_L, IDX_R, IDX_START, IDX_SELECT,
+            IDX_UP, IDX_DOWN, IDX_LEFT, IDX_RIGHT,
+            IDX_HOME, IDX_ZL, IDX_ZR
         )
-        for ((id, isPressed) in keyEvents) {
-            try { lib.KeyEvent(id, if (isPressed) 1 else 0) } catch (_: Throwable) {}
-        }
-        val idxEvents = listOf(
-            IDX_A to (bits and BIT_A != 0),
-            IDX_B to (bits and BIT_B != 0),
-            IDX_X to (bits and BIT_X != 0),
-            IDX_Y to (bits and BIT_Y != 0),
-            IDX_L to (bits and BIT_L != 0),
-            IDX_R to (bits and BIT_R != 0),
-            IDX_START to (bits and BIT_START != 0),
-            IDX_SELECT to (bits and BIT_SELECT != 0),
-            IDX_UP to (bits and BIT_UP != 0),
-            IDX_DOWN to (bits and BIT_DOWN != 0),
-            IDX_LEFT to (bits and BIT_LEFT != 0),
-            IDX_RIGHT to (bits and BIT_RIGHT != 0)
+        val states = booleanArrayOf(
+            pressed(BIT_A), pressed(BIT_B), pressed(BIT_X), pressed(BIT_Y),
+            pressed(BIT_L), pressed(BIT_R), pressed(BIT_START), pressed(BIT_SELECT),
+            pressed(BIT_UP), pressed(BIT_DOWN), pressed(BIT_LEFT), pressed(BIT_RIGHT),
+            pressed(BIT_HOME), pressed(BIT_ZL), pressed(BIT_ZR)
         )
-        for ((idx, isPressed) in idxEvents) {
-            try { lib.InputEvent(idx, if (isPressed) 1f else 0f) } catch (_: Throwable) {}
+        for (i in idxEvents.indices) {
+            try { lib.InputEvent(idxEvents[i], if (states[i]) 1f else 0f) } catch (_: Throwable) {}
         }
     }
 
@@ -879,22 +941,29 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     /**
-     * 双摇杆：CirclePad (lx, ly) / C-Stick (rx, ry)。
-     * 屏幕坐标约定（上=负）与 MMJ 一致：MoveEvent(轴码, 带符号值)；
-     * 负值由核心按 轴码+0x1000 匹配反向槽（circle_pad_up / left）。
+     * 双摇杆：CirclePad (lx, ly) / C-Stick (rx, ry) —— InputEvent 模拟量
+     * 通道（原版 overlay/b.java k() 同款）：
+     *   圆盘 = InputEvent(21, x) / InputEvent(22, y)，C 摇杆 = 23/24。
+     *
+     * ★ Y 轴符号：原版 k() 实证【+1 = 向上】（触摸上 1/3 → fArr[1]=+1）；
+     *   NesStation 的 setAnalogAxes 是屏幕坐标（上=负，AzaharEngine 同款
+     *   注释实证）—— 下发前对 Y 取反。X 轴两侧一致（左=-1 右=+1）直传。
+     * ★ 旧的 MoveEvent(自选轴码) 通道已删除（同 setPad1 注释的根因）。
      */
     override fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float) {
         if (!_loaded) return
         val lib = CitraMmjNative.lib
-        val values = floatArrayOf(lx, ly, rx, ry)
-        val axes = intArrayOf(MMJ_AXIS_CPAD_X, MMJ_AXIS_CPAD_Y, MMJ_AXIS_CSTICK_X, MMJ_AXIS_CSTICK_Y)
-        for (i in axes.indices) {
-            val v = values[i].coerceIn(-1f, 1f)
-            if (v != stickLast[i]) {
-                stickLast[i] = v
-                try { lib.MoveEvent(axes[i], v) } catch (_: Throwable) {}
+        fun send(idx: Int, v: Float, lastIdx: Int) {
+            val clamped = v.coerceIn(-1f, 1f)
+            if (clamped != stickLast[lastIdx]) {
+                stickLast[lastIdx] = clamped
+                try { lib.InputEvent(idx, clamped) } catch (_: Throwable) {}
             }
         }
+        send(IDX_CPAD_X, lx, 0)
+        send(IDX_CPAD_Y, -ly, 1)      // Y 取反：屏幕坐标（上=负）→ MMJ（上=+1）
+        send(IDX_CSTICK_X, rx, 2)
+        send(IDX_CSTICK_Y, -ry, 3)
     }
 
     // ------------------------------------------------------------------
@@ -921,14 +990,20 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     override fun swapScreens() {
         if (!_loaded) return
-        try {
-            // 布局交换（landscape_swap_screen 配置切换）
-            val lib = CitraMmjNative.lib
-            val current = lib.getConfigBoolean("landscape_swap_screen")
-            lib.setConfigBoolean("landscape_swap_screen", !current)
-            lib.setConfigBoolean("portrait_swap_screen", !current)
-            lib.saveConfig()
-        } catch (_: Throwable) {}
+        // ★ ini 读-改-写（原版设置编辑器同款机制）。旧实现的
+        //   getConfigBoolean/setConfigBoolean("landscape_swap_screen") 两键
+        //   都不在 JNI 分发器接受集内 → brk #1 SIGTRAP 闪退（已反汇编实证）。
+        //   写入 ini 后核心下次启动（或下次 Run）读取生效。
+        synchronized(lifecycleLock) {
+            val current = readMmjIniValue("landscape_swap_screen")
+                ?.equals("true", true) ?: false
+            writeMmjIniLocked(
+                mapOf(
+                    "landscape_swap_screen" to (!current).toString(),
+                    "portrait_swap_screen" to (!current).toString()
+                )
+            )
+        }
     }
 
     // ------------------------------------------------------------------
