@@ -819,7 +819,7 @@ class PadLayout {
     var mmjLandscapeCustomLayout: String = "disabled" // mmj_landscape_custom_layout (横屏自定义布局)
     var mmjOverlayScale: String = "100"      // mmj_overlay_scale (按键覆盖层缩放 0..200)
     var mmjOverlayAlpha: String = "100"      // mmj_overlay_alpha (按键覆盖层透明度 0..100)
-    var mmjOverlayHide: String = "disabled"  // mmj_overlay_hide (隐藏按键覆盖层)
+    var mmjOverlayHide: String = "enabled"  // mmj_overlay_hide (隐藏按键覆盖层) — ★★ 默认启用：NesStation 自带 Compose 遮罩，MMJ 自带 overlay 资源缺失（原 MMJ APK 也无 overlay PNG），开启会触发 pc 0x282234 UNREACHABLE 闪退
     var mmjJoystickRange: String = "100"     // mmj_joystick_range (摇杆灵敏度范围)
 
     // === NGC/WII (Ishiiruka — Dolphin 优化分支) core options ===
@@ -2737,7 +2737,7 @@ object PadLayoutStore {
             mmjLandscapeCustomLayout = p.getString("mmj_landscape_custom_layout", "disabled") ?: "disabled"
             mmjOverlayScale = p.getString("mmj_overlay_scale", "100") ?: "100"
             mmjOverlayAlpha = p.getString("mmj_overlay_alpha", "100") ?: "100"
-            mmjOverlayHide = p.getString("mmj_overlay_hide", "disabled") ?: "disabled"
+            mmjOverlayHide = p.getString("mmj_overlay_hide", "enabled") ?: "enabled"
             mmjJoystickRange = p.getString("mmj_joystick_range", "100") ?: "100"
             azRegion = p.getString("az_region", "-1") ?: "-1"
             azAudioEmulation = p.getString("az_audio_emulation", "0") ?: "0"

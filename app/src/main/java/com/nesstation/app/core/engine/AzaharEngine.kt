@@ -493,6 +493,29 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         this.saveDir = saveDir
         this.romPath = rom.absolutePath
 
+        // ★★ 本轮新增：显式预创建 shader disk cache 目录树（用户反馈"jit 着色器和
+        //   着色器缓存感觉好像没用"修复）。libazahar.so 字符串实证路径：
+        //     <userDir>/opengl/transferable/{:016X}.bin      （OpenGL 转移式缓存）
+        //     <userDir>/opengl/precompiled/{}/{:016X}.bin   （OpenGL 预编译缓存）
+        //     <userDir>/vulkan/transferable/{:016X}_{}.vkch （Vulkan 转移式缓存）
+        //     <userDir>/vulkan/pipeline                     （Vulkan 管线缓存）
+        //   核心内部 FileUtil::CreateFullPath 会按需创建，但在某些 ROM/线程
+        //   时序下首次创建会与渲染管线初始化竞争 → ShaderDiskCache::IsUsable()
+        //   返回 false → 着色器缓存静默失效（"感觉没用"的直接根因）。
+        //   此处预建到 userDir 下，核心创建时目录已就绪，缓存立即可用。
+        //   同时预建 nand/sdmc/states 等子目录（与 MMJ ensureUserDirTree 对齐）。
+        try {
+            val root = File(userDir())
+            for (rel in listOf(
+                "nand", "nand/title", "nand/data", "sdmc", "sdmc/1ds", "sysdata",
+                "config", "log", "states", "cheats", "dump",
+                "opengl", "opengl/transferable", "opengl/precompiled",
+                "vulkan", "vulkan/transferable", "vulkan/pipeline"
+            )) {
+                try { File(root, rel).mkdirs() } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {}
+
         // ★★ 参考环境系统数据种子（必须在核心读配置前完成）★★
         //   参考 APK 首次初始化即解压 Mii.zip + Font_ACG.zip（共享字体 /
         //   seeddb / 系统 title）。旧集成从不种这些 → 与参考环境不一致。

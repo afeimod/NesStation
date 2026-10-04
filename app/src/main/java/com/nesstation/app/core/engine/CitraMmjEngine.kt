@@ -20,7 +20,7 @@ import kotlin.concurrent.thread
  * （org.citra.emu.NativeLibrary）+ 引擎类驱动生命周期。
  *
  * 架构（推模型，与 AzaharEngine 同构）：
- *  1. [loadRom]：建用户目录树（<filesDir>/citra_mmj/）→ SetUserPath →
+ *  1. [loadRom]：建用户目录树（<filesDir>/azahar/，与 Azahar 共用）→ SetUserPath →
  *     loadConfig → 应用 MMJ 设置（coreOptions）+ 输入映射配置 →
  *     SurfaceChanged → 专用线程 Run(path)（阻塞直至退出）；
  *  2. Choreographer 帧回调驱动 doFrame（呈现）；
@@ -191,7 +191,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     private fun userDir(): String {
         val ctx = appContext
             ?: throw IllegalStateException("CitraMmjEngine: app context not initialised")
-        return File(ctx.filesDir, "citra_mmj").apply { mkdirs() }.absolutePath
+        // ★★ 本轮根治：与 Azahar 共用 <filesDir>/azahar 目录 —— nand/sdmc/sysdata
+        //   3DS 必需系统文件、游戏存档、SD 卡内容双核心共享，用户在一个核心
+        //   导入的存档/系统文件另一个核心立即可用。两核心的【配置】分开：
+        //     - Azahar 主配置：<userDir>/config.ini
+        //     - MMJ per-game 配置：<userDir>/config/config-games.ini
+        //     - MMJ 输入布局：<userDir>/config/input-layout.ini
+        //   两者使用不同文件路径，互不覆盖。
+        return File(ctx.filesDir, "azahar").apply { mkdirs() }.absolutePath
     }
 
     private fun ensureUserDirTree() {
@@ -202,20 +209,11 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         )) {
             try { File(root, rel).mkdirs() } catch (_: Throwable) {}
         }
-        // ★★ v1.3：系统文件种子（“启动游戏闪退”根治）—— 见 seedMmjSystemAssets。
+        // ★★ v1.3：系统文件种子（"启动游戏闪退"根治）—— 见 seedMmjSystemAssets。
         seedMmjSystemAssets()
-        // 密钥/字体种子：复用 Azahar 已放置的 sysdata（aes_keys.txt 等，兜底通道）。
-        try {
-            val azSysdata = File(File(appContext!!.filesDir, "azahar"), "sysdata")
-            val dst = File(root, "sysdata")
-            for (name in listOf("aes_keys.txt", "boot9.bin", "seeddb.bin")) {
-                val src = File(azSysdata, name)
-                val out = File(dst, name)
-                if (src.isFile && src.length() > 0 && !out.isFile) {
-                    src.copyTo(out, overwrite = true)
-                }
-            }
-        } catch (_: Throwable) {}
+        // ★★ 本轮：与 Azahar 共用目录后，sysdata 拷贝逻辑已无意义（同一目录）
+        //   —— AzaharEngine.ensureSysDataFiles() 已把 aes_keys.txt/boot9.bin/seeddb.bin
+        //   归位到 <userDir>/sysdata/，MMJ 直接读同一路径即可，无需再拷贝。
     }
 
     /**
@@ -235,14 +233,17 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      *
      * 修复：把原版 assets 的必需集打进 app/src/main/assets/mmj 目录（sysdata/
      * nand/sdmc/config/shaders，25 文件 ~13MB），loadRom 时递归释放到
-     * <filesDir>/citra_mmj/ 对应位置。已存在且非空的文件跳过（对齐原版
+     * <filesDir>/azahar/ 对应位置（与 Azahar 共用目录）。已存在且非空的文件跳过（对齐原版
      * overwrite=FALSE 语义，二次启动零拷贝、纯 list 遍历）。
      */
     private fun seedMmjSystemAssets() {
         val ctx = appContext ?: return
         try {
             val am = ctx.assets
-            val root = File(ctx.filesDir, "citra_mmj")
+            // ★★ 本轮：与 userDir() 对齐 —— 之前硬编码 "citra_mmj" 会与
+            //   userDir() 改为 "azahar" 后不一致，种子文件写到旧目录、核心
+            //   却在新目录读不到，启动崩。改用 userDir() 同步路径。
+            val root = File(userDir())
             var copied = 0
             fun walk(assetDir: String, outDir: File) {
                 val entries = try { am.list(assetDir) } catch (_: Throwable) { null } ?: return
@@ -364,18 +365,31 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     private fun applyCoreOptions() {
         val lib = CitraMmjNative.lib
         for ((key, value) in coreOptions) {
-            if (!isKnownMmjKey(key, value.toIntOrNull() != null,
-                    value.equals("true", true) || value.equals("false", true))) {
+            // ★★ 本轮根治（pc 0x282234 在 libcitra_mmj.so 的根因之一）★★
+            //   NesStation 自带 Compose 虚拟按键遮罩 —— MMJ 自带 overlay
+            //   必须永远关闭。原 MMJ APK 实测（Citra_MMJ_20250220.apk.zip
+            //   全文件枚举）assets/ 下零张 overlay 图（PNG/JPG/BMP 全无），
+            //   但 MMJ 原生层在 input_overlay_hide=false 时仍会尝试调起
+            //   overlay 渲染分支（按 input-layout.ini 程序式绘制），
+            //   该分支在没有配套 overlay 资源 / 在 Surface 尚未就绪时
+            //   触发 UNREACHABLE → brk #1 → SIGTRAP at pc 0x282234
+            //   （DefaultDispatch 线程，BuildId 14a21e39...）。
+            //   修复：无视 UI 传入值，input_overlay_hide 永远强制 true。
+            //   这是 NesStation 的硬约束（自有遮罩 + 无 MMJ overlay 资源），
+            //   UI 的开关只对 NesStation 自身的遮罩有效（见 PadLayoutStore）。
+            val effectiveValue = if (key == "input_overlay_hide") "true" else value
+            if (!isKnownMmjKey(key, effectiveValue.toIntOrNull() != null,
+                    effectiveValue.equals("true", true) || effectiveValue.equals("false", true))) {
                 android.util.Log.w("CitraMmjEngine", "skip unknown MMJ config key: $key")
                 continue
             }
             try {
                 when {
-                    value.equals("true", true) || value.equals("false", true) ->
-                        lib.setConfigBoolean(key, value.equals("true", true))
-                    value.toIntOrNull() != null ->
-                        lib.setConfigInteger(key, value.toInt())
-                    else -> lib.setConfigString(key, value)
+                    effectiveValue.equals("true", true) || effectiveValue.equals("false", true) ->
+                        lib.setConfigBoolean(key, effectiveValue.equals("true", true))
+                    effectiveValue.toIntOrNull() != null ->
+                        lib.setConfigInteger(key, effectiveValue.toInt())
+                    else -> lib.setConfigString(key, effectiveValue)
                 }
             } catch (_: Throwable) {}
         }

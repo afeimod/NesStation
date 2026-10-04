@@ -4731,15 +4731,18 @@ private fun applyAzaharCoreOptions(
             //   SettingKeys 无 shadow 键）；写入 config.ini 无害且前向兼容，
             //   与 Citra MMJ 核心的 shadow_rendering 键同语义。
             engine.setCoreOption("Renderer/shadow_rendering", b(layout.azShadowRendering))
-            // ★★★ 全局滤镜 xbr/hqx 生效（3DS 分支）★★：
-            //   直绘核心无前端后处理链路（setVideoFilter no-op），xbr/hqx
-            //   类全局滤镜通过核心自带的 GPU 纹理滤波器落地：
-            //     texture_filter 4 = xBRZ（与 XBR 同族的边缘导向放大）。
-            //   全局选了放大型滤镜时优先于平台专属设置，退出后恢复用户选择。
-            engine.setCoreOption(
-                "Renderer/texture_filter",
-                if (isGlobalUpscaleFilter(layout.videoFilter)) "4" else layout.azTextureFilter
-            )
+            // ★★ 本轮根治（"azahar xbr/hqx 滤镜渲染黑块"修复）★★
+            //   旧实现：全局滤镜选 xbr/hqx 时强制 texture_filter=4 (xBRZ) ——
+            //   xBRZ 是 2D 像素艺术放大算法，3DS 渲染的是 3D 场景（带深度/Alpha
+            //   边缘），xBRZ 试图平滑这些边缘会失败 → 出现黑块（libazahar.so
+            //   字符串实证同类 bicubic 也有"black floaters"已知问题）。
+            //   修复：3DS 直绘核心不再接管全局 xbr/hqx（setVideoFilter 已是 no-op），
+            //   texture_filter 永远走用户的平台专属设置 azTextureFilter（默认 0=无），
+            //   全局 xbr/hqx 在 3DS 平台静默不生效（UI 已有"该核心不支持前端滤镜"
+            //   的同等语义，由 PadLayoutStore 的文档说明）。
+            //   想要 3DS 内置放大用设置面板"纹理过滤"选 Anime4K / ScaleForce
+            //   （这两个对 3D 渲染友好，不会黑块）。
+            engine.setCoreOption("Renderer/texture_filter", layout.azTextureFilter)
             engine.setCoreOption("Renderer/texture_sampling", layout.azTextureSampling)
             engine.setCoreOption("Renderer/use_integer_scaling", b(layout.azIntegerScaling))
             engine.setCoreOption("Renderer/use_frame_limit", "true")
