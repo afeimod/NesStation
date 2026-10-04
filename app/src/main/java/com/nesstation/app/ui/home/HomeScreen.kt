@@ -2,21 +2,23 @@ package com.nesstation.app.ui.home
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.ui.fsd.FsdHomeScreen
+import com.nesstation.app.ui.neon.NeonHomeScreen
+import com.nesstation.app.ui.neon.NeonUi
 
 /**
- * 主页 — Xbox 360 FSD（Freestyle Dash）桌面风格磁贴主菜单。
+ * 主页 —— 风格分发器（本轮新增 Neon 风格切换）。
  *
- * 完整的视觉实现位于 [FsdHomeScreen]（ui/fsd 包），手机与 TV 共用：
- *   - 顶部系统状态条（CPU/内存/存储/时钟，真实数据）
- *   - 蓝/黄对角磁贴封面流：全部游戏 → 各游戏平台（带数量徽标）→
- *     在线游戏 / 对战平台 / SWF / 设置 / 关于 / 退出
- *   - 「N of M」计数、A/B 按键提示、底部 IP/日期/时间状态条
- *   - D-pad 左右切换磁贴、OK 激活（TV 遥控器友好）
+ * 总设置「外观 → 主界面风格」二选一：
+ *   - FSD 经典：Xbox 360 Freestyle Dash 磁贴桌面（[FsdHomeScreen]）
+ *   - Neon 新UI：赛博街机厅风格（[NeonHomeScreen]，图3 参考稿）——
+ *     左侧 Hero 预览 + 右侧分区菜单 + 底部手柄提示栏，
+ *     菜单含 全部游戏/收藏/最近/各平台/在线/对战(4P)/SWF/设置/关于/退出。
  *
- * 选择平台磁贴直接进入按该平台过滤的游戏库封面流（[onOpenPlatform]）。
+ * TV 模式不走本分发（TvNavHost 使用 TvHomeScreen）。
  */
 @Composable
 fun HomeScreen(
@@ -29,18 +31,40 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenAbout: () -> Unit,
     onExit: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOpenFavorites: () -> Unit = {},
+    onOpenHistory: () -> Unit = {}
 ) {
-    FsdHomeScreen(
-        games = games,
-        onOpenLibrary = onOpenLibrary,
-        onOpenPlatform = onOpenPlatform,
-        onOpenOnlineGames = onOpenOnlineGames,
-        onOpenBattle = onOpenBattle,
-        onOpenSwf = onOpenSwf,
-        onOpenSettings = onOpenSettings,
-        onOpenAbout = onOpenAbout,
-        onExit = onExit,
-        modifier = modifier
-    )
+    val context = LocalContext.current
+    NeonUi.ensureLoaded(context)
+
+    if (NeonUi.isNeon) {
+        NeonHomeScreen(
+            games = games,
+            onOpenAllGames = onOpenLibrary,
+            onOpenFavorites = onOpenFavorites,
+            onOpenHistory = onOpenHistory,
+            onOpenPlatform = { p -> onOpenPlatform(p) },
+            onOpenOnlineGames = onOpenOnlineGames,
+            onOpenBattle = onOpenBattle,
+            onOpenSwf = onOpenSwf,
+            onOpenSettings = onOpenSettings,
+            onOpenAbout = onOpenAbout,
+            onExit = onExit,
+            modifier = modifier
+        )
+    } else {
+        FsdHomeScreen(
+            games = games,
+            onOpenLibrary = onOpenLibrary,
+            onOpenPlatform = onOpenPlatform,
+            onOpenOnlineGames = onOpenOnlineGames,
+            onOpenBattle = onOpenBattle,
+            onOpenSwf = onOpenSwf,
+            onOpenSettings = onOpenSettings,
+            onOpenAbout = onOpenAbout,
+            onExit = onExit,
+            modifier = modifier
+        )
+    }
 }

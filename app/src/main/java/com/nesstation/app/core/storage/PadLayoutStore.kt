@@ -445,6 +445,11 @@ class PadLayout {
     // 磁贴自定义图标透明度：JSON map { tileKey → Float 0.05..1.0 }，缺省 1.0 不透明。
     // 与 homeTileIcons 分键存储，互不影响；仅对已设置自定义图标的磁贴有意义。
     var homeTileIconAlphas: String = ""
+    // === 主界面风格（总设置切换）===
+    //   "fsd"  → FSD 经典桌面（Xbox 360 Freestyle Dash 磁贴流，默认）
+    //   "neon" → Neon 新UI（图3赛博主页 + 图1平台总游戏库 + 图2弧形封面墙）
+    // HomeScreen/LibraryScreen 读取本字段分发两种风格；设置页「外观 → 主界面风格」切换。
+    var homeUiStyle: String = "fsd"
     var ndsSwapscreenMode: String = "Toggle"            // Toggle | Hold (换屏按钮模式)
     var ndsMicInput: String = "Blow Noise"              // Blow Noise | White Noise (麦克风输入类型)
     var ndsLanguage: String = "English"                  // Japanese | English | French | German | Italian | Spanish
@@ -729,7 +734,14 @@ class PadLayout {
     var azResolution: String = "1"                  // "0"=自动 "1".."5" (resolution_factor, 1=1x 原生)
     var azUseHwShader: String = "enabled"           // enabled | disabled (use_hw_shader)
     var azUseShaderJit: String = "enabled"          // enabled | disabled (use_shader_jit)
-    var azUseVsync: String = "enabled"              // enabled | disabled (use_vsync)
+    // ★★ 默认值修正（"时不时卡顿"根治）：libazahar.so 配置模板原文注释：
+    //   "Forces VSync on the display thread. Can cause input delay, so only turn
+    //    this on if you have screen tearing, which is unusual on Android.
+    //    0 (default): Off, 1: On"
+    //   核心推荐的 Android 默认是【关】！旧版默认 enabled —— VSync 开启时渲染
+    //   帧率与屏幕刷新率不匹配（如 59.8fps vs 60Hz）会周期性丢帧 → "时不时
+    //   卡顿"的直接元凶。改为默认 disabled（对齐核心默认），需要防撕裂再手动开。
+    var azUseVsync: String = "disabled"              // enabled | disabled (use_vsync)
     var azUseDiskShaderCache: String = "enabled"    // enabled | disabled (use_disk_shader_cache)
     var azAsyncPresentation: String = "enabled"     // enabled | disabled (async_presentation)
     var azAsyncShaderCompilation: String = "enabled" // enabled | disabled (async_shader_compilation)
@@ -1782,6 +1794,7 @@ class PadLayout {
         homeBackgroundIsVideo = another.homeBackgroundIsVideo
         homeTileIcons = another.homeTileIcons
         homeTileIconAlphas = another.homeTileIconAlphas
+        homeUiStyle = another.homeUiStyle
     }
 }
 
@@ -2487,6 +2500,10 @@ object PadLayoutStore {
             homeBackgroundIsVideo = p.getBoolean("home_bg_is_video", false)
             homeTileIcons = p.getString("home_tile_icons", "") ?: ""
             homeTileIconAlphas = p.getString("home_tile_icon_alphas", "") ?: ""
+            // 主界面风格：老版本无此键 → 默认 fsd；非法值一律回退 fsd
+            homeUiStyle = p.getString("home_ui_style", "fsd")?.let {
+                if (it == "neon") "neon" else "fsd"
+            } ?: "fsd"
             ndsTopLayoutLeft = p.getFloat(KEY_NDS_TOP_LEFT, ndsTopLayoutLeft)
             ndsTopLayoutTop = p.getFloat(KEY_NDS_TOP_TOP, ndsTopLayoutTop)
             ndsTopLayoutRight = p.getFloat(KEY_NDS_TOP_RIGHT, ndsTopLayoutRight)
@@ -2669,7 +2686,14 @@ object PadLayoutStore {
             azResolution = p.getString("az_resolution", "0") ?: "0"
             azUseHwShader = p.getString("az_use_hw_shader", "enabled") ?: "enabled"
             azUseShaderJit = p.getString("az_use_shader_jit", "enabled") ?: "enabled"
-            azUseVsync = p.getString("az_use_vsync", "enabled") ?: "enabled"
+            // ★★ VSync 默认值迁移（"时不时卡顿"根治，见字段声明注释）：
+            //   旧版把 az_use_vsync 默认写成 enabled（与核心推荐相反）。
+            //   一次性迁移：迁移标志未置位时强制 disabled（老存的 enabled 是坏默认值，
+            //   不是用户主动选择）；首次 save 后置位，此后完全尊重用户选择
+            //   （重新手动开启 vsync 会被保留）。
+            azUseVsync = if (p.getBoolean("az_vsync_migrated", false)) {
+                p.getString("az_use_vsync", "disabled") ?: "disabled"
+            } else "disabled"
             azUseDiskShaderCache = p.getString("az_use_disk_shader_cache", "enabled") ?: "enabled"
             azAsyncPresentation = p.getString("az_async_presentation", "enabled") ?: "enabled"
             azAsyncShaderCompilation = p.getString("az_async_shader_compilation", "enabled") ?: "enabled"
@@ -3267,6 +3291,7 @@ object PadLayoutStore {
             putBoolean("home_bg_is_video", layout.homeBackgroundIsVideo)
             putString("home_tile_icons", layout.homeTileIcons)
             putString("home_tile_icon_alphas", layout.homeTileIconAlphas)
+            putString("home_ui_style", layout.homeUiStyle)
             putFloat(KEY_NDS_TOP_LEFT, layout.ndsTopLayoutLeft)
             putFloat(KEY_NDS_TOP_TOP, layout.ndsTopLayoutTop)
             putFloat(KEY_NDS_TOP_RIGHT, layout.ndsTopLayoutRight)
@@ -3417,6 +3442,8 @@ object PadLayoutStore {
             putString("az_use_hw_shader", layout.azUseHwShader)
             putString("az_use_shader_jit", layout.azUseShaderJit)
             putString("az_use_vsync", layout.azUseVsync)
+            // VSync 一次性迁移标志（见 load 内迁移注释）：首次保存即置位
+            putBoolean("az_vsync_migrated", true)
             putString("az_use_disk_shader_cache", layout.azUseDiskShaderCache)
             putString("az_async_presentation", layout.azAsyncPresentation)
             putString("az_async_shader_compilation", layout.azAsyncShaderCompilation)

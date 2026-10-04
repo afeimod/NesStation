@@ -1636,7 +1636,12 @@ fun CoreSettingsPanel(
                         padLayout.azUseShaderJit
                     ) { updateLayout(padLayout.copy {azUseShaderJit = it}) }
                     DropdownRow("垂直同步",
-                        listOf("enabled" to "开启", "disabled" to "关闭"),
+                        // ★★ 标注对齐核心推荐（libazahar.so 配置模板原文：
+                        //   "Can cause input delay, so only turn this on if you have
+                        //    screen tearing, which is unusual on Android. 0 (default): Off"）。
+                        //   VSync 开启时渲染帧率与刷新率不匹配会周期性丢帧
+                        //   （"时不时卡顿"元凶），默认关闭。
+                        listOf("disabled" to "关闭 (默认·低延迟不卡顿)", "enabled" to "开启 (仅防撕裂·可能卡顿)"),
                         padLayout.azUseVsync
                     ) { updateLayout(padLayout.copy {azUseVsync = it}) }
                     DropdownRow("磁盘着色器缓存",
@@ -1655,10 +1660,12 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (个别游戏需要)"),
                         padLayout.azAccurateMultiplication
                     ) { updateLayout(padLayout.copy {azAccurateMultiplication = it}) }
-                    DropdownRow("阴影渲染 (几何)",
-                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (MMJ 兼容键·与 MMJ 核心同语义)"),
-                        padLayout.azShadowRendering
-                    ) { updateLayout(padLayout.copy {azShadowRendering = it}) }
+                    // ★★ 阴影渲染开关已删除（本轮需求："阴影渲染关闭也不起作用"根治）：
+                    //   strings 扫描 libazahar.so 实证 150 个配置键中不存在
+                    //   shadow_rendering —— 阴影由 GLSL/SPIRV 着色器管线无条件渲染
+                    //   （DefineShadowHelpers/WriteShadow 为固定代码路径），写入
+                    //   config.ini 无任何效果。保留开关只会误导用户，已移除；
+                    //   PadLayoutStore.azShadowRendering 字段保留用于存量数据兼容。
                     DropdownRow("纹理过滤",
                         listOf("0" to "无", "1" to "Anime4K", "2" to "双三次", "3" to "ScaleForce", "4" to "xBRZ", "5" to "MMPX"),
                         padLayout.azTextureFilter
@@ -1939,25 +1946,13 @@ fun CoreSettingsPanel(
                         padLayout.mmjCameraType
                     ) { updateLayout(padLayout.copy {mmjCameraType = it}) }
                 }
-
-                SettingsSection("3DS (Citra MMJ) · 虚拟按键覆盖层") {
-                    DropdownRow("覆盖层缩放",
-                        listOf("50" to "50%", "75" to "75%", "100" to "100% (默认)", "150" to "150%", "200" to "200%"),
-                        padLayout.mmjOverlayScale
-                    ) { updateLayout(padLayout.copy {mmjOverlayScale = it}) }
-                    DropdownRow("覆盖层透明度",
-                        listOf("0" to "0% 全透明", "25" to "25%", "50" to "50%", "75" to "75%", "100" to "100% 不透明 (默认)"),
-                        padLayout.mmjOverlayAlpha
-                    ) { updateLayout(padLayout.copy {mmjOverlayAlpha = it}) }
-                    DropdownRow("隐藏覆盖层",
-                        listOf("disabled" to "显示 (默认)", "enabled" to "隐藏 (纯实体手柄)"),
-                        padLayout.mmjOverlayHide
-                    ) { updateLayout(padLayout.copy {mmjOverlayHide = it}) }
-                    DropdownRow("摇杆灵敏度范围",
-                        listOf("50" to "50 (精确)", "75" to "75", "100" to "100 (默认)", "125" to "125", "150" to "150 (灵敏)"),
-                        padLayout.mmjJoystickRange
-                    ) { updateLayout(padLayout.copy {mmjJoystickRange = it}) }
-                }
+                // ★★ "3DS (Citra MMJ) · 虚拟按键覆盖层" 区块已删除（本轮需求：
+                //   "独立设置里多余的虚拟按键覆盖层去掉，总设置有"）——
+                //   覆盖层缩放/透明度/隐藏/摇杆灵敏度 4 项与总设置的
+                //   「输入 → 屏幕手柄」+「遮罩/按钮主题（所有核心统一入口）」
+                //   完全重复；且 NesStation 自带 Compose 遮罩，MMJ 原生 overlay
+                //   被引擎强制关闭（调起会触发 UNREACHABLE 闪退），这些开关
+                //   从未真正生效。虚拟按键外观请到 总设置 → 输入 / 遮罩主题 调整。
             }
             GamePlatform.NGCWII -> item {
                 // Ishiiruka 核心选项 —— 引擎经 SetConfig(file, section, key, value)

@@ -60,6 +60,7 @@ import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.PadLayoutStore
 import com.nesstation.app.ui.components.AppBackgroundState
 import com.nesstation.app.ui.components.PixelBackdrop
+import com.nesstation.app.ui.neon.NeonUi
 
 @Composable
 fun SettingsScreen(
@@ -69,6 +70,8 @@ fun SettingsScreen(
     val context = LocalContext.current
     var padLayout by remember { mutableStateOf(PadLayoutStore.load(context)) }
     var dialogText by remember { mutableStateOf<String?>(null) }
+    // 主界面风格全局状态（主页分发器共用；设置页读取前确保已从持久化载入）
+    NeonUi.ensureLoaded(context)
 
     // 当前打开的核心设置页（null = 设置主页）。点击「核心设置」里的某个
     // 核心后进入该核心的独立设置页，展示该核心专属的选项。
@@ -419,9 +422,24 @@ fun SettingsScreen(
                         }
                     }
 
-                    // === 外观（全局背景） ===
+                    // === 外观（全局背景 + 主界面风格） ===
                     item {
                         SettingsSection("外观") {
+                            // ★★ 主界面风格切换（本轮新增）：FSD 经典 ↔ Neon 新UI。
+                            //   Neon：图3 赛博主页 + 图1 平台总游戏库 + 图2 弧形封面墙；
+                            //   FSD：Xbox 360 Freestyle Dash 磁贴桌面（原风格不变）。
+                            //   选择后立即生效（NeonUi 全局可观察状态），返回主页即见。
+                            DropdownRow("主界面风格",
+                                listOf(
+                                    "fsd" to "FSD 经典 (Xbox360 磁贴桌面)",
+                                    "neon" to "Neon 街机厅 (新UI·赛博风)"
+                                ),
+                                NeonUi.style
+                            ) {
+                                NeonUi.set(context, it)
+                                // 同步进本地 padLayout 快照（保持设置页状态一致）
+                                padLayout = PadLayoutStore.load(context)
+                            }
                             SettingsRow("应用背景",
                                 if (padLayout.homeBackgroundUri.isEmpty()) "默认深蓝壁纸"
                                 else if (padLayout.homeBackgroundIsVideo) "自定义视频"

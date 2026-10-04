@@ -2002,15 +2002,12 @@ fun EmulatorScreen(
                    padLayout.mmjLandscapeSwapScreen,
                    padLayout.mmjPortraitSwapScreen,
                    padLayout.mmjLandscapeCustomLayout,
-                   padLayout.mmjOverlayScale,
-                   padLayout.mmjOverlayAlpha,
-                   padLayout.mmjOverlayHide,
-                   padLayout.mmjJoystickRange,
+                   // ★ MMJ 覆盖层 4 键已移除（独立设置区块删除，引擎强制
+                   //   input_overlay_hide=true，下发这些键无意义且危险）
                    padLayout.azUseHwShader, padLayout.azUseShaderJit,
                    padLayout.azUseVsync, padLayout.azUseDiskShaderCache,
                    padLayout.azAsyncPresentation, padLayout.azAsyncShaderCompilation,
                    padLayout.azAccurateMultiplication, padLayout.azLleApplets,
-                   padLayout.azShadowRendering,
                    padLayout.azTextureFilter, padLayout.azTextureSampling,
                    padLayout.azIntegerScaling, padLayout.azFrameLimit,
                    padLayout.azRender3d, padLayout.azFactor3d,
@@ -4726,11 +4723,11 @@ private fun applyAzaharCoreOptions(
             engine.setCoreOption("Renderer/async_presentation", b(layout.azAsyncPresentation))
             engine.setCoreOption("Renderer/async_shader_compilation", b(layout.azAsyncShaderCompilation))
             engine.setCoreOption("Renderer/shaders_accurate_mul", b(layout.azAccurateMultiplication))
-            // ★ 阴影渲染（几何，MMJ 兼容键）：AzaharPlus 2125 核心未读取此键
-            //   （阴影由着色器管线恒定渲染，无独立开关——反汇编 150 个
-            //   SettingKeys 无 shadow 键）；写入 config.ini 无害且前向兼容，
-            //   与 Citra MMJ 核心的 shadow_rendering 键同语义。
-            engine.setCoreOption("Renderer/shadow_rendering", b(layout.azShadowRendering))
+            // ★ 阴影渲染写入已删除（本轮根治"阴影渲染关闭也不起作用"）：
+            //   strings 扫描 libazahar.so 实证配置键中不存在 shadow_rendering
+            //   （阴影由着色器管线无条件渲染），写入 config.ini 无任何效果；
+            //   UI 开关已同步移除。PadLayoutStore.azShadowRendering 字段仅作
+            //   存量数据兼容保留。
             // ★★ 本轮根治（"azahar xbr/hqx 滤镜渲染黑块"修复）★★
             //   旧实现：全局滤镜选 xbr/hqx 时强制 texture_filter=4 (xBRZ) ——
             //   xBRZ 是 2D 像素艺术放大算法，3DS 渲染的是 3D 场景（带深度/Alpha
@@ -4868,10 +4865,11 @@ private fun applyCoreOptionsInner(
                 engine.setCoreOption("landscape_swap_screen", if (layout.mmjLandscapeSwapScreen == "enabled") "true" else "false")
                 engine.setCoreOption("portrait_swap_screen", if (layout.mmjPortraitSwapScreen == "enabled") "true" else "false")
                 engine.setCoreOption("landscape_custom_layout", if (layout.mmjLandscapeCustomLayout == "enabled") "true" else "false")
-                engine.setCoreOption("input_overlay_scale", layout.mmjOverlayScale)
-                engine.setCoreOption("input_overlay_alpha", layout.mmjOverlayAlpha)
-                engine.setCoreOption("input_overlay_hide", if (layout.mmjOverlayHide == "enabled") "true" else "false")
-                engine.setCoreOption("input_joystick_range", layout.mmjJoystickRange)
+                // ★ MMJ 原生覆盖层 4 键写入已删除（本轮需求：独立设置里多余的
+                //   虚拟按键覆盖层去掉，总设置有）：NesStation 自带 Compose 遮罩
+                //   （总设置「屏幕手柄」+「遮罩主题」统一控制），MMJ 原生 overlay
+                //   由引擎在 applyInputConfig 中硬性关闭（input_overlay_hide=true，
+                //   调起会触发 UNREACHABLE 闪退）——这些键不再从 UI 下发。
                 return
             }
             // Azahar 分支继续（见下方）

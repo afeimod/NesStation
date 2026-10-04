@@ -359,6 +359,12 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         i("c_stick_up", MMJ_AXIS_CSTICK_Y + MMJ_NEG)
         i("c_stick_right", MMJ_AXIS_CSTICK_X)
         i("c_stick_left", MMJ_AXIS_CSTICK_X + MMJ_NEG)
+        // ★★ 虚拟按键覆盖层硬关闭（本轮需求：独立设置里多余的覆盖层项已删，
+        //   MMJ 自带 overlay 永远关闭 —— NesStation 用自己的 Compose 遮罩
+        //   （总设置「屏幕手柄」+「遮罩主题」统一控制），且 MMJ overlay 资源
+        //   缺失时调起会触发 UNREACHABLE 闪退。无论任何路径都不再下发
+        //   input_overlay_scale/alpha/joystick_range（白名单外无意义）。
+        try { lib.setConfigBoolean("input_overlay_hide", true) } catch (_: Throwable) {}
     }
 
     /** 应用全部 coreOptions（MMJ 配置键 → setConfig*；白名单外的键跳过防闪退）。 */
@@ -653,13 +659,18 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         surfaceW = width
         surfaceH = height
         if (surface != this.surface) { setSurface(surface); return }
-        // ★★ 本轮根治（同 startEmulationLocked 注释）：在 emuThread 真正运行后
-        //   才调 SetDisplayInfo —— Run 之前原生 EmuWindow 状态机不接，会触发
-        //   UNREACHABLE → SIGTRAP（pc 0x282234）。emuThread?.isAlive 是唯一可靠
-        //   的“核心已启动”指示（running.get() 在 loadRom 中就被置 true，不能区分
-        //   Run 是否已执行）。
+        // ★★ 本轮根治：SetDisplayInfo 只在核心真正进入模拟主循环后下发。★★
+        //   旧守卫是 emuThread?.isAlive —— 但 boot 线程在 3 秒等 surface 窗口期
+        //   和 Run() 引导早期（EmuWindow 尚未构造完成）同样是 alive 状态！
+        //   引导窗口内调 SetDisplayInfo → 原生 EmuWindow 状态机 UNREACHABLE
+        //   → brk #1 → SIGTRAP（pc 0x282234）→ "MMJ 运行游戏闪退"。
+        //   IsRunning() 返回核心模拟主循环的真实运行标志（引导期 false），
+        //   是唯一可靠的"EmuWindow 已就绪"指示。
         if (_loaded && width > 0 && height > 0 && emuThread?.isAlive == true) {
-            try { CitraMmjNative.lib.SetDisplayInfo(width, height, width, height, 0, 1f) } catch (_: Throwable) {}
+            val coreRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
+            if (coreRunning) {
+                try { CitraMmjNative.lib.SetDisplayInfo(width, height, width, height, 0, 1f) } catch (_: Throwable) {}
+            }
         }
     }
 

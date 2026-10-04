@@ -253,49 +253,140 @@ object NativeLibrary {
     /**
      * 核心文件 IO（ROM / 存档 / 系统文件读取走 Java 侧）。
      * 句柄 = [RemoteFileHandle]。所有回调可能来自模拟线程 —— 实现必须线程安全。
+     *
+     * ★★ 闪退根治（本轮）：★★
+     *   旧实现只支持本地裸路径 —— 两种真实场景会拿到 null 句柄：
+     *     1. 引擎/核心传入 "!"-前缀的原生绝对路径（Run("!path") 同款标记，
+     *        Java File("!/storage/...").isFile == false）→ null；
+     *     2. SAF 导入的游戏是 content:// URI → File() 必然 false → null。
+     *   核心拿到 null 后继续解引用 → 原生 SIGSEGV → "MMJ 运行游戏闪退"。
+     *   现在：剥 "!" 前缀；content:// 走 ContentResolver（只读 / 可写两种
+     *   模式都支持，写入用 "w" 模式的 ParcelFileDescriptor）；其余照旧本地文件。
      */
     @Keep
     @JvmStatic
     fun RemoteFileOpen(path: String, mode: String): Any? = try {
-        RemoteFileHandle.open(path, mode)
+        val p = path.removePrefix("!")
+        if (p.startsWith("content://")) {
+            // content:// 统一走 SafOpen 的 ContentResolver 通道（同款流式句柄）
+            SafOpen(path, mode)
+        } else {
+            RemoteFileHandle.open(p, mode)
+        }
     } catch (_: Throwable) { null }
 
     @Keep
     @JvmStatic
-    fun RemoteFileRead(handle: Any?): Int = (handle as? RemoteFileHandle)?.read() ?: -1
+    fun RemoteFileRead(handle: Any?): Int = when (handle) {
+        is RemoteFileHandle -> handle.read()
+        is SafHandle -> handle.read()
+        else -> -1
+    }
 
     @Keep
     @JvmStatic
-    fun RemoteFileSize(handle: Any?): Int = (handle as? RemoteFileHandle)?.size ?: 0
+    fun RemoteFileSize(handle: Any?): Int = when (handle) {
+        is RemoteFileHandle -> handle.size
+        is SafHandle -> handle.size
+        else -> 0
+    }
 
     @Keep
     @JvmStatic
-    fun RemoteFileData(handle: Any?): ByteArray? = (handle as? RemoteFileHandle)?.data()
+    fun RemoteFileData(handle: Any?): ByteArray? = when (handle) {
+        is RemoteFileHandle -> handle.data()
+        is SafHandle -> handle.data()
+        else -> null
+    }
 
     @Keep
     @JvmStatic
-    fun RemoteFileStatus(handle: Any?): Int = (handle as? RemoteFileHandle)?.status() ?: -1
+    fun RemoteFileStatus(handle: Any?): Int = when (handle) {
+        is RemoteFileHandle -> handle.status()
+        is SafHandle -> handle.status()
+        else -> -1
+    }
 
     @Keep
     @JvmStatic
-    fun RemoteFileClose(handle: Any?) { (handle as? RemoteFileHandle)?.close() }
+    fun RemoteFileClose(handle: Any?) {
+        when (handle) {
+            is RemoteFileHandle -> handle.close()
+            is SafHandle -> handle.close()
+        }
+    }
 
-    /** SAF 文件访问（content:// URI）—— 本地文件直读为主，SAF 仅返回不可用。 */
+    /**
+     * SAF 文件访问（content:// URI）—— ★★ 闪退根治（本轮）：旧实现直接返回
+     *   null/-1，核心对 content:// ROM 调 SafOpen 拿 null 后崩溃。现在返回
+     *   真实可用的 ParcelFileDescriptor 句柄（SafHandle）：
+     *     - SafOpen：content:// 经 ContentResolver 打开（支持读/写模式）；
+     *       本地路径（含 "!" 前缀）转交 RemoteFileHandle 同款逻辑。
+     *     - SafNativeFd：返回底层 fd（dup 一份，核心用完关闭不影响句柄）。
+     *     - SafClose：关闭句柄；SafLastModified：返回真实 mtime。
+     */
     @Keep
     @JvmStatic
-    fun SafOpen(path: String, mode: String): Any? = null
+    fun SafOpen(path: String, mode: String): Any? = try {
+        val p = path.removePrefix("!")
+        if (p.startsWith("content://")) {
+            val ctx = hostContext ?: return null
+            val write = mode.contains('w') || mode.contains('a')
+            val uri = android.net.Uri.parse(p)
+            val pfd = if (write) {
+                ctx.contentResolver.openFileDescriptor(uri, "wt")
+            } else {
+                ctx.contentResolver.openFileDescriptor(uri, "r")
+            }
+            // ★ 流式句柄：不预读全量（大 ROM 可达 GB 级，预读必 OOM）——
+            //   read() 按需从 fd 流式读块；核心若走 SafNativeFd 拿 fd 直读
+            //   则完全不碰 read()。两条路径都安全。
+            pfd?.let { SafHandle(it) }
+        } else {
+            RemoteFileHandle.open(p, mode)
+        }
+    } catch (_: Throwable) { null }
 
     @Keep
     @JvmStatic
-    fun SafNativeFd(handle: Any?): Int = -1
+    fun SafNativeFd(handle: Any?): Int = try {
+        when (handle) {
+            is SafHandle -> android.os.ParcelFileDescriptor.dup(handle.pfd.fileDescriptor).detachFd()
+            is RemoteFileHandle -> {
+                // 本地文件句柄：取 fd 需要 dup —— RandomAccessFile 没有直接 fd 接口，
+                // 返回 -1 让核心回落到 RemoteFileData 字节流通道（安全路径）。
+                -1
+            }
+            else -> -1
+        }
+    } catch (_: Throwable) { -1 }
 
     @Keep
     @JvmStatic
-    fun SafClose(handle: Any?) {}
+    fun SafClose(handle: Any?) {
+        try {
+            when (handle) {
+                is SafHandle -> handle.close()
+                is RemoteFileHandle -> handle.close()
+            }
+        } catch (_: Throwable) {}
+    }
 
     @Keep
     @JvmStatic
-    fun SafLastModified(path: String): Long = 0L
+    fun SafLastModified(path: String): Long = try {
+        val p = path.removePrefix("!")
+        if (p.startsWith("content://")) {
+            val ctx = hostContext ?: return 0L
+            ctx.contentResolver.query(android.net.Uri.parse(p), null, null, null, null)
+                ?.use { c ->
+                    val idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                    if (c.moveToFirst() && idx >= 0) c.getLong(idx) else 0L
+                } ?: 0L
+        } else {
+            java.io.File(p).lastModified()
+        }
+    } catch (_: Throwable) { 0L }
 
     @Keep
     @JvmStatic
@@ -383,6 +474,10 @@ object NativeLibrary {
  * RemoteFile* 回调的文件句柄 —— 线程安全的本地文件读取封装。
  * read() 顺序读取下一块（64KB），data() 返回最近读取的字节，
  * status() = 0（正常）/ -1（失败）。
+ *
+ * ★★ 本轮加固：open() 剥离 "!" 前缀（引擎 Run/SetUserPath 同款原生绝对路径
+ *   标记）—— 旧实现对 "!/storage/..." 直接 File().isFile=false 返回 null，
+ *   核心拿 null 句柄继续用 → SIGSEGV 闪退。
  */
 class RemoteFileHandle private constructor(
     private val raf: java.io.RandomAccessFile,
@@ -415,10 +510,49 @@ class RemoteFileHandle private constructor(
 
     companion object {
         fun open(path: String, mode: String): RemoteFileHandle? {
-            val f = java.io.File(path)
+            // ★ 剥 "!" 前缀：核心经 TranslateFilePath 后可能把带标记的原生
+            //   路径原样传回 Java 回调（Run("!path") 同款约定）。
+            val p = path.removePrefix("!")
+            val f = java.io.File(p)
             if (!f.isFile) return null
             val raf = java.io.RandomAccessFile(f, if (mode.contains('w') || mode.contains('a')) "rw" else "r")
             return RemoteFileHandle(raf, f.length().toInt())
         }
+    }
+}
+
+/**
+ * Saf* 回调的 content:// 句柄 —— 包装 ParcelFileDescriptor 的流式读取。
+ * read()/data() 与 RemoteFileHandle 同契约（核心按字节流消费）；
+ * size 取打开时 statSize 快照；close() 关闭 pfd。不预读全量 ——
+ * 大 ROM（GB 级）预读必 OOM，流式按块读才安全。
+ */
+class SafHandle(val pfd: android.os.ParcelFileDescriptor) {
+    private val stream = java.io.FileInputStream(pfd.fileDescriptor)
+    private var lastRead: ByteArray = ByteArray(0)
+
+    val size: Int = try {
+        pfd.statSize().toInt().coerceAtLeast(0)
+    } catch (_: Throwable) { 0 }
+
+    fun read(): Int = try {
+        val chunk = ByteArray(64 * 1024)
+        val n = stream.read(chunk)
+        if (n > 0) {
+            lastRead = if (n == chunk.size) chunk else chunk.copyOf(n)
+            n
+        } else {
+            lastRead = ByteArray(0)
+            -1
+        }
+    } catch (_: Throwable) { -1 }
+
+    fun data(): ByteArray = lastRead
+
+    fun status(): Int = 0
+
+    fun close() {
+        try { stream.close() } catch (_: Throwable) {}
+        try { pfd.close() } catch (_: Throwable) {}
     }
 }

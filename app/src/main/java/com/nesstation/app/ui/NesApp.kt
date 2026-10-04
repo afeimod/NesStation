@@ -63,6 +63,8 @@ object Routes {
     const val HOME = "home"
     // 带可选 platform 查询参数：主页平台磁贴可直接深链到对应平台的封面流
     const val LIBRARY = "library?platform={platform}"
+    // ★ Neon 新UI（本轮）：总游戏库（图1 平台总览选择页）
+    const val ALL_GAMES = "all_games"
     const val FAVORITES = "favorites"
     const val HISTORY = "history"
     const val SETTINGS = "settings"
@@ -331,14 +333,32 @@ private fun PhoneNavHost(
         composable(Routes.HOME) {
             HomeScreen(
                 games = games,
-                onOpenLibrary = { nav.navigate(Routes.library()) },
+                onOpenLibrary = {
+                    // ★ Neon 风格下「全部游戏」进入总游戏库（图1 平台总览页）；
+                    //   FSD 风格保持原行为（直接进游戏库封面流）
+                    if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                        nav.navigate(Routes.ALL_GAMES)
+                    } else {
+                        nav.navigate(Routes.library())
+                    }
+                },
                 onOpenPlatform = { p -> nav.navigate(Routes.library(p)) },
                 onOpenOnlineGames = { nav.navigate(Routes.ONLINE_GAMES) },
                 onOpenBattle = { nav.navigate(Routes.BATTLE) },
                 onOpenSwf = { nav.navigate(Routes.SWF_LIST) },
                 onOpenSettings = { nav.navigate(Routes.SETTINGS) },
                 onOpenAbout = { nav.navigate(Routes.ABOUT) },
-                onExit = { nav.context.let { (it as? android.app.Activity)?.finishAffinity() } }
+                onExit = { nav.context.let { (it as? android.app.Activity)?.finishAffinity() } },
+                onOpenFavorites = { nav.navigate(Routes.FAVORITES) },
+                onOpenHistory = { nav.navigate(Routes.HISTORY) }
+            )
+        }
+        // ★ Neon 总游戏库（图1）：平台总览 → 点击平台进入该平台游戏库（图2 墙）
+        composable(Routes.ALL_GAMES) {
+            com.nesstation.app.ui.neon.NeonAllGamesScreen(
+                games = games,
+                onBack = { nav.popBackStack() },
+                onOpenPlatform = { p -> nav.navigate(Routes.library(p)) }
             )
         }
         composable(Routes.BATTLE) {
