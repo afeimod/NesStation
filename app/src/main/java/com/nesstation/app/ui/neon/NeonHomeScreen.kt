@@ -46,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -545,6 +546,4 @@ private fun NeonMenuList(
 
 /** focus 事件桥接（避免直接依赖内部 API 的兼容小封装）。 */
 private fun Modifier.onFocusChangedCompat(onFocus: (Boolean) -> Unit): Modifier =
-    this.then(
-        androidx.compose.ui.focus.onFocusChanged { onFocus(it.isFocused) }
-    )
+    this.onFocusChanged { onFocus(it.isFocused) }

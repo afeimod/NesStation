@@ -327,25 +327,27 @@ object NativeLibrary {
      */
     @Keep
     @JvmStatic
-    fun SafOpen(path: String, mode: String): Any? = try {
-        val p = path.removePrefix("!")
-        if (p.startsWith("content://")) {
-            val ctx = hostContext ?: return null
-            val write = mode.contains('w') || mode.contains('a')
-            val uri = android.net.Uri.parse(p)
-            val pfd = if (write) {
-                ctx.contentResolver.openFileDescriptor(uri, "wt")
+    fun SafOpen(path: String, mode: String): Any? {
+        return try {
+            val p = path.removePrefix("!")
+            if (p.startsWith("content://")) {
+                val ctx = hostContext ?: return null
+                val write = mode.contains('w') || mode.contains('a')
+                val uri = android.net.Uri.parse(p)
+                val pfd = if (write) {
+                    ctx.contentResolver.openFileDescriptor(uri, "wt")
+                } else {
+                    ctx.contentResolver.openFileDescriptor(uri, "r")
+                }
+                // ★ 流式句柄：不预读全量（大 ROM 可达 GB 级，预读必 OOM）——
+                //   read() 按需从 fd 流式读块；核心若走 SafNativeFd 拿 fd 直读
+                //   则完全不碰 read()。两条路径都安全。
+                pfd?.let { SafHandle(it) }
             } else {
-                ctx.contentResolver.openFileDescriptor(uri, "r")
+                RemoteFileHandle.open(p, mode)
             }
-            // ★ 流式句柄：不预读全量（大 ROM 可达 GB 级，预读必 OOM）——
-            //   read() 按需从 fd 流式读块；核心若走 SafNativeFd 拿 fd 直读
-            //   则完全不碰 read()。两条路径都安全。
-            pfd?.let { SafHandle(it) }
-        } else {
-            RemoteFileHandle.open(p, mode)
-        }
-    } catch (_: Throwable) { null }
+        } catch (_: Throwable) { null }
+    }
 
     @Keep
     @JvmStatic
@@ -374,19 +376,32 @@ object NativeLibrary {
 
     @Keep
     @JvmStatic
-    fun SafLastModified(path: String): Long = try {
-        val p = path.removePrefix("!")
-        if (p.startsWith("content://")) {
-            val ctx = hostContext ?: return 0L
-            ctx.contentResolver.query(android.net.Uri.parse(p), null, null, null, null)
-                ?.use { c ->
-                    val idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
-                    if (c.moveToFirst() && idx >= 0) c.getLong(idx) else 0L
+    fun SafLastModified(path: String): Long {
+        return try {
+            val p = path.removePrefix("!")
+            if (p.startsWith("content://")) {
+                val ctx = hostContext ?: return 0L
+                val uri = android.net.Uri.parse(p)
+                // ★ 返回真实 mtime（旧版误查 OpenableColumns.SIZE，把文件大小
+                //   当时间戳返回）。优先 DocumentsContract 的 last_modified 列；
+                //   提供方不支持时回落 fstat(pfd) 拿真实 mtime。
+                val queried = ctx.contentResolver.query(
+                    uri,
+                    arrayOf(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                    null, null, null
+                )?.use { c ->
+                    if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+                }
+                queried ?: ctx.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    try {
+                        android.system.Os.fstat(pfd.fileDescriptor).st_mtime
+                    } catch (_: Throwable) { 0L }
                 } ?: 0L
-        } else {
-            java.io.File(p).lastModified()
-        }
-    } catch (_: Throwable) { 0L }
+            } else {
+                java.io.File(p).lastModified()
+            }
+        } catch (_: Throwable) { 0L }
+    }
 
     @Keep
     @JvmStatic
@@ -532,7 +547,9 @@ class SafHandle(val pfd: android.os.ParcelFileDescriptor) {
     private var lastRead: ByteArray = ByteArray(0)
 
     val size: Int = try {
-        pfd.statSize().toInt().coerceAtLeast(0)
+        // ★ statSize 是 Kotlin 合成属性（Java getter getStatSize()），不能加括号调用。
+        //   GB 级 ROM 钳制到 Int.MAX_VALUE，避免 toInt() 溢出变负数后归 0。
+        pfd.statSize.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
     } catch (_: Throwable) { 0 }
 
     fun read(): Int = try {
