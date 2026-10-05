@@ -210,6 +210,7 @@ fun NeonHomeScreen(
                                 grabFocusOnLaunch = true,
                                 showReflection = true,
                                 verticalShift = 14.dp,   // ★ 下移不缩小，避开菜单行
+                                centerBiasX = 72.dp,     // ★ 封面整体右移，贴近右侧游戏名
                                 modifier = Modifier.fillMaxSize()
                             ) { i ->
                                 NeonCoverCard(

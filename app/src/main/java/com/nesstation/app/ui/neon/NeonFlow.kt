@@ -82,6 +82,12 @@ fun NeonFlow(
     showReflection: Boolean = true,
     reflectionRatio: Float = 0.28f,
     verticalShift: Dp = 16.dp,
+    /**
+     * ★ 整体水平偏移（正值向右）：选中卡中心不再居于容器几何中心，
+     * 而是向右贴近信息面板/游戏名 —— 解决「选中封面与游戏名离得太远」。
+     * 侧边封面随整条弧形导轨一起平移（自然溢出容器左缘，不裁剪）。
+     */
+    centerBiasX: Dp = 0.dp,
     visibleHalfWindow: Int = 5,
     grabFocusOnLaunch: Boolean = false,
     content: @Composable (Int) -> Unit
@@ -118,6 +124,7 @@ fun NeonFlow(
         } else 1f
         val stepPx = with(LocalDensity.current) { (itemWidth + gap).toPx() * fitScale }
         val shiftPx = with(LocalDensity.current) { verticalShift.toPx() }
+        val biasPx = with(LocalDensity.current) { centerBiasX.toPx() }
         var dragAccum by remember { mutableFloatStateOf(0f) }
 
         // 实时拖拽跟手：拖动中封面直接随手指平移，松手残余偏移平滑归零
@@ -224,7 +231,7 @@ fun NeonFlow(
                             // ===== 弧形导轨 3D 变换（绘制阶段，零重组）=====
                             val pos = i - animated
                             val aPos = abs(pos)
-                            translationX = pos * stepPx + dragPx
+                            translationX = pos * stepPx + dragPx + biasPx
                             // ★ 整体下移（不遮挡上方文字）+ 弧形轨道越远越下沉
                             translationY = shiftPx + aPos * aPos * 5.5f + aPos * 3f
                             // 缩放：中心放大、两侧逐级缩小（fitScale 仅超矮屏自保，常规 1.0）

@@ -409,13 +409,94 @@ object NativeLibrary {
         hostContext?.assets
     } catch (_: Throwable) { null }
 
+    /**
+     * ★★★ 启动闪退根治（本轮，libcitra_mmj.so 反汇编实证）★★★
+     *
+     * Run() 引导早期（updateProgress("BootGame") 之后）会执行签名/环境收集例程：
+     * ```
+     * ctx = NativeLibrary.getEmulationContext()
+     * pm = ctx.getPackageManager()
+     * pkgInfo = pm.getPackageInfo(ctx.getPackageName(), 64 /*GET_SIGNATURES*/)
+     * sig = pkgInfo.signatures[0].toByteArray() → 哈希存入全局状态
+     * versionName / packageName / codePath 逐一 GetStringUTFChars → std::string
+     * name = ctx.getString(0x7f100020)   ← ★ 原包 R.string.app_name = "Citra"
+     * ```
+     *
+     * 崩溃链（用户 tombstone，Redmi socrates / Android 15）：
+     *   Run+108 → G(0x275928) → 0x276050 bl H → H 内 bl strlen(NULL) → SIGSEGV。
+     * 根因：我们的 APK 资源表没有 0x7f100020 这一项 → Context.getString 抛
+     * Resources$NotFoundException（JNI 挂起）→ CallObjectMethodV 返回 NULL →
+     * GetStringUTFChars(NULL) 返回 NULL → strlen(NULL) 原生段错误。
+     *
+     * 修复：返回一个 ContextWrapper，其 getResources() 返回的 Resources 对
+     * 0x7f100020 固定应答 "Citra"（与 Citra_MMJ_20250220.apk 的 app_name 逐字
+     * 一致 —— 已从该 APK 的 resources.arsc 提取验证：type 0x10/string，
+     * entry 0x20，值 "Citra"）。boot 阶段的核心还会比对 app_name == "Citra"
+     * （len==5 + "Citr"+'a' 内联比较，so 0x2676bc），该值同时通过正版检查。
+     * 其余资源 id 透传宿主，不影响 NesStation 自身 UI（包装仅给 MMJ 核心用）。
+     */
     @Keep
     @JvmStatic
-    fun getEmulationContext(): Context? = hostContext
+    fun getEmulationContext(): Context? = hostContext?.let(::mmjCompatContext)
 
     @Keep
     @JvmStatic
-    fun getMainContext(): Context? = hostContext
+    fun getMainContext(): Context? = hostContext?.let(::mmjCompatContext)
+
+    /** 兼容 Context 缓存（每个 base 只包一层；核心可能多次调用）。 */
+    @Volatile
+    private var cachedCompatContext: Context? = null
+
+    @Volatile
+    private var cachedCompatBase: Context? = null
+
+    private fun mmjCompatContext(base: Context): Context {
+        cachedCompatContext?.let { cached ->
+            if (cachedCompatBase === base) return cached
+        }
+        synchronized(this) {
+            cachedCompatContext?.let { cached ->
+                if (cachedCompatBase === base) return cached
+            }
+            val wrapped = MmjCompatContext(base)
+            cachedCompatBase = base
+            cachedCompatContext = wrapped
+            return wrapped
+        }
+    }
+
+    /**
+     * MMJ 核心专用 Context 包装：仅重写 getResources()，其余全部委托宿主。
+     * Context.getString(int) 是 final（内部走 getResources().getString(id)），
+     * 所以拦截点在 Resources 层 —— so 全库仅此一处资源查找（movk 0x7f10 扫描实证）。
+     */
+    private class MmjCompatContext(base: Context) : android.content.ContextWrapper(base) {
+
+        private val mmjResources: android.content.res.Resources by lazy {
+            MmjCompatResources(base.resources)
+        }
+
+        override fun getResources(): android.content.res.Resources = mmjResources
+    }
+
+    /**
+     * 对 0x7f100020（原包 app_name）应答 "Citra"，其余 id 走宿主真实资源。
+     * 构造用同 AssetManager —— 除被重写的 id 外行为与宿主 Resources 完全一致。
+     */
+    private class MmjCompatResources(base: android.content.res.Resources) :
+        android.content.res.Resources(base.assets, base.displayMetrics, base.configuration) {
+
+        override fun getString(id: Int): String =
+            if (id == MMJ_RES_APP_NAME) MMJ_APP_NAME_VALUE else super.getString(id)
+
+        companion object {
+            /** Citra_MMJ_20250220.apk 的 R.string.app_name（resources.arsc 实证）。 */
+            private const val MMJ_RES_APP_NAME = 0x7f100020
+
+            /** 原包该资源的值（也是 so 正版检查的期望值）。 */
+            private const val MMJ_APP_NAME_VALUE = "Citra"
+        }
+    }
 
     @Keep
     @JvmStatic
