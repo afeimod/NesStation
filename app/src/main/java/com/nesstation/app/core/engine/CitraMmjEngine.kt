@@ -368,7 +368,45 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         "input_joystick_deadzone" to "Controls",
         "landscape_swap_screen" to "Controls", "portrait_swap_screen" to "Controls",
         "landscape_custom_layout" to "Controls", "portrait_custom_layout" to "Controls",
-        "landscape_layout_option" to "Controls", "screen_presentation_mode" to "Controls"
+        "landscape_layout_option" to "Controls", "screen_presentation_mode" to "Controls",
+        // ★★ 修复：layout_option（竖屏/通用布局）此前完全缺失 —— UI 下发被
+        //   "skip unknown MMJ ini key" 跳过，"屏幕布局"下拉从未生效！
+        "layout_option" to "Controls",
+        // ★★★ 双屏自定义布局矩形（so .rodata 键名表实证 0x12dbf8-0x12e010：
+        //   landscape_top_left/top/top/right/bottom + landscape_bottom_* +
+        //   portrait_top_* + portrait_bottom_*，共 16 键，像素坐标相对全屏
+        //   窗口 —— setCustomLayout JNI 同源字段（config+0x27e..0x28c u16））。
+        //   旧集成只发了 landscape_custom_layout 开关、从未发矩形 ——
+        //   "自定义布局更不行"的直接原因。
+        "landscape_top_left" to "Controls", "landscape_top_top" to "Controls",
+        "landscape_top_right" to "Controls", "landscape_top_bottom" to "Controls",
+        "landscape_bottom_left" to "Controls", "landscape_bottom_top" to "Controls",
+        "landscape_bottom_right" to "Controls", "landscape_bottom_bottom" to "Controls",
+        "portrait_top_left" to "Controls", "portrait_top_top" to "Controls",
+        "portrait_top_right" to "Controls", "portrait_top_bottom" to "Controls",
+        "portrait_bottom_left" to "Controls", "portrait_bottom_top" to "Controls",
+        "portrait_bottom_right" to "Controls", "portrait_bottom_bottom" to "Controls"
+    )
+
+    /**
+     * ★★★ 布局族热生效键（本轮新增）★★★
+     * 这些键改动时核心无需重启：写 ini → loadConfig() 重读 →
+     * WindowChanged() 触发 EmuWindow 重算双屏布局（so 0x264dc0 实证：
+     * 对窗口全局对象调虚方法重算布局，窗口为空时内部有空检查直接返回，
+     * 运行中调用安全）。自定义布局编辑器拖动即所见即所得。
+     */
+    private val MMJ_LAYOUT_HOT_KEYS = setOf(
+        "layout_option", "landscape_layout_option",
+        "landscape_swap_screen", "portrait_swap_screen",
+        "landscape_custom_layout", "portrait_custom_layout",
+        "landscape_top_left", "landscape_top_top",
+        "landscape_top_right", "landscape_top_bottom",
+        "landscape_bottom_left", "landscape_bottom_top",
+        "landscape_bottom_right", "landscape_bottom_bottom",
+        "portrait_top_left", "portrait_top_top",
+        "portrait_top_right", "portrait_top_bottom",
+        "portrait_bottom_left", "portrait_bottom_top",
+        "portrait_bottom_right", "portrait_bottom_bottom"
     )
 
     /**
@@ -421,6 +459,46 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             for ((k, v) in coreOptions) overrides[k] = v
             overrides.putAll(extra)
             overrides["input_overlay_hide"] = "true"
+            // ★★★ 闪退根治（本轮，崩溃栈逐帧反汇编定位）★★★
+            //
+            // 用户 tombstone（Redmi socrates / Android 15）：
+            //   fault 0x5414f8 ldr x8,[x20] ← F0(0x541484 VFS 打开+读文件)
+            //   ← F1(0x4254c4 后处理着色器加载) ← F2(渲染器初始化虚方法)
+            //   ← F3(0x3d4f54) ← F4(0x288d54) ← F5(0x2654d8 boot 主体)
+            //   ← Run+192。F1 读 config 的 pp_shader_name（非空时）拼
+            //   <前缀><name>.glsl 以文本模式("r")经 VFS 打开 —— VFS 走
+            //   Java RemoteFileOpen，文件不存在返回 null → F0 对返回的
+            //   shared_ptr 裸指针【无空检查】直接 ldr → SIGSEGV。
+            //   （so 内同族函数 0x541368 有 cbz 空检查，唯独 F0 没有。）
+            //
+            //   触发值：UI 默认 "(off)" 哨兵与下拉里的 "Anime4K"（无此文件）
+            //   都会写进 ini → 核心启动必炸；"部分游戏有概率能启动"是设置
+            //   下发与 loadRom 的竞态 + saveConfig 回写振荡的结果。
+            //
+            //   修复：任何值先校验 <userDir>/shaders/<name>.glsl 真实存在，
+            //   不存在一律归一为空串 —— 空串时 F1 在 0x4255ec cbz 直接
+            //   跳过文件加载（内置直通渲染），与原版"无后处理"语义一致。
+            val shaderName = overrides.remove("pp_shader_name")
+            if (shaderName != null) {
+                val exists = shaderName.isNotEmpty() &&
+                    File(userDir(), "shaders/$shaderName.glsl").isFile
+                overrides["pp_shader_name"] = if (exists) shaderName else ""
+                if (!exists && shaderName.isNotEmpty()) {
+                    android.util.Log.w("CitraMmjEngine",
+                        "pp_shader_name '$shaderName' has no .glsl in shaders/, reset to none (crash guard)")
+                }
+            }
+            // ★★★ 帧率限制保险（"画面像快进"根治）★★★
+            // MMJ 的 use_frame_limit=false = 不限速（快进）。旧流程退出快进
+            // 时机不对时会在 ini 残留 false，下次启动 loadConfig 读到 →
+            // 游戏全速狂奔（用户反馈"画面有时候像是快进一样"）。
+            // 本次覆盖集没有该键时强制写 true + 用户值/100。
+            if (!overrides.containsKey("use_frame_limit")) {
+                overrides["use_frame_limit"] = "true"
+                if (!overrides.containsKey("frame_limit")) {
+                    overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
+                }
+            }
             var applied = 0
             for ((key, value) in overrides) {
                 val section = MMJ_INI_SECTION[key]
@@ -708,6 +786,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 //   pc 0x282234（详见 startEmulationLocked 注释）。
                 if (surface.isValid) {
                     try { lib.SurfaceChanged(surface); surfaceAttached = true } catch (_: Throwable) {}
+                    // ★ 全局缩放跟随（同 onSurfaceChanged）：SurfaceView 改变
+                    //   宽高比时 Android 会重建 Surface —— 换新 surface 挂到
+                    //   运行中的核心后同样要 WindowChanged() 让核心按新窗口
+                    //   几何重算双屏布局。
+                    val running = try { lib.IsRunning() } catch (_: Throwable) { false }
+                    if (running) {
+                        try { lib.WindowChanged() } catch (_: Throwable) {}
+                    }
                 } else {
                     android.util.Log.w("CitraMmjEngine",
                         "setSurface: surface valid=false, defer SurfaceChanged to emu thread")
@@ -754,6 +840,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 //   （无挖孔设备上与原版行为等价；overlay 已隐藏，密度仅用于
                 //   overlay 缩放，1.0 无副作用）。
                 try { CitraMmjNative.lib.SetDisplayInfo(0, 0, 0, 0, 0, 1f) } catch (_: Throwable) {}
+                // ★★★ 全局缩放跟随（本轮根治）★★★
+                // SurfaceView 随「画面缩放」(videoScale) 改变宽高比时，
+                // surfaceChanged 携带新几何回调到这里。MMJ 核心的双屏布局
+                // 不是每帧重算的 —— 必须显式 WindowChanged()（so 0x264dc0：
+                // 对 EmuWindow 全局对象调虚方法重算布局）才会按新窗口
+                // 几何重新排版上下屏。旧实现从不调用 → 改全局缩放后核心
+                // 仍按旧布局渲染 → "游戏画面没有根据全局缩放来"。
+                try { CitraMmjNative.lib.WindowChanged() } catch (_: Throwable) {}
             }
         }
     }
@@ -871,8 +965,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (!_loaded) return
             writeMmjIniLocked(
                 if (_ffSpeed > 0) mapOf("use_frame_limit" to "false")
-                else mapOf("use_frame_limit" to "true", "frame_limit" to "100")
+                else mapOf(
+                    // ★ 退出快进恢复【用户设置值】（旧实现硬编码 100，会覆盖
+                    //   用户在设置里选的帧率上限百分比）。
+                    "use_frame_limit" to (coreOptions["use_frame_limit"] ?: "true"),
+                    "frame_limit" to (coreOptions["frame_limit"] ?: "100")
+                )
             )
+            // ★ 快进开关即时生效：重读 ini + 通知核心（MMJ 帧率限制由核心
+            //   每帧消费 config，loadConfig 后立即生效，无需重启）。
+            try { CitraMmjNative.lib.loadConfig() } catch (_: Throwable) {}
         }
     }
 
@@ -888,15 +990,65 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      * ★ 绝不经 setConfig* JNI 下发（分发器仅接受 8 键，其余 brk #1 闪退，
      *   详见 MMJ_INI_SECTION 注释）。
      */
+    /**
+     * ★★★ 设置批量事务 + 布局热生效（本轮新增）★★★
+     * EmulatorScreen.applyCoreOptions 把整批设置包在 begin/end 之间 ——
+     * 一次面板变更/编辑器拖动连发几十个 setCoreOption。旧实现每个键都
+     * 全量重写 ini（文件 IO × 50），拖动自定义布局时更会每键都触发核心
+     * 重载。现在 begin/end 之间只缓存，end 时统一：写一次 ini +
+     * （若含布局族键）loadConfig() 重读 + WindowChanged() 热重算 ——
+     * 自定义布局拖动即时生效（所见即所得），其余键下次启动生效（与
+     * 原版行为一致）。
+     */
+    private var optionsBatching = false
+    private var optionsBatchDirty = false
+    private var optionsBatchLayoutDirty = false
+
     override fun setCoreOption(key: String, value: String) {
         coreOptions[key] = value
-        if (_loaded && MMJ_INI_SECTION.containsKey(key)) {
-            synchronized(lifecycleLock) { writeMmjIniLocked() }
+        if (!MMJ_INI_SECTION.containsKey(key)) return
+        synchronized(lifecycleLock) {
+            if (optionsBatching) {
+                optionsBatchDirty = true
+                if (key in MMJ_LAYOUT_HOT_KEYS) optionsBatchLayoutDirty = true
+                return
+            }
+            if (!_loaded) return
+            writeMmjIniLocked()
+            applyLayoutHotReloadIfNeeded(key)
         }
     }
 
-    override fun beginCoreOptionsBatch() {}
-    override fun endCoreOptionsBatch() {}
+    /** 单键（非批量）路径的布局热生效。 */
+    private fun applyLayoutHotReloadIfNeeded(vararg keys: String) {
+        if (keys.none { it in MMJ_LAYOUT_HOT_KEYS }) return
+        try { CitraMmjNative.lib.loadConfig() } catch (_: Throwable) {}
+        val running = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
+        if (running) {
+            try { CitraMmjNative.lib.WindowChanged() } catch (_: Throwable) {}
+        }
+    }
+
+    override fun beginCoreOptionsBatch() {
+        synchronized(lifecycleLock) {
+            optionsBatching = true
+            optionsBatchDirty = false
+            optionsBatchLayoutDirty = false
+        }
+    }
+
+    override fun endCoreOptionsBatch() {
+        synchronized(lifecycleLock) {
+            optionsBatching = false
+            val dirty = optionsBatchDirty
+            val layoutDirty = optionsBatchLayoutDirty
+            optionsBatchDirty = false
+            optionsBatchLayoutDirty = false
+            if (!dirty || !_loaded) return
+            writeMmjIniLocked()
+            if (layoutDirty) applyLayoutHotReloadIfNeeded("layout_option")
+        }
+    }
 
     // ------------------------------------------------------------------
     // 输入
@@ -993,7 +1145,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         // ★ ini 读-改-写（原版设置编辑器同款机制）。旧实现的
         //   getConfigBoolean/setConfigBoolean("landscape_swap_screen") 两键
         //   都不在 JNI 分发器接受集内 → brk #1 SIGTRAP 闪退（已反汇编实证）。
-        //   写入 ini 后核心下次启动（或下次 Run）读取生效。
+        //   写入 ini 后 loadConfig() 重读 + WindowChanged() 【即时生效】
+        //   （swap_screen 属布局族热键，无需重启游戏）。
         synchronized(lifecycleLock) {
             val current = readMmjIniValue("landscape_swap_screen")
                 ?.equals("true", true) ?: false
@@ -1003,6 +1156,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     "portrait_swap_screen" to (!current).toString()
                 )
             )
+            applyLayoutHotReloadIfNeeded("landscape_swap_screen")
         }
     }
 

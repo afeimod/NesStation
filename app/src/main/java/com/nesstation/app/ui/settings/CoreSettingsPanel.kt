@@ -1803,11 +1803,16 @@ fun CoreSettingsPanel(
                         listOf("0" to "最近邻", "1" to "线性 (默认)"),
                         padLayout.mmjMinFilter
                     ) { updateLayout(padLayout.copy {mmjMinFilter = it}) }
+                    // ★★★ 闪退根治（本轮）：列表必须与 <userDir>/shaders/ 实际
+                    //   存在的 .glsl 一一对应 —— 原生核心对不存在的着色器名
+                    //   打开 .glsl 失败会直接空指针崩溃（旧列表里的 Anime4K
+                    //   并无对应文件，选了必炸）。已增补 FXAA_natural。
                     DropdownRow("后处理着色器",
-                        listOf("(off)" to "关闭 (默认)", "Anime4K" to "Anime4K 锐化", "bloom" to "泛光",
+                        listOf("(off)" to "关闭 (默认)", "bloom" to "泛光",
                                "brighten" to "提亮", "cartoon" to "卡通", "film" to "胶片",
-                               "spline36" to "样条缩放", "FXAA" to "FXAA 抗锯齿", "Cel" to "赛璐璐",
-                               "Dot" to "点阵", "SEDI" to "SEDI 边缘导向"),
+                               "spline36" to "样条缩放", "FXAA" to "FXAA 抗锯齿",
+                               "FXAA_natural" to "FXAA 自然锐化",
+                               "Cel" to "赛璐璐", "Dot" to "点阵", "SEDI" to "SEDI 边缘导向"),
                         padLayout.mmjPpShaderName
                     ) { updateLayout(padLayout.copy {mmjPpShaderName = it}) }
                     DropdownRow("屏幕呈现模式",
@@ -1868,7 +1873,11 @@ fun CoreSettingsPanel(
                         listOf("0" to "0 关 (默认)", "25" to "25%", "50" to "50%", "75" to "75%", "100" to "100%"),
                         padLayout.mmjFactor3d
                     ) { updateLayout(padLayout.copy {mmjFactor3d = it}) }
-                    DropdownRow("屏幕布局",
+                    // ★ 标签修正：layout_option 实为竖屏/通用布局（so 无
+                    //   portrait_layout_option 键，横屏由 landscape_layout_option
+                    //   单独控制）。此前该键从未写入核心（引擎映射表缺失），
+                    //   本轮已修。
+                    DropdownRow("竖屏布局",
                         listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
                         padLayout.mmjLayoutOption
                     ) { updateLayout(padLayout.copy {mmjLayoutOption = it}) }
@@ -1884,8 +1893,12 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
                         padLayout.mmjPortraitSwapScreen
                     ) { updateLayout(padLayout.copy {mmjPortraitSwapScreen = it}) }
-                    DropdownRow("横屏自定义布局",
-                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (配合 setCustomLayout)"),
+                    // ★ 自定义布局开关接线说明：开启后（或全局「画面缩放」选
+                    //   自定义）引擎把双屏编辑器的上/下屏像素矩形写入核心
+                    //   landscape_top_*/bottom_*（竖屏 portrait_*），布局族
+                    //   键即时生效（拖动所见即所得）。
+                    DropdownRow("启用自定义布局",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (用双屏编辑器排布)"),
                         padLayout.mmjLandscapeCustomLayout
                     ) { updateLayout(padLayout.copy {mmjLandscapeCustomLayout = it}) }
                 }

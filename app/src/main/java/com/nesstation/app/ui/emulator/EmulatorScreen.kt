@@ -4836,7 +4836,13 @@ private fun applyCoreOptionsInner(
                 engine.setCoreOption("mag_filter", layout.mmjMagFilter)
                 engine.setCoreOption("min_filter", layout.mmjMinFilter)
                 engine.setCoreOption("custom_textures", if (layout.mmjCustomTextures == "enabled") "true" else "false")
-                engine.setCoreOption("pp_shader_name", layout.mmjPpShaderName)
+                // ★★★ 闪退根治（本轮）："(off)" 是 UI 哨兵值，不是有效着色器名！
+                //   MMJ 核心启动时对非空名拼 <userDir>/shaders/<name>.glsl 打开，
+                //   "(off).glsl" 不存在 → 原生空指针崩溃（绝大多数游戏闪退的
+                //   根因）。空串 = 关闭后处理（核心内置直通）。引擎层还有同款
+                //   文件存在性校验兜底（writeMmjIniLocked）。
+                engine.setCoreOption("pp_shader_name",
+                    if (layout.mmjPpShaderName == "(off)") "" else layout.mmjPpShaderName)
                 engine.setCoreOption("screen_presentation_mode", layout.mmjScreenPresentationMode)
                 engine.setCoreOption("use_compatible_mode", if (layout.mmjUseCompatibleMode == "enabled") "true" else "false")
                 engine.setCoreOption("use_fmv_hack", if (layout.mmjUseFmvHack == "enabled") "true" else "false")
@@ -4864,7 +4870,47 @@ private fun applyCoreOptionsInner(
                 engine.setCoreOption("landscape_layout_option", layout.mmjLandscapeLayoutOption)
                 engine.setCoreOption("landscape_swap_screen", if (layout.mmjLandscapeSwapScreen == "enabled") "true" else "false")
                 engine.setCoreOption("portrait_swap_screen", if (layout.mmjPortraitSwapScreen == "enabled") "true" else "false")
-                engine.setCoreOption("landscape_custom_layout", if (layout.mmjLandscapeCustomLayout == "enabled") "true" else "false")
+                // ★★★ 双屏自定义布局接线（本轮根治"自定义布局更不行"）★★★
+                //   对齐 Azahar n3dsCustom 模型：videoScale=="custom"（前端双屏
+                //   编辑器）或 mmjLandscapeCustomLayout=="enabled" 都进入核心
+                //   自定义布局 —— 上/下屏像素矩形（相对全屏 Surface）写
+                //   [Controls] 段 landscape_top_*/landscape_bottom_*（竖屏
+                //   portrait_*），开关 landscape/portrait_custom_layout=true。
+                //   键名 = so .rodata 设置键表实证（0x12dbf8-0x12e010），
+                //   与 setCustomLayout JNI 同源字段。surfaceSize 未知时写 0，
+                //   编辑器/重算时带真实尺寸重写（引擎布局族热键即时生效，
+                //   拖动所见即所得）。
+                val mmjCustom = layout.videoScale == "custom" ||
+                    layout.mmjLandscapeCustomLayout == "enabled"
+                if (mmjCustom) {
+                    engine.setCoreOption("landscape_custom_layout", "true")
+                    engine.setCoreOption("portrait_custom_layout", "true")
+                    val sw = n3dsSurfaceSize.width
+                    val sh = n3dsSurfaceSize.height
+                    fun px(v: Float, max: Int): String =
+                        (if (max > 0) (v * max).toInt().coerceIn(0, 65535) else 0).toString()
+                    // 横屏：上屏 / 下屏
+                    engine.setCoreOption("landscape_top_left", px(layout.n3dsTopLayoutLeft, sw))
+                    engine.setCoreOption("landscape_top_top", px(layout.n3dsTopLayoutTop, sh))
+                    engine.setCoreOption("landscape_top_right", px(layout.n3dsTopLayoutRight, sw))
+                    engine.setCoreOption("landscape_top_bottom", px(layout.n3dsTopLayoutBottom, sh))
+                    engine.setCoreOption("landscape_bottom_left", px(layout.n3dsBottomLayoutLeft, sw))
+                    engine.setCoreOption("landscape_bottom_top", px(layout.n3dsBottomLayoutTop, sh))
+                    engine.setCoreOption("landscape_bottom_right", px(layout.n3dsBottomLayoutRight, sw))
+                    engine.setCoreOption("landscape_bottom_bottom", px(layout.n3dsBottomLayoutBottom, sh))
+                    // 竖屏：上屏 / 下屏
+                    engine.setCoreOption("portrait_top_left", px(layout.n3dsTopLayoutLeftP, sw))
+                    engine.setCoreOption("portrait_top_top", px(layout.n3dsTopLayoutTopP, sh))
+                    engine.setCoreOption("portrait_top_right", px(layout.n3dsTopLayoutRightP, sw))
+                    engine.setCoreOption("portrait_top_bottom", px(layout.n3dsTopLayoutBottomP, sh))
+                    engine.setCoreOption("portrait_bottom_left", px(layout.n3dsBottomLayoutLeftP, sw))
+                    engine.setCoreOption("portrait_bottom_top", px(layout.n3dsBottomLayoutTopP, sh))
+                    engine.setCoreOption("portrait_bottom_right", px(layout.n3dsBottomLayoutRightP, sw))
+                    engine.setCoreOption("portrait_bottom_bottom", px(layout.n3dsBottomLayoutBottomP, sh))
+                } else {
+                    engine.setCoreOption("landscape_custom_layout", "false")
+                    engine.setCoreOption("portrait_custom_layout", "false")
+                }
                 // ★ MMJ 原生覆盖层 4 键写入已删除（本轮需求：独立设置里多余的
                 //   虚拟按键覆盖层去掉，总设置有）：NesStation 自带 Compose 遮罩
                 //   （总设置「屏幕手柄」+「遮罩主题」统一控制），MMJ 原生 overlay
@@ -13665,26 +13711,191 @@ private fun SettingsPanel(
                     Text("3DS (Citra MMJ) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                     Spacer(Modifier.size(6.dp))
-                    Text("当前核心：Citra MMJ（高性能老核心）。完整设置（48 项）请前往" +
-                        "主界面 设置 → 核心设置 → 3DS (Citra MMJ)；本核心不支持" +
-                        "即时存档（用游戏内存档）与联机。",
+                    Text("当前核心：Citra MMJ（高性能老核心）。全部设置如下，" +
+                        "与主界面 设置 → 核心设置 → 3DS (Citra MMJ) 完全同步；" +
+                        "布局/自定义布局改动即时生效，其余下次进游戏生效。" +
+                        "本核心不支持即时存档（用游戏内存档）与联机。",
                         color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     Spacer(Modifier.size(6.dp))
-                    Text("快捷设置", color = Color(0xFF8899AA), fontSize = 11.sp)
+
+                    // ===== 画面 / 性能 =====
+                    Text("画面 / 性能", color = Color(0xFF8899AA), fontSize = 11.sp)
                     DropdownSetting("渲染分辨率",
-                        listOf("1" to "1x (原生, 兼容)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x"),
+                        listOf("1" to "1x (原生, 兼容)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x (高性能设备)"),
                         padLayout.mmjResolution
                     ) { onLayoutChange(padLayout.copy {mmjResolution = it}) }
+                    DropdownSetting("着色器类型 (shader_type)",
+                        listOf("0" to "0 GL (默认)", "1" to "1 GL 兼容", "2" to "2 Vulkan"),
+                        padLayout.mmjShaderType
+                    ) { onLayoutChange(padLayout.copy {mmjShaderType = it}) }
+                    SwitchSetting("硬件着色器", "PICA 着色器经 GPU 生成，性能关键",
+                        padLayout.mmjUseHwShader == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjUseHwShader = if (it) "enabled" else "disabled"}) }
+                    SwitchSetting("着色器 JIT (use_shader_jit)", "着色器即时编译，性能关键",
+                        padLayout.mmjUseShaderJit == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjUseShaderJit = if (it) "enabled" else "disabled"}) }
+                    SwitchSetting("异步着色器编译", "减少着色器编译卡顿",
+                        padLayout.mmjAsyncShaderCompile == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjAsyncShaderCompile = if (it) "enabled" else "disabled"}) }
+                    DropdownSetting("几何着色器 (hw_gs_mode)",
+                        listOf("0" to "0 关闭 (默认)", "1" to "1 兼容", "2" to "2 完整"),
+                        padLayout.mmjHwGsMode
+                    ) { onLayoutChange(padLayout.copy {mmjHwGsMode = it}) }
+                    DropdownSetting("精确乘法 (accurate_mul_type)",
+                        listOf("0" to "0 精确 (默认)", "1" to "1 兼容", "2" to "2 快速"),
+                        padLayout.mmjAccurateMulType
+                    ) { onLayoutChange(padLayout.copy {mmjAccurateMulType = it}) }
+                    DropdownSetting("阴影渲染 (几何)",
+                        listOf("disabled" to "关闭 (默认, 兼容)", "enabled" to "开启 (需几何着色器)"),
+                        padLayout.mmjShadowRendering
+                    ) { onLayoutChange(padLayout.copy {mmjShadowRendering = it}) }
+                    DropdownSetting("强制纹理过滤",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjForceTextureFilter
+                    ) { onLayoutChange(padLayout.copy {mmjForceTextureFilter = it}) }
+                    DropdownSetting("纹理放大过滤",
+                        listOf("0" to "最近邻 (像素风)", "1" to "线性 (平滑, 默认)"),
+                        padLayout.mmjMagFilter
+                    ) { onLayoutChange(padLayout.copy {mmjMagFilter = it}) }
+                    DropdownSetting("纹理缩小过滤",
+                        listOf("0" to "最近邻", "1" to "线性 (默认)"),
+                        padLayout.mmjMinFilter
+                    ) { onLayoutChange(padLayout.copy {mmjMinFilter = it}) }
+                    // ★ 着色器列表与 shaders/ 实际 .glsl 一一对应（不存在=闪退）
+                    DropdownSetting("后处理着色器",
+                        listOf("(off)" to "关闭 (默认)", "bloom" to "泛光",
+                               "brighten" to "提亮", "cartoon" to "卡通", "film" to "胶片",
+                               "spline36" to "样条缩放", "FXAA" to "FXAA 抗锯齿",
+                               "FXAA_natural" to "FXAA 自然锐化",
+                               "Cel" to "赛璐璐", "Dot" to "点阵", "SEDI" to "SEDI 边缘导向"),
+                        padLayout.mmjPpShaderName
+                    ) { onLayoutChange(padLayout.copy {mmjPpShaderName = it}) }
+                    DropdownSetting("屏幕呈现模式",
+                        listOf("0" to "0 兼容 (默认)", "1" to "1 共享上下文", "2" to "2 硬件缓冲"),
+                        padLayout.mmjScreenPresentationMode
+                    ) { onLayoutChange(padLayout.copy {mmjScreenPresentationMode = it}) }
+                    DropdownSetting("自定义纹理",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (加载 HD 纹理包)"),
+                        padLayout.mmjCustomTextures
+                    ) { onLayoutChange(padLayout.copy {mmjCustomTextures = it}) }
+
+                    // ===== 性能 Hack =====
+                    Text("性能 Hack", color = Color(0xFF8899AA), fontSize = 11.sp)
+                    DropdownSetting("兼容模式",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (老设备/花屏时)"),
+                        padLayout.mmjUseCompatibleMode
+                    ) { onLayoutChange(padLayout.copy {mmjUseCompatibleMode = it}) }
+                    DropdownSetting("FMV 视频 Hack",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (过场视频卡顿游戏)"),
+                        padLayout.mmjUseFmvHack
+                    ) { onLayoutChange(padLayout.copy {mmjUseFmvHack = it}) }
+                    SwitchSetting("跳过慢速绘制", "性能 Hack（个别游戏异常时关闭）",
+                        padLayout.mmjSkipSlowDraw == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjSkipSlowDraw = if (it) "enabled" else "disabled"}) }
+                    SwitchSetting("跳过 CPU 写直通", "性能 Hack",
+                        padLayout.mmjSkipCpuWrite == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjSkipCpuWrite = if (it) "enabled" else "disabled"}) }
+                    SwitchSetting("跳过纹理拷贝", "性能 Hack",
+                        padLayout.mmjSkipTextureCopy == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjSkipTextureCopy = if (it) "enabled" else "disabled"}) }
+                    DropdownSetting("栅栏同步 (use_fence_sync)",
+                        listOf("enabled" to "开启 (稳定, 默认)", "disabled" to "关闭 (快, 可能花屏)"),
+                        padLayout.mmjUseFenceSync
+                    ) { onLayoutChange(padLayout.copy {mmjUseFenceSync = it}) }
+                    DropdownSetting("呈现线程 (use_present_thread)",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭"),
+                        padLayout.mmjUsePresentThread
+                    ) { onLayoutChange(padLayout.copy {mmjUsePresentThread = it}) }
+                    DropdownSetting("启用帧率限制",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭 (不限速)"),
+                        padLayout.mmjUseFrameLimit
+                    ) { onLayoutChange(padLayout.copy {mmjUseFrameLimit = it}) }
                     DropdownSetting("帧率上限",
                         listOf("50" to "50%", "60" to "60%", "100" to "100% (默认)", "200" to "200%", "300" to "300%", "400" to "400%"),
                         padLayout.mmjFrameLimit
                     ) { onLayoutChange(padLayout.copy {mmjFrameLimit = it}) }
-                    SwitchSetting("硬件着色器", "PICA 着色器经 GPU 生成，性能关键",
-                        padLayout.mmjUseHwShader == "enabled"
-                    ) { onLayoutChange(padLayout.copy {mmjUseHwShader = if (it) "enabled" else "disabled"}) }
-                    SwitchSetting("跳过慢速绘制", "性能 Hack（个别游戏异常时关闭）",
-                        padLayout.mmjSkipSlowDraw == "enabled"
-                    ) { onLayoutChange(padLayout.copy {mmjSkipSlowDraw = if (it) "enabled" else "disabled"}) }
+                    DropdownSetting("CPU 占用限制 (cpu_usage_limit)",
+                        listOf("0" to "不限 (默认)", "20" to "20%", "50" to "50%", "80" to "80%"),
+                        padLayout.mmjCpuUsageLimit
+                    ) { onLayoutChange(padLayout.copy {mmjCpuUsageLimit = it}) }
+
+                    // ===== 3D / 布局 =====
+                    Text("3D / 布局", color = Color(0xFF8899AA), fontSize = 11.sp)
+                    DropdownSetting("立体 3D 深度",
+                        listOf("0" to "0 关 (默认)", "25" to "25%", "50" to "50%", "75" to "75%", "100" to "100%"),
+                        padLayout.mmjFactor3d
+                    ) { onLayoutChange(padLayout.copy {mmjFactor3d = it}) }
+                    DropdownSetting("竖屏布局",
+                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
+                        padLayout.mmjLayoutOption
+                    ) { onLayoutChange(padLayout.copy {mmjLayoutOption = it}) }
+                    DropdownSetting("横屏布局",
+                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
+                        padLayout.mmjLandscapeLayoutOption
+                    ) { onLayoutChange(padLayout.copy {mmjLandscapeLayoutOption = it}) }
+                    DropdownSetting("横屏交换上下屏",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjLandscapeSwapScreen
+                    ) { onLayoutChange(padLayout.copy {mmjLandscapeSwapScreen = it}) }
+                    DropdownSetting("竖屏交换上下屏",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjPortraitSwapScreen
+                    ) { onLayoutChange(padLayout.copy {mmjPortraitSwapScreen = it}) }
+                    DropdownSetting("启用自定义布局",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (用双屏编辑器排布)"),
+                        padLayout.mmjLandscapeCustomLayout
+                    ) { onLayoutChange(padLayout.copy {mmjLandscapeCustomLayout = it}) }
+
+                    // ===== 系统 / 音频 =====
+                    Text("系统 / 音频", color = Color(0xFF8899AA), fontSize = 11.sp)
+                    SwitchSetting("CPU JIT", "性能关键（关闭极慢）",
+                        padLayout.mmjUseCpuJit == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjUseCpuJit = if (it) "enabled" else "disabled"}) }
+                    SwitchSetting("New 3DS 模式", "新 3DS 硬件规格（默认开）",
+                        padLayout.mmjIsNew3ds == "enabled"
+                    ) { onLayoutChange(padLayout.copy {mmjIsNew3ds = if (it) "enabled" else "disabled"}) }
+                    DropdownSetting("主机区域",
+                        listOf("-1" to "自动 (默认)", "1" to "日本", "2" to "美国", "3" to "欧洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                        padLayout.mmjRegion
+                    ) { onLayoutChange(padLayout.copy {mmjRegion = it}) }
+                    DropdownSetting("DSP 音频模拟",
+                        listOf("disabled" to "HLE (默认, 快)", "enabled" to "LLE (实验, 需 DSP 固件)"),
+                        padLayout.mmjEnableDspLle
+                    ) { onLayoutChange(padLayout.copy {mmjEnableDspLle = it}) }
+                    DropdownSetting("DSP LLE 多线程",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                        padLayout.mmjDspLleMultithread
+                    ) { onLayoutChange(padLayout.copy {mmjDspLleMultithread = it}) }
+                    DropdownSetting("音量", (0..100 step 10).map { it.toString() to "$it%" },
+                        padLayout.mmjAudioVolume
+                    ) { onLayoutChange(padLayout.copy {mmjAudioVolume = it}) }
+                    DropdownSetting("音频拉伸",
+                        listOf("enabled" to "开启 (防爆音, 默认)", "disabled" to "关闭"),
+                        padLayout.mmjAudioStretching
+                    ) { onLayoutChange(padLayout.copy {mmjAudioStretching = it}) }
+                    DropdownSetting("音频输出",
+                        listOf("0" to "0 自动 (默认)", "1" to "1 AudioTrack", "2" to "2 AAudio", "3" to "3 兼容模式"),
+                        padLayout.mmjAudioOutputType
+                    ) { onLayoutChange(padLayout.copy {mmjAudioOutputType = it}) }
+                    DropdownSetting("麦克风音量", (0..100 step 10).map { it.toString() to "$it%" },
+                        padLayout.mmjMicVolume
+                    ) { onLayoutChange(padLayout.copy {mmjMicVolume = it}) }
+                    DropdownSetting("共享字体",
+                        listOf("0" to "0 标准 (默认)", "1" to "1 韩文", "2" to "2 简体中文", "3" to "3 繁体中文"),
+                        padLayout.mmjSharedFontType
+                    ) { onLayoutChange(padLayout.copy {mmjSharedFontType = it}) }
+                    DropdownSetting("虚拟 SD 卡",
+                        listOf("enabled" to "开启 (默认)", "disabled" to "关闭"),
+                        padLayout.mmjUseVirtualSd
+                    ) { onLayoutChange(padLayout.copy {mmjUseVirtualSd = it}) }
+                    DropdownSetting("按游戏配置",
+                        listOf("enabled" to "开启 (默认, config-games.ini 兼容补丁)", "disabled" to "关闭"),
+                        padLayout.mmjUseGameConfig
+                    ) { onLayoutChange(padLayout.copy {mmjUseGameConfig = it}) }
+                    DropdownSetting("摄像头",
+                        listOf("0" to "0 无 (默认)", "1" to "1 静态图片", "2" to "2 前置摄像头", "3" to "3 后置摄像头"),
+                        padLayout.mmjCameraType
+                    ) { onLayoutChange(padLayout.copy {mmjCameraType = it}) }
                 } else {
                 Text("3DS (Azahar) 专属设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
