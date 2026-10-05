@@ -4648,6 +4648,31 @@ private fun isGlobalUpscaleFilter(videoFilter: String?): Boolean =
         "xbr_tv", "4xbr_tv", "hq2x_tv", "hq4x_tv"
     )
 
+/**
+ * ★★★ 全局放大型滤镜 → MMJ 后处理着色器名（本轮新增，回应"mmj核心好像
+ *   全局的xbr和hqx没效果"）★★★
+ *
+ * MMJ 是直绘核心（setVideoFilter no-op），但它自带 GLSL 后处理链路
+ * （[Renderer] pp_shader_name → <userDir>/shaders/<name>.glsl，与
+ * SEDI/FXAA 等同一条通道）。本轮向 assets/mmj/shaders 移植了真正的
+ * xBR-lv2 / xBR-lv3（Hyllian 原版算法，无 LUT 依赖），全局滤镜选
+ * 放大类时映射过去：
+ *   xbr / hq2x 族 → xBR（lv2，圆润边缘）
+ *   4xbr / hq4x 族 → 4xBR（lv3，长边检测更强）
+ * （hq2x/hq4x 与 xbr 互相映射是本项目既有惯例 —— 其他核心的前端映射
+ *   也在两族间互换，见上方 filterInt 注释与 J2ME 的 else 0。）
+ * 着色器在渲染器初始化时加载 —— 游戏运行中修改下次进入游戏生效
+ * （与 NGC/Wii 的 SEDI 映射同语义）。扫描线/点阵等叠加外观仍由
+ * FilterOverlay 绘制，不受此影响。
+ */
+private fun mmjShaderForGlobalFilter(videoFilter: String?): String? = when (videoFilter) {
+    "xbr", "hq2x", "xbr_dot", "hq2x_dot",
+    "xbr_scanline", "hq2x_scanline", "xbr_tv", "hq2x_tv" -> "xBR"
+    "4xbr", "hq4x", "4xbr_dot", "hq4x_dot",
+    "4xbr_scanline", "hq4x_scanline", "4xbr_tv", "hq4x_tv" -> "4xBR"
+    else -> null
+}
+
 private fun applyCoreOptions(
     engine: EmulatorEngine,
     layout: PadLayout,
@@ -4844,13 +4869,21 @@ private fun applyCoreOptionsInner(
                 engine.setCoreOption("mag_filter", layout.mmjMagFilter)
                 engine.setCoreOption("min_filter", layout.mmjMinFilter)
                 engine.setCoreOption("custom_textures", if (layout.mmjCustomTextures == "enabled") "true" else "false")
-                // ★★★ 闪退根治（本轮）："(off)" 是 UI 哨兵值，不是有效着色器名！
+                // ★★★ 闪退根治："(off)" 是 UI 哨兵值，不是有效着色器名！
                 //   MMJ 核心启动时对非空名拼 <userDir>/shaders/<name>.glsl 打开，
                 //   "(off).glsl" 不存在 → 原生空指针崩溃（绝大多数游戏闪退的
                 //   根因）。空串 = 关闭后处理（核心内置直通）。引擎层还有同款
                 //   文件存在性校验兜底（writeMmjIniLocked）。
+                // ★★★ 本轮（全局 xbr/hqx 生效）：全局滤镜选放大型（xbr/4xbr/
+                //   hq2x/hq4x 及组合）时优先映射到 MMJ 后处理着色器
+                //   （xBR / 4xBR，本轮新移植进 assets/mmj/shaders，见
+                //   mmjShaderForGlobalFilter）；未选时用核心专属
+                //   "后处理着色器" 设置（mmjPpShaderName）。引擎层的
+                //   文件存在性校验同时接受 APK assets 内的着色器
+                //   （首次启动种子释放前也能通过校验）。
+                val mmjGlobalFx = mmjShaderForGlobalFilter(layout.videoFilter)
                 engine.setCoreOption("pp_shader_name",
-                    if (layout.mmjPpShaderName == "(off)") "" else layout.mmjPpShaderName)
+                    mmjGlobalFx ?: (if (layout.mmjPpShaderName == "(off)") "" else layout.mmjPpShaderName))
                 engine.setCoreOption("screen_presentation_mode", layout.mmjScreenPresentationMode)
                 engine.setCoreOption("use_compatible_mode", if (layout.mmjUseCompatibleMode == "enabled") "true" else "false")
                 engine.setCoreOption("use_fmv_hack", if (layout.mmjUseFmvHack == "enabled") "true" else "false")
@@ -13794,12 +13827,16 @@ private fun SettingsPanel(
                         padLayout.mmjMinFilter
                     ) { onLayoutChange(padLayout.copy {mmjMinFilter = it}) }
                     // ★ 着色器列表与 shaders/ 实际 .glsl 一一对应（不存在=闪退）
+                    // ★ 本轮新增 xBR / 4xBR（Hyllian 原版移植，与全局滤镜
+                    //   xbr/4xbr 同款效果；也可单独选用）。
                     DropdownSetting("后处理着色器",
                         listOf("(off)" to "关闭 (默认)", "bloom" to "泛光",
                                "brighten" to "提亮", "cartoon" to "卡通", "film" to "胶片",
                                "spline36" to "样条缩放", "FXAA" to "FXAA 抗锯齿",
                                "FXAA_natural" to "FXAA 自然锐化",
-                               "Cel" to "赛璐璐", "Dot" to "点阵", "SEDI" to "SEDI 边缘导向"),
+                               "Cel" to "赛璐璐", "Dot" to "点阵", "SEDI" to "SEDI 边缘导向",
+                               "xBR" to "xBR 像素平滑 (2x)",
+                               "4xBR" to "4xBR 像素平滑 (4x 强化)"),
                         padLayout.mmjPpShaderName
                     ) { onLayoutChange(padLayout.copy {mmjPpShaderName = it}) }
                     DropdownSetting("屏幕呈现模式",

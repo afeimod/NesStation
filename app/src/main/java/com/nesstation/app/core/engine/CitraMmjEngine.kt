@@ -558,8 +558,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             //   跳过文件加载（内置直通渲染），与原版"无后处理"语义一致。
             val shaderName = overrides.remove("pp_shader_name")
             if (shaderName != null) {
-                val exists = shaderName.isNotEmpty() &&
-                    File(userDir(), "shaders/$shaderName.glsl").isFile
+                // ★ 本轮：存在性校验同时接受 APK assets/mmj/shaders 内的
+                //   .glsl —— 首次启动 seedMmjSystemAssets 释放前（ini 写入
+                //   先于种子）也能通过校验，全局 xbr/hqx 首启即生效
+                //   （xBR/4xBR 随 APK 打包，非首次联网下载）。
+                val seeded = File(userDir(), "shaders/$shaderName.glsl").isFile
+                val inAssets = shaderName.isNotEmpty() && try {
+                    ((appContext ?: com.nesstation.app.NesApp.get())?.assets?.list("mmj/shaders") ?: arrayOf())
+                        .contains("$shaderName.glsl")
+                } catch (_: Throwable) { false }
+                val exists = shaderName.isNotEmpty() && (seeded || inAssets)
                 overrides["pp_shader_name"] = if (exists) shaderName else ""
                 if (!exists && shaderName.isNotEmpty()) {
                     android.util.Log.w("CitraMmjEngine",
@@ -567,15 +575,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 }
             }
             // ★★★ 帧率限制保险（"画面像快进"根治）★★★
-            // MMJ 的 use_frame_limit=false = 不限速（快进）。旧流程退出快进
-            // 时机不对时会在 ini 残留 false，下次启动 loadConfig 读到 →
-            // 游戏全速狂奔（用户反馈"画面有时候像是快进一样"）。
-            // 本次覆盖集没有该键时强制写 true + 用户值/100。
-            if (!overrides.containsKey("use_frame_limit")) {
-                overrides["use_frame_limit"] = "true"
-                if (!overrides.containsKey("frame_limit")) {
-                    overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
-                }
+            //   本轮（v2）：不再写 use_frame_limit=false（运行中无通道能
+            //   恢复，见 currentFrameLimitPct 注释；快进改为 frame_limit
+            //   百分比实现）。这里以用户在 MMJ 设置面板的选择为准
+            //   （默认 enabled），无值时兜底 true；frame_limit 取覆盖集
+            //   里的值（快进路径已带倍速%），缺省用户值/100。
+            overrides["use_frame_limit"] =
+                coreOptions["use_frame_limit"] ?: extra["use_frame_limit"] ?: "true"
+            if (!overrides.containsKey("frame_limit")) {
+                overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
             }
             var applied = 0
             for ((key, value) in overrides) {
@@ -948,12 +956,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             i("layout_option", 0, 0, 3),        // [15] 屏幕布局
             i("accurate_mul_type", 0, 0, 2),    // [16] 精确乘法
             if (customLayout) 1 else 0,         // [17] 自定义布局开关
-            i("frame_limit", 100, 1, 200),      // [18] 帧率上限 %（核心内 max(v,1)）
+            // ★ [18] 帧率上限 %：快进中 = 倍速%（见 currentFrameLimitPct
+            //   注释：setRunningSettings 不写 use_frame_limit，运行时速度
+            //   只能靠本槽控制 —— 快进也必须推高百分比，不能不推）。
+            currentFrameLimitPct(),              // [18] 帧率上限 %（核心内 max(v,1)）
             0                                   // [19] 投屏（关）
         )
     }
 
-    /** 推送运行时设置到核心（通道 2）。快进中不推（避免给快进限速）。 */
+    /** 推送运行时设置到核心（通道 2）。值全部来自 currentFrameLimitPct 等
+     *  FF 感知计算，快进中推送也安全（[18] = 倍速%，不会给快进封顶）。 */
     private fun pushRunningSettingsNow() {
         try {
             val arr = buildRunningSettingsArray()
@@ -968,7 +980,11 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     /**
      * 运行时设置推送看护线程：轮询 IsRunning（最多 ~20s），核心进入模拟
-     * 主循环后再等 600ms（越过引导期），然后推送一次运行时设置。
+     * 主循环后再等 600ms（越过引导期），然后首次推送；之后每 5s 重推
+     * 一次共 6 次（30s 窗口）—— 防核心启动后期任何内部 Config::Load/
+     * 状态重置把推送值洗掉（偶发"开局正常、中途狂奔"的最后保险）。
+     * setRunningSettings 幂等（同一值重写无副作用，SettingUpdate 只置
+     * 标志位下一帧 ApplySetting 消费，实测开销可忽略）。
      */
     private fun startRuntimeSettingsPusher() {
         val pusher = Thread({
@@ -980,9 +996,19 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 val isRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
                 if (isRunning) {
                     try { Thread.sleep(600) } catch (_: InterruptedException) { return@Thread }
-                    // 快进中不推（frame_limit 会给快进限速）；退出快进时
-                    // applyFastForwardConfig 会重新推送。
-                    if (running.get() && _ffSpeed <= 0) pushRunningSettingsNow()
+                    if (!running.get()) return@Thread
+                    // ★ 快进中也照推：[18] 槽已是倍速%（currentFrameLimitPct），
+                    //   推送不会给快进封顶（旧代码这里跳过是 [18] 恒写 100
+                    //   时代的遗留防御，现已无必要）。
+                    pushRunningSettingsNow()
+                    // 周期重推（30s 看护窗口）
+                    var rePush = 0
+                    while (rePush < 6 && running.get() && !Thread.currentThread().isInterrupted) {
+                        try { Thread.sleep(5000) } catch (_: InterruptedException) { return@Thread }
+                        if (!running.get()) return@Thread
+                        pushRunningSettingsNow()
+                        rePush++
+                    }
                     return@Thread
                 }
             }
@@ -1207,36 +1233,51 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     /**
-     * 快进：写 frame_limit / use_frame_limit 到 ini（MMJ 无运行时变速 JNI；
-     * use_frame_limit=false = 不限速）。核心启动时读 ini 生效 —— 快进
-     * 效果同"下次启动生效"（与设置面板提示一致）。
+     * ★★★ 当前帧率上限百分比（本轮 v2 新增，根治"偶尔 2 倍速"）★★★
      *
+     * 快进中 = 倍速 × 100（如 6x → 600%，效果 = 不限速狂奔：DoFrameLimiting
+     * 的 sleep_scale=6，设备跑不到 6x 就等于不限）；非快进 = 用户的
+     * frame_limit 设置（默认 100%）。
+     *
+     * 【为什么不再用 use_frame_limit=false 做快进】上游 main_android.cpp 实证：
+     *   setRunningSettings 只写 frame_limit（Settings::values.frame_limit =
+     *   max(arr[18],1)），【不写 use_frame_limit】；use_frame_limit 仅在 Run()
+     *   启动时从 ini 读一次，运行中无任何 JNI 通道可改。旧方案进快进把
+     *   use_frame_limit=false 写进 ini → 退出快进 ini 虽改回 true，但
+     *   【运行时结构体仍是 false】且 loadConfig() 只重读注册表 →
+     *   DoFrameLimiting 直接 return → 整局不限速（= 用户反馈"偶尔 2 倍速，
+     *   偶尔正常"：是否复现取决于本局是否用过快进按钮，看起来像随机的）。
+     * 现在 use_frame_limit 恒 true，速度完全由 frame_limit% 控制（这正是
+     * 原版运行时设置面板的百分比滑杆同款机制）。
+     */
+    private fun currentFrameLimitPct(): Int =
+        if (_ffSpeed > 0) (_ffSpeed * 100).coerceIn(100, 60000)
+        else (coreOptions["frame_limit"]?.toIntOrNull() ?: 100).coerceIn(1, 60000)
+
+    /**
+     * 快进：写 frame_limit = 倍速% 到 ini（通道 1）+ setRunningSettings
+     * 运行时推送（通道 2，即时生效）。
+     *
+     * ★★ 绝不写 use_frame_limit=false（见 currentFrameLimitPct 注释：
+     *   运行中无通道能把它改回 true，退出快进后整局 2 倍速）。
      * ★ 旧实现经 setConfigBoolean("use_frame_limit")/setConfigInteger(
      *   "frame_limit") 下发 —— 两键都不在 JNI 分发器接受集内 → brk #1
-     *   SIGTRAP 闪退。改为 ini 文件写入（原版设置编辑器同款机制）。
+     *   SIGTRAP 闪退（早已改 ini 文件写入）。
      */
     private fun applyFastForwardConfig() {
         synchronized(lifecycleLock) {
             if (!_loaded) return
-            writeMmjIniLocked(
-                if (_ffSpeed > 0) mapOf("use_frame_limit" to "false")
-                else mapOf(
-                    // ★ 退出快进恢复【用户设置值】（旧实现硬编码 100，会覆盖
-                    //   用户在设置里选的帧率上限百分比）。
-                    "use_frame_limit" to (coreOptions["use_frame_limit"] ?: "true"),
-                    "frame_limit" to (coreOptions["frame_limit"] ?: "100")
-                )
-            )
-            // ★ 快进开关即时生效：重读 ini + 通知核心（MMJ 帧率限制由核心
-            //   每帧消费 config，loadConfig 后立即生效，无需重启）。
+            val target = currentFrameLimitPct()
+            writeMmjIniLocked(mapOf(
+                "use_frame_limit" to "true",
+                "frame_limit" to target.toString()
+            ))
+            // 重读 ini（注册表/下次启动视角保持一致）+ 通道 2 即时生效：
+            // setRunningSettings 直写 Settings::values.frame_limit 并触发
+            // VideoCore::SettingUpdate()（下一帧 ApplySetting 消费）。
             try { CitraMmjNative.lib.loadConfig() } catch (_: Throwable) {}
-            // ★ 本轮新增：退出快进时经通道 2 重推运行时 frame_limit（与
-            //   启动推送同款），双保险恢复限速；进入快进不推（运行时
-            //   frame_limit 会给快进封顶）。
-            if (_ffSpeed <= 0) {
-                val isRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
-                if (isRunning) pushRunningSettingsNow()
-            }
+            val isRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
+            if (isRunning) pushRunningSettingsNow()
         }
     }
 

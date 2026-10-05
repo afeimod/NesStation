@@ -8,65 +8,68 @@ import android.hardware.SensorManager
 import android.view.Surface
 
 /**
- * ★★ 手机体感 → Wii 倾斜/挥动/摇晃模拟（V2 重写：修旧版"偶尔生效/无作用"问题）★★
+ * ★★★ V3 重写（本轮，回应用户"wii的手机体感模拟方向不对…手持手机面向自己的，
+ *   也就是横向竖放或者竖向竖放，并不是平放在桌面进行体感而且左右倾斜
+ *   上下晃动自己前后晃动都即可生效，灵敏度要高，特别是左右倾斜，
+ *   一定要注意不是按钮而且往左倾斜不回正就别停止"）★★★
  *
- * 需求原话："并加入手机体感模拟wii体感"，用户反馈："左右倾斜偶尔生效偶尔无效，
- * 前后一样，手机模拟体感毫无作用，没有接入"。
+ * V2 及更早版本的三处根因（全部在本轮根治）：
+ *  1.【单位错】FULL_TILT_G=0.26 注释称"≈15°"，但 Android 加速度计单位
+ *    是 m/s²（静止时 ≈9.81，代码 STATIONARY 检查也以此为证）—— 0.26
+ *    m/s² 对应仅 ~1.6° 就满程！输出瞬间饱和成 0/1 开关 → 手部微小
+ *    姿态漂移即永久占满某个方向（"像按钮"、方向乱、基准冻结后
+ *    反向打不出）——用户描述的全部症状都由此而来。
+ *  2.【方向错】旧模型按"平放桌面"设计（倾角分量制），而用户是
+ *    【面向自己竖持】：推导实证（右手系，绕屏幕法向 +Z 旋转）——
+ *    手机顶部向左倾 = +θ → gx>0，旧代码却把 dX>0 标为"右倾"；
+ *    顶部远离自己（前倾）= gz>0，旧代码却把 dZ>0 标为"后仰"；
+ *    旋转表实际给出 Y_s 向上（ROTATION_90: Y_s=+deviceX=世界上），
+ *    注释误标"Y_s 下"导致上下挥动反向。
+ *  3.【模型错】分量差模型在竖持姿态下饱和特性差；改为【角度制】：
+ *    roll = atan2(gx, gy)（屏幕平面内重力方向角，左倾为正），
+ *    pitch = gz/9.81（前后倚俯分量，顶部远离自己为正）。
+ *    保持倾斜 = 保持输出（角度相对基准恒定）→ "往左倾斜不回正
+ *    就别停止"；静止重校准有门控（四向输出 < 0.10 才重采），
+ *    持续倾斜期间基准绝不追赶。
  *
- * V1 旧版问题诊断：
- *  1. 只用加速度计，没接陀螺仪 → 真正的 3D 旋转追踪不到，只看得到重力方向；
- *  2. 低通滤波 alpha=0.15 过低 → 响应延迟约 250ms，"偶尔生效"的直接根因；
- *  3. DEADZONE=0.06 / FULL_TILT_G=0.55 → 死区太大、满程太难触发；
- *  4. 只推 TILT_F/B/L/R + SWING_F/B 五根轴 → Wii Sports 这类挥拍游戏完全
- *     读不到 SWING_UP/DOWN/LEFT/RIGHT（120-123），挥拍无反应；
- *  5. 完全没推 SHAKE_X/Y/Z（132-134）→ 马里奥赛车 wheelie/抽搐类动作识别不到；
- *  6. 缺少高通分支 → 甩手时被低通滤波吃掉，"挥动毫无作用"。
- *
- * V2 修复：
- *  - 加 TYPE_GYROSCOPE 用于真 3D 旋转追踪（角速度 → 四元积分 → 设备姿态）；
- *  - 加 TYPE_ACCELEROMETER + TYPE_LINEAR_ACCELERATION 双路：前者提取重力（倾斜），
- *    后者直接给挥动/摇晃（无重力分量，灵敏度高）；
- *  - 加高通分支（线性加速度幅值 > 阈值 → 视为挥动/摇动事件）；
- *  - 推 SWING 全方向（F/B/U/D/L/R）+ SHAKE_X/Y/Z（132-134）；
- *  - 参数调优：alpha 0.35（响应快）/ DEADZONE 0.03 / FULL_TILT_G 0.42；
- *  - sink 签名扩展为 11 个 Float（4 tilt + 4 swing + 3 shake）。
- *
- * 屏幕坐标系（旋转后统一）：X_s 右、Y_s 下、Z_s 出屏朝用户。
- *   - turn LEFT  → 重力 -X_s → left > 0
- *   - 顶边前推 → 重力 -Z_s → forward > 0
- *   - 顶边左甩 → 线性加速度 -X_s → swingLeft > 0
+ * 屏幕坐标系（旋转表实证：X_s 右、Y_s 上、Z_s 出屏朝用户）：
+ *   - 左右倾斜（方向盘式，绕 Z_s）：roll > 0 = 左倾 → tiltLeft
+ *   - 前后倚俯（顶部推离/拉近）：pitchFrac > 0 = 前倾 → tiltForward
+ *   - 上下挥动：线性加速度 +Y_s = 上挥 → swingUp
+ *   - 前后推拉：线性加速度 -Z_s = 向前推 → swingForward
  */
 object WiiMotionSensors {
 
-    /** ★★ v1.4 全局灵敏度增益（本轮新增，回应用户"需要使劲摇手机才有
-     *   反应，轻轻的左右前后上下都不能生效"）：
-     *   1.0 = 基准灵敏度；>1 更灵敏（满程所需幅度/阈值按比例缩小）。
-     *   由设置面板「体感灵敏度」写入（默认 1.6 高），存
-     *   PadLayoutStore.wiiMotionSensitivity。增益在各项标尺计算处
-     *   应用（满程/阈值除以增益），并对增益钳位防止退化（满程永不低于
-     *   FULL_TILT_MIN / 阈值永不低于 SWING/SHAKE_THRESHOLD_MIN）。 */
+    /** ★★ v1.4 全局灵敏度增益（设置面板「体感灵敏度」写入，默认 1.6 高）：
+     *   1.0 = 基准；>1 更灵敏（满程所需倾角/阈值按比例缩小）。存
+     *   PadLayoutStore.wiiMotionSensitivity，在各项标尺计算处应用。 */
     @Volatile var sensitivityGain: Float = 1.6f
 
-    /** 倾斜满强度对应的重力分量变化（v1.4 基准 0.26 ≈ 15° 即满程 ——
-     *   v1.3 的 0.42（25°）实测"轻倾无反应"；增益在 clean() 内除）。 */
-    private const val FULL_TILT_G = 0.26f
+    /** ★★★ V3：左右倾斜（方向盘式 roll）满程角度（度）。
+     *   角度制 —— 相对基准（开启时握持角）的偏转。基准 ≈15° 即满程；
+     *   增益在 clean() 内除（1.6 默认 → ~9° 满程，轻倾即大幅输出，
+     *   回应"灵敏度要高，特别是左右倾斜"）。 */
+    private const val FULL_ROLL_DEG = 14.0f
 
-    /** ★★ v1.4 前后轴独立满程（基准 ≈ 10° 满程，v1.3 的 0.30 同步下调；
-     *   手腕俯仰的自然幅度仍小于尺桡偏，保持独立标尺）。 */
-    private const val FULL_TILT_FB_G = 0.18f
+    /** ★★★ V3：前后倚俯（pitch）满程（重力分量比，sin θ）。
+     *   0.28 ≈ 16°；增益同除。*/
+    private const val FULL_PITCH_FRAC = 0.28f
 
-    /** 死区（v1.4 再降：0.02 —— 轻微倾摆即出值）。 */
-    private const val DEADZONE = 0.02f
+    /** 死区：roll 角度制（度）——轻微手抖不触发。 */
+    private const val DEADZONE_ROLL_DEG = 1.0f
+
+    /** 死区：pitch 分量比（≈0.9°）。 */
+    private const val DEADZONE_PITCH = 0.015f
 
     /** ★ 增益下限保护：倾斜满程最低值（防增益过高时标尺退化/噪声满幅）。 */
-    private const val FULL_TILT_MIN = 0.10f
+    private const val FULL_ROLL_MIN_DEG = 7.0f
+    private const val FULL_PITCH_MIN = 0.14f
 
-    /** ★★ v1.3 前后轴快通道滤波系数：前后"晃动"是 100ms 级快速动态动作，
-     *   慢通道 alpha=0.45 会把脉冲峰值削掉约一半（左右"倾斜"是静态保持，
-     *   滤波无衰减）—— 同样动作幅度下前后读数只有左右的一半，这是
-     *   "前后不灵敏"的滤波根源。快通道 0.70（响应 ~30ms）与慢通道
-     *   取大者：静态倾斜由慢通道主导（抗噪），动态晃动由快通道主导（保峰）。 */
-    private const val ALPHA_FB_FAST = 0.70f
+    /** ★ 近平放抑制：屏幕平面内重力 < 此值（m/s²）时 roll 不可信
+     *   （手机平放桌面姿态，非用户约定的竖持模型）—— 按平面内重力
+     *   幅值 2..5 m/s² 线性淡出 roll 输出。 */
+    private const val ROLL_VALID_MAG = 2.0f
+    private const val ROLL_FULL_MAG = 5.0f
 
     /** 挥动触发阈值（线性加速度幅值，m/s²）。v1.4 基准 0.8（v1.3 的 1.5
      *   实测"轻甩无反应"）；增益在 clean() 内除。 */
@@ -143,14 +146,12 @@ object WiiMotionSensors {
     private var sensorManager: SensorManager? = null
     private var listener: SensorEventListener? = null
 
-    /** 基准姿态（开启时的重力屏幕分量）。 */
+    /** 基准姿态（V3 角度制）：[0] = 基准 roll（度，屏幕平面内重力角），
+     *  [1] = 基准 pitch 分量比（gz/9.81），[2] = 基准平面内重力幅值（诊断用）。 */
     private val baseGravity = FloatArray(3)
 
-    /** 低通滤波后的重力（屏幕坐标系）。 */
+    /** 低通滤波后的重力（屏幕坐标系：X_s 右、Y_s 上、Z_s 出屏）。 */
     private val smoothed = FloatArray(3)
-
-    /** ★★ v1.3 前后轴快通道滤波状态（仅 Z 分量，见 ALPHA_FB_FAST 注释）。 */
-    private val smoothedFast = FloatArray(3)
 
     /** 上一帧线性加速度（用于摇动检测的导数计算）。 */
     private val lastLinAccel = FloatArray(3)
@@ -194,7 +195,6 @@ object WiiMotionSensors {
         hasLinearAccel = linAcc != null
         hasGyro = gyro != null
         smoothed.fill(0f)
-        smoothedFast.fill(0f)
         lastLinAccel.fill(0f)
         lastGyro.fill(0f)
 
@@ -225,7 +225,15 @@ object WiiMotionSensors {
         }
     }
 
-    /** 处理加速度计：提取重力（低通）→ 算倾斜。 */
+    /**
+     * 处理加速度计：提取重力（低通）→ 角度制算倾斜（V3 面向用户竖持模型）。
+     *
+     * 屏幕坐标系（旋转表实证，X_s 右、Y_s 上、Z_s 出屏朝用户）：
+     *   - 左右倾斜（方向盘，绕 Z_s）：顶部向左 = 屏幕平面重力角 +θ
+     *     （gx_s > 0）→ rollDev > 0 = 左倾 → tiltLeft
+     *   - 前后倚俯：顶部推离自己 = gz_s > 0 → pitchDev > 0 = 前倾 → tiltForward
+     *   （旧版按"平放桌面"模型标注，左右/前后/上下三处方向全反，本轮修正）
+     */
     private fun handleAccel(
         event: SensorEvent,
         rotation: Int,
@@ -244,78 +252,81 @@ object WiiMotionSensors {
             else -> { gxS = gx; gyS = gy }
         }
         val gzS = gz
-        // ★ 调优：alpha 0.45（旧版 0.35）→ 响应延迟 ~60ms，进一步降低
-        //   "偶尔生效"感；仍保留足够滤波抑制手抖噪声。
-        val alpha = 0.45f
+        // ★ 低通重力估计：alpha 0.5（50Hz 传感器 ≈ 40ms 响应）—— 方向盘式
+        //   转向对延迟敏感，轻倾即跟手（回应"灵敏度要高，特别是左右倾斜"）。
+        val alpha = 0.5f
         smoothed[0] = alpha * gxS + (1 - alpha) * smoothed[0]
         smoothed[1] = alpha * gyS + (1 - alpha) * smoothed[1]
         smoothed[2] = alpha * gzS + (1 - alpha) * smoothed[2]
-        // ★★ v1.3 前后快通道（见 ALPHA_FB_FAST 注释）
-        smoothedFast[0] = ALPHA_FB_FAST * gxS + (1 - ALPHA_FB_FAST) * smoothedFast[0]
-        smoothedFast[1] = ALPHA_FB_FAST * gyS + (1 - ALPHA_FB_FAST) * smoothedFast[1]
-        smoothedFast[2] = ALPHA_FB_FAST * gzS + (1 - ALPHA_FB_FAST) * smoothedFast[2]
-        // ★★ 基线收敛（本轮根治）：启动后先积累 CALIB_SAMPLES 个原始样本
-        //   求均值作为基准，期间不输出任何倾斜 —— 旧实现第 1 个事件就把
-        //   未收敛的 smoothed（从 0 起步只滤了一拍 ≈ 0.45g）当基准，
-        //   收敛期间 smoothed-base 漂移高达 0.55g > FULL_TILT_G →
-        //   开局假性满幅倾斜，把游戏输入饱和占死（按钮“按好久才生效”
-        //   与传感器假倾斜与按钮对向对消（“偶尔失效”）的双重根源）。
+        // ★★ 基线收敛：启动后先积累 CALIB_SAMPLES 个原始样本求均值，
+        //   期间不输出任何倾斜 —— 防开局滤波器未收敛导致假性满幅。
         if (!calibrated) {
             calibSum[0] += gxS; calibSum[1] += gyS; calibSum[2] += gzS
             calibCount++
             if (calibCount < CALIB_SAMPLES) {
                 return   // 未收敛：不输出、不参与重校准
             }
-            baseGravity[0] = calibSum[0] / calibCount
-            baseGravity[1] = calibSum[1] / calibCount
-            baseGravity[2] = calibSum[2] / calibCount
+            val meanX = calibSum[0] / calibCount
+            val meanY = calibSum[1] / calibCount
+            val meanZ = calibSum[2] / calibCount
+            // V3：基准 = 开启时的握持角（角度制，用户自然握姿即可，
+            //   不必绝对竖直）；[0]=基准 roll（度），[1]=基准 pitch 分量比，
+            //   [2]=平面内重力幅值（诊断）。
+            baseGravity[0] = rollDegOf(meanX, meanY)
+            baseGravity[1] = meanZ / 9.81f
+            baseGravity[2] = kotlin.math.sqrt(meanX * meanX + meanY * meanY)
             calibrated = true
             stationarySinceMs = 0L
-            // 收敛后首个事件：把滤波器也预热到真实重力，避免首拍跳变
-            smoothed[0] = baseGravity[0]
-            smoothed[1] = baseGravity[1]
-            smoothed[2] = baseGravity[2]
-            smoothedFast[0] = baseGravity[0]
-            smoothedFast[1] = baseGravity[1]
-            smoothedFast[2] = baseGravity[2]
+            // 收敛后首个事件：把滤波器预热到真实重力，避免首拍跳变
+            smoothed[0] = meanX
+            smoothed[1] = meanY
+            smoothed[2] = meanZ
             return
         }
-        // 倾斜：相对基准的重力分量差
-        // ★ v1.4：满程除以灵敏度增益（gain≥1 → 满程所需倾角更小），
-        //   满程钳位 ≥ FULL_TILT_MIN 防标尺退化。
-        fun clean(v: Float): Float {
-            val a = kotlin.math.abs(v)
-            val full = (FULL_TILT_G / sensitivityGain).coerceAtLeast(FULL_TILT_MIN)
-            return if (a < DEADZONE) 0f
-            else ((a - DEADZONE) / (full - DEADZONE)).coerceIn(0f, 1f)
+        // ===== V3 角度制倾斜（面向用户竖持模型，推导见文件头）=====
+        // 左右倾斜（方向盘式 roll）：屏幕平面内重力角，顶部向左 = 正
+        val inPlaneMag = kotlin.math.sqrt(
+            smoothed[0] * smoothed[0] + smoothed[1] * smoothed[1])
+        val rollNow = rollDegOf(smoothed[0], smoothed[1])
+        var rollDev = rollNow - baseGravity[0]
+        if (rollDev > 180f) rollDev -= 360f
+        if (rollDev < -180f) rollDev += 360f
+        // 近平放（屏幕朝上/下）时平面内重力太小，roll 角不可信 → 线性淡出
+        val rollFade = ((inPlaneMag - ROLL_VALID_MAG) /
+            (ROLL_FULL_MAG - ROLL_VALID_MAG)).coerceIn(0f, 1f)
+        // ★ v3：满程角度除以灵敏度增益（1.6 默认 → ~9° 满程，轻倾即大幅
+        //   输出），满程钳位 ≥ FULL_ROLL_MIN_DEG 防标尺退化。
+        fun cleanRoll(devDeg: Float): Float {
+            val a = kotlin.math.abs(devDeg)
+            val full = (FULL_ROLL_DEG / sensitivityGain).coerceAtLeast(FULL_ROLL_MIN_DEG)
+            val v = if (a < DEADZONE_ROLL_DEG) 0f
+            else ((a - DEADZONE_ROLL_DEG) / (full - DEADZONE_ROLL_DEG)).coerceIn(0f, 1f)
+            return v * rollFade
         }
-        // ★★ v1.3 前后轴：独立满程（FULL_TILT_FB_G）+ 快慢双通道取大。
-        //   慢通道主导静态倾斜（抗噪），快通道保住动态晃动的峰值
-        //   （0.45 低通对 100ms 脉冲削峰 ~50%，是"前后不灵敏"主因）。
-        //   v1.4：同除增益（前后轴是"轻晃不生效"重灾区）。
-        fun cleanFb(v: Float): Float {
+        val tL = cleanRoll(rollDev)     // rollDev > 0 = 左倾（V3 推导修正）
+        val tR = cleanRoll(-rollDev)
+
+        // 前后倚俯（pitch 分量比）：顶部推离自己 = 正 = 前倾（V3 修正）
+        val pitchNow = smoothed[2] / 9.81f
+        val pitchDev = pitchNow - baseGravity[1]
+        fun cleanPitch(v: Float): Float {
             val a = kotlin.math.abs(v)
-            val full = (FULL_TILT_FB_G / sensitivityGain).coerceAtLeast(FULL_TILT_MIN)
-            return if (a < DEADZONE) 0f
-            else ((a - DEADZONE) / (full - DEADZONE)).coerceIn(0f, 1f)
+            val full = (FULL_PITCH_FRAC / sensitivityGain).coerceAtLeast(FULL_PITCH_MIN)
+            return if (a < DEADZONE_PITCH) 0f
+            else ((a - DEADZONE_PITCH) / (full - DEADZONE_PITCH)).coerceIn(0f, 1f)
         }
-        val dX = smoothed[0] - baseGravity[0]   // >0 = 右倾
-        val dZ = smoothed[2] - baseGravity[2]   // <0 = 前倾（顶边前推）
-        val dZf = smoothedFast[2] - baseGravity[2]   // 快通道（前后专用）
-        val tR = clean(dX)
-        val tL = clean(-dX)
-        val tF = maxOf(cleanFb(-dZ), cleanFb(-dZf))
-        val tB = maxOf(cleanFb(dZ), cleanFb(dZf))
+        val tF = cleanPitch(pitchDev)
+        val tB = cleanPitch(-pitchDev)
         state.tiltRight = tR
         state.tiltLeft = tL
         state.tiltForward = tF
         state.tiltBackward = tB
-        // ★★ 静止重校准（防漂移，本轮加固）：
+        // ★★ 静止重校准（防漂移）：
         //   1) 加速度接近纯重力（总幅值 ≈ 9.8±0.35）且持续 ≥ RECENTER_HOLD_MS；
-        //   2) ★ 新增门控：当前四向输出全部 < RECENTER_MAX_OUTPUT ——
-        //      用户正在保持倾斜时绝不重采基准（防基准追赶导致的
-        //      “持续倾斜逐渐衰减/反向失灵”）；
-        //   3) ★ 新增缓冲：重采后 500ms 内不再次重采（防高频抖动）。
+        //   2) 门控：当前四向输出全部 < RECENTER_MAX_OUTPUT ——
+        //      用户正在保持倾斜时绝不重采基准（角度制下保持倾斜 =
+        //      保持输出，"往左倾斜不回正就别停止"的保证）；
+        //   3) 重采 = 以当前角度为新基准。
         val mag = kotlin.math.sqrt(gxS * gxS + gyS * gyS + gzS * gzS)
         val nearStationary = kotlin.math.abs(mag - 9.81f) < STATIONARY_ACCEL
         if (nearStationary && tL < RECENTER_MAX_OUTPUT && tR < RECENTER_MAX_OUTPUT &&
@@ -323,9 +334,9 @@ object WiiMotionSensors {
             val now = android.os.SystemClock.uptimeMillis()
             if (stationarySinceMs == 0L) stationarySinceMs = now
             if (now - stationarySinceMs >= RECENTER_HOLD_MS) {
-                baseGravity[0] = smoothed[0]
-                baseGravity[1] = smoothed[1]
-                baseGravity[2] = smoothed[2]
+                baseGravity[0] = rollNow
+                baseGravity[1] = pitchNow
+                baseGravity[2] = inPlaneMag
                 stationarySinceMs = now
             }
         } else {
@@ -342,6 +353,10 @@ object WiiMotionSensors {
         }
         try { sink(state) } catch (_: Throwable) {}
     }
+
+    /** 屏幕平面内重力方向角（度）。竖持时 ≈0；顶部向左倾为正（V3 推导）。 */
+    private fun rollDegOf(gxS: Float, gyS: Float): Float =
+        Math.toDegrees(kotlin.math.atan2(gxS, gyS).toDouble()).toFloat()
 
     /** 处理线性加速度（去重力后的纯运动）：驱动挥动。 */
     private fun handleLinAccel(
@@ -435,7 +450,12 @@ object WiiMotionSensors {
         try { sink(state) } catch (_: Throwable) {}
     }
 
-    /** 由线性加速度分量更新挥动状态（4 向 + 推/拉）。 */
+    /**
+     * 由线性加速度分量更新挥动状态（4 向 + 推/拉）。
+     * ★★ V3 方向修正：旋转表实证 Y_s 向上（非旧注释误标的"Y_s 下"）——
+     *   lyS > 0 = 向上甩（加速度沿 +Y_s）→ swingUp；旧实现上下颠倒。
+     *   lzS > 0 = 向自己拉（Z_s 出屏朝用户）→ swingBackward（不变）。
+     */
     private fun updateSwingFromLinear(
         lxS: Float, lyS: Float, lzS: Float,
         state: MotionState
@@ -449,17 +469,14 @@ object WiiMotionSensors {
             else ((a - th) / (full - th))
                 .coerceIn(0f, 1f)
         }
-        // 屏幕坐标：X_s 右、Y_s 下、Z_s 出屏
-        //   lxS > 0 = 右甩；lyS > 0 = 下甩；lzS > 0 = 向自己拉（后拉）
-        // ★★ v1.3：F/B（推/拉）用独立低阈值（SWING_FB_*），并对消重力泄漏 ——
-        //   手腕俯仰时 TYPE_LINEAR_ACCELERATION 的 Z 轴常混入重力分量残留，
-        //   只取比慢通道重力估计大的部分（正值化），进一步降噪。
+        // 屏幕坐标（V3 实证）：X_s 右、Y_s 上、Z_s 出屏朝用户
+        //   lxS > 0 = 右甩；lyS > 0 = 上甩；lzS > 0 = 向自己拉
         state.swingRight = clean(lxS)
         state.swingLeft = clean(-lxS)
-        state.swingDown = clean(lyS)
-        state.swingUp = clean(-lyS)
-        state.swingForward = cleanFbSwing(-lzS)   // 顶边前推
-        state.swingBackward = cleanFbSwing(lzS)   // 顶边后拉
+        state.swingUp = clean(lyS)       // ★ V3：Y_s 向上，旧实现颠倒
+        state.swingDown = clean(-lyS)
+        state.swingForward = cleanFbSwing(-lzS)   // 向前推（远离自己）
+        state.swingBackward = cleanFbSwing(lzS)   // 向自己拉
     }
 
     /** ★★ v1.3 推/拉独立标尺（见 SWING_FB_THRESHOLD 注释）。
@@ -485,7 +502,6 @@ object WiiMotionSensors {
         calibCount = 0
         calibSum.fill(0f)
         smoothed.fill(0f)
-        smoothedFast.fill(0f)
         hasLinearAccel = false
         hasGyro = false
         stationarySinceMs = 0L

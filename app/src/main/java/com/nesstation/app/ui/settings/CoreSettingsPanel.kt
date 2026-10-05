@@ -1814,12 +1814,16 @@ fun CoreSettingsPanel(
                     //   存在的 .glsl 一一对应 —— 原生核心对不存在的着色器名
                     //   打开 .glsl 失败会直接空指针崩溃（旧列表里的 Anime4K
                     //   并无对应文件，选了必炸）。已增补 FXAA_natural。
+                    // ★ 本轮新增 xBR / 4xBR（Hyllian 原版移植，与全局滤镜
+                    //   xbr/4xbr 同款效果；也可单独选用）。
                     DropdownRow("后处理着色器",
                         listOf("(off)" to "关闭 (默认)", "bloom" to "泛光",
                                "brighten" to "提亮", "cartoon" to "卡通", "film" to "胶片",
                                "spline36" to "样条缩放", "FXAA" to "FXAA 抗锯齿",
                                "FXAA_natural" to "FXAA 自然锐化",
-                               "Cel" to "赛璐璐", "Dot" to "点阵", "SEDI" to "SEDI 边缘导向"),
+                               "Cel" to "赛璐璐", "Dot" to "点阵", "SEDI" to "SEDI 边缘导向",
+                               "xBR" to "xBR 像素平滑 (2x)",
+                               "4xBR" to "4xBR 像素平滑 (4x 强化)"),
                         padLayout.mmjPpShaderName
                     ) { updateLayout(padLayout.copy {mmjPpShaderName = it}) }
                     DropdownRow("屏幕呈现模式",
@@ -1987,14 +1991,15 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭", "enabled" to "开启 (默认·重力+陀螺仪模拟体感)"),
                         if (padLayout.wiiMotionSensor) "enabled" else "disabled"
                     ) { updateLayout(padLayout.copy {wiiMotionSensor = it == "enabled"}) }
-                    // ★ v1.4 体感灵敏度（回应用户"需要使劲摇手机才有反应，
-                    //   轻轻的左右前后上下都不能生效"）：满程所需倾角/挥动
-                    //   阈值按增益缩小。默认 1.6 高灵敏。
+                    // ★ v3 角度制模型（本轮重写）：手机【面向自己竖持】（横/
+                    //   竖皆可）——左右倾斜=方向盘（保持倾斜=持续转向，回正
+                    //   才停）；上下晃动/前后推拉=挥动；轻晃/抖动=摇晃。
+                    //   满程角度随增益缩小：1.0=14° / 1.6≈9°(默认) / 2.2≈6.5°。
                     DropdownRow("体感灵敏度",
                         listOf(
-                            "1.0" to "标准 (基准)",
-                            "1.6" to "高 (默认, 轻倾/轻甩即生效)",
-                            "2.2" to "极高 (大幅动作才不误触时反向调低)"),
+                            "1.0" to "标准 (满程 14°)",
+                            "1.6" to "高 (默认, 满程 ≈9°, 轻倾即满)",
+                            "2.2" to "极高 (满程 ≈6.5°, 微倾即反应)"),
                         padLayout.wiiMotionSensitivity
                     ) { updateLayout(padLayout.copy {wiiMotionSensitivity = it}) }
                     Text(

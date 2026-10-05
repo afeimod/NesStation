@@ -314,20 +314,30 @@ fun NeonSettingsScreen(
                         .fillMaxHeight()
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
+                    // ★★★ 闪退根治（本轮，回应用户"总设置里所有核心设置都进不去，
+                    //   都会闪退"）★★★
+                    // CoreSettingsPanel 内部是 LazyColumn —— 绝不能放进带
+                    // verticalScroll 的 Column（子项以无穷高度约束测量，
+                    // Compose 运行时直接抛 IllegalStateException：
+                    // "Vertically scrollable component was measured with an
+                    // infinity maximum height constraints"）。旧结构把核心
+                    // 子页也包进了下面的滚动 Column → Neon 模式下点任何一个
+                    // 核心设置都闪退（FSD 设置页没包，所以只有 Neon 崩）。
+                    // 现在核心子页直接铺在 Box 里（自滚动），分类内容才用
+                    // 滚动 Column。
+                    if (selectedCore != null) {
+                        CoreSettingsPanel(
+                            platform = selectedCore!!,
+                            padLayout = padLayout,
+                            updateLayout = ::updateLayout
+                        )
+                    } else {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
                     ) {
                         when {
-                            // --- 核心子页（复用 CoreSettingsPanel，共享行已 Neon 化）---
-                            selectedCore != null -> {
-                                CoreSettingsPanel(
-                                    platform = selectedCore!!,
-                                    padLayout = padLayout,
-                                    updateLayout = ::updateLayout
-                                )
-                            }
                             // --- 分类内容 ---
                             selectedCategory == "appearance" -> NeonSettingsSection("外观") {
                                 NeonDropdownRow(
@@ -504,6 +514,7 @@ fun NeonSettingsScreen(
                             }
                         }
                     }
+                    } // else（非核心子页）分类内容滚动容器
                 }
             }
         }
