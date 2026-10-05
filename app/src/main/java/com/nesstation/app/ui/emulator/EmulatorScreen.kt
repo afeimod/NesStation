@@ -2144,9 +2144,15 @@ fun EmulatorScreen(
             rotation
         } catch (_: Throwable) { android.view.Surface.ROTATION_0 }
         androidx.compose.runtime.DisposableEffect(
-            padLayout.wiiMotionSensor, engine, displayRotation
+            padLayout.wiiMotionSensor, engine, displayRotation,
+            padLayout.wiiMotionSensitivity
         ) {
             if (padLayout.wiiMotionSensor) {
+                // ★ v1.4：应用体感灵敏度增益（设置面板「体感灵敏度」，
+                //   默认 1.6 高 —— 回应"需要使劲摇手机才有反应"）。
+                //   加入 DisposableEffect 键：灵敏度变更即时生效（重启监听）。
+                com.nesstation.app.core.engine.WiiMotionSensors.sensitivityGain =
+                    padLayout.wiiMotionSensitivity.toFloatOrNull() ?: 1.6f
                 val started = com.nesstation.app.core.engine.WiiMotionSensors.start(
                     motionCtx, displayRotation
                 ) { state ->
@@ -4832,7 +4838,9 @@ private fun applyCoreOptionsInner(
                 engine.setCoreOption("hw_gs_mode", layout.mmjHwGsMode)
                 engine.setCoreOption("accurate_mul_type", layout.mmjAccurateMulType)
                 engine.setCoreOption("shadow_rendering", if (layout.mmjShadowRendering == "enabled") "true" else "false")
-                engine.setCoreOption("force_texture_filter", if (layout.mmjForceTextureFilter == "enabled") "true" else "false")
+                // ★ force_texture_filter 是 u8 枚举（0=跟随游戏/1=强制），
+                //   旧版发 "true"/"false" 字符串核心解析失败 → 永远不生效。
+                engine.setCoreOption("force_texture_filter", if (layout.mmjForceTextureFilter == "enabled") "1" else "0")
                 engine.setCoreOption("mag_filter", layout.mmjMagFilter)
                 engine.setCoreOption("min_filter", layout.mmjMinFilter)
                 engine.setCoreOption("custom_textures", if (layout.mmjCustomTextures == "enabled") "true" else "false")
@@ -13744,9 +13752,14 @@ private fun SettingsPanel(
                         padLayout.mmjResolution
                     ) { onLayoutChange(padLayout.copy {mmjResolution = it}) }
                     DropdownSetting("着色器类型",
-                        listOf("0" to "标准", "1" to "标准+缓存 (默认, 推荐)", "2" to "分离 (兼容)"),
+                        listOf("0" to "GL 标准", "1" to "GL 标准+缓存 (默认, 推荐)", "2" to "GL 分离 (兼容)"),
                         padLayout.mmjShaderType
                     ) { onLayoutChange(padLayout.copy {mmjShaderType = it}) }
+                    // ★ 说明：MMJ 核心无 GL/VK 渲染器切换（so 无 graphics_api
+                    //   键，原版亦无此选项；旧 UI 把 shader_type 错标成
+                    //   GL/Vulkan 造成错觉）。核心固定 GL(ES) 渲染。
+                    Text("MMJ 固定 GL 渲染，无 Vulkan 切换（此项只控制着色器缓存/分离模式）",
+                        color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     SwitchSetting("硬件着色器", "PICA 着色器经 GPU 生成，性能关键",
                         padLayout.mmjUseHwShader == "enabled"
                     ) { onLayoutChange(padLayout.copy {mmjUseHwShader = if (it) "enabled" else "disabled"}) }
@@ -13915,7 +13928,7 @@ private fun SettingsPanel(
                         padLayout.mmjUseGameConfig
                     ) { onLayoutChange(padLayout.copy {mmjUseGameConfig = it}) }
                     DropdownSetting("摄像头",
-                        listOf("blank" to "无 (默认)", "still_image" to "静态图片", "from_device" to "设备摄像头"),
+                        listOf("blank" to "无 (默认)", "image" to "静态图片", "camera" to "设备摄像头"),
                         padLayout.mmjCameraType
                     ) { onLayoutChange(padLayout.copy {mmjCameraType = it}) }
                 } else {

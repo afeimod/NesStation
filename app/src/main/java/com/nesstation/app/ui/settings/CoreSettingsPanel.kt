@@ -1776,9 +1776,16 @@ fun CoreSettingsPanel(
                         padLayout.mmjAsyncShaderCompile
                     ) { updateLayout(padLayout.copy {mmjAsyncShaderCompile = it}) }
                     DropdownRow("着色器类型",
-                        listOf("0" to "标准", "1" to "标准+缓存 (默认, 推荐)", "2" to "分离 (兼容)"),
+                        listOf("0" to "GL 标准", "1" to "GL 标准+缓存 (默认, 推荐)", "2" to "GL 分离 (兼容)"),
                         padLayout.mmjShaderType
                     ) { updateLayout(padLayout.copy {mmjShaderType = it}) }
+                    // ★ 说明（回应用户"gl和vk咋没了"）：反编译实证 MMJ 核心
+                    //   【没有 GL/VK 渲染器切换】—— so 内无 graphics_api 键、
+                    //   原版 MMJ 设置也没有该选项（shader_type 是着色器缓存/
+                    //   分离模式开关，旧 UI 把它错标成 "GL/Vulkan" 才造成
+                    //   有渲染器切换的错觉）。核心固定 GL(ES) 渲染。
+                    Text("MMJ 核心固定 GL 渲染，无 Vulkan 切换（核心与原版 MMJ 均无此选项；此项只控制着色器缓存/分离模式）",
+                        color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownRow("几何着色器 (hw_gs_mode)",
                         listOf("0" to "0 关闭 (默认)", "1" to "1 兼容", "2" to "2 完整"),
                         padLayout.mmjHwGsMode
@@ -1943,7 +1950,7 @@ fun CoreSettingsPanel(
                         padLayout.mmjUseGameConfig
                     ) { updateLayout(padLayout.copy {mmjUseGameConfig = it}) }
                     DropdownRow("摄像头",
-                        listOf("blank" to "无 (默认)", "still_image" to "静态图片", "from_device" to "设备摄像头"),
+                        listOf("blank" to "无 (默认)", "image" to "静态图片", "camera" to "设备摄像头"),
                         padLayout.mmjCameraType
                     ) { updateLayout(padLayout.copy {mmjCameraType = it}) }
                 }
@@ -1980,6 +1987,16 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭", "enabled" to "开启 (默认·重力+陀螺仪模拟体感)"),
                         if (padLayout.wiiMotionSensor) "enabled" else "disabled"
                     ) { updateLayout(padLayout.copy {wiiMotionSensor = it == "enabled"}) }
+                    // ★ v1.4 体感灵敏度（回应用户"需要使劲摇手机才有反应，
+                    //   轻轻的左右前后上下都不能生效"）：满程所需倾角/挥动
+                    //   阈值按增益缩小。默认 1.6 高灵敏。
+                    DropdownRow("体感灵敏度",
+                        listOf(
+                            "1.0" to "标准 (基准)",
+                            "1.6" to "高 (默认, 轻倾/轻甩即生效)",
+                            "2.2" to "极高 (大幅动作才不误触时反向调低)"),
+                        padLayout.wiiMotionSensitivity
+                    ) { updateLayout(padLayout.copy {wiiMotionSensitivity = it}) }
                     Text(
                         "虚拟按键随所选控制器变化：GameCube 手柄 → GC 键组；" +
                         "经典手柄 → ABXY + ZL/ZR + 双摇杆；双节棍 → 竖持 Wiimote + C/Z + 摇杆；" +

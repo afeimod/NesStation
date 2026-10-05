@@ -329,7 +329,12 @@ object CoverFetcher {
     )
 
     /** 平台 → libretro 缩略图系统目录名（null = 无源，跳过）。 */
-    fun libretroSystemDir(platform: GamePlatform, romFileName: String?): List<String> {
+    fun libretroSystemDir(
+        platform: GamePlatform,
+        romFileName: String?,
+        romPathFull: String? = null,
+        ctx: Context? = null
+    ): List<String> {
         return when (platform) {
             GamePlatform.NES -> listOf("Nintendo - Nintendo Entertainment System")
             GamePlatform.SFC -> listOf("Nintendo - Super Nintendo Entertainment System")
@@ -344,13 +349,34 @@ object CoverFetcher {
             GamePlatform.PS2 -> listOf("Sony - PlayStation 2")
             GamePlatform.DC -> listOf("Sega - Dreamcast")
             GamePlatform.N3DS -> listOf("Nintendo - Nintendo 3DS")
-            // NGCWII 双平台共存：按 ROM 扩展名优先猜一个，两个都试。
+            // ★★★ NGCWII 真平台判位（本轮根治 "只读取和搜索ngc，wii也要
+            //   读取和搜索"）：libretro 缩略图库 NGC 与 Wii 是**两个独立
+            //   目录**（用户原话"核心封面网址里好像是分开的"）。旧实现按
+            //   扩展名猜优先级后仍两个目录都搜 —— 但 .iso（NGC/Wii 通
+            //   用主流格式）默认 NGC 优先，Wii 游戏先搜 NGC 索引，模糊
+            //   匹配可能命中错误 NGC 封面（实测 "Super Smash Bros. Brawl"
+            //   在 NGC 索引模糊命中 "Melee" 0.68 ≥ 阈值 → 下载错封面），
+            //   表现为 "只读取和搜索ngc"。
+            //   现在直接读光盘头魔数判位（Wii: 0x5D1C9EA3@0x18 /
+            //   GameCube: 0xC2339F3D@0x1C / WBFS 头），判位成功 → 只搜
+            //   真平台目录（正确封面唯一来源，跨目录只会拿错图）；
+            //   判位失败（压缩格式 rvz/gcz/nkit/ciso 或读不到）→ 退回
+            //   扩展名启发式双目录（原行为）。
             GamePlatform.NGCWII -> {
-                val ext = romFileName?.substringAfterLast('.', "")?.lowercase() ?: ""
-                if (ext in setOf("wbfs", "wad", "dol", "elf", "rvz")) {
-                    listOf("Nintendo - Wii", "Nintendo - GameCube")
-                } else {
-                    listOf("Nintendo - GameCube", "Nintendo - Wii")
+                val disc = if (romPathFull != null && ctx != null) {
+                    detectNgcWiiPlatform(ctx, romPathFull)
+                } else null
+                when (disc) {
+                    "wii" -> listOf("Nintendo - Wii")
+                    "ngc" -> listOf("Nintendo - GameCube")
+                    else -> {
+                        val ext = romFileName?.substringAfterLast('.', "")?.lowercase() ?: ""
+                        if (ext in setOf("wbfs", "wad", "dol", "elf", "rvz")) {
+                            listOf("Nintendo - Wii", "Nintendo - GameCube")
+                        } else {
+                            listOf("Nintendo - GameCube", "Nintendo - Wii")
+                        }
+                    }
                 }
             }
             // ★ 街机接入修复：libretro 缩略图库确实有 FBNeo/MAME 街机封面
@@ -360,6 +386,52 @@ object CoverFetcher {
             // JAVA/DOS 仍无源 —— 跳过（Java 已有内置 icon，DOS 用占位）
             else -> emptyList()
         }
+    }
+
+    /**
+     * ★★ NGC/Wii 光盘真平台判位（本轮新增）。
+     *
+     * 读 ROM 头 0x20 字节（真实路径与 content:// SAF URI 均支持）：
+     *   - Wii 光盘：魔数 0x5D1C9EA3（大端）@ 0x18 —— Wii Brew 官方 "Wii
+     *     magic word"；
+     *   - GameCube 光盘：魔数 0xC2339F3D（大端）@ 0x1C —— 官方 disc header
+     *     magic；
+     *   - WBFS 容器：文件头 "WBFS"（Wii 专有格式）；
+     *   - 读不到 / 压缩容器（RVZ/GCZ/NKIT/CISO 自有头）→ null（调用方
+     *     退回扩展名启发式）。
+     */
+    private fun detectNgcWiiPlatform(context: Context, romPath: String): String? {
+        if (romPath.isBlank()) return null
+        val head: ByteArray? = try {
+            val stream = if (romPath.startsWith("content://")) {
+                context.contentResolver.openInputStream(android.net.Uri.parse(romPath))
+            } else {
+                java.io.File(romPath).takeIf { it.isFile }?.inputStream()
+            }
+            stream?.use { s ->
+                val buf = ByteArray(0x20)
+                var off = 0
+                while (off < 0x20) {
+                    val n = s.read(buf, off, 0x20 - off)
+                    if (n <= 0) break
+                    off += n
+                }
+                if (off >= 0x20) buf else null
+            }
+        } catch (_: Throwable) { null }
+        if (head == null) return null
+        fun u32be(off: Int): Int =
+            ((head[off].toInt() and 0xFF) shl 24) or
+            ((head[off + 1].toInt() and 0xFF) shl 16) or
+            ((head[off + 2].toInt() and 0xFF) shl 8) or
+            (head[off + 3].toInt() and 0xFF)
+        // WBFS 容器头（Wii 专有转档格式）
+        if (u32be(0) == 0x57424653) return "wii"   // "WBFS"
+        // Wii magic word（disc header @0x18）
+        if (u32be(0x18) == 0x5D1C9EA3) return "wii"
+        // GameCube magic（disc header @0x1C；0xC2339F3D > Int.MAX → toInt() 取同位模式）
+        if (u32be(0x1C) == 0xC2339F3D.toInt()) return "ngc"
+        return null
     }
 
     /**
@@ -527,7 +599,8 @@ object CoverFetcher {
             if (f.exists() && f.length() > 0) return f
         }
         val romFile = game.romPath?.substringAfterLast('/') ?: ""
-        val systemDirs = libretroSystemDir(game.platform, romFile)
+        // ★ 本轮：传入完整 romPath + context —— NGCWII 走光盘魔数真平台判位
+        val systemDirs = libretroSystemDir(game.platform, romFile, game.romPath, context)
         // ★ Java 游戏：JAR 内嵌图标/封面直接提取（J2ME 游戏自带 icon，
         //   上游模拟器均直接读 JAR 内资源）—— 无需联网。
         if (game.platform == GamePlatform.JAVA) {
@@ -1119,7 +1192,8 @@ object CoverFetcher {
     ): List<Pair<File, String>> {
         if (searchNames.isEmpty()) return emptyList()
         val romFile = game.romPath?.substringAfterLast('/') ?: ""
-        val systemDirs = libretroSystemDir(game.platform, romFile)
+        // ★ 本轮：传入完整 romPath + context —— NGCWII 走光盘魔数真平台判位
+        val systemDirs = libretroSystemDir(game.platform, romFile, game.romPath, context)
         if (systemDirs.isEmpty()) return emptyList()
         val results = LinkedHashMap<String, File>() // name -> file（去重）
         val out = ArrayList<Pair<File, String>>()

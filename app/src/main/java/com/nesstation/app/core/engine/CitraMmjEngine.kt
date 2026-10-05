@@ -334,8 +334,21 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      * 键名不在下表 → 只记日志跳过（ini 未知键本来就会被核心忽略，双保险）。
      */
     private val MMJ_INI_SECTION: Map<String, String> = mapOf(
-        // [Renderer] —— 原版设置编辑器 k2() 实证
-        "layout_option" to "Renderer", "show_fps" to "Renderer",
+        // ★★★ 本轮段名全面修正（根治"布局不生效/画面不跟随全局缩放"）★★★
+        //
+        // 依据（双源实证）：
+        //   1. weihuoya/citra 上游 src/android/jni/config/main_settings.cpp 的
+        //      ConfigInfo 定义（authoritative 段名表）；
+        //   2. 参考 APK Java 设置编辑器 Y0/i.java k2()（段名一致）。
+        //
+        // 旧表把布局族全塞进 [Controls]，且 layout_option 重复定义两次
+        // （mapOf 保留后者 → Controls）—— 核心实际从 [Renderer]/[Layout] 读，
+        // 写错段 = 核心永远读不到 → "自定义布局不行 / 全局缩放不跟随"的
+        // 直接根因。本轮逐一按上游修正。
+        //
+        // [Renderer] —— 上游 main_settings.cpp + k2() 实证
+        "layout_option" to "Renderer", "landscape_layout_option" to "Renderer",
+        "screen_presentation_mode" to "Renderer", "show_fps" to "Renderer",
         "resolution_factor" to "Renderer", "use_hw_shader" to "Renderer",
         "accurate_mul_type" to "Renderer", "pp_shader_name" to "Renderer",
         "frame_limit" to "Renderer", "custom_textures" to "Renderer",
@@ -361,31 +374,30 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         "dsp_lle_multithread" to "Audio",
         // [Camera] —— k2() 实证
         "camera_type" to "Camera",
-        // [Controls] —— 设置表结构体段名实证（overlay/布局族）
+        // [Controls] —— 上游实证：仅 overlay/输入族（布局族已迁出！）
         "input_overlay_scale" to "Controls", "input_overlay_alpha" to "Controls",
         "input_overlay_hide" to "Controls", "input_overlay_feedback" to "Controls",
         "input_joystick_relative" to "Controls", "input_joystick_range" to "Controls",
         "input_joystick_deadzone" to "Controls",
-        "landscape_swap_screen" to "Controls", "portrait_swap_screen" to "Controls",
-        "landscape_custom_layout" to "Controls", "portrait_custom_layout" to "Controls",
-        "landscape_layout_option" to "Controls", "screen_presentation_mode" to "Controls",
-        // ★★ 修复：layout_option（竖屏/通用布局）此前完全缺失 —— UI 下发被
-        //   "skip unknown MMJ ini key" 跳过，"屏幕布局"下拉从未生效！
-        "layout_option" to "Controls",
+        // ★★★ [Layout] —— 上游 main_settings.cpp 实证（旧表错放 [Controls]，
+        //   是"自定义布局/交换屏幕/全局缩放跟随"全部失效的段名根因）：
+        //   PORTRAIT/LANDSCAPE_CUSTOM_LAYOUT / SWAP_SCREEN / 16 个矩形键。
+        "landscape_swap_screen" to "Layout", "portrait_swap_screen" to "Layout",
+        "landscape_custom_layout" to "Layout", "portrait_custom_layout" to "Layout",
         // ★★★ 双屏自定义布局矩形（so .rodata 键名表实证 0x12dbf8-0x12e010：
         //   landscape_top_left/top/top/right/bottom + landscape_bottom_* +
         //   portrait_top_* + portrait_bottom_*，共 16 键，像素坐标相对全屏
         //   窗口 —— setCustomLayout JNI 同源字段（config+0x27e..0x28c u16））。
         //   旧集成只发了 landscape_custom_layout 开关、从未发矩形 ——
         //   "自定义布局更不行"的直接原因。
-        "landscape_top_left" to "Controls", "landscape_top_top" to "Controls",
-        "landscape_top_right" to "Controls", "landscape_top_bottom" to "Controls",
-        "landscape_bottom_left" to "Controls", "landscape_bottom_top" to "Controls",
-        "landscape_bottom_right" to "Controls", "landscape_bottom_bottom" to "Controls",
-        "portrait_top_left" to "Controls", "portrait_top_top" to "Controls",
-        "portrait_top_right" to "Controls", "portrait_top_bottom" to "Controls",
-        "portrait_bottom_left" to "Controls", "portrait_bottom_top" to "Controls",
-        "portrait_bottom_right" to "Controls", "portrait_bottom_bottom" to "Controls"
+        "landscape_top_left" to "Layout", "landscape_top_top" to "Layout",
+        "landscape_top_right" to "Layout", "landscape_top_bottom" to "Layout",
+        "landscape_bottom_left" to "Layout", "landscape_bottom_top" to "Layout",
+        "landscape_bottom_right" to "Layout", "landscape_bottom_bottom" to "Layout",
+        "portrait_top_left" to "Layout", "portrait_top_top" to "Layout",
+        "portrait_top_right" to "Layout", "portrait_top_bottom" to "Layout",
+        "portrait_bottom_left" to "Layout", "portrait_bottom_top" to "Layout",
+        "portrait_bottom_right" to "Layout", "portrait_bottom_bottom" to "Layout"
     )
 
     /**
@@ -418,11 +430,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      * 输出白噪声"滋滋滋"，即用户反馈的音频问题根因）：
      *   - audio_output_type： 1=关闭 / 2=Cubeb（原版默认 2）
      *   - audio_input_type：  1=关闭 / 2=静态噪声 / 3=真实设备（原版默认 1）
-     *   - camera_type：       "blank" / "still_image" / "from_device"（字符串！）
+     *   - camera_type：       "blank" / "image" / "camera"（字符串！arrays.xml
+     *                         cameraValues 实证 —— 上一轮误写 still_image/
+     *                         from_device，已修正）
      *   - resolution_factor： 1..4（无 5x 档）
      *   - shader_type：       0=标准 / 1=标准+缓存（默认）/ 2=分离
      *   - accurate_mul_type： 0=关闭（默认）/ 1=快速 / 2=精确
      *   - factor_3d：         0..10（不是 0..100）
+     *   - audio_volume/mic_volume： float 0..1（上游 ConfigInfo<float> 默认
+     *                         1.0/1.5；UI 存 0..100 百分比 → /100 归一）
      *   - shared_font_type：  -1=自动（默认）/ 0=shared_font.bin / 1=日 /
      *                         2=简中 / 3=韩 / 4=繁
      *   - region_value：      -1=自动 / 0=日 / 1=美 / 2=欧 / 3=澳 / 4=中 /
@@ -436,15 +452,33 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             val n = v.toIntOrNull() ?: return dflt.toString()
             return n.coerceIn(lo, hi).toString()
         }
+        // float 百分比归一：上游 AUDIO_VOLUME/MIC_VOLUME 是 float 0..1
+        //（上游 dsp_interface.cpp clamp(0,1)），UI 下发 0..100 → /100。
+        fun percentToFloat(v: String, dflt: Float): String {
+            val f = v.toFloatOrNull() ?: return dflt.toString()
+            val norm = if (f > 1.0f) f / 100f else f
+            return norm.coerceIn(0f, 1f).let {
+                if (it == it.toInt().toFloat()) it.toInt().toString() else it.toString()
+            }
+        }
         return when (key) {
             "audio_output_type" -> if (value == "1" || value == "2") value else "2"
             "audio_input_type" -> if (value == "1" || value == "2" || value == "3") value else "1"
-            "camera_type" -> if (value == "blank" || value == "still_image" ||
-                value == "from_device") value else "blank"
+            "camera_type" -> if (value == "blank" || value == "image" ||
+                value == "camera") value else "blank"
             "resolution_factor" -> clampInt(value, 1, 4, 1)
             "shader_type" -> if (value == "0" || value == "1" || value == "2") value else "1"
             "accurate_mul_type" -> if (value == "0" || value == "1" || value == "2") value else "0"
             "factor_3d" -> clampInt(value, 0, 10, 0)
+            "audio_volume" -> percentToFloat(value, 1.0f)
+            "mic_volume" -> percentToFloat(value, 1.5f).let {
+                // mic 上游默认 1.5（>1 有增益），本 UI 百分比语义下 100%→1.0，
+                // 保持 1.0 即可（真麦克风输入由 audio_input_type=3 开启）。
+                val f = it.toFloatOrNull() ?: 1.0f
+                f.coerceIn(0f, 1.5f).let { v2 ->
+                    if (v2 == v2.toInt().toFloat()) v2.toInt().toString() else v2.toString()
+                }
+            }
             "shared_font_type" -> if (value in listOf("-1", "0", "1", "2", "3", "4")) value else "-1"
             "region_value" -> clampInt(value, -1, 6, -1)
             "layout_option", "landscape_layout_option" ->
@@ -556,6 +590,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     normalizeMmjValue(key, value)
                 applied++
             }
+            // ★ 旧版 [Controls] 布局族残留清理（见 cleanupLegacyControlsLayoutKeys）
+            cleanupLegacyControlsLayoutKeys(sections)
             // 3) 写回
             val sb = StringBuilder()
             for ((section, kv) in sections) {
@@ -570,6 +606,32 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "writeMmjIni failed", t)
         }
+    }
+
+    /**
+     * ★★ 旧版残留清理（本轮段名修正的配套）：
+     * 旧映射表把布局族键写进了 [Controls]（核心从 [Layout]/[Renderer] 读）。
+     * 修正后新值写对段，但用户设备上的 ini 还残留 [Controls] 下的旧键。
+     * 虽核心按段读会忽略它们，仍主动清除防止任何歧义（如核心未来版本
+     * 改为全局键匹配时新旧值打架）。在每次写 ini 前调用。
+     */
+    private fun cleanupLegacyControlsLayoutKeys(sections: LinkedHashMap<String, LinkedHashMap<String, String>>) {
+        val controls = sections["Controls"] ?: return
+        val legacyKeys = setOf(
+            "layout_option", "landscape_layout_option", "screen_presentation_mode",
+            "landscape_swap_screen", "portrait_swap_screen",
+            "landscape_custom_layout", "portrait_custom_layout",
+            "landscape_top_left", "landscape_top_top",
+            "landscape_top_right", "landscape_top_bottom",
+            "landscape_bottom_left", "landscape_bottom_top",
+            "landscape_bottom_right", "landscape_bottom_bottom",
+            "portrait_top_left", "portrait_top_top",
+            "portrait_top_right", "portrait_top_bottom",
+            "portrait_bottom_left", "portrait_bottom_top",
+            "portrait_bottom_right", "portrait_bottom_bottom"
+        )
+        controls.keys.removeAll(legacyKeys)
+        if (controls.isEmpty()) sections.remove("Controls")
     }
 
     /** 读 ini 里某键当前值（swapScreens 等需要读-改-写的场景）。 */
@@ -794,6 +856,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         emuThread = bootThread
         bootThread.start()
         startPresentation()
+        // ★ 运行时设置推送（通道 2）：核心进入模拟主循环后直写帧率上限/
+        //   布局等（原版游戏内设置面板同款通道），不依赖 ini 解析链路。
+        startRuntimeSettingsPusher()
     }
 
     /** Choreographer 驱动 doFrame（呈现节拍，与 Azahar 同构）。 */
@@ -802,16 +867,22 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         mainHandler.post {
             try {
+                // ★★ 本轮加固：Choreographer 实例捕获为局部 val —— 旧实现回调
+                //   里读 choreographer 字段，与 stopPresentation()（可从引擎
+                //   线程调用）置 null 存在竞态：一旦撞上，postFrameCallback
+                //   静默失败 → 呈现节拍永久死亡 → 核心呈现线程失去 vsync
+                //   驱动（画面停滞/节奏异常）。局部实例彻底消除该竞态。
+                val ch = Choreographer.getInstance()
                 val cb = object : Choreographer.FrameCallback {
                     override fun doFrame(frameTimeNanos: Long) {
                         if (!running.get()) return
                         try { CitraMmjNative.lib.doFrame(frameTimeNanos) } catch (_: Throwable) {}
-                        try { choreographer?.postFrameCallback(this) } catch (_: Throwable) {}
+                        try { ch.postFrameCallback(this) } catch (_: Throwable) {}
                     }
                 }
                 frameCallback = cb
-                choreographer = Choreographer.getInstance()
-                choreographer?.postFrameCallback(cb)
+                choreographer = ch
+                ch.postFrameCallback(cb)
             } catch (_: Throwable) {}
         }
     }
@@ -820,6 +891,104 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         try { frameCallback?.let { choreographer?.removeFrameCallback(it) } } catch (_: Throwable) {}
         choreographer = null
         frameCallback = null
+    }
+
+    /**
+     * ★★★ 运行时设置推送（本轮新增：根治"全都 60 帧 / 速度加快 / 滋滋声"）★★★
+     *
+     * 原版 APK 有两条设置通道（c1/Q.java 反编译实证）：
+     *   1. ini 文件（启动时 Run() 内部 Config::Load 读取）；
+     *   2. setRunningSettings(int[20])（游戏运行中实时生效 —— 直接写核心
+     *      Settings 结构体 + Config::Set 注册表，原版游戏内设置面板用的
+     *      就是这条）。
+     * 旧集成只用了通道 1。若 ini → 运行时结构体的传递在任何环节断链
+     * （段名/时序/核心内部状态），帧率限制值到不了核心 → 模拟不限速
+     * 狂奔（30 帧游戏跑 60 帧、速度 2x）→ 音频样本产出速度远超播放
+     * 速度 → 缓冲反复覆盖 = 恒定"滋滋滋"白噪声（速度与音频是同一根因）。
+     *
+     * 本方法在核心真正进入模拟主循环后，经【通道 2】把用户的帧率上限/
+     * 布局/性能 hack 直写核心运行时结构体 —— 与原版"打开游戏内设置并
+     * 确认"完全同款效果，不依赖 ini 解析链路。
+     *
+     * 数组布局（Q.java K() + so 0x269520 setRunningSettings 反汇编实证）：
+     *   [0]震动 [1]摇杆相对 [2]隐藏overlay [3]手柄缩放 [4]手柄透明度
+     *   （前 5 项 Java 侧 overlay 用 —— overlay 已隐藏，值仅占位）
+     *   [5]FMV hack [6]skip_slow_draw [7]skip_cpu_write [8]skip_texture_copy
+     *   [9]force_texture_filter [10]hw_gs_mode [11]shadow_rendering
+     *   [12]async_shader_compile [13]use_compatible_mode
+     *   [14]分辨率(0基, 原版运行时面板同款) [15]layout_option
+     *   [16]accurate_mul_type [17]custom_layout
+     *   [18]frame_limit(%, 核心内 max(v,1)) [19]投屏
+     */
+    private fun buildRunningSettingsArray(): IntArray {
+        fun b(key: String, dflt: Boolean) =
+            (coreOptions[key]?.let { it == "true" || it == "enabled" } ?: dflt)
+        fun i(key: String, dflt: Int, lo: Int = Int.MIN_VALUE, hi: Int = Int.MAX_VALUE) =
+            (coreOptions[key]?.toIntOrNull() ?: dflt).coerceIn(lo, hi)
+        // 分辨率：UI 存 1..4，运行时面板 0 基（0=1x）
+        val res0based = (i("resolution_factor", 1, 1, 4) - 1).coerceIn(0, 3)
+        val customLayout = coreOptions["landscape_custom_layout"] == "true" ||
+            coreOptions["portrait_custom_layout"] == "true"
+        return intArrayOf(
+            0,                                  // [0] 震动（Java 侧，占位 0）
+            1,                                  // [1] 摇杆相对中心（占位默认）
+            1,                                  // [2] 隐藏 overlay（我们本来就强制隐藏）
+            40,                                 // [3] 手柄缩放（占位默认）
+            100,                                // [4] 手柄透明度（占位默认）
+            if (b("use_fmv_hack", false)) 1 else 0,      // [5] FMV hack
+            0,                                  // [6] skip_slow_draw（默认关）
+            0,                                  // [7] skip_cpu_write（默认关）
+            0,                                  // [8] skip_texture_copy（默认关）
+            i("force_texture_filter", 0, 0, 2), // [9] 强制纹理过滤
+            i("hw_gs_mode", 0, 0, 2),           // [10] 几何着色器
+            if (b("shadow_rendering", false)) 1 else 0,  // [11] 阴影渲染
+            if (b("async_shader_compile", true)) 1 else 0, // [12] 异步着色器编译
+            if (b("use_compatible_mode", false)) 1 else 0, // [13] 兼容模式
+            res0based,                          // [14] 分辨率（0 基）
+            i("layout_option", 0, 0, 3),        // [15] 屏幕布局
+            i("accurate_mul_type", 0, 0, 2),    // [16] 精确乘法
+            if (customLayout) 1 else 0,         // [17] 自定义布局开关
+            i("frame_limit", 100, 1, 200),      // [18] 帧率上限 %（核心内 max(v,1)）
+            0                                   // [19] 投屏（关）
+        )
+    }
+
+    /** 推送运行时设置到核心（通道 2）。快进中不推（避免给快进限速）。 */
+    private fun pushRunningSettingsNow() {
+        try {
+            val arr = buildRunningSettingsArray()
+            CitraMmjNative.lib.setRunningSettings(arr)
+            android.util.Log.i("CitraMmjEngine",
+                "setRunningSettings pushed: frame_limit=${arr[18]}% layout=${arr[15]} " +
+                "custom=${arr[17]} res=${arr[14] + 1}x")
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "setRunningSettings failed", t)
+        }
+    }
+
+    /**
+     * 运行时设置推送看护线程：轮询 IsRunning（最多 ~20s），核心进入模拟
+     * 主循环后再等 600ms（越过引导期），然后推送一次运行时设置。
+     */
+    private fun startRuntimeSettingsPusher() {
+        val pusher = Thread({
+            var waited = 0
+            while (waited < 20000 && !Thread.currentThread().isInterrupted) {
+                try { Thread.sleep(400) } catch (_: InterruptedException) { return@Thread }
+                waited += 400
+                if (!running.get() || _loaded.not()) return@Thread
+                val isRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
+                if (isRunning) {
+                    try { Thread.sleep(600) } catch (_: InterruptedException) { return@Thread }
+                    // 快进中不推（frame_limit 会给快进限速）；退出快进时
+                    // applyFastForwardConfig 会重新推送。
+                    if (running.get() && _ffSpeed <= 0) pushRunningSettingsNow()
+                    return@Thread
+                }
+            }
+        }, "mmj-runtime-settings-pusher")
+        pusher.isDaemon = true
+        pusher.start()
     }
 
     override fun setSurface(surface: Surface?) {
@@ -879,14 +1048,53 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         if (_loaded && width > 0 && height > 0 && emuThread?.isAlive == true) {
             val coreRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
             if (coreRunning) {
-                // ★ 参数语义修正（原版 EmulationActivity.N0() 反编译实证）：
-                //   SetDisplayInfo(safeInsetLeft, safeInsetTop, safeInsetRight,
-                //                   safeInsetBottom, rotation, scaledDensity)
-                //   旧实现把 (w,h,w,h) 当前四个参数传 = 挖孔屏安全边距全错。
-                //   本引擎无 Display 引用，保守传 0 边距 + 0 旋转 + 1.0 密度
-                //   （无挖孔设备上与原版行为等价；overlay 已隐藏，密度仅用于
-                //   overlay 缩放，1.0 无副作用）。
-                try { CitraMmjNative.lib.SetDisplayInfo(0, 0, 0, 0, 0, 1f) } catch (_: Throwable) {}
+                // ★★★ 本轮根治：传【真实】旋转角/挖孔边距/密度 ★★★
+                //   （原版 EmulationActivity.N0() 反编译实证语义：
+                //    SetDisplayInfo(safeInsetLeft, safeInsetTop, safeInsetRight,
+                //                    safeInsetBottom, rotation, scaledDensity)）
+                //   旧实现永远传 rotation=0 —— 横屏游玩时核心按竖屏几何
+                //   计算双屏布局 → 全局缩放/布局怎么调都不对（"画面不
+                //   跟随全局缩放"的另一半根因）。现在从 appContext 读取
+                //   真实 display rotation；挖孔边距经 Display.getCutout()
+                //   反射获取（失败传 0 —— 无挖孔设备等价原版）；密度取
+                //   resources 显示 scaledDensity（overlay 已隐藏，仅对
+                //   overlay 缩放有意义）。
+                try {
+                    val ctx = appContext
+                    var rotation = 0
+                    var insets = intArrayOf(0, 0, 0, 0)
+                    var density = 1f
+                    if (ctx != null) {
+                        @Suppress("DEPRECATION")
+                        val disp = (ctx.getSystemService(android.content.Context.WINDOW_SERVICE)
+                            as? android.view.WindowManager)?.defaultDisplay
+                        rotation = disp?.rotation ?: 0
+                        // 挖孔屏安全边距：Display.getCutout()（API 28+，
+                        // @UnsupportedAppUsage 但各厂商 ROM 普遍可反射调用；
+                        // 失败 = 无挖孔 = 全 0，与原版无挖孔分支一致）
+                        if (android.os.Build.VERSION.SDK_INT >= 28) {
+                            try {
+                                val m = android.view.Display::class.java
+                                    .getDeclaredMethod("getCutout")
+                                m.isAccessible = true
+                                val cutout = m.invoke(disp) as? android.view.DisplayCutout
+                                if (cutout != null) {
+                                    insets = intArrayOf(
+                                        cutout.safeInsetLeft, cutout.safeInsetTop,
+                                        cutout.safeInsetRight, cutout.safeInsetBottom)
+                                }
+                            } catch (_: Throwable) { /* 无挖孔/权限限制 */ }
+                        }
+                        density = try {
+                            ctx.resources.displayMetrics.scaledDensity
+                        } catch (_: Throwable) { 1f }
+                    }
+                    CitraMmjNative.lib.SetDisplayInfo(
+                        insets[0], insets[1], insets[2], insets[3], rotation, density)
+                } catch (_: Throwable) {
+                    // 兜底：任何一步失败都不阻塞窗口更新
+                    try { CitraMmjNative.lib.SetDisplayInfo(0, 0, 0, 0, 0, 1f) } catch (_: Throwable) {}
+                }
                 // ★★★ 全局缩放跟随（本轮根治）★★★
                 // SurfaceView 随「画面缩放」(videoScale) 改变宽高比时，
                 // surfaceChanged 携带新几何回调到这里。MMJ 核心的双屏布局
@@ -1022,6 +1230,13 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             // ★ 快进开关即时生效：重读 ini + 通知核心（MMJ 帧率限制由核心
             //   每帧消费 config，loadConfig 后立即生效，无需重启）。
             try { CitraMmjNative.lib.loadConfig() } catch (_: Throwable) {}
+            // ★ 本轮新增：退出快进时经通道 2 重推运行时 frame_limit（与
+            //   启动推送同款），双保险恢复限速；进入快进不推（运行时
+            //   frame_limit 会给快进封顶）。
+            if (_ffSpeed <= 0) {
+                val isRunning = try { CitraMmjNative.lib.IsRunning() } catch (_: Throwable) { false }
+                if (isRunning) pushRunningSettingsNow()
+            }
         }
     }
 

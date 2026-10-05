@@ -38,17 +38,28 @@ import android.view.Surface
  */
 object WiiMotionSensors {
 
-    /** 倾斜满强度对应的重力分量变化（约 25°，比旧版 30° 更易触发满程）。 */
-    private const val FULL_TILT_G = 0.42f
+    /** ★★ v1.4 全局灵敏度增益（本轮新增，回应用户"需要使劲摇手机才有
+     *   反应，轻轻的左右前后上下都不能生效"）：
+     *   1.0 = 基准灵敏度；>1 更灵敏（满程所需幅度/阈值按比例缩小）。
+     *   由设置面板「体感灵敏度」写入（默认 1.6 高），存
+     *   PadLayoutStore.wiiMotionSensitivity。增益在各项标尺计算处
+     *   应用（满程/阈值除以增益），并对增益钳位防止退化（满程永不低于
+     *   FULL_TILT_MIN / 阈值永不低于 SWING/SHAKE_THRESHOLD_MIN）。 */
+    @Volatile var sensitivityGain: Float = 1.6f
 
-    /** ★★ v1.3 前后轴独立满程（约 16° 即满程）：持握手机时手腕俯仰
-     *   （前后晃动）的自然幅度显著小于尺桡偏/前臂旋转（左右倾斜），
-     *   与左右共用 0.42 标尺时前后永远到不了满程 —— 用户反馈
-     *   "前后晃动不灵敏，最好和左右一样"的标尺根源。 */
-    private const val FULL_TILT_FB_G = 0.30f
+    /** 倾斜满强度对应的重力分量变化（v1.4 基准 0.26 ≈ 15° 即满程 ——
+     *   v1.3 的 0.42（25°）实测"轻倾无反应"；增益在 clean() 内除）。 */
+    private const val FULL_TILT_G = 0.26f
 
-    /** 死区（比旧版 0.06 小一半，轻微倾摆也能识别）。 */
-    private const val DEADZONE = 0.03f
+    /** ★★ v1.4 前后轴独立满程（基准 ≈ 10° 满程，v1.3 的 0.30 同步下调；
+     *   手腕俯仰的自然幅度仍小于尺桡偏，保持独立标尺）。 */
+    private const val FULL_TILT_FB_G = 0.18f
+
+    /** 死区（v1.4 再降：0.02 —— 轻微倾摆即出值）。 */
+    private const val DEADZONE = 0.02f
+
+    /** ★ 增益下限保护：倾斜满程最低值（防增益过高时标尺退化/噪声满幅）。 */
+    private const val FULL_TILT_MIN = 0.10f
 
     /** ★★ v1.3 前后轴快通道滤波系数：前后"晃动"是 100ms 级快速动态动作，
      *   慢通道 alpha=0.45 会把脉冲峰值削掉约一半（左右"倾斜"是静态保持，
@@ -57,23 +68,28 @@ object WiiMotionSensors {
      *   取大者：静态倾斜由慢通道主导（抗噪），动态晃动由快通道主导（保峰）。 */
     private const val ALPHA_FB_FAST = 0.70f
 
-    /** 挥动触发阈值（线性加速度幅值，m/s²）。低于此值视为静止。 */
-    private const val SWING_THRESHOLD = 1.5f
+    /** 挥动触发阈值（线性加速度幅值，m/s²）。v1.4 基准 0.8（v1.3 的 1.5
+     *   实测"轻甩无反应"）；增益在 clean() 内除。 */
+    private const val SWING_THRESHOLD = 0.8f
 
-    /** 挥动满强度阈值（线性加速度幅值，约对应"用力一甩"）。 */
-    private const val SWING_FULL = 6.0f
+    /** 挥动满强度阈值（线性加速度幅值；v1.4 基准 3.5，原 6.0）。 */
+    private const val SWING_FULL = 3.5f
 
     /** ★★ v1.3 推/拉（前后晃动的线性加速度分量）独立阈值：手腕俯仰甩动
-     *   在 Z 轴（出屏方向）产生的线性加速度峰值天然低于整臂挥动，
-     *   与 U/D/L/R 共用 1.5/6.0 标尺时小幅度晃动全被吃进死区。 */
-    private const val SWING_FB_THRESHOLD = 1.0f
-    private const val SWING_FB_FULL = 4.0f
+     *   在 Z 轴（出屏方向）产生的线性加速度峰值天然低于整臂挥动。
+     *   v1.4 基准同步下调（0.55/2.2，原 1.0/4.0）。 */
+    private const val SWING_FB_THRESHOLD = 0.55f
+    private const val SWING_FB_FULL = 2.2f
 
-    /** 摇晃触发阈值（瞬时角速度变化，rad/s）。 */
-    private const val SHAKE_THRESHOLD = 4.0f
+    /** 摇晃触发阈值（瞬时角速度变化，rad/s；v1.4 基准 2.2，原 4.0）。 */
+    private const val SHAKE_THRESHOLD = 2.2f
 
-    /** 摇晃满强度阈值。 */
-    private const val SHAKE_FULL = 12.0f
+    /** 摇晃满强度阈值（v1.4 基准 7.0，原 12.0）。 */
+    private const val SHAKE_FULL = 7.0f
+
+    /** ★ 增益下限保护：挥动/摇晃阈值最低值（防高增益时噪声触发）。 */
+    private const val SWING_THRESHOLD_MIN = 0.35f
+    private const val SHAKE_THRESHOLD_MIN = 0.8f
 
     /** ★ 静止重校准：判定"近静止"的角速度上限（rad/s）。 */
     private const val STATIONARY_GYRO = 0.06f
@@ -265,18 +281,23 @@ object WiiMotionSensors {
             return
         }
         // 倾斜：相对基准的重力分量差
+        // ★ v1.4：满程除以灵敏度增益（gain≥1 → 满程所需倾角更小），
+        //   满程钳位 ≥ FULL_TILT_MIN 防标尺退化。
         fun clean(v: Float): Float {
             val a = kotlin.math.abs(v)
+            val full = (FULL_TILT_G / sensitivityGain).coerceAtLeast(FULL_TILT_MIN)
             return if (a < DEADZONE) 0f
-            else ((a - DEADZONE) / (FULL_TILT_G - DEADZONE)).coerceIn(0f, 1f)
+            else ((a - DEADZONE) / (full - DEADZONE)).coerceIn(0f, 1f)
         }
         // ★★ v1.3 前后轴：独立满程（FULL_TILT_FB_G）+ 快慢双通道取大。
         //   慢通道主导静态倾斜（抗噪），快通道保住动态晃动的峰值
         //   （0.45 低通对 100ms 脉冲削峰 ~50%，是"前后不灵敏"主因）。
+        //   v1.4：同除增益（前后轴是"轻晃不生效"重灾区）。
         fun cleanFb(v: Float): Float {
             val a = kotlin.math.abs(v)
+            val full = (FULL_TILT_FB_G / sensitivityGain).coerceAtLeast(FULL_TILT_MIN)
             return if (a < DEADZONE) 0f
-            else ((a - DEADZONE) / (FULL_TILT_FB_G - DEADZONE)).coerceIn(0f, 1f)
+            else ((a - DEADZONE) / (full - DEADZONE)).coerceIn(0f, 1f)
         }
         val dX = smoothed[0] - baseGravity[0]   // >0 = 右倾
         val dZ = smoothed[2] - baseGravity[2]   // <0 = 前倾（顶边前推）
@@ -351,7 +372,10 @@ object WiiMotionSensors {
         // 抖动 = 瞬时变化幅值（无陀螺时用此分支兜底）
         if (!hasGyro) {
             val jerkMag = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-            val shake = ((jerkMag - SHAKE_THRESHOLD) / (SHAKE_FULL - SHAKE_THRESHOLD))
+            // ★ v1.4：摇晃阈值同除灵敏度增益（钳位 ≥ SHAKE_THRESHOLD_MIN）
+            val th = (SHAKE_THRESHOLD / sensitivityGain).coerceAtLeast(SHAKE_THRESHOLD_MIN)
+            val full = (SHAKE_FULL / sensitivityGain).coerceAtLeast(th * 2f)
+            val shake = ((jerkMag - th) / (full - th))
                 .coerceIn(0f, 1f)
             // X 方向（左右）抽搐
             if (kotlin.math.abs(dx) > kotlin.math.abs(dy) &&
@@ -398,8 +422,12 @@ object WiiMotionSensors {
         val magX = kotlin.math.abs(dx)
         val magY = kotlin.math.abs(dy)
         val magZ = kotlin.math.abs(dz)
-        fun s(m: Float): Float =
-            ((m - SHAKE_THRESHOLD) / (SHAKE_FULL - SHAKE_THRESHOLD)).coerceIn(0f, 1f)
+        fun s(m: Float): Float {
+            // ★ v1.4：摇晃阈值同除灵敏度增益（钳位 ≥ SHAKE_THRESHOLD_MIN）
+            val th = (SHAKE_THRESHOLD / sensitivityGain).coerceAtLeast(SHAKE_THRESHOLD_MIN)
+            val full = (SHAKE_FULL / sensitivityGain).coerceAtLeast(th * 2f)
+            return ((m - th) / (full - th)).coerceIn(0f, 1f)
+        }
         // 取瞬时主导轴作为本次摇动方向
         state.shakeX = if (magX >= magY && magX >= magZ) s(magX) else 0f
         state.shakeY = if (magY > magX && magY >= magZ) s(magY) else 0f
@@ -414,8 +442,11 @@ object WiiMotionSensors {
     ) {
         fun clean(v: Float): Float {
             val a = kotlin.math.abs(v)
-            return if (a < SWING_THRESHOLD) 0f
-            else ((a - SWING_THRESHOLD) / (SWING_FULL - SWING_THRESHOLD))
+            // ★ v1.4：挥动阈值/满程同除灵敏度增益（"轻甩无反应"根治）
+            val th = (SWING_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN)
+            val full = (SWING_FULL / sensitivityGain).coerceAtLeast(th * 2f)
+            return if (a < th) 0f
+            else ((a - th) / (full - th))
                 .coerceIn(0f, 1f)
         }
         // 屏幕坐标：X_s 右、Y_s 下、Z_s 出屏
@@ -431,12 +462,14 @@ object WiiMotionSensors {
         state.swingBackward = cleanFbSwing(lzS)   // 顶边后拉
     }
 
-    /** ★★ v1.3 推/拉独立标尺（见 SWING_FB_THRESHOLD 注释）。 */
+    /** ★★ v1.3 推/拉独立标尺（见 SWING_FB_THRESHOLD 注释）。
+     *  v1.4：同除灵敏度增益。 */
     private fun cleanFbSwing(v: Float): Float {
         val a = kotlin.math.abs(v)
-        return if (a < SWING_FB_THRESHOLD) 0f
-        else ((a - SWING_FB_THRESHOLD) / (SWING_FB_FULL - SWING_FB_THRESHOLD))
-            .coerceIn(0f, 1f)
+        val th = (SWING_FB_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN * 0.6f)
+        val full = (SWING_FB_FULL / sensitivityGain).coerceAtLeast(th * 2f)
+        return if (a < th) 0f
+        else ((a - th) / (full - th)).coerceIn(0f, 1f)
     }
 
     /** 停止监听（幂等）。 */

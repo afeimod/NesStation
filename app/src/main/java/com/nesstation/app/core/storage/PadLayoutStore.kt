@@ -823,7 +823,7 @@ class PadLayout {
     var mmjSharedFontType: String = "-1"     // mmj_shared_font_type (共享字体 -1 自动(默认)/0 shared_font.bin/1 日/2 简中/3 韩/4 繁)
     var mmjUseVirtualSd: String = "enabled"  // mmj_use_virtual_sd (虚拟 SD 卡)
     var mmjUseGameConfig: String = "enabled" // mmj_use_game_config (按游戏配置（config-games.ini）)
-    var mmjCameraType: String = "blank"      // mmj_camera_type (摄像头 blank 无(默认)/still_image 静态图片/from_device 设备摄像头 —— 字符串枚举，原版实证)
+    var mmjCameraType: String = "blank"      // mmj_camera_type (摄像头 blank 无(默认)/image 静态图片/camera 设备摄像头 —— 字符串枚举，原版 arrays.xml cameraValues 实证，本轮修正值名)
     var mmjLayoutOption: String = "0"        // mmj_layout_option (屏幕布局 0 默认/1 单屏/2 大屏/3 并排 —— 原版仅 0..3)
     var mmjLandscapeLayoutOption: String = "0" // mmj_landscape_layout_option (横屏布局 0 默认/1 单屏/2 大屏/3 并排 —— 原版仅 0..3)
     var mmjLandscapeSwapScreen: String = "disabled" // mmj_landscape_swap_screen (横屏交换上下屏)
@@ -852,6 +852,7 @@ class PadLayout {
     //    wii体感”）：开启后加速度计 → Wii Tilt 四轴（与 L2/R2/L3/R3
     //    按钮倾斜叠加）。无传感器设备自动退化。
     var wiiMotionSensor: Boolean = true             // true = 手机体感模拟 Wii 倾斜（★★ 默认开启：需求原话“无法使用手机体感（陀螺仪）模拟”；实测 Android 读加速度计/陀螺仪无需任何 permission，旧默认 false 加上无提示 = “无法使用”。无传感器的设备 WiiMotionSensors.start() 返回 false 自动退化，不影响无体感硬件的机型）
+    var wiiMotionSensitivity: String = "1.6"       // ★ v1.4 体感灵敏度增益（1.0 标准/1.6 高（默认）/2.2 极高）—— 回应“需要使劲摇手机才有反应”；满程所需倾角/挥动阈值按增益缩小，WiiMotionSensors.sensitivityGain 消费
     var irCpuCore: String = "4"                     // "0" 解释器 | "4" JIT ARM64 (CPUCore)
     var irDualCore: String = "enabled"              // enabled | disabled (CPUThread 双核)
     var irOverclockEnable: String = "disabled"      // enabled | disabled (OverclockEnable)
@@ -1641,6 +1642,7 @@ class PadLayout {
         irWiiExtension = another.irWiiExtension
         irWiiOrientation = another.irWiiOrientation
         wiiMotionSensor = another.wiiMotionSensor
+        wiiMotionSensitivity = another.wiiMotionSensitivity
         irCpuCore = another.irCpuCore
         irDualCore = another.irDualCore
         irOverclockEnable = another.irOverclockEnable
@@ -2789,9 +2791,17 @@ object PadLayoutStore {
             }
             mmjUseVirtualSd = p.getString("mmj_use_virtual_sd", "enabled") ?: "enabled"
             mmjUseGameConfig = p.getString("mmj_use_game_config", "enabled") ?: "enabled"
-            // ★ 摄像头：原版为字符串枚举 blank/still_image/from_device（旧数字值全非法）
+            // ★ 摄像头：原版为字符串枚举 blank/image/camera（arrays.xml
+            //   cameraValues 逐一实证；上一轮误写成 still_image/from_device
+            //   —— 均非法值，核心归一回 blank = 静态图片/设备摄像头选项
+            //   从未生效。本轮修正 + 旧值迁移。）
             mmjCameraType = (p.getString("mmj_camera_type", "blank") ?: "blank").let {
-                if (it == "still_image" || it == "from_device") it else "blank" }
+                when (it) {
+                    "image", "camera" -> it
+                    "still_image" -> "image"      // 上一轮 UI 误值迁移
+                    "from_device" -> "camera"    // 上一轮 UI 误值迁移
+                    else -> "blank"
+                } }
             mmjLayoutOption = (p.getString("mmj_layout_option", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2", "3")) it else "0" }   // 原版 0..3（无 4=自定义）
             mmjLandscapeLayoutOption = (p.getString("mmj_landscape_layout_option", "0") ?: "0").let {
@@ -2847,6 +2857,8 @@ object PadLayoutStore {
             irWiiOrientation = p.getString("ir_wii_orientation", "vertical")?.takeIf {
                 it in setOf("vertical", "horizontal") } ?: "vertical"
             wiiMotionSensor = p.getBoolean("wii_motion_sensor", true)
+            wiiMotionSensitivity = (p.getString("wii_motion_sensitivity", "1.6") ?: "1.6").let {
+                if (it in listOf("1.0", "1.6", "2.2")) it else "1.6" }
             irCpuCore = p.getString("ir_cpu_core", "4") ?: "4"
             irDualCore = p.getString("ir_dual_core", "enabled") ?: "enabled"
             irOverclockEnable = p.getString("ir_overclock_enable", "disabled") ?: "disabled"
@@ -3597,6 +3609,7 @@ object PadLayoutStore {
             putString("ir_wii_extension", layout.irWiiExtension)
             putString("ir_wii_orientation", layout.irWiiOrientation)
             putBoolean("wii_motion_sensor", layout.wiiMotionSensor)
+            putString("wii_motion_sensitivity", layout.wiiMotionSensitivity)
             putString("ir_cpu_core", layout.irCpuCore)
             putString("ir_dual_core", layout.irDualCore)
             putString("ir_overclock_enable", layout.irOverclockEnable)
