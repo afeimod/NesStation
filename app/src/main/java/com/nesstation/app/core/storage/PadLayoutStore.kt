@@ -785,16 +785,16 @@ class PadLayout {
     // === 3DS (Citra MMJ — weihuoya 分支 20250220) core options ===
     // 键名 = libmain.so 配置系统真实键（strings 提取）；由 CitraMmjEngine
     // 经 setConfigInteger/Boolean/String 直写核心配置（getConfig/setConfig JNI）。
-    var mmjResolution: String = "1"          // mmj_resolution (渲染分辨率 1x..5x)
+    var mmjResolution: String = "1"          // mmj_resolution (渲染分辨率 1x..4x，原版实证无 5x 档)
     var mmjIsNew3ds: String = "enabled"      // mmj_is_new_3ds (New 3DS 模式)
     var mmjUseCpuJit: String = "enabled"     // mmj_use_cpu_jit (CPU JIT)
-    var mmjRegion: String = "-1"             // mmj_region (主机区域 -1 自动/1 日/2 美/3 欧/4 中/5 韩/6 台)
+    var mmjRegion: String = "-1"             // mmj_region (主机区域 -1 自动/0 日/1 北美/2 欧/3 澳/4 中/5 韩/6 台)
     var mmjUseHwShader: String = "enabled"   // mmj_use_hw_shader (硬件着色器)
     var mmjUseShaderJit: String = "enabled"  // mmj_use_shader_jit (着色器 JIT)
     var mmjAsyncShaderCompile: String = "enabled" // mmj_async_shader_compile (异步着色器编译)
-    var mmjShaderType: String = "0"          // mmj_shader_type (着色器类型 0 自动/1 GLSL/2 SPIR-V/3 兼容)
+    var mmjShaderType: String = "1"          // mmj_shader_type (着色器类型 0 标准/1 标准+缓存(默认)/2 分离)
     var mmjHwGsMode: String = "0"            // mmj_hw_gs_mode (几何着色器模式 0 关/1 兼容/2 完整)
-    var mmjAccurateMulType: String = "0"     // mmj_accurate_mul_type (精确乘法 0 精确/1 兼容/2 快速)
+    var mmjAccurateMulType: String = "0"     // mmj_accurate_mul_type (精确乘法 0 关(默认)/1 快速/2 精确)
     var mmjShadowRendering: String = "disabled" // mmj_shadow_rendering (阴影渲染（几何着色器）)
     var mmjForceTextureFilter: String = "disabled" // mmj_force_texture_filter (强制纹理过滤)
     var mmjMagFilter: String = "1"           // mmj_mag_filter (放大过滤 0 最近邻/1 线性)
@@ -812,20 +812,20 @@ class PadLayout {
     var mmjUseFrameLimit: String = "enabled" // mmj_use_frame_limit (启用帧率限制)
     var mmjFrameLimit: String = "100"        // mmj_frame_limit (帧率限制 %（100=全速）)
     var mmjCpuUsageLimit: String = "0"       // mmj_cpu_usage_limit (CPU 占用限制 %（0=不限制）)
-    var mmjFactor3d: String = "0"            // mmj_factor_3d (立体 3D 深度 0..100)
+    var mmjFactor3d: String = "0"            // mmj_factor_3d (立体 3D 深度 0..10，原版实证非 0..100)
     var mmjEnableDspLle: String = "disabled" // mmj_enable_dsp_lle (DSP LLE 音频（实验）)
     var mmjDspLleMultithread: String = "disabled" // mmj_dsp_lle_multithread (DSP LLE 多线程)
     var mmjAudioVolume: String = "100"       // mmj_audio_volume (音量 0..100)
-    var mmjAudioStretching: String = "enabled" // mmj_audio_stretching (音频拉伸)
-    var mmjAudioOutputType: String = "0"     // mmj_audio_output_type (音频输出 0 自动/1 AudioTrack/2 AAudio/3 兼容)
-    var mmjAudioInputType: String = "0"      // mmj_audio_input_type (音频输入 0 自动/1 静态/2 麦克风)
+    var mmjAudioStretching: String = "disabled" // mmj_audio_stretching (音频拉伸，原版默认关)
+    var mmjAudioOutputType: String = "2"     // mmj_audio_output_type (音频输出 1 关闭/2 Cubeb(默认)，原版仅此两值)
+    var mmjAudioInputType: String = "1"      // mmj_audio_input_type (音频输入 1 关闭(默认)/2 静态噪声/3 真实设备)
     var mmjMicVolume: String = "100"         // mmj_mic_volume (麦克风音量 0..100)
-    var mmjSharedFontType: String = "0"      // mmj_shared_font_type (共享字体 0 标准/1 韩文/2 简中/3 繁中)
+    var mmjSharedFontType: String = "-1"     // mmj_shared_font_type (共享字体 -1 自动(默认)/0 shared_font.bin/1 日/2 简中/3 韩/4 繁)
     var mmjUseVirtualSd: String = "enabled"  // mmj_use_virtual_sd (虚拟 SD 卡)
     var mmjUseGameConfig: String = "enabled" // mmj_use_game_config (按游戏配置（config-games.ini）)
-    var mmjCameraType: String = "0"          // mmj_camera_type (摄像头 0 无/1 静态图片/2 前置/3 后置)
-    var mmjLayoutOption: String = "0"        // mmj_layout_option (屏幕布局 0 默认/1 单屏/2 大屏/3 并排/4 自定义)
-    var mmjLandscapeLayoutOption: String = "0" // mmj_landscape_layout_option (横屏布局 0 默认/1 单屏/2 大屏/3 并排/4 自定义)
+    var mmjCameraType: String = "blank"      // mmj_camera_type (摄像头 blank 无(默认)/still_image 静态图片/from_device 设备摄像头 —— 字符串枚举，原版实证)
+    var mmjLayoutOption: String = "0"        // mmj_layout_option (屏幕布局 0 默认/1 单屏/2 大屏/3 并排 —— 原版仅 0..3)
+    var mmjLandscapeLayoutOption: String = "0" // mmj_landscape_layout_option (横屏布局 0 默认/1 单屏/2 大屏/3 并排 —— 原版仅 0..3)
     var mmjLandscapeSwapScreen: String = "disabled" // mmj_landscape_swap_screen (横屏交换上下屏)
     var mmjPortraitSwapScreen: String = "disabled" // mmj_portrait_swap_screen (竖屏交换上下屏)
     var mmjLandscapeCustomLayout: String = "disabled" // mmj_landscape_custom_layout (横屏自定义布局)
@@ -2716,14 +2716,32 @@ object PadLayoutStore {
             azIsNew3ds = p.getString("az_is_new_3ds", "enabled") ?: "enabled"
             azLleApplets = p.getString("az_lle_applets", "disabled") ?: "disabled"
 
-            mmjResolution = p.getString("mmj_resolution", "1") ?: "1"
+            // ★★ 本轮（原版 APK 反编译实证）：修正取值域与默认值 + 旧值迁移
+            //   详见 normalizeMmjValue / MMJ 注释 —— 旧 UI 下发过非法值
+            //   （audio_output_type=0/3 等）是"滋滋滋"音频与设置无效的根因。
+            //   值域迁移（audio_output_type 等非法值→合法值）幂等可重放；
+            //   仅 region/shared_font 的【语义错位】迁移是一次性（v2 标志位），
+            //   避免把新语义的合法值再映射回旧语义。
+            val mmjValuesV2 = p.getBoolean("mmj_values_v2", false)
+            mmjResolution = (p.getString("mmj_resolution", "1") ?: "1").let {
+                if (it == "5") "4" else it }   // 原版最高 4x（无 5x 档）
             mmjIsNew3ds = p.getString("mmj_is_new_3ds", "enabled") ?: "enabled"
             mmjUseCpuJit = p.getString("mmj_use_cpu_jit", "enabled") ?: "enabled"
-            mmjRegion = p.getString("mmj_region", "-1") ?: "-1"
+            // ★ 主机区域：原版 -1=自动/0=日/1=北美/2=欧/3=澳/4=中/5=韩/6=台
+            //   旧标签错位（1=日/2=美/3=欧）→ 首次载入按旧标签语义迁移
+            mmjRegion = if (mmjValuesV2) {
+                (p.getString("mmj_region", "-1") ?: "-1").let {
+                    if (it in listOf("-1","0","1","2","3","4","5","6")) it else "-1" }
+            } else {
+                (p.getString("mmj_region", "-1") ?: "-1").let {
+                    when (it) { "1" -> "0"; "2" -> "1"; "3" -> "2"
+                        else -> if (it in listOf("-1","0","1","2","3","4","5","6")) it else "-1" } }
+            }
             mmjUseHwShader = p.getString("mmj_use_hw_shader", "enabled") ?: "enabled"
             mmjUseShaderJit = p.getString("mmj_use_shader_jit", "enabled") ?: "enabled"
             mmjAsyncShaderCompile = p.getString("mmj_async_shader_compile", "enabled") ?: "enabled"
-            mmjShaderType = p.getString("mmj_shader_type", "0") ?: "0"
+            mmjShaderType = (p.getString("mmj_shader_type", "1") ?: "1").let {
+                if (it == "3") "1" else it }   // 原版 0/1/2，默认 1=标准+缓存
             mmjHwGsMode = p.getString("mmj_hw_gs_mode", "0") ?: "0"
             mmjAccurateMulType = p.getString("mmj_accurate_mul_type", "0") ?: "0"
             mmjShadowRendering = p.getString("mmj_shadow_rendering", "disabled") ?: "disabled"
@@ -2743,20 +2761,41 @@ object PadLayoutStore {
             mmjUseFrameLimit = p.getString("mmj_use_frame_limit", "enabled") ?: "enabled"
             mmjFrameLimit = p.getString("mmj_frame_limit", "100") ?: "100"
             mmjCpuUsageLimit = p.getString("mmj_cpu_usage_limit", "0") ?: "0"
-            mmjFactor3d = p.getString("mmj_factor_3d", "0") ?: "0"
+            mmjFactor3d = (p.getString("mmj_factor_3d", "0") ?: "0").let {
+                // 原版 0..10（非 0..100）；旧百分比档就近迁移
+                when (it) { "100" -> "10"; "75" -> "8"; "50" -> "5"; "25" -> "3"
+                    else -> (it.toIntOrNull()?.coerceIn(0, 10))?.toString() ?: "0" } }
             mmjEnableDspLle = p.getString("mmj_enable_dsp_lle", "disabled") ?: "disabled"
             mmjDspLleMultithread = p.getString("mmj_dsp_lle_multithread", "disabled") ?: "disabled"
             mmjAudioVolume = p.getString("mmj_audio_volume", "100") ?: "100"
-            mmjAudioStretching = p.getString("mmj_audio_stretching", "enabled") ?: "enabled"
-            mmjAudioOutputType = p.getString("mmj_audio_output_type", "0") ?: "0"
-            mmjAudioInputType = p.getString("mmj_audio_input_type", "0") ?: "0"
+            mmjAudioStretching = p.getString("mmj_audio_stretching", "disabled") ?: "disabled"
+            // ★ 音频输出：原版仅 1=关闭 / 2=Cubeb（默认 2）；旧 "0 自动"/"3 兼容"
+            //   均为非法值（滋滋滋白噪声根因）→ 统一迁移到 2
+            mmjAudioOutputType = (p.getString("mmj_audio_output_type", "2") ?: "2").let {
+                if (it == "1" || it == "2") it else "2" }
+            // ★ 音频输入：原版 1=关闭（默认）/ 2=静态噪声 / 3=真实设备；旧 "0" 非法
+            mmjAudioInputType = (p.getString("mmj_audio_input_type", "1") ?: "1").let {
+                if (it == "1" || it == "2" || it == "3") it else "1" }
             mmjMicVolume = p.getString("mmj_mic_volume", "100") ?: "100"
-            mmjSharedFontType = p.getString("mmj_shared_font_type", "0") ?: "0"
+            // ★ 共享字体：原版 -1=自动（默认）/0=shared_font.bin/1=日/2=简中/3=韩/4=繁
+            //   旧标签错位（0=标准/1=韩/2=简中/3=繁中）→ 首次载入按旧标签语义迁移
+            mmjSharedFontType = if (mmjValuesV2) {
+                (p.getString("mmj_shared_font_type", "-1") ?: "-1").let {
+                    if (it in listOf("-1","0","1","2","3","4")) it else "-1" }
+            } else {
+                (p.getString("mmj_shared_font_type", "-1") ?: "-1").let {
+                    when (it) { "0" -> "-1"; "1" -> "3"; "2" -> "2"; "3" -> "4"
+                        else -> if (it in listOf("-1","0","1","2","3","4")) it else "-1" } }
+            }
             mmjUseVirtualSd = p.getString("mmj_use_virtual_sd", "enabled") ?: "enabled"
             mmjUseGameConfig = p.getString("mmj_use_game_config", "enabled") ?: "enabled"
-            mmjCameraType = p.getString("mmj_camera_type", "0") ?: "0"
-            mmjLayoutOption = p.getString("mmj_layout_option", "0") ?: "0"
-            mmjLandscapeLayoutOption = p.getString("mmj_landscape_layout_option", "0") ?: "0"
+            // ★ 摄像头：原版为字符串枚举 blank/still_image/from_device（旧数字值全非法）
+            mmjCameraType = (p.getString("mmj_camera_type", "blank") ?: "blank").let {
+                if (it == "still_image" || it == "from_device") it else "blank" }
+            mmjLayoutOption = (p.getString("mmj_layout_option", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2", "3")) it else "0" }   // 原版 0..3（无 4=自定义）
+            mmjLandscapeLayoutOption = (p.getString("mmj_landscape_layout_option", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2", "3")) it else "0" }
             mmjLandscapeSwapScreen = p.getString("mmj_landscape_swap_screen", "disabled") ?: "disabled"
             mmjPortraitSwapScreen = p.getString("mmj_portrait_swap_screen", "disabled") ?: "disabled"
             mmjLandscapeCustomLayout = p.getString("mmj_landscape_custom_layout", "disabled") ?: "disabled"
@@ -3514,6 +3553,9 @@ object PadLayoutStore {
             putString("mmj_overlay_alpha", layout.mmjOverlayAlpha)
             putString("mmj_overlay_hide", layout.mmjOverlayHide)
             putString("mmj_joystick_range", layout.mmjJoystickRange)
+            // ★ MMJ 取值域 v2 标志：region/shared_font 的一次性语义迁移已执行，
+            //   之后的载入不再做旧→新语义映射（防止把新语义合法值改回旧语义）。
+            putBoolean("mmj_values_v2", true)
             putString("az_region", layout.azRegion)
             putString("az_audio_emulation", layout.azAudioEmulation)
             putString("az_volume", layout.azVolume)

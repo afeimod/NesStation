@@ -1275,8 +1275,13 @@ fun J2meMenuOverlay(
             )
             Spacer(Modifier.width(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                // ★ 本轮：每个按钮下方加文字标签（与主 MenuOverlay 同款），
+                //   需求："每个按钮下方应该加入文本以免很多人不知道按钮的作用"。
                 // Pause / Resume
-                IconButton(onClick = onTogglePause) {
+                J2meMenuButton(
+                    label = if (running) "暂停" else "继续",
+                    onClick = onTogglePause
+                ) {
                     Icon(
                         if (running) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                         "暂停/继续",
@@ -1284,37 +1289,66 @@ fun J2meMenuOverlay(
                     )
                 }
                 // Overlay mode toggle (gamepad ↔ phone)
-                IconButton(onClick = onToggleOverlayMode) {
+                J2meMenuButton(
+                    label = if (isPhoneMode) "切手柄" else "切手机",
+                    onClick = onToggleOverlayMode
+                ) {
                     Icon(
                         Icons.Rounded.SwapHoriz,
                         if (isPhoneMode) "切换到手柄" else "切换到手机键盘",
                         tint = if (isPhoneMode) Color(0xFFFFD66B) else Color.White
                     )
                 }
-                Text(
-                    if (isPhoneMode) "手机" else "手柄",
-                    color = Color(0xFFFFD66B),
-                    fontSize = 12.sp,
-                    modifier = Modifier.clickable { onToggleOverlayMode() }
-                )
                 // Virtual keypad layout editor — same as other cores' 手柄布局
-                IconButton(onClick = onLayoutEditor) {
+                J2meMenuButton(label = "手柄布局", onClick = onLayoutEditor) {
                     Icon(Icons.Rounded.Tune, "虚拟按键布局", tint = Color.White)
                 }
                 // Engine-specific settings (输入模式/屏幕缩放/J2ME帧率/即时绘制)
-                IconButton(onClick = onSettings) {
+                J2meMenuButton(label = "设置", onClick = onSettings) {
                     Icon(Icons.Rounded.Settings, "设置", tint = Color.White)
                 }
                 // Close menu
-                IconButton(onClick = onClose) {
+                J2meMenuButton(label = "隐藏菜单", onClick = onClose) {
                     Icon(Icons.Rounded.Fullscreen, "隐藏菜单", tint = Color(0xFF4A90D9))
                 }
                 // Exit
-                IconButton(onClick = onExit) {
+                J2meMenuButton(label = "退出", onClick = onExit) {
                     Icon(Icons.Rounded.Close, "退出", tint = Color(0xFFFF6B6B))
                 }
             }
         }
+    }
+}
+
+/**
+ * J2ME 菜单按钮：图标 + 下方文字标签（与 EmulatorScreen 的
+ * FocusableIconButton(label=…) 同款视觉），让用户知道每个按钮的作用。
+ */
+@Composable
+private fun J2meMenuButton(
+    label: String,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(46.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            content()
+        }
+        Text(
+            label,
+            color = Color(0xFFAAB8C8),
+            fontSize = 9.sp,
+            maxLines = 1,
+            modifier = Modifier.padding(top = 1.dp)
+        )
     }
 }
 

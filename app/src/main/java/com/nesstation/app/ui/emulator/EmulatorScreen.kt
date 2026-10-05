@@ -8802,23 +8802,26 @@ private fun MenuOverlay(
         // on TV. The default IconButton is clickable but not focusable, which
         // makes TV remote navigation impossible.
         androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-            FocusableIconButton(onClick = onTogglePause, focusRequester = firstButtonFocus) { Icon(if (running) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "暂停/继续", tint = Color.White) }
-            FocusableIconButton(onClick = onToggleFastForward) { Icon(Icons.Rounded.FastForward, "快进", tint = if (fastForwardSpeed > 0) Color(0xFFFFD66B) else Color.White) }
-            Text(
-                if (fastForwardSpeed > 0) "${fastForwardSpeed}x" else "",
-                color = Color(0xFFFFD66B),
-                fontSize = 12.sp,
-                modifier = Modifier.clickable { onCycleFFSpeed() }
-            )
-            FocusableIconButton(onClick = onScreenshot) { Icon(Icons.Rounded.CameraAlt, "截图", tint = Color.White) }
-            FocusableIconButton(onClick = onSaveState) { Icon(Icons.Rounded.Save, "存档", tint = Color.White) }
-            FocusableIconButton(onClick = onLoadState) { Icon(Icons.Rounded.Upload, "读档", tint = Color.White) }
-            FocusableIconButton(onClick = onReset) { Icon(Icons.Rounded.Refresh, "重置", tint = Color(0xFFFFD66B)) }
-            FocusableIconButton(onClick = onLayoutEditor) { Icon(Icons.Rounded.Tune, "手柄布局", tint = Color.White) }
-            FocusableIconButton(onClick = onSettings) { Icon(Icons.Rounded.Settings, "设置", tint = Color.White) }
-            FocusableIconButton(onClick = onCoreLog) { Icon(Icons.Rounded.Description, "核心日志", tint = Color.White) }
-            FocusableIconButton(onClick = onClose) { Icon(Icons.Rounded.Fullscreen, "隐藏菜单", tint = Color(0xFF4A90D9)) }
-            FocusableIconButton(onClick = onExit) { Icon(Icons.Rounded.Close, "退出", tint = Color(0xFFFF6B6B)) }
+            // ★ 本轮：每个按钮下方加文字标签（需求："每个按钮下方应该加入
+            //   文本以免很多人不知道按钮的作用"）—— 图标+小字纵向排列。
+            FocusableIconButton(onClick = onTogglePause, focusRequester = firstButtonFocus,
+                label = if (running) "暂停" else "继续") { Icon(if (running) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "暂停/继续", tint = Color.White) }
+            FocusableIconButton(onClick = onToggleFastForward,
+                label = if (fastForwardSpeed > 0) "快进 ${fastForwardSpeed}x" else "快进") { Icon(Icons.Rounded.FastForward, "快进", tint = if (fastForwardSpeed > 0) Color(0xFFFFD66B) else Color.White) }
+            FocusableIconButton(onClick = onCycleFFSpeed, label = "倍速") { Text(
+                if (fastForwardSpeed > 0) "${fastForwardSpeed}x" else "1x",
+                color = if (fastForwardSpeed > 0) Color(0xFFFFD66B) else Color.White,
+                fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+            ) }
+            FocusableIconButton(onClick = onScreenshot, label = "截图") { Icon(Icons.Rounded.CameraAlt, "截图", tint = Color.White) }
+            FocusableIconButton(onClick = onSaveState, label = "存档") { Icon(Icons.Rounded.Save, "存档", tint = Color.White) }
+            FocusableIconButton(onClick = onLoadState, label = "读档") { Icon(Icons.Rounded.Upload, "读档", tint = Color.White) }
+            FocusableIconButton(onClick = onReset, label = "重置") { Icon(Icons.Rounded.Refresh, "重置", tint = Color(0xFFFFD66B)) }
+            FocusableIconButton(onClick = onLayoutEditor, label = "手柄布局") { Icon(Icons.Rounded.Tune, "手柄布局", tint = Color.White) }
+            FocusableIconButton(onClick = onSettings, label = "设置") { Icon(Icons.Rounded.Settings, "设置", tint = Color.White) }
+            FocusableIconButton(onClick = onCoreLog, label = "核心日志") { Icon(Icons.Rounded.Description, "核心日志", tint = Color.White) }
+            FocusableIconButton(onClick = onClose, label = "隐藏菜单") { Icon(Icons.Rounded.Fullscreen, "隐藏菜单", tint = Color(0xFF4A90D9)) }
+            FocusableIconButton(onClick = onExit, label = "退出") { Icon(Icons.Rounded.Close, "退出", tint = Color(0xFFFF6B6B)) }
         }
     }
     }
@@ -8829,36 +8832,52 @@ private fun MenuOverlay(
  * navigate between buttons on TV. Shows a subtle highlight when focused.
  * Optionally accepts a FocusRequester so the caller can programmatically
  * grab focus (e.g. when the menu opens).
+ * ★ [label] 非空时在图标下方渲染小字标签（需求：让用户知道每个按钮的作用）。
  */
 @Composable
 private fun FocusableIconButton(
     onClick: () -> Unit,
     focusRequester: androidx.compose.ui.focus.FocusRequester? = null,
+    label: String? = null,
     content: @Composable () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
-    val baseModifier = Modifier
-        .size(40.dp)
+    val baseModifier = if (label != null) Modifier.size(width = 46.dp, height = 50.dp)
+        else Modifier.size(40.dp)
     val mod = if (focusRequester != null) {
         baseModifier.focusRequester(focusRequester)
     } else {
         baseModifier
     }
-    Box(
-        modifier = mod
-            .focusable(interactionSource = interaction)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
-        contentAlignment = Alignment.Center
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(46.dp)
     ) {
-        if (focused) {
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .background(Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+        Box(
+            modifier = mod
+                .focusable(interactionSource = interaction)
+                .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            if (focused) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(Color.White.copy(alpha = 0.25f), RoundedCornerShape(8.dp))
+                )
+            }
+            content()
+        }
+        if (label != null) {
+            Text(
+                label,
+                color = Color(0xFFAAB8C8),
+                fontSize = 9.sp,
+                maxLines = 1,
+                modifier = Modifier.padding(top = 1.dp)
             )
         }
-        content()
     }
 }
 
@@ -13721,11 +13740,11 @@ private fun SettingsPanel(
                     // ===== 画面 / 性能 =====
                     Text("画面 / 性能", color = Color(0xFF8899AA), fontSize = 11.sp)
                     DropdownSetting("渲染分辨率",
-                        listOf("1" to "1x (原生, 兼容)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x (高性能设备)"),
+                        listOf("1" to "1x (原生, 默认)", "2" to "2x", "3" to "3x", "4" to "4x (最高, 原版无 5x)"),
                         padLayout.mmjResolution
                     ) { onLayoutChange(padLayout.copy {mmjResolution = it}) }
-                    DropdownSetting("着色器类型 (shader_type)",
-                        listOf("0" to "0 GL (默认)", "1" to "1 GL 兼容", "2" to "2 Vulkan"),
+                    DropdownSetting("着色器类型",
+                        listOf("0" to "标准", "1" to "标准+缓存 (默认, 推荐)", "2" to "分离 (兼容)"),
                         padLayout.mmjShaderType
                     ) { onLayoutChange(padLayout.copy {mmjShaderType = it}) }
                     SwitchSetting("硬件着色器", "PICA 着色器经 GPU 生成，性能关键",
@@ -13741,8 +13760,8 @@ private fun SettingsPanel(
                         listOf("0" to "0 关闭 (默认)", "1" to "1 兼容", "2" to "2 完整"),
                         padLayout.mmjHwGsMode
                     ) { onLayoutChange(padLayout.copy {mmjHwGsMode = it}) }
-                    DropdownSetting("精确乘法 (accurate_mul_type)",
-                        listOf("0" to "0 精确 (默认)", "1" to "1 兼容", "2" to "2 快速"),
+                    DropdownSetting("精确乘法",
+                        listOf("0" to "关闭 (默认, 最快)", "1" to "快速", "2" to "精确 (个别游戏花纹需要)"),
                         padLayout.mmjAccurateMulType
                     ) { onLayoutChange(padLayout.copy {mmjAccurateMulType = it}) }
                     DropdownSetting("阴影渲染 (几何)",
@@ -13820,19 +13839,19 @@ private fun SettingsPanel(
                     ) { onLayoutChange(padLayout.copy {mmjCpuUsageLimit = it}) }
 
                     // ===== 3D / 布局 =====
+                    // ★ 本轮按需求移除 MMJ 独立的布局选项（竖屏/横屏布局、
+                    //   独立自定义布局开关）：3DS 双屏布局统一跟随全局
+                    //   「画面缩放」(videoScale) —— 普通比例=核心默认上下屏
+                    //   适配窗口；选“自定义”时进入双屏自由布局编辑器，
+                    //   上/下屏矩形直接写入核心（即所见即所得）。仅保留
+                    //   交换上下屏（显示位置交换，非布局尺寸）。
                     Text("3D / 布局", color = Color(0xFF8899AA), fontSize = 11.sp)
+                    Text("双屏布局跟随全局「画面缩放」设置（上方 画面缩放 → 自定义 可自由排布上下屏）",
+                        color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownSetting("立体 3D 深度",
-                        listOf("0" to "0 关 (默认)", "25" to "25%", "50" to "50%", "75" to "75%", "100" to "100%"),
+                        listOf("0" to "0 关 (默认)", "2" to "2", "4" to "4", "6" to "6", "8" to "8", "10" to "10 (最深)"),
                         padLayout.mmjFactor3d
                     ) { onLayoutChange(padLayout.copy {mmjFactor3d = it}) }
-                    DropdownSetting("竖屏布局",
-                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
-                        padLayout.mmjLayoutOption
-                    ) { onLayoutChange(padLayout.copy {mmjLayoutOption = it}) }
-                    DropdownSetting("横屏布局",
-                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
-                        padLayout.mmjLandscapeLayoutOption
-                    ) { onLayoutChange(padLayout.copy {mmjLandscapeLayoutOption = it}) }
                     DropdownSetting("横屏交换上下屏",
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
                         padLayout.mmjLandscapeSwapScreen
@@ -13841,10 +13860,6 @@ private fun SettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
                         padLayout.mmjPortraitSwapScreen
                     ) { onLayoutChange(padLayout.copy {mmjPortraitSwapScreen = it}) }
-                    DropdownSetting("启用自定义布局",
-                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (用双屏编辑器排布)"),
-                        padLayout.mmjLandscapeCustomLayout
-                    ) { onLayoutChange(padLayout.copy {mmjLandscapeCustomLayout = it}) }
 
                     // ===== 系统 / 音频 =====
                     Text("系统 / 音频", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -13855,7 +13870,7 @@ private fun SettingsPanel(
                         padLayout.mmjIsNew3ds == "enabled"
                     ) { onLayoutChange(padLayout.copy {mmjIsNew3ds = if (it) "enabled" else "disabled"}) }
                     DropdownSetting("主机区域",
-                        listOf("-1" to "自动 (默认)", "1" to "日本", "2" to "美国", "3" to "欧洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                        listOf("-1" to "自动 (默认)", "0" to "日本", "1" to "北美", "2" to "欧洲", "3" to "澳洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
                         padLayout.mmjRegion
                     ) { onLayoutChange(padLayout.copy {mmjRegion = it}) }
                     DropdownSetting("DSP 音频模拟",
@@ -13870,18 +13885,25 @@ private fun SettingsPanel(
                         padLayout.mmjAudioVolume
                     ) { onLayoutChange(padLayout.copy {mmjAudioVolume = it}) }
                     DropdownSetting("音频拉伸",
-                        listOf("enabled" to "开启 (防爆音, 默认)", "disabled" to "关闭"),
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (时间拉伸防爆音)"),
                         padLayout.mmjAudioStretching
                     ) { onLayoutChange(padLayout.copy {mmjAudioStretching = it}) }
+                    // ★ 音频输出：原版仅 1=关闭 / 2=Cubeb（默认）两个合法值
+                    //   （arrays.xml audioOuputValues 实证）；旧版 "0 自动"/"3 兼容"
+                    //   是非法值 → 核心输出白噪声（滋滋滋），已迁移到 2。
                     DropdownSetting("音频输出",
-                        listOf("0" to "0 自动 (默认)", "1" to "1 AudioTrack", "2" to "2 AAudio", "3" to "3 兼容模式"),
+                        listOf("2" to "Cubeb (默认)", "1" to "关闭 (无声)"),
                         padLayout.mmjAudioOutputType
                     ) { onLayoutChange(padLayout.copy {mmjAudioOutputType = it}) }
+                    DropdownSetting("音频输入",
+                        listOf("1" to "关闭 (默认)", "2" to "静态噪声", "3" to "真实设备 (麦克风)"),
+                        padLayout.mmjAudioInputType
+                    ) { onLayoutChange(padLayout.copy {mmjAudioInputType = it}) }
                     DropdownSetting("麦克风音量", (0..100 step 10).map { it.toString() to "$it%" },
                         padLayout.mmjMicVolume
                     ) { onLayoutChange(padLayout.copy {mmjMicVolume = it}) }
                     DropdownSetting("共享字体",
-                        listOf("0" to "0 标准 (默认)", "1" to "1 韩文", "2" to "2 简体中文", "3" to "3 繁体中文"),
+                        listOf("-1" to "自动 (默认)", "0" to "shared_font.bin", "1" to "日文", "2" to "简体中文", "3" to "韩文", "4" to "繁体中文"),
                         padLayout.mmjSharedFontType
                     ) { onLayoutChange(padLayout.copy {mmjSharedFontType = it}) }
                     DropdownSetting("虚拟 SD 卡",
@@ -13893,7 +13915,7 @@ private fun SettingsPanel(
                         padLayout.mmjUseGameConfig
                     ) { onLayoutChange(padLayout.copy {mmjUseGameConfig = it}) }
                     DropdownSetting("摄像头",
-                        listOf("0" to "0 无 (默认)", "1" to "1 静态图片", "2" to "2 前置摄像头", "3" to "3 后置摄像头"),
+                        listOf("blank" to "无 (默认)", "still_image" to "静态图片", "from_device" to "设备摄像头"),
                         padLayout.mmjCameraType
                     ) { onLayoutChange(padLayout.copy {mmjCameraType = it}) }
                 } else {

@@ -78,14 +78,34 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val PrimaryText = Color(0xFF1E2A3A)
-private val SecondaryText = Color(0xFF4A5568)
-private val SecondaryTextLight = Color(0xFF8899AA)
-private val Accent = Color(0xFF8A7BFF)
-private val Accent2 = Color(0xFF4F8AC4)
+// ---- 配色（★ 本轮 Neon 主题适配：全部改为随 NeonUi.isNeon 切换的动态取色，
+//      整页文字/卡片/背景在 Neon 主题下自动切换为深空底+电光青风格）----
+private val PrimaryText: Color
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextHi
+        else Color(0xFF1E2A3A)
+private val SecondaryText: Color
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Text
+        else Color(0xFF4A5568)
+private val SecondaryTextLight: Color
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
+        else Color(0xFF8899AA)
+private val Accent: Color
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+        else Color(0xFF8A7BFF)
+private val Accent2: Color
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+        else Color(0xFF4F8AC4)
 private val DeleteColor = Color(0xFFE74C3C)
 private val Success = Color(0xFF27AE60)
 private val Warn = Color(0xFFF1C40F)
+/** 卡片底：Neon=深空面板 / FSD=白色半透明 */
+private val CardBg: Color
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.BgPanelHi
+        else Color.White.copy(alpha = 0.85f)
+/** 弹窗底：Neon=深空面板 / FSD=白 */
+private val DialogBg: Color
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.BgPanel
+        else Color.White
 
 /** 街机厅桌子数量 */
 private const val TABLE_COUNT = 10
@@ -176,7 +196,14 @@ fun BattleScreen(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (!AppBackgroundState.active) PixelBackdrop()
+        // ★ Neon 主题：深空背景；FSD：像素浅色背景
+        if (!AppBackgroundState.active) {
+            if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                com.nesstation.app.ui.neon.NeonBackdrop()
+            } else {
+                PixelBackdrop()
+            }
+        }
 
         Column(modifier = Modifier.fillMaxSize()) {
             // ---- 顶部栏 ----
@@ -474,6 +501,8 @@ private fun BattleFilterChip(
             .clip(RoundedCornerShape(20.dp))
             .background(
                 if (selected) Accent
+                else if (com.nesstation.app.ui.neon.NeonUi.isNeon)
+                    com.nesstation.app.ui.neon.Neon.BgPanel
                 else Color.White.copy(alpha = 0.5f)
             )
             .clickable(onClick = onClick)
@@ -505,7 +534,7 @@ private fun BattleGameCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
-            .background(Color.White.copy(alpha = 0.85f))
+            .background(CardBg)
             .border(1.5.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
     ) {
@@ -690,7 +719,7 @@ private fun ArcadeTableCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
-            .background(Color.White.copy(alpha = 0.88f))
+            .background(CardBg.copy(alpha = if (com.nesstation.app.ui.neon.NeonUi.isNeon) 1f else 0.88f))
             .border(
                 width = if (isFull) 2.dp else 1.5.dp,
                 color = if (isFull) Success else accent.copy(alpha = 0.45f),
@@ -947,7 +976,7 @@ private fun LoginDialog(
                 }
             }
         },
-        containerColor = Color.White,
+        containerColor = DialogBg,
         titleContentColor = PrimaryText,
         textContentColor = PrimaryText,
         confirmButton = {},
@@ -1012,7 +1041,7 @@ private fun ServerConfigDialog(
                 }
             }
         },
-        containerColor = Color.White,
+        containerColor = DialogBg,
         titleContentColor = PrimaryText,
         textContentColor = PrimaryText,
         confirmButton = {

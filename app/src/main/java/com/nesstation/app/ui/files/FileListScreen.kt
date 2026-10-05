@@ -44,11 +44,23 @@ import java.io.File
 import java.util.Locale
 
 // Dark pixel-art palette for the file browser.
-private val BgColor = Color(0xFF0D1117)
-private val CardColor = Color(0xFF1E2A3A)
-private val PrimaryText = Color.White
-private val SecondaryText = Color(0xFF4A5568)
-private val AccentColor = Color(0xFF8A7BFF)
+// ★ Neon 主题适配（需求："swf等没有正确设计为neon的主题ui"）：
+//   取色全部改为随 NeonUi.isNeon 切换的动态取色 + 背景换 Neon 深空底。
+private val BgColor
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Bg
+        else Color(0xFF0D1117)
+private val CardColor
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.BgPanelHi
+        else Color(0xFF1E2A3A)
+private val PrimaryText
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextHi
+        else Color.White
+private val SecondaryText
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
+        else Color(0xFF4A5568)
+private val AccentColor
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+        else Color(0xFF8A7BFF)
 
 /**
  * A full-screen file browser for locating .swf files on the device.
@@ -102,8 +114,15 @@ fun FileListScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(if (AppBackgroundState.active) Color.Transparent else BgColor)
     ) {
+        // 背景：Neon=深空网格底 / FSD=纯深色；全局背景激活时透明
+        if (!AppBackgroundState.active) {
+            if (com.nesstation.app.ui.neon.NeonUi.isNeon) {
+                com.nesstation.app.ui.neon.NeonBackdrop()
+            } else {
+                Box(Modifier.fillMaxSize().background(BgColor))
+            }
+        }
         Column(modifier = Modifier.fillMaxSize()) {
             // ---- Header: back arrow · current path · up-one-level ----
             Row(

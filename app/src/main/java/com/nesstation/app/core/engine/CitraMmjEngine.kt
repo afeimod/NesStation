@@ -410,6 +410,50 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     )
 
     /**
+     * ★★★ 值域归一化（本轮根治"滋滋滋"音频 + "很多独立设置无效"）★★★
+     *
+     * 依据：Citra_MMJ_20250220.apk 反编译（settings 编辑器 Y0/i.java k2() +
+     * res/values/arrays.xml 逐一实证）—— MMJ 核心只接受以下枚举值，
+     * 越界值行为未定义（audio_output_type=0/3 → sink 选择走野指针分支 →
+     * 输出白噪声"滋滋滋"，即用户反馈的音频问题根因）：
+     *   - audio_output_type： 1=关闭 / 2=Cubeb（原版默认 2）
+     *   - audio_input_type：  1=关闭 / 2=静态噪声 / 3=真实设备（原版默认 1）
+     *   - camera_type：       "blank" / "still_image" / "from_device"（字符串！）
+     *   - resolution_factor： 1..4（无 5x 档）
+     *   - shader_type：       0=标准 / 1=标准+缓存（默认）/ 2=分离
+     *   - accurate_mul_type： 0=关闭（默认）/ 1=快速 / 2=精确
+     *   - factor_3d：         0..10（不是 0..100）
+     *   - shared_font_type：  -1=自动（默认）/ 0=shared_font.bin / 1=日 /
+     *                         2=简中 / 3=韩 / 4=繁
+     *   - region_value：      -1=自动 / 0=日 / 1=美 / 2=欧 / 3=澳 / 4=中 /
+     *                         5=韩 / 6=台
+     *   - layout_option：     0..3（默认/单屏/大屏/并排；自定义布局走
+     *                         landscape/portrait_custom_layout 开关 + 16 矩形键）
+     * 旧版 UI 下发过的非法值在此统一归一到合法集，双保险（UI 层同步修正）。
+     */
+    private fun normalizeMmjValue(key: String, value: String): String {
+        fun clampInt(v: String, lo: Int, hi: Int, dflt: Int): String {
+            val n = v.toIntOrNull() ?: return dflt.toString()
+            return n.coerceIn(lo, hi).toString()
+        }
+        return when (key) {
+            "audio_output_type" -> if (value == "1" || value == "2") value else "2"
+            "audio_input_type" -> if (value == "1" || value == "2" || value == "3") value else "1"
+            "camera_type" -> if (value == "blank" || value == "still_image" ||
+                value == "from_device") value else "blank"
+            "resolution_factor" -> clampInt(value, 1, 4, 1)
+            "shader_type" -> if (value == "0" || value == "1" || value == "2") value else "1"
+            "accurate_mul_type" -> if (value == "0" || value == "1" || value == "2") value else "0"
+            "factor_3d" -> clampInt(value, 0, 10, 0)
+            "shared_font_type" -> if (value in listOf("-1", "0", "1", "2", "3", "4")) value else "-1"
+            "region_value" -> clampInt(value, -1, 6, -1)
+            "layout_option", "landscape_layout_option" ->
+                if (value == "0" || value == "1" || value == "2" || value == "3") value else "0"
+            else -> value
+        }
+    }
+
+    /**
      * 把 coreOptions 合并写入 <userDir>/config/config-mmj.ini。
      *
      * 合并语义（对齐原版 Java ini 编辑器）：保留文件中已有的一切条目（包括
@@ -506,7 +550,10 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     android.util.Log.w("CitraMmjEngine", "skip unknown MMJ ini key: $key")
                     continue
                 }
-                sections.getOrPut(section) { LinkedHashMap() }[key] = value
+                // ★ 值域归一化：非法枚举值（旧 UI 下发/手改 ini）在此修正，
+                //   保证核心永远读到合法值（详见 normalizeMmjValue 注释）。
+                sections.getOrPut(section) { LinkedHashMap() }[key] =
+                    normalizeMmjValue(key, value)
                 applied++
             }
             // 3) 写回

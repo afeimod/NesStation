@@ -65,7 +65,10 @@ import com.nesstation.app.ui.swf.SwfExtractDialog
 import com.nesstation.app.ui.swf.SwfItem
 import kotlinx.coroutines.flow.MutableStateFlow
 
-private val PrimaryBackground = Color(0xFF0F1115)
+// ★ Neon 主题适配：播放器底色随主题切换（Neon=深空黑蓝）
+private val PrimaryBackground
+    get() = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Bg
+        else Color(0xFF0F1115)
 
 /**
  * 在线网页游戏/Flash 游戏的 Compose 入口。

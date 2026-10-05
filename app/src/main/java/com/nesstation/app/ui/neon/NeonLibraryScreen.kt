@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -474,28 +475,11 @@ fun NeonLibraryScreen(
 
         Column(modifier = Modifier.fillMaxSize()) {
             // ===== 顶栏：返回 + 标题 + 工具栏 =====
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Rounded.ArrowBack, null,
-                    tint = Neon.TextHi,
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clickable { onBack() }
-                        .padding(8.dp)
-                )
-                Column {
-                    Text(modeTitle, color = Neon.TextHi, fontSize = 19.sp, fontWeight = FontWeight.ExtraBold)
-                    Text(
-                        "$modeSub · ${if (searching) "${displayGames.size} 结果" else "${modeGames.size} GAMES"}",
-                        color = Neon.Accent, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp
-                    )
-                }
-                Spacer(Modifier.weight(1f))
+            // ★ 竖屏修复（需求："竖屏时游戏库右上方的搜索导入rom导入文件夹
+            //   等按钮显示不完整应该支持滑动"）：竖屏时工具按钮下沉为标题
+            //   下方的独立横向滑动行（不再被标题挤压截断）；横屏保持右侧
+            //   内联排布（宽屏空间足够）。
+            val toolbarContent: @Composable () -> Unit = {
                 NeonToolbarButton(
                     icon = Icons.Rounded.Search,
                     label = "搜索",
@@ -534,7 +518,45 @@ fun NeonLibraryScreen(
                 ) { fetchCoversManual() }
                 Spacer(Modifier.width(7.dp))
                 NeonToolbarButton(Icons.Rounded.Home, "主页", tint = Neon.Accent, onClick = onHome)
-                Spacer(Modifier.width(4.dp))
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Rounded.ArrowBack, null,
+                    tint = Neon.TextHi,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clickable { onBack() }
+                        .padding(8.dp)
+                )
+                Column {
+                    Text(modeTitle, color = Neon.TextHi, fontSize = 19.sp, fontWeight = FontWeight.ExtraBold)
+                    Text(
+                        "$modeSub · ${if (searching) "${displayGames.size} 结果" else "${modeGames.size} GAMES"}",
+                        color = Neon.Accent, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp
+                    )
+                }
+                if (!isPortrait) {
+                    Spacer(Modifier.weight(1f))
+                    toolbarContent()
+                    Spacer(Modifier.width(4.dp))
+                }
+            }
+            // 竖屏：工具按钮独立成行 + 横向滑动（不再截断）
+            if (isPortrait) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    toolbarContent()
+                }
             }
 
             // ===== 搜索行 =====

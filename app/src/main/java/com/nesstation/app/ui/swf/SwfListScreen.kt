@@ -55,17 +55,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nesstation.app.ui.components.AppBackgroundState
 import com.nesstation.app.ui.fsd.Fsd
-import com.nesstation.app.ui.fsd.FsdBackdrop
-import com.nesstation.app.ui.fsd.FsdBottomBar
-import com.nesstation.app.ui.fsd.FsdBreadcrumb
 import com.nesstation.app.ui.fsd.FsdButtonHint
-import com.nesstation.app.ui.fsd.FsdButtonHints
-import com.nesstation.app.ui.fsd.FsdCounter
 import com.nesstation.app.ui.fsd.FsdCoverFlow
-import com.nesstation.app.ui.fsd.FsdIconCoverCard
-import com.nesstation.app.ui.fsd.FsdTitleBanner
-import com.nesstation.app.ui.fsd.FsdToolButton
-import com.nesstation.app.ui.fsd.FsdTopBar
+import com.nesstation.app.ui.neon.Neon
+import com.nesstation.app.ui.neon.SecBackdrop
+import com.nesstation.app.ui.neon.SecBottomBar
+import com.nesstation.app.ui.neon.SecBreadcrumb
+import com.nesstation.app.ui.neon.SecButtonHints
+import com.nesstation.app.ui.neon.SecCoverCard
+import com.nesstation.app.ui.neon.SecCounter
+import com.nesstation.app.ui.neon.SecTitleBanner
+import com.nesstation.app.ui.neon.SecToolButton
+import com.nesstation.app.ui.neon.SecTopBar
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -195,10 +196,10 @@ fun SwfListScreen(
             }
     ) {
         // FSD 深蓝壁纸（与游戏库一致）；全局背景激活时由根布局统一渲染
-        if (!AppBackgroundState.active) FsdBackdrop()
+        if (!AppBackgroundState.active) SecBackdrop()
 
         Column(modifier = Modifier.fillMaxSize()) {
-            FsdTopBar()
+            SecTopBar()
 
             // ===== 工具行：面包屑 + 操作按钮（与游戏库同款） =====
             Row(
@@ -207,7 +208,7 @@ fun SwfListScreen(
                     .padding(end = 24.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                FsdBreadcrumb(
+                SecBreadcrumb(
                     listOf(
                         "SWF 游戏",
                         if (currentTab == 1) "浏览文件" else "我的游戏 ${swfList.size}"
@@ -215,7 +216,7 @@ fun SwfListScreen(
                     modifier = Modifier.weight(1f)
                 )
                 if (currentTab == 1) {
-                    FsdToolButton(Icons.Rounded.Search, "扫描此文件夹") {
+                    SecToolButton(Icons.Rounded.Search, "扫描此文件夹") {
                         val count = SwfStore.scanFolder(context, currentDir.absolutePath)
                         if (count > 0) {
                             refreshList()
@@ -225,7 +226,7 @@ fun SwfListScreen(
                         }
                     }
                 }
-                FsdToolButton(Icons.Rounded.Home, "主页") { onHome() }
+                SecToolButton(Icons.Rounded.Home, "主页") { onHome() }
             }
 
             // ===== Tab 切换行（FSD 风格胶囊，与游戏库平台标签一致） =====
@@ -291,7 +292,7 @@ fun SwfListScreen(
                             modifier = Modifier.fillMaxSize()
                         ) { i ->
                             val entry = swfList[i]
-                            FsdIconCoverCard(
+                            SecCoverCard(
                                 title = SwfStore.displayTitle(entry),
                                 icon = Icons.Rounded.Movie,
                                 accent = AccentPalette[i % AccentPalette.size],
@@ -302,7 +303,7 @@ fun SwfListScreen(
                         }
 
                         // 底部左：按键提示
-                        FsdButtonHints(
+                        SecButtonHints(
                             hints = listOf(
                                 FsdButtonHint("A", "启动", Fsd.BtnA),
                                 FsdButtonHint("B", "返回", Fsd.BtnB),
@@ -315,7 +316,7 @@ fun SwfListScreen(
 
                         // 底部中：标题横幅
                         swfList.getOrNull(selIdx)?.let { g ->
-                            FsdTitleBanner(
+                            SecTitleBanner(
                                 text = SwfStore.displayTitle(g),
                                 modifier = Modifier
                                     .align(Alignment.BottomCenter)
@@ -324,7 +325,7 @@ fun SwfListScreen(
                         }
 
                         // 右侧：N of M 计数
-                        FsdCounter(
+                        SecCounter(
                             current = selIdx + 1,
                             total = swfList.size,
                             modifier = Modifier
@@ -412,7 +413,7 @@ fun SwfListScreen(
                 }
             }
 
-            FsdBottomBar(status = "SWF 游戏")
+            SecBottomBar(status = "SWF 游戏")
         }
 
         // Snackbar
@@ -559,33 +560,46 @@ private fun MenuRow(text: String, danger: Boolean = false, onClick: () -> Unit) 
     }
 }
 
-/** FSD 风格 Tab 胶囊（与游戏库的平台 FilterChip 同款视觉）。 */
+/** FSD 风格 Tab 胶囊（与游戏库的平台 FilterChip 同款视觉）。
+ *  ★ Neon 主题时自动换装：切角 + 电光青（深空底上更协调）。 */
 @Composable
 private fun FsdTabChip(
     text: String,
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val neon = com.nesstation.app.ui.neon.NeonUi.isNeon
+    val shape = if (neon) com.nesstation.app.ui.neon.neonChamfer(0.4f)
+        else RoundedCornerShape(16.dp)
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
+            .clip(shape)
             .background(
-                if (selected) Brush.verticalGradient(
+                if (neon) {
+                    SolidColor(
+                        if (selected) Neon.Accent.copy(alpha = 0.30f)
+                        else Neon.BgPanel.copy(alpha = 0.75f)
+                    )
+                } else if (selected) Brush.verticalGradient(
                     listOf(Fsd.TileBlueTop, Fsd.TileBlueBottom)
                 ) else SolidColor(Color.White.copy(alpha = 0.12f))
             )
             .border(
                 width = 1.dp,
-                color = if (selected) Color.White.copy(alpha = 0.65f)
+                color = if (neon) {
+                    if (selected) Neon.Accent else Neon.Line
+                } else if (selected) Color.White.copy(alpha = 0.65f)
                         else Color.White.copy(alpha = 0.22f),
-                shape = RoundedCornerShape(16.dp)
+                shape = shape
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 6.dp)
     ) {
         Text(
             text,
-            color = if (selected) Color.White else Fsd.BarTextDim,
+            color = if (neon) {
+                if (selected) Neon.TextHi else Neon.TextDim
+            } else if (selected) Color.White else Fsd.BarTextDim,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold
         )

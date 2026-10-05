@@ -1760,7 +1760,7 @@ fun CoreSettingsPanel(
                 //    setConfig* 直写核心配置）。
                 SettingsSection("3DS (Citra MMJ) · 画面 / 性能") {
                     DropdownRow("渲染分辨率",
-                        listOf("1" to "1x (原生, 兼容)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x (高性能设备)"),
+                        listOf("1" to "1x (原生, 默认)", "2" to "2x", "3" to "3x", "4" to "4x (最高, 原版无 5x)"),
                         padLayout.mmjResolution
                     ) { updateLayout(padLayout.copy {mmjResolution = it}) }
                     DropdownRow("硬件着色器",
@@ -1775,16 +1775,16 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "开启 (后台编译, 默认)", "disabled" to "关闭"),
                         padLayout.mmjAsyncShaderCompile
                     ) { updateLayout(padLayout.copy {mmjAsyncShaderCompile = it}) }
-                    DropdownRow("着色器类型 (shader_type)",
-                        listOf("0" to "0 自动 (默认)", "1" to "1 GLSL", "2" to "2 SPIR-V", "3" to "3 兼容"),
+                    DropdownRow("着色器类型",
+                        listOf("0" to "标准", "1" to "标准+缓存 (默认, 推荐)", "2" to "分离 (兼容)"),
                         padLayout.mmjShaderType
                     ) { updateLayout(padLayout.copy {mmjShaderType = it}) }
                     DropdownRow("几何着色器 (hw_gs_mode)",
                         listOf("0" to "0 关闭 (默认)", "1" to "1 兼容", "2" to "2 完整"),
                         padLayout.mmjHwGsMode
                     ) { updateLayout(padLayout.copy {mmjHwGsMode = it}) }
-                    DropdownRow("精确乘法 (accurate_mul_type)",
-                        listOf("0" to "0 精确 (默认)", "1" to "1 兼容", "2" to "2 快速"),
+                    DropdownRow("精确乘法",
+                        listOf("0" to "关闭 (默认, 最快)", "1" to "快速", "2" to "精确 (个别游戏花纹需要)"),
                         padLayout.mmjAccurateMulType
                     ) { updateLayout(padLayout.copy {mmjAccurateMulType = it}) }
                     DropdownRow("阴影渲染 (几何)",
@@ -1869,22 +1869,15 @@ fun CoreSettingsPanel(
                 }
 
                 SettingsSection("3DS (Citra MMJ) · 3D / 布局") {
+                    // ★ 本轮按需求移除 MMJ 独立布局选项（竖屏/横屏布局、
+                    //   独立自定义布局开关）：3DS 双屏布局统一跟随全局
+                    //   「画面缩放」(videoScale) —— "自定义"时进双屏编辑器。
                     DropdownRow("立体 3D 深度",
-                        listOf("0" to "0 关 (默认)", "25" to "25%", "50" to "50%", "75" to "75%", "100" to "100%"),
+                        listOf("0" to "0 关 (默认)", "2" to "2", "4" to "4", "6" to "6", "8" to "8", "10" to "10 (最深)"),
                         padLayout.mmjFactor3d
                     ) { updateLayout(padLayout.copy {mmjFactor3d = it}) }
-                    // ★ 标签修正：layout_option 实为竖屏/通用布局（so 无
-                    //   portrait_layout_option 键，横屏由 landscape_layout_option
-                    //   单独控制）。此前该键从未写入核心（引擎映射表缺失），
-                    //   本轮已修。
-                    DropdownRow("竖屏布局",
-                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
-                        padLayout.mmjLayoutOption
-                    ) { updateLayout(padLayout.copy {mmjLayoutOption = it}) }
-                    DropdownRow("横屏布局",
-                        listOf("0" to "默认 (上/下)", "1" to "单屏", "2" to "大屏", "3" to "左右并排", "4" to "自定义"),
-                        padLayout.mmjLandscapeLayoutOption
-                    ) { updateLayout(padLayout.copy {mmjLandscapeLayoutOption = it}) }
+                    Text("双屏布局跟随全局「画面缩放」设置（游戏内 画面缩放 → 自定义 可自由排布上下屏；此处不再提供独立布局选项）",
+                        color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownRow("横屏交换上下屏",
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
                         padLayout.mmjLandscapeSwapScreen
@@ -1893,14 +1886,6 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
                         padLayout.mmjPortraitSwapScreen
                     ) { updateLayout(padLayout.copy {mmjPortraitSwapScreen = it}) }
-                    // ★ 自定义布局开关接线说明：开启后（或全局「画面缩放」选
-                    //   自定义）引擎把双屏编辑器的上/下屏像素矩形写入核心
-                    //   landscape_top_*/bottom_*（竖屏 portrait_*），布局族
-                    //   键即时生效（拖动所见即所得）。
-                    DropdownRow("启用自定义布局",
-                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (用双屏编辑器排布)"),
-                        padLayout.mmjLandscapeCustomLayout
-                    ) { updateLayout(padLayout.copy {mmjLandscapeCustomLayout = it}) }
                 }
 
                 SettingsSection("3DS (Citra MMJ) · 系统 / 音频") {
@@ -1913,7 +1898,7 @@ fun CoreSettingsPanel(
                         padLayout.mmjIsNew3ds
                     ) { updateLayout(padLayout.copy {mmjIsNew3ds = it}) }
                     DropdownRow("主机区域",
-                        listOf("-1" to "自动 (默认)", "1" to "日本", "2" to "美国", "3" to "欧洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                        listOf("-1" to "自动 (默认)", "0" to "日本", "1" to "北美", "2" to "欧洲", "3" to "澳洲", "4" to "中国", "5" to "韩国", "6" to "台湾"),
                         padLayout.mmjRegion
                     ) { updateLayout(padLayout.copy {mmjRegion = it}) }
                     DropdownRow("DSP 音频模拟",
@@ -1928,22 +1913,25 @@ fun CoreSettingsPanel(
                         padLayout.mmjAudioVolume
                     ) { updateLayout(padLayout.copy {mmjAudioVolume = it}) }
                     DropdownRow("音频拉伸",
-                        listOf("enabled" to "开启 (防爆音, 默认)", "disabled" to "关闭"),
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (时间拉伸防爆音)"),
                         padLayout.mmjAudioStretching
                     ) { updateLayout(padLayout.copy {mmjAudioStretching = it}) }
+                    // ★ 音频输出：原版仅 1=关闭 / 2=Cubeb（默认）两个合法值
+                    //   （arrays.xml audioOuputValues 实证）；旧 "0 自动"/"3 兼容"
+                    //   是非法值 → 核心输出白噪声（滋滋滋），已迁移到 2。
                     DropdownRow("音频输出",
-                        listOf("0" to "0 自动 (默认)", "1" to "1 AudioTrack", "2" to "2 AAudio", "3" to "3 兼容模式"),
+                        listOf("2" to "Cubeb (默认)", "1" to "关闭 (无声)"),
                         padLayout.mmjAudioOutputType
                     ) { updateLayout(padLayout.copy {mmjAudioOutputType = it}) }
                     DropdownRow("音频输入",
-                        listOf("0" to "0 自动 (默认)", "1" to "1 静态样本", "2" to "2 麦克风"),
+                        listOf("1" to "关闭 (默认)", "2" to "静态噪声", "3" to "真实设备 (麦克风)"),
                         padLayout.mmjAudioInputType
                     ) { updateLayout(padLayout.copy {mmjAudioInputType = it}) }
                     DropdownRow("麦克风音量", (0..100 step 10).map { it.toString() to "$it%" },
                         padLayout.mmjMicVolume
                     ) { updateLayout(padLayout.copy {mmjMicVolume = it}) }
                     DropdownRow("共享字体",
-                        listOf("0" to "0 标准 (默认)", "1" to "1 韩文", "2" to "2 简体中文", "3" to "3 繁体中文"),
+                        listOf("-1" to "自动 (默认)", "0" to "shared_font.bin", "1" to "日文", "2" to "简体中文", "3" to "韩文", "4" to "繁体中文"),
                         padLayout.mmjSharedFontType
                     ) { updateLayout(padLayout.copy {mmjSharedFontType = it}) }
                     DropdownRow("虚拟 SD 卡",
@@ -1955,7 +1943,7 @@ fun CoreSettingsPanel(
                         padLayout.mmjUseGameConfig
                     ) { updateLayout(padLayout.copy {mmjUseGameConfig = it}) }
                     DropdownRow("摄像头",
-                        listOf("0" to "0 无 (默认)", "1" to "1 静态图片", "2" to "2 前置摄像头", "3" to "3 后置摄像头"),
+                        listOf("blank" to "无 (默认)", "still_image" to "静态图片", "from_device" to "设备摄像头"),
                         padLayout.mmjCameraType
                     ) { updateLayout(padLayout.copy {mmjCameraType = it}) }
                 }

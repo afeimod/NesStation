@@ -51,17 +51,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nesstation.app.ui.components.AppBackgroundState
-import com.nesstation.app.ui.fsd.FsdBackdrop
-import com.nesstation.app.ui.fsd.FsdBottomBar
-import com.nesstation.app.ui.fsd.FsdBreadcrumb
 import com.nesstation.app.ui.fsd.FsdButtonHint
-import com.nesstation.app.ui.fsd.FsdButtonHints
-import com.nesstation.app.ui.fsd.FsdCounter
 import com.nesstation.app.ui.fsd.FsdCoverFlow
-import com.nesstation.app.ui.fsd.FsdIconCoverCard
-import com.nesstation.app.ui.fsd.FsdTitleBanner
-import com.nesstation.app.ui.fsd.FsdToolButton
-import com.nesstation.app.ui.fsd.FsdTopBar
+import com.nesstation.app.ui.neon.SecBackdrop
+import com.nesstation.app.ui.neon.SecBottomBar
+import com.nesstation.app.ui.neon.SecBreadcrumb
+import com.nesstation.app.ui.neon.SecButtonHints
+import com.nesstation.app.ui.neon.SecCoverCard
+import com.nesstation.app.ui.neon.SecCounter
+import com.nesstation.app.ui.neon.SecTitleBanner
+import com.nesstation.app.ui.neon.SecToolButton
+import com.nesstation.app.ui.neon.SecTopBar
 import kotlinx.coroutines.delay
 
 // ---- 配色（对话框等浅色弹层与旧版一致） ----
@@ -163,11 +163,12 @@ fun OnlineGamesScreen(
                 }
             }
     ) {
-        // FSD 深蓝壁纸（与游戏库一致）；全局背景激活时由根布局统一渲染
-        if (!AppBackgroundState.active) FsdBackdrop()
+        // ★ 主题适配（Sec* 组件）：Neon 时渲染 Neon 深空风，FSD 时原样
+        //   （需求："整体ui设置为neon时在线游戏…没有正确设计为neon"）
+        if (!AppBackgroundState.active) SecBackdrop()
 
         Column(modifier = Modifier.fillMaxSize()) {
-            FsdTopBar()
+            SecTopBar()
 
             // ===== 工具行：面包屑 + 操作按钮（与游戏库同款） =====
             Row(
@@ -176,13 +177,13 @@ fun OnlineGamesScreen(
                     .padding(end = 24.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                FsdBreadcrumb(
+                SecBreadcrumb(
                     listOf("在线游戏", "${games.size} 个站点"),
                     modifier = Modifier.weight(1f)
                 )
-                FsdToolButton(Icons.Rounded.Add, "添加") { showAddDialog = true }
-                FsdToolButton(Icons.Rounded.Refresh, "刷新") { refresh() }
-                FsdToolButton(Icons.Rounded.Home, "主页") { onHome() }
+                SecToolButton(Icons.Rounded.Add, "添加") { showAddDialog = true }
+                SecToolButton(Icons.Rounded.Refresh, "刷新") { refresh() }
+                SecToolButton(Icons.Rounded.Home, "主页") { onHome() }
             }
 
             // ===== 封面流主体（与游戏库同款） =====
@@ -228,7 +229,7 @@ fun OnlineGamesScreen(
                     ) { i ->
                         val g = games[i]
                         val displayTitle = g.customTitle?.takeIf { it.isNotBlank() } ?: g.title
-                        FsdIconCoverCard(
+                        SecCoverCard(
                             title = displayTitle,
                             icon = Icons.Rounded.Public,
                             accent = AccentPalette[i % AccentPalette.size],
@@ -239,7 +240,7 @@ fun OnlineGamesScreen(
                     }
 
                     // 底部左：按键提示
-                    FsdButtonHints(
+                    SecButtonHints(
                         hints = listOf(
                             FsdButtonHint("A", "启动", com.nesstation.app.ui.fsd.Fsd.BtnA),
                             FsdButtonHint("B", "主页", com.nesstation.app.ui.fsd.Fsd.BtnB),
@@ -253,7 +254,7 @@ fun OnlineGamesScreen(
                     // 底部中：标题横幅
                     games.getOrNull(selIdx)?.let { g ->
                         val displayTitle = g.customTitle?.takeIf { it.isNotBlank() } ?: g.title
-                        FsdTitleBanner(
+                        SecTitleBanner(
                             text = "${if (g.uaMode == "mobile") "手机端" else "PC端"}  $displayTitle",
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -262,7 +263,7 @@ fun OnlineGamesScreen(
                     }
 
                     // 右侧：N of M 计数
-                    FsdCounter(
+                    SecCounter(
                         current = selIdx + 1,
                         total = games.size,
                         modifier = Modifier
@@ -272,7 +273,7 @@ fun OnlineGamesScreen(
                 }
             }
 
-            FsdBottomBar(status = if (games.isEmpty()) "空" else "在线游戏")
+            SecBottomBar(status = if (games.isEmpty()) "空" else "在线游戏")
         }
 
         // ---- Snackbar ----
