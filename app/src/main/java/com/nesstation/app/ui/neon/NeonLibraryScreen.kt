@@ -31,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Refresh
@@ -167,7 +168,15 @@ fun NeonLibraryScreen(
                 add(NeonCoreEntry(null, "全部", modeGames.size))
                 coreOrder.forEach { p ->
                     val n = countByCore[p] ?: 0
-                    if (n > 0) add(NeonCoreEntry(p, p.displayName, n))
+                    // ★★★ 本轮修复（回应"neon的ui在没有导入游戏时没有显示对应
+                    //   核心，也就无法导入对应游戏"）：旧实现 `if (n > 0)` 把
+                    //   零游戏的核心全部隐藏 —— 全新安装/未导入任何游戏时
+                    //   侧栏只剩「全部(0)」，无法选中目标核心（导入时的平台
+                    //   提示 hint = selectedCore 无从生效，DOS/街机等需指定
+                    //   核心导入的平台完全无法工作）。现在【全部核心始终显示】
+                    //   （含 0 计）：选中某核心 → 导入ROM/导入文件夹以该核心为
+                    //   平台提示，空库也能按核心导入。
+                    add(NeonCoreEntry(p, p.displayName, n))
                 }
             }
         }
@@ -273,13 +282,30 @@ fun NeonLibraryScreen(
         }
     }
 
-    /** 重扫当前核心（全部=所有核心）已导入文件夹：补新增 + 清失效。 */
+    /** 重扫当前核心（全部=所有核心）已导入文件夹：补新增 + 清失效。
+     * ★★ 本轮新增：刷新同时枚举 Azahar NAND 已安装标题（CIA 安装的
+     *   游戏/更新/DLC）补进 3DS 库 —— 解决“安装cia后界面没有刷新游戏
+     *   或者说没有读取对应目录包括游戏和dlc等”。 */
     suspend fun refreshCurrent(): String = withContext(Dispatchers.IO) {
         val target = selectedCore
+        // ★ 3DS：无论当前核心是否 3DS，NAND 已装标题都补入（选中 3DS 核心
+        //   或全部时执行；其它核心选中时跳过避免无关 IO）
+        var nandAdded = 0
+        if (target == null || target == GamePlatform.N3DS) {
+            try {
+                nandAdded = com.nesstation.app.core.storage.CiaInstaller
+                    .importInstalledTitles(context)
+            } catch (_: Throwable) {}
+        }
         val folders = RomStore.getImportedFolders(context)
             .filter { target == null || it.second == target }
         if (folders.isEmpty()) {
-            "没有已导入的文件夹记录（导入文件夹后刷新才有意义）"
+            if (nandAdded > 0) {
+                withContext(Dispatchers.Main) { onGamesChanged() }
+                "刷新完成：NAND 已安装标题补入 $nandAdded 个（游戏/更新/DLC）"
+            } else {
+                "没有已导入的文件夹记录（导入文件夹后刷新才有意义）"
+            }
         } else {
             val snapshot = RomStore.loadAll(context)
             val knownPaths = snapshot.mapNotNull { it.romPath }.toHashSet()
@@ -338,6 +364,7 @@ fun NeonLibraryScreen(
             withContext(Dispatchers.Main) { onGamesChanged() }
             when {
                 lostAccess -> "部分文件夹授权已失效，请重新「导入文件夹」"
+                nandAdded > 0 -> "刷新完成：新增 $added，移除 $removed，\nNAND 已安装标题补入 $nandAdded 个（游戏/更新/DLC）"
                 else -> "刷新完成：新增 $added，移除 $removed"
             }
         }
@@ -372,6 +399,39 @@ fun NeonLibraryScreen(
             catch (e: SecurityException) { statusMsg = "没有权限访问所选文件夹，请重试" }
             catch (e: Exception) { statusMsg = "导入文件夹失败：${e.message}" }
             finally { importing = false }
+        }
+    }
+
+    // ===== ★★ CIA 安装（3DS 专属，本轮新增 —— 回应"3ds核心新ui缺少安装cia
+    //   按钮，安装cia后界面没有刷新游戏或者说没有读取对应目录包括游戏和dlc
+    //   等"）：与经典 UI（LibraryScreen）同一套链路，逻辑共享
+    //   [com.nesstation.app.core.storage.CiaInstaller] =====
+    // .cia 是 3DS 安装包（数字版游戏 / 更新 / DLC），必须先装进 Azahar 的
+    // NAND 才能启动。安装完成后枚举 NAND 已装标题（游戏+更新+DLC）补入库
+    // 并刷新界面。
+    var ciaInstallMsg by remember { mutableStateOf<String?>(null) }
+    val ciaPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        if (importing) { statusMsg = "上一次导入还在进行中，请稍候再试"; return@rememberLauncherForActivityResult }
+        importing = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                statusMsg = com.nesstation.app.core.storage.CiaInstaller.installCias(
+                    context, uris,
+                    onProgress = { name, max, progress ->
+                        ciaInstallMsg = "正在安装 $name…\n$progress / $max"
+                    }
+                )
+                // ★ 安装后立即刷新界面（onGamesChanged 重载游戏列表）
+                withContext(Dispatchers.Main) { onGamesChanged() }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { statusMsg = "CIA 安装失败：${e.message}" }
+            } finally {
+                ciaInstallMsg = null
+                importing = false
+            }
         }
     }
 
@@ -495,6 +555,14 @@ fun NeonLibraryScreen(
                 Spacer(Modifier.width(7.dp))
                 NeonToolbarButton(Icons.Rounded.CreateNewFolder, "导入文件夹") {
                     runCatching { folderPickerLauncher.launch(null) }
+                }
+                Spacer(Modifier.width(7.dp))
+                // ★★ CIA 安装入口（本轮新增 —— 与经典 UI 对齐）：3DS 数字版
+                //   游戏/更新/DLC 安装包（.cia）不能像普通 ROM 直接导入 ——
+                //   必须装进 Azahar NAND 后以「已安装标题」形式入库。
+                //   安装后自动枚举 NAND 补入库并刷新（见 ciaPickerLauncher）。
+                NeonToolbarButton(Icons.Rounded.Download, "安装CIA") {
+                    runCatching { ciaPickerLauncher.launch(arrayOf("*/*")) }
                 }
                 Spacer(Modifier.width(7.dp))
                 NeonToolbarButton(Icons.Rounded.Refresh, "刷新") {
@@ -693,6 +761,24 @@ fun NeonLibraryScreen(
                     )
                     Spacer(Modifier.width(14.dp))
                     Text("正在重扫已导入的文件夹", fontSize = 13.sp)
+                }
+            }
+        )
+    }
+    // ★★ CIA 安装进度弹窗（本轮新增，与经典 UI 同款体验）
+    ciaInstallMsg?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { },
+            confirmButton = { },
+            title = { Text("正在安装 CIA…", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        color = Neon.Accent,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Text(msg, fontSize = 13.sp)
                 }
             }
         )

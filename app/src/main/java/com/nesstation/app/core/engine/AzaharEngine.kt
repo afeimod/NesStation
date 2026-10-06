@@ -389,6 +389,12 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     override fun setCoreOption(key: String, value: String) {
         val prev = coreOptions.put(key, value)
+        // ★★ VK 崩溃标记重试通道（本轮）：用户【主动切换到 Vulkan】（prev 存在
+        //   且不同）→ 清除崩溃标记，给 VK 一次全新机会（设置面板里重选 Vulkan
+        //   即重试；崩了下次启动仍会自动回落 GL —— 永远有出路且永不死循环）。
+        if (key == "Renderer/graphics_api" && value == "2" && prev != null && prev != value) {
+            try { File(userDir(), "vk_boot_marker").delete() } catch (_: Throwable) {}
+        }
         // ★ 批量事务中只缓存 —— 由 endCoreOptionsBatch 统一提交一次
         //（旧行为：每个键全量 flush+reload+updateFramebuffer，50 键连发 = 卡顿根源）
         if (optionsBatching) {
@@ -691,6 +697,57 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         if (_ffSpeed > 0) {
             try { lib.setTemporaryFrameLimit(100.0 * _ffSpeed) } catch (_: Throwable) {}
         }
+        // ★★★★ VK 崩溃标记自动回落（本轮根治"azahar核心用vk渲染会闪退"）★★★★
+        //
+        // 背景：graphics_api=2 (Vulkan) 时原生 run() 构造 EmuWindow_Android_
+        // Vulkan → adrenotools/设备驱动初始化失败（无 VK 硬件 / 钩子链缺失 /
+        // 驱动不支持所需扩展）→ C++ CHECK 失败 → SIGABRT。Java try/catch 拦不住
+        // native abort，前置 hasSystemFeature 探测也只能覆盖"完全无 VK"一种。
+        //
+        // 方案（自愈式崩溃标记）：进 run() 前在用户目录写 vk_boot_marker；
+        // - 本局正常结束（run() 返回 / 稳定运行 20s）→ 清除标记；
+        // - 进程在 VK 启动期崩死 → 标记留存 → 下次进游戏检测到标记 →
+        //   自动把 graphics_api 回落为 1 (OpenGL) 并写盘（本局+后续局都安全），
+        //   用户重新选择 Vulkan 时标记重新生效（再崩再回落，永远有出路）。
+        //   同时写诊断日志 + lastErrorText 说明回落原因（界面弹窗可见）。
+        try {
+            val vkMarker = File(userDir(), "vk_boot_marker")
+            val wantsVk = (coreOptions["Renderer/graphics_api"] ?: "1") == "2"
+            if (wantsVk) {
+                if (vkMarker.isFile) {
+                    android.util.Log.w("AzaharEngine",
+                        "VK boot crash marker detected -> falling back to OpenGL")
+                    coreOptions["Renderer/graphics_api"] = "1"
+                    flushConfig()
+                    try { lib.reloadSettings() } catch (_: Throwable) {}
+                    // 仅记录说明（不弹窗打断游戏 —— 本局以 GL 继续启动）
+                    lastErrorText = "检测到上次 Vulkan 启动崩溃，已自动回落 OpenGL 渲染" +
+                        "（如需重试 Vulkan：设置 → 3DS (Azahar) → 图形后端）"
+                } else {
+                    vkMarker.writeText("vk-booting")
+                    // 稳定运行 20s 后清除标记（渲染器已过初始化窗口）；
+                    // run() 正常返回时 finally 分支也会清除。
+                    thread(name = "azahar-vk-marker-clear", isDaemon = true) {
+                        try {
+                            var waited = 0
+                            while (waited < 20000) {
+                                Thread.sleep(1000); waited += 1000
+                                if (!running.get() || !isLoaded) return@thread
+                                if (emuThread?.isAlive != true) return@thread
+                            }
+                            if (running.get() && emuThread?.isAlive == true) {
+                                try { vkMarker.delete() } catch (_: Throwable) {}
+                                android.util.Log.i("AzaharEngine",
+                                    "VK boot stable >20s, crash marker cleared")
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                }
+            } else {
+                // 非 VK 后端：清掉可能残留的标记（用户手动切回 GL 后不应再触发回落）
+                if (vkMarker.isFile) try { vkMarker.delete() } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {}
         // ★★ 赋值竞态根治：先创建不启动的线程并赋值 emuThread，再 start()。
         //   旧写法 emuThread = thread{...} 在赋值完成前，setSurface(null)
         //   读到 emuThread==null → booting=false → 放行 surfaceDestroyed
@@ -752,6 +809,10 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             } finally {
                 // run() 返回（含异常）即退出启动窗口
                 nativeBooting = false
+                // ★★ VK 崩溃标记：run() 正常返回 = 本局未被 native abort 杀死
+                //   → 清除标记（下次 VK 启动重新给机会；崩溃场景进程直接
+                //   死亡走不到这里 → 标记留存 → 下次进游戏自动回落 GL）。
+                try { File(userDir(), "vk_boot_marker").delete() } catch (_: Throwable) {}
             }
             // run() 自然返回（未被用户停止）且核心从未报过错误 → 同样属于
             // 提前退出，上报（覆盖核心不调 exitEmulationActivity 的路径）。

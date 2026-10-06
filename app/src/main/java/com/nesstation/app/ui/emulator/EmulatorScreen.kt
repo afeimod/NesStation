@@ -2009,6 +2009,10 @@ fun EmulatorScreen(
                    padLayout.mmjLandscapeCustomLayout,
                    // ★ MMJ 覆盖层 4 键已移除（独立设置区块删除，引擎强制
                    //   input_overlay_hide=true，下发这些键无意义且危险）
+                   // ★ 本轮新增：全局"显示帧数"开关（MMJ show_fps / Ishiiruka
+                   //   GFX ShowFPS 映射，游戏中切换即时生效）
+                   padLayout.showFps,
+                   padLayout.irShowFps,
                    padLayout.azUseHwShader, padLayout.azUseShaderJit,
                    padLayout.azUseVsync, padLayout.azUseDiskShaderCache,
                    padLayout.azAsyncPresentation, padLayout.azAsyncShaderCompilation,
@@ -2127,6 +2131,28 @@ fun EmulatorScreen(
             if (surfaceSize != IntSize.Zero && loaded) {
                 applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
             }
+        }
+    }
+
+    // ★★★ 模拟器屏幕常亮（本轮，回应"模拟器要屏幕常亮才对！"）★★★
+    //   进入游戏页即给 Activity 窗口加 FLAG_KEEP_SCREEN_ON，退出时移除 ——
+    //   游玩中系统永不熄屏（Android 官方推荐做法，比 WakeLock 轻量：
+    //   无需权限、跟随窗口生命周期自动回收）。暂停/菜单期间同样保持常亮
+    //   （读攻略/调设置不应被熄屏打断）。
+    val keepScreenOnCtx = LocalContext.current
+    androidx.compose.runtime.DisposableEffect(keepScreenOnCtx) {
+        // Context 可能是 ContextWrapper 包装（主题/安全包装），逐层剥出 Activity
+        var ctx: android.content.Context? = keepScreenOnCtx
+        var window: android.view.Window? = null
+        var unwrap = 0
+        while (ctx != null && unwrap < 6) {
+            if (ctx is android.app.Activity) { window = ctx.window; break }
+            ctx = (ctx as? android.content.ContextWrapper)?.baseContext
+            unwrap++
+        }
+        window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 
@@ -3662,7 +3688,14 @@ fun EmulatorScreen(
         }
 
         // 全局 FPS 悬浮显示 —— 左上角小字，实时显示模拟帧率
-        if (loaded && padLayout.showFps && !showMenu && !showLayoutEditor && !showSettings &&
+        // ★★★ 本轮（"mmj/wii 帧数显示不准"根治）：MMJ / Ishiiruka 是推模型
+        //   核心 —— 前端心跳打点恒 ~60（假帧率），显示出来只会误导；真实
+        //   帧率由核心自绘 HUD 呈现（MMJ: ini show_fps；Ishiiruka: GFX.ini
+        //   Settings/ShowFPS，均已接线到全局"显示帧数"开关）。这两个核心
+        //   隐藏前端假 HUD，其余平台（拉模型核心逐帧计数 = 真值）保留。
+        val coreDrawsOwnFps = engine is com.nesstation.app.core.engine.CitraMmjEngine ||
+            engine is com.nesstation.app.core.engine.IshirukaEngine
+        if (loaded && padLayout.showFps && !coreDrawsOwnFps && !showMenu && !showLayoutEditor && !showSettings &&
             !showCustomLayoutEditor && !showNdsCustomLayoutEditor) {
             Text(
                 text = "FPS $fpsDisplay",
@@ -4889,6 +4922,13 @@ private fun applyCoreOptionsInner(
                 val mmjGlobalFx = mmjShaderForGlobalFilter(layout.videoFilter)
                 engine.setCoreOption("pp_shader_name",
                     mmjGlobalFx ?: (if (layout.mmjPpShaderName == "(off)") "" else layout.mmjPpShaderName))
+                // ★★★ 本轮（"mmj帧数显示不准"根治）：MMJ 是推模型核心，
+                //   前端心跳打点恒 ~60（假帧率）；核心自身有 show_fps 开关
+                //   （[Renderer] 段，原版设置 UI 的 "Show FPS" 同款）—— 由
+                //   核心在游戏画面角落绘制【真实帧率】。这里把全局"显示帧数"
+                //   开关映射过去；前端假 FPS HUD 对本核心同步隐藏
+                //   （见 FPS 悬浮显示处的 coreDrawsOwnFps 判定）。
+                engine.setCoreOption("show_fps", if (layout.showFps) "true" else "false")
                 engine.setCoreOption("screen_presentation_mode", layout.mmjScreenPresentationMode)
                 engine.setCoreOption("use_compatible_mode", if (layout.mmjUseCompatibleMode == "enabled") "true" else "false")
                 engine.setCoreOption("use_fmv_hack", if (layout.mmjUseFmvHack == "enabled") "true" else "false")
@@ -5444,7 +5484,14 @@ private fun applyCoreOptionsInner(
             //   PadLayoutStore.normalizeIrResolution 自动迁移。
             engine.setCoreOption("GFX.ini/Settings/InternalResolution", layout.irResolution)
             engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
-            engine.setCoreOption("GFX.ini/Settings/ShowFPS", b(layout.irShowFps))
+            // ★★★ 本轮（"wii游戏帧数显示不准"根治）：Ishiiruka 是推模型核心，
+            //   前端心跳打点恒 ~60（假帧率）且 so 无 GetPerfStats 导出 ——
+            //   真实帧率只能由核心自绘（GFX.ini/Settings/ShowFPS，Dolphin
+            //   原生 FPS HUD）。全局"显示帧数"开关或核心专属 irShowFps 任一
+            //   开启即打开；前端假 FPS HUD 对本核心同步隐藏
+            //   （见 FPS 悬浮显示处的 coreDrawsOwnFps 判定）。
+            engine.setCoreOption("GFX.ini/Settings/ShowFPS",
+                if (layout.irShowFps == "enabled" || layout.showFps) "true" else "false")
             engine.setCoreOption("GFX.ini/Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
             // ★★★ NGC/WII 画面比例取消（本轮）：恒写 "3"（拉伸到窗口）★★★
             //   需求原话："ngcwii核心设置取消屏幕比例，要根据全局屏幕缩放来，
@@ -13844,6 +13891,13 @@ private fun SettingsPanel(
                                "4xBR" to "4xBR 像素平滑 (4x 强化)"),
                         padLayout.mmjPpShaderName
                     ) { onLayoutChange(padLayout.copy {mmjPpShaderName = it}) }
+                    // ★ 本轮：着色器在渲染器初始化时加载 —— 游戏运行中修改
+                    //   需重进游戏生效（引擎会自动把呈现模式升到共享上下文，
+                    //   保证着色器作用到输出画面）。
+                    Text(
+                        "提示：后处理着色器在进入游戏时加载，游戏中修改需退出重进生效。\n" +
+                            "全局滤镜选 xbr/hqx 系时自动映射为 xBR/4xBR。",
+                        color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 13.sp)
                     DropdownSetting("屏幕呈现模式",
                         listOf("0" to "0 兼容 (默认)", "1" to "1 共享上下文", "2" to "2 硬件缓冲"),
                         padLayout.mmjScreenPresentationMode

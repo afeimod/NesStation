@@ -1826,6 +1826,14 @@ fun CoreSettingsPanel(
                                "4xBR" to "4xBR 像素平滑 (4x 强化)"),
                         padLayout.mmjPpShaderName
                     ) { updateLayout(padLayout.copy {mmjPpShaderName = it}) }
+                    // ★ 本轮：着色器加载时机提示 + 呈现模式自动升级说明
+                    Text(
+                        "提示：后处理着色器在进入游戏时加载（游戏中修改需重进生效）。\n" +
+                            "选择任一着色器时引擎自动把呈现模式升为「共享上下文」—— 兼容模式的" +
+                            "CPU 拷贝呈现通道不经过 GL 后处理管线，着色器会表现为「无效」。",
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon)
+                            com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF8899AA),
+                        fontSize = 10.sp, lineHeight = 13.sp)
                     DropdownRow("屏幕呈现模式",
                         listOf("0" to "0 兼容 (默认)", "1" to "1 共享上下文", "2" to "2 硬件缓冲"),
                         padLayout.mmjScreenPresentationMode

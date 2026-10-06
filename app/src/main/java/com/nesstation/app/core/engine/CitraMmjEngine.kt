@@ -87,6 +87,13 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         // ★ 索引 12 = 本核心的【加速(Turbo)键】（so KeyEvent 反汇编实证，
         //   长按 ≥0.35s → frame_limit=200 即 2 倍速）—— 不是 HOME！
         //   绝不从 setPad1 下发（幽灵按下 = “突然 2 倍速”根因，见 setPad1）。
+        //   ★★★ 本轮（快进根治）：快进按钮改经本通道驱动 —— InputEvent(12, 1f)
+        //   = 按住加速键（350ms 后 2x，原版 APK 同款机制，反汇编 0x25cc8c
+        //   实证：直接写 frame_limit=200 到运行时 Settings），InputEvent(12, 0f)
+        //   = 松开（自动恢复原 frame_limit）。旧方案仅靠 ini frame_limit%/
+        //   setRunningSettings[18] —— 该值在 renderer 初始化时被换算成
+        //   skip 指标后不再重读（运行时改值无效），用户实测“无法快进”。
+        private const val IDX_TURBO = 12
         private const val IDX_ZL = 14        // 原版 overlay：new a("button_zl", 14)
         private const val IDX_ZR = 15        // 原版 overlay：new a("button_zr", 15)
         // 摇杆（joystick=21 / c_stick=23；c.java k() 模拟量通道，X=base+0，Y=base+1）
@@ -429,7 +436,11 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         "portrait_top_left", "portrait_top_top",
         "portrait_top_right", "portrait_top_bottom",
         "portrait_bottom_left", "portrait_bottom_top",
-        "portrait_bottom_right", "portrait_bottom_bottom"
+        "portrait_bottom_right", "portrait_bottom_bottom",
+        // ★ 本轮新增：show_fps（FPS 显示）也走热生效链（写 ini → loadConfig
+        //   重读 → WindowChanged 无害重算布局）—— 全局"显示帧数"开关在
+        //   游戏中切换即时生效，无需重进游戏。
+        "show_fps"
     )
 
     /**
@@ -612,6 +623,32 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 coreOptions["use_frame_limit"] ?: extra["use_frame_limit"] ?: "true"
             if (!overrides.containsKey("frame_limit")) {
                 overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
+            }
+            // ★★★★ 本轮（"全局xbr和hqx不生效，自带的后处理着色器里全失效"
+            //   根治）：着色器激活时强制 screen_presentation_mode=1 ★★★★
+            //
+            // 原理：MMJ 的呈现模式（[Renderer] screen_presentation_mode）：
+            //   0=兼容 / 1=共享上下文 / 2=硬件缓冲。兼容模式（默认）走
+            //   CPU 拷贝式呈现通道 —— 不经过 OpenGL 后处理 blit 管线，
+            //   pp_shader_name 加载的着色器在该通道上【不会作用到输出画面】
+            //   → 用户选任何着色器都"看不出效果"（正好是"全失效"的症状）。
+            //   呈现模式 1（共享上下文）走标准 GL 呈现 quad —— 后处理着色
+            //   器在渲染管线内，选择即生效。
+            //   仅在【用户保持默认 0（兼容）且选了着色器】时升到 1；用户
+            //   显式选过 1/2 的保持不动（同为 GL 呈现路径）。着色器关闭时
+            //   回写用户原值（清掉上一轮着色器期的提升，ini 不残留脏值）。
+            val activeShader = overrides["pp_shader_name"] ?: ""
+            val userPresentMode = overrides["screen_presentation_mode"]
+                ?: coreOptions["screen_presentation_mode"] ?: "0"
+            if (activeShader.isNotEmpty() && userPresentMode == "0") {
+                overrides["screen_presentation_mode"] = "1"
+                android.util.Log.i("CitraMmjEngine",
+                    "pp shader '$activeShader' active: screen_presentation_mode 0->1 " +
+                        "(compat present path bypasses post-processing blit)")
+            } else if (activeShader.isEmpty() && userPresentMode == "0") {
+                // 着色器关闭 + 用户设置 0：显式回写 0（覆盖 ini 里可能残留的
+                // 着色器期提升值）
+                overrides["screen_presentation_mode"] = "0"
             }
             var applied = 0
             for ((key, value) in overrides) {
@@ -1005,7 +1042,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     /** 推送运行时设置到核心（通道 2）。值全部来自 currentFrameLimitPct 等
-     *  FF 感知计算，快进中推送也安全（[18] = 倍速%，不会给快进封顶）。 */
+     *  FF 感知计算，快进中推送也安全（[18] = 倍速%，不会给快进封顶）。
+     *  ★★ 本轮：同时重发 Turbo 键状态（核心跑起来前发出的快进键事件会被
+     *   原生输入管理器静默丢弃 —— 运行后补发，快进状态跨启动窗口保持）。 */
     private fun pushRunningSettingsNow() {
         try {
             val arr = buildRunningSettingsArray()
@@ -1015,6 +1054,11 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 "custom=${arr[17]} res=${arr[14] + 1}x")
         } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "setRunningSettings failed", t)
+        }
+        // ★ Turbo 键状态重发（幂等：同状态重复发送无副作用；
+        //   快进开启中 = 持续按住加速键，核心内帧限持续 2x）
+        if (_ffSpeed > 0) {
+            try { CitraMmjNative.lib.InputEvent(IDX_TURBO, 1f) } catch (_: Throwable) {}
         }
     }
 
@@ -1227,6 +1271,12 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     private fun cleanupLocked() {
         running.set(false)
         stopPresentation()
+        // ★★ Turbo 键释放（本轮快进修复配套）：退出/重载前松开加速键 ——
+        //   输入管理器是全局单例、状态跨 Run 存活，不松开会把"按住加速"
+        //   残留到下一局（开局即 2x 的幽灵状态）。
+        if (surfaceAttached || emuThread?.isAlive == true) {
+            try { CitraMmjNative.lib.InputEvent(IDX_TURBO, 0f) } catch (_: Throwable) {}
+        }
         heartbeatThread?.let { t ->
             t.interrupt()
             try { t.join(500) } catch (_: InterruptedException) {}
@@ -1289,6 +1339,21 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
         if (!_loaded) return
+        // ★★★ 本轮根治“mmj无法快进”★★★
+        //
+        // 【通道 1：Turbo 键（原版同款，反汇编实证可靠）】
+        //   InputEvent(12, 1f) = 按住加速键：原生输入管理器启动 350ms 长按
+        //   计时 → 到时直接把运行时 Settings.frame_limit 写为 200（2x），
+        //   抬键（0f）恢复原值。这是原版 APK 唯一可靠的运行时变速通道 ——
+        //   setRunningSettings[18] 写的 frame_limit 会被 renderer 初始化时
+        //   一次性换算成 skip 指标（max(200-limit,2)/2，so 0x428758 实证）
+        //   之后不再重读，改值无效 → 旧实现快进失败的根因。
+        //   ★ 核心未跑起来时事件被原生静默丢弃（输入管理器 +0x118 字段
+        //     为 null）→ 下方的运行时推送器会在 IsRunning 后重发一次。
+        try {
+            CitraMmjNative.lib.InputEvent(IDX_TURBO, if (speed > 0) 1f else 0f)
+        } catch (_: Throwable) {}
+        // 【通道 2：ini frame_limit%（旧通道保留，双保险）】
         applyFastForwardConfig()
     }
 

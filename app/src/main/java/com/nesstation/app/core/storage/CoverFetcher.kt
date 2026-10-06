@@ -383,7 +383,16 @@ object CoverFetcher {
             //   目录按 No-Intro 长名组织，驱动名（如 kof98h.zip）匹配率低，
             //   但少量 ROM 仍可命中。同时尝试两个目录提高命中率。
             GamePlatform.ARCADE -> listOf("FBNeo - Arcade Games", "MAME")
-            // JAVA/DOS 仍无源 —— 跳过（Java 已有内置 icon，DOS 用占位）
+            // ★★★ DOS 封面接入（本轮，回应"dos没有搜索对应核心的封面，缺少了，
+            //   核心封面网址里是有DOS的"）：libretro 缩略图站实测存在
+            //   http://thumbnails.libretro.com/DOS/ 目录（Named_Boxarts /
+            //   Named_Snaps / Named_Titles 三件套齐全，2025-04 更新）。
+            //   旧实现把 DOS 归入"无源跳过"→ DOS 游戏永远拿不到封面。
+            //   DOS 游戏导入标题形如 "GameFolder(PLAY)" —— 匹配层会剥
+            //   括号后缀 + 模糊匹配（与其它平台同一套规则），命中率与
+            //   站点命名（多为游戏常用名）一致。
+            GamePlatform.DOS -> listOf("DOS")
+            // JAVA 仍无源 —— 跳过（Java 已有内置 icon）
             else -> emptyList()
         }
     }
