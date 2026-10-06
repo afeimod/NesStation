@@ -2076,6 +2076,13 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             -merged[0],   // 左倾 → Axis 129 负值（负向侧）
             +merged[1]    // 右倾 → Axis 130 正值（正向侧）
         )
+        // 轴号表（与 tiltSigned 四元一一对应：前/后/左/右 = 127/128/129/130）
+        val tiltIds = intArrayOf(
+            NativeLibrary.ButtonType.WIIMOTE_TILT_FORWARD,   // 127
+            NativeLibrary.ButtonType.WIIMOTE_TILT_BACKWARD,  // 128
+            NativeLibrary.ButtonType.WIIMOTE_TILT_LEFT,      // 129
+            NativeLibrary.ButtonType.WIIMOTE_TILT_RIGHT      // 130
+        )
         for (i in tiltIds.indices) {
             if (tiltSigned[i] != wiiTiltLast[i]) {
                 wiiTiltLast[i] = tiltSigned[i]
