@@ -2022,6 +2022,13 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         val merged = FloatArray(4)
         val swingMerged = FloatArray(6)   // U/D/L/R/F/B
         val shakeMerged = FloatArray(3)  // X/Y/Z
+        // ★ 前后挥动（Swing F/B 轴 124/125）的合成源（在锁内填充）：
+        //   按钮（L3/R3 前晃/后晃，确定性输入）+ 传感器的【瞬时挥动分量】。
+        //   【不含】传感器的静态倾斜分量 —— 旧实现把静态 pitch 也叠加进
+        //   Swing F/B，手机静止斜握时游戏持续收到“向前挥”= 不停挥拍/出拳
+        //   （用户反馈“乱晃”的直接成因之一）。静态姿态只走 Tilt 轴（127/128），
+        //   动态挥动才走 Swing 轴 —— 与“前后晃动(不是倾斜)”的需求原话一致。
+        val swingFb = FloatArray(2)
         synchronized(wiiTiltLock) {
             // ★★ 对向轴互斥（本轮根治："倾斜按钮偶尔失效"）：
             //   Tilt 左/右（前/后同理）是**两根独立半轴**（129/130），游戏把
@@ -2042,41 +2049,32 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                         else (wiiTiltBtn[3] + wiiTiltSensor[3]).coerceIn(0f, 1f)   // 后
             for (i in 0 until 6) swingMerged[i] = swingSensor[i]
             for (i in 0 until 3) shakeMerged[i] = shakeSensor[i]
+            // Swing F/B 合成源 = 按钮 + 传感器【瞬时挥动】（不含静态倾斜，
+            // 见下方 swingVals 注释）
+            swingFb[0] = (wiiTiltBtn[2] + swingMerged[4]).coerceIn(0f, 1f)   // 前
+            swingFb[1] = (wiiTiltBtn[3] + swingMerged[5]).coerceIn(0f, 1f)   // 后
         }
         // ---- Tilt 四轴 (127/128/129/130) ----
-        // ★★★ 本轮符号根治（"wii 手机体感还是有问题/相当于按住虚拟按键"）★★★
+        // ★★★ 本轮回退（用户反馈“虚拟按键的左倾和前晃直接不能用了”）★★★
         //
-        // 【核心的组合公式（Ishiiruka 源码 InputCommon/ControllerEmu/
-        //   ControlGroup/Tilt.cpp 实证）】：
-        //     Tilt X = Right_input − Left_input
-        //     Tilt Y = Forward_input − Backward_input
-        // 每个 input 的值 = 绑定表达式 `Axis N` 的原始轴值
-        //（Android 后端 AddAnalogInputs 两侧均 neg=+1，无二次取反 ——
-        //  ControllerInterface/Android/Android.cpp 实证）。
-        //
-        // 【正确驱动方式】每个方向在自己的轴上推【正值】：
-        //   左倾 → Axis 129 = +v（Left 输入 +v → X = −v = 左）
-        //   右倾 → Axis 130 = +v（Right 输入 +v → X = +v = 右）
-        //   前倾 → Axis 127 = +v（Forward 输入 +v → Y = +v = 前）
-        //   后仰 → Axis 128 = +v（Backward 输入 +v → Y = −v = 后）
-        //
-        // 【旧实现的 bug】：左/前推负值 —— 左倾发 129=−v 使 Left 输入为
-        //   −v → X = +v，与右倾（130=+v → X=+v）同号！即【左倾和右倾都
-        //   往右倒，前倾和后仰都往后仰】—— 四个方向只剩两个可达，且
-        //   左/前反向。用户体感"方向不对/像乱晃"的真正根因。
-        //   （此前误接了现代 Dolphin 的 AddAnalogInputs(neg, pos) 语义 ——
-        //    本核心是旧版接口，两侧都是正号。）
-        val tiltIds = intArrayOf(
-            NativeLibrary.ButtonType.WIIMOTE_TILT_FORWARD,   // 127
-            NativeLibrary.ButtonType.WIIMOTE_TILT_BACKWARD,  // 128
-            NativeLibrary.ButtonType.WIIMOTE_TILT_LEFT,      // 129
-            NativeLibrary.ButtonType.WIIMOTE_TILT_RIGHT      // 130
-        )
+        // 【实证语义（本项目内三重验证）】：本核心 Touchscreen 设备的
+        //   “Axis N” 输入是带符号轴，且方向命名侧（Forward/Left/Up
+        //   等负向侧）只接受负值、对向侧（Backward/Right/Down）只接受
+        //   正值 —— 证据：
+        //   1) 同核心/同 ini/同推送通道的双节棍摇杆（setAnalogAxes）
+        //      以 Up/Left 轴发负值、Down/Right 轴发正值的方式工作正常；
+        //   2) IR 指针（setPointer）把同一带符号值发方向对两轴，原生按
+        //      符号半波整流（负=上/左，正=下/右）；
+        //   3) 上一版把 Forward/Left 轴改发正值后，恰好左倾、前晃两个
+        //      按钮失效而右倾/后晃仍有效 —— 正值被负向侧输入整流归零
+        //      的必然结果（与用户症状完全吻合）。
+        // 旧注释的 Tilt X = Right − Left / 两侧 neg=+1 假设已被上述实测
+        // 推翻，勿再按其改回正值。
         val tiltSigned = floatArrayOf(
-            +merged[2],   // 前倾/前晃 → Axis 127 正值（Forward 输入正 → Y 正 = 前）
-            +merged[3],   // 后倾/后晃 → Axis 128 正值（Backward 输入正 → Y 负 = 后）
-            +merged[0],   // 左倾 → Axis 129 正值（Left 输入正 → X 负 = 左）
-            +merged[1]    // 右倾 → Axis 130 正值（Right 输入正 → X 正 = 右）
+            -merged[2],   // 前倾/前晃 → Axis 127 负值（负向侧输入，整流后 = 前倾幅值）
+            +merged[3],   // 后倾/后晃 → Axis 128 正值（正向侧）
+            -merged[0],   // 左倾 → Axis 129 负值（负向侧）
+            +merged[1]    // 右倾 → Axis 130 正值（正向侧）
         )
         for (i in tiltIds.indices) {
             if (tiltSigned[i] != wiiTiltLast[i]) {
@@ -2094,30 +2092,24 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             NativeLibrary.ButtonType.WIIMOTE_SWING_LEFT,    // 122
             NativeLibrary.ButtonType.WIIMOTE_SWING_RIGHT    // 123
         )
-        // ★ Swing F/B：v1.3 修复 —— 旧实现只用 Tilt F/B（重力分量）驱动，
-        //   swingSensor 的 swingForward/Backward（线性加速度 Z 轴推/拉，
-        //   swingMerged[4]/[5]）被完全忽略 —— 推/拉手机这一最直接的
-        //   "前后晃动"信号根本没进核心。现改为 Tilt（姿态）+ Swing（瞬时
-        //   推力）合成：静态前倾走 Tilt 分量，快速推拉走 Swing 分量，
-        //   二者叠加截断 —— 与"左右倾斜（静态）+ 左右挥动（动态）"
-        //   的既有行为对齐。
-        //
-        // ★★★ 本轮符号根治（与上方 Tilt 同源）：Force/Swing 组合公式
-        //   （Ishiiruka ControlGroup/Force.cpp 实证）：
-        //     轴0(Y) = Down_input − Up_input
-        //     轴1(X) = Right_input − Left_input
-        //     轴2(Z) = Backward_input − Forward_input
-        //   每个方向同样要在【自己的轴】上推【正值】（上挥→120 正、左挥
-        //   →122 正、前挥→124 正……）。旧实现 U/L/F 推负值 → 上挥变下挥、
-        //   左挥变右挥、前挥变后挥 —— 六个挥动方向一半反向，与 Tilt 的
-        //   bug 叠加后体感"乱晃"。全部改为正值。
+        // ★ 同 Tilt 符号回退（见上方 tiltSigned 注释的实证链）：
+        //   Up/Left/Forward = 负向侧轴（发负值），Down/Right/Backward =
+        //   正向侧轴（发正值）—— 与摇杆/IR 的已验证语义一致。
+        //   ★ F/B 解耦（见 swingFb 注释）：按钮 + 传感器瞬时挥动，
+        //   不再叠加传感器的静态倾斜（防“静止斜握 = 持续前挥”乱晃）。
+        //   快速推/拉手机的线性加速度（swingMerged[4]/[5]）走 Swing 分量，
+        //   静态前倾/后仰只走 Tilt 分量（127/128）。
+        // ★ 同 Tilt 回退：Up/Left/Forward = 负向侧轴（发负值），
+        //   Down/Right/Backward = 正向侧轴（发正值）。
+        //   ★ F/B 解耦（见 swingFb 注释）：按钮 + 传感器瞬时挥动，
+        //   不再叠加传感器的静态倾斜（防“静止斜握 = 持续前挥”乱晃）。
         val swingVals = floatArrayOf(
-            (merged[2] + swingMerged[4]).coerceIn(0f, 1f),  // F: 前倾 + 前推 → Axis 124 正
-            (merged[3] + swingMerged[5]).coerceIn(0f, 1f),  // B: 后仰 + 后拉 → Axis 125 正
-            +swingMerged[0],                     // U: 上挥 → Axis 120 正
-            +swingMerged[1],                     // D: 下挥 → Axis 121 正
-            +swingMerged[2],                     // L: 左挥 → Axis 122 正
-            +swingMerged[3]                      // R: 右挥 → Axis 123 正
+            -swingFb[0],                          // F: 前晃按钮 + 前推 → Axis 124 负值
+            +swingFb[1],                          // B: 后晃按钮 + 后拉 → Axis 125 正值
+            -swingMerged[0],                      // U: 上挥 → Axis 120 负值
+            +swingMerged[1],                      // D: 下挥 → Axis 121 正值
+            -swingMerged[2],                      // L: 左挥 → Axis 122 负值
+            +swingMerged[3]                       // R: 右挥 → Axis 123 正值
         )
         // F/B 走旧去重索引（0/1），U/D/L/R 走 wiiSwingFullLast（0..3）
         for (i in 0..1) {

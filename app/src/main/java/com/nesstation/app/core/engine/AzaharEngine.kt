@@ -74,6 +74,33 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     @Volatile private var surfaceAttached: Boolean = false
 
     /**
+     * ★★★ VK 副窗口 surface 附着标志（本轮根治“azahar 用 vk 渲染闪退”）★★★
+     *
+     * 崩溃栈定位（用户日志，BuildId 0758b08c…）：
+     *   EmuWindow_Android:66 "surface is nullptr" ← Vulkan::CreateSurface+224
+     *   ← PresentWindow::ctor ← RendererVulkan::ctor ← System::Load ← run()
+     *
+     * 反汇编 libazahar.so 实证（run() +0x28c..+0x384 VK 分支）：
+     *   run() 无条件构造【两个】EmuWindow_Android_Vulkan —— 主窗口取
+     *   g_surface（0x261d4f0，surfaceChanged 已设置，有效）；**副窗口取
+     *   g_secondary_surface（0x261d4f8，secondarySurfaceChanged 设置）**。
+     *   NesStation 从不调用 secondarySurfaceChanged → 副窗口 native window
+     *   为 null → 基类构造 LOG "surface is nullptr"（用户看到的 abort 消息）
+     *   且 CreateWindowSurface 提前返回、window_info.platform 未置
+     *   Android → RendererVulkan 只在副窗口指针非空时构造 PresentWindow
+     *   （副窗口对象恒被构造=非空）→ Vulkan::CreateSurface 检查 platform
+     *   != Android → UNREACHABLE → brk#1 SIGABRT。GL 路径不用副窗口呈现，
+     *   所以 GL 正常 —— “VK 闪退、GL 正常”的完整解释。
+     *
+     * 修复：graphics_api==2(Vulkan) 时在 run() 之前把【同一个 Surface】
+     *   也推给 secondarySurfaceChanged —— 副窗口拿到有效 ANativeWindow
+     *   （refcount 各自独立），platform 置位，CreateSurface 正常走通，
+     *   VK 呈现链路落在用户眼前这块 Surface 上。GL 后端则显式清掉副
+     *   surface（保持 GL 路径与旧行为完全一致）。
+     */
+    @Volatile private var secondaryAttached: Boolean = false
+
+    /**
      * ★★★ 启动窗口门（“surface is nullptr”闪退根治，本轮）★★★
      *
      * 反汇编实证（libazahar.so BuildId 0758b08c…）：
@@ -748,6 +775,27 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 if (vkMarker.isFile) try { vkMarker.delete() } catch (_: Throwable) {}
             }
         } catch (_: Throwable) {}
+        // ★★★ VK 副窗口 surface 推送（本轮根治“azahar 用 vk 渲染闪退”，
+        //   见 secondaryAttached 字段注释的完整反汇编证据链）★★★：
+        //   注意放在 VK 崩溃标记回落【之后】—— 若上次 VK 崩溃已回落 GL，
+        //   本局按 GL 处理（不推副 surface）；真正以 VK 启动才推。
+        //   GL 后端显式清掉残留副 surface，保证 GL 路径行为与旧版完全一致。
+        try {
+            val effectiveApi = coreOptions["Renderer/graphics_api"] ?: "1"
+            if (effectiveApi == "2") {
+                lib.secondarySurfaceChanged(bootSurface)
+                secondaryAttached = true
+                android.util.Log.i("AzaharEngine",
+                    "Vulkan backend: secondary surface attached (fix for VK boot crash)")
+            } else {
+                if (secondaryAttached) {
+                    try { lib.secondarySurfaceDestroyed() } catch (_: Throwable) {}
+                    secondaryAttached = false
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("AzaharEngine", "secondary surface push failed", t)
+        }
         // ★★ 赋值竞态根治：先创建不启动的线程并赋值 emuThread，再 start()。
         //   旧写法 emuThread = thread{...} 在赋值完成前，setSurface(null)
         //   读到 emuThread==null → booting=false → 放行 surfaceDestroyed
@@ -798,6 +846,14 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             } else {
                 try { lib.surfaceChanged(attemptedSurface); surfaceAttached = true } catch (_: Throwable) {}
             }
+            // ★ VK 副 surface 与主 surface 同步重推（surface 重建后全局已被
+            //   surfaceDestroyed 清空，见 secondaryAttached 注释）
+            try {
+                if ((coreOptions["Renderer/graphics_api"] ?: "1") == "2") {
+                    lib.secondarySurfaceChanged(attemptedSurface)
+                    secondaryAttached = true
+                }
+            } catch (_: Throwable) {}
             try {
                 // ★ '!' 前缀 = 原生绝对路径标记（见 startEmulationLocked 注释）。
                 //   裸绝对路径会被 TranslateFilePath 拼到用户目录下变成不存在
@@ -964,6 +1020,12 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 if (!booting && surfaceAttached) {
                     try { lib.surfaceDestroyed() } catch (_: Throwable) {}
                     surfaceAttached = false
+                    // ★ VK 副窗口 surface 同步释放（见 secondaryAttached 注释；
+                    //   原生侧自带空值守卫，重复调用安全）
+                    if (secondaryAttached) {
+                        try { lib.secondarySurfaceDestroyed() } catch (_: Throwable) {}
+                        secondaryAttached = false
+                    }
                 }
             }
         }
@@ -1068,6 +1130,17 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             surfaceAttached = false
             val surf = surface ?: return@synchronized
             try { lib.surfaceChanged(surf); surfaceAttached = true } catch (_: Throwable) {}
+            // ★ VK 副 surface 同步重推（重置 = 全新 run()，副窗口将重建；
+            //   startEmulationLocked 内也会推，这里先对齐状态防止旧引用泄漏）
+            try {
+                if ((coreOptions["Renderer/graphics_api"] ?: "1") == "2") {
+                    lib.secondarySurfaceChanged(surf)
+                    secondaryAttached = true
+                } else if (secondaryAttached) {
+                    try { lib.secondarySurfaceDestroyed() } catch (_: Throwable) {}
+                    secondaryAttached = false
+                }
+            } catch (_: Throwable) {}
             startEmulationLocked()
         }
     }
@@ -1118,6 +1191,12 @@ class AzaharEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         //   宁可泄漏一次窗口也不能崩。
         if (surfaceAttached && !threadStillAlive) {
             try { AzaharNative.lib.surfaceDestroyed() } catch (_: Throwable) {}
+            // ★ VK 副窗口 surface 同步释放（与主 surface 同款守卫：线程确已
+            //   退出才释放，防止仍在使用窗口的 run() 读到 null）
+            if (secondaryAttached) {
+                try { AzaharNative.lib.secondarySurfaceDestroyed() } catch (_: Throwable) {}
+                secondaryAttached = false
+            }
             surfaceAttached = false
         }
         surface = null

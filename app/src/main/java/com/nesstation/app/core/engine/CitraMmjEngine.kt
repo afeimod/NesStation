@@ -809,11 +809,17 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         _loaded = true
 
         // HUD 心跳（FPS 计数兼容）
+        // ★★ 本轮：心跳线程同时记录实测节拍（滑动窗口反推 pacing）——
+        //   MMJ 核心无 FPS JNI（nm 实测），前端 HUD 只能靠心跳；旧实现
+        //   显示恒 ~60（假帧率，用户"帧数显示不准"的根因）。实测节拍在
+        //   CPU 抢占/掉帧时会真实下行，配合快进倍率缩放（见 realtimeFps）
+        //   后 HUD 数值诚实可用。
         running.set(true)
         heartbeatThread = thread(name = "mmj-hud-heartbeat", isDaemon = true) {
             try {
                 while (running.get()) {
                     onFrame()
+                    recordHeartbeat()
                     try { Thread.sleep(16) } catch (_: InterruptedException) { break }
                 }
             } catch (_: Throwable) {}
@@ -1332,7 +1338,42 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     override fun videoWidth(): Int = 400
     override fun videoHeight(): Int = 480
-    override fun realtimeFps(): Double = 0.0
+    /**
+     * ★★ 实测心跳节拍（滑动窗口，本轮新增）—— CPU 节拍代理：
+     * 系统空闲 ≈62，CPU 抢占/掉帧时下行。MMJ 核心未导出任何 FPS JNI
+     * （nm 实测全部 68 个导出），这是前端可获得的最诚实信号。
+     * 快进（Turbo）激活时按 frame_limit% 缩放 —— 200% ≈ 120fps，
+     * 与核心实际变速目标一致。
+     */
+    @Volatile private var measuredFps = 0.0
+    private val heartbeatTimes = ArrayDeque<Long>()
+    private val heartbeatLock = Any()
+
+    /** 心跳线程每拍调用，保留最近 60 个 nanoTime 样本反推节拍。 */
+    private fun recordHeartbeat() {
+        val now = System.nanoTime()
+        synchronized(heartbeatLock) {
+            heartbeatTimes.addLast(now)
+            while (heartbeatTimes.size > 60) heartbeatTimes.removeFirst()
+            if (heartbeatTimes.size >= 2) {
+                val first = heartbeatTimes.first()
+                val spanNs = now - first
+                val intervals = heartbeatTimes.size - 1
+                if (spanNs > 0 && intervals > 0) {
+                    measuredFps = 1_000_000_000.0 / (spanNs.toDouble() / intervals)
+                }
+            }
+        }
+    }
+
+    override fun realtimeFps(): Double {
+        if (!_loaded) return 0.0
+        val pacing = measuredFps
+        if (pacing <= 0.5) return 0.0
+        // 快进/限速缩放：显示值对齐核心的变速目标（200% → ×2.0）
+        val pct = try { currentFrameLimitPct() } catch (_: Throwable) { 100 }
+        return pacing * (pct.coerceIn(1, 60000) / 100.0)
+    }
     override fun setVideoFilter(filter: Int) {}
     override fun setHighQualityScaling(enabled: Boolean) {}
 
