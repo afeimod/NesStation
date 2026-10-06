@@ -2044,6 +2044,28 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             for (i in 0 until 3) shakeMerged[i] = shakeSensor[i]
         }
         // ---- Tilt 四轴 (127/128/129/130) ----
+        // ★★★ 本轮符号根治（"wii 手机体感还是有问题/相当于按住虚拟按键"）★★★
+        //
+        // 【核心的组合公式（Ishiiruka 源码 InputCommon/ControllerEmu/
+        //   ControlGroup/Tilt.cpp 实证）】：
+        //     Tilt X = Right_input − Left_input
+        //     Tilt Y = Forward_input − Backward_input
+        // 每个 input 的值 = 绑定表达式 `Axis N` 的原始轴值
+        //（Android 后端 AddAnalogInputs 两侧均 neg=+1，无二次取反 ——
+        //  ControllerInterface/Android/Android.cpp 实证）。
+        //
+        // 【正确驱动方式】每个方向在自己的轴上推【正值】：
+        //   左倾 → Axis 129 = +v（Left 输入 +v → X = −v = 左）
+        //   右倾 → Axis 130 = +v（Right 输入 +v → X = +v = 右）
+        //   前倾 → Axis 127 = +v（Forward 输入 +v → Y = +v = 前）
+        //   后仰 → Axis 128 = +v（Backward 输入 +v → Y = −v = 后）
+        //
+        // 【旧实现的 bug】：左/前推负值 —— 左倾发 129=−v 使 Left 输入为
+        //   −v → X = +v，与右倾（130=+v → X=+v）同号！即【左倾和右倾都
+        //   往右倒，前倾和后仰都往后仰】—— 四个方向只剩两个可达，且
+        //   左/前反向。用户体感"方向不对/像乱晃"的真正根因。
+        //   （此前误接了现代 Dolphin 的 AddAnalogInputs(neg, pos) 语义 ——
+        //    本核心是旧版接口，两侧都是正号。）
         val tiltIds = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_TILT_FORWARD,   // 127
             NativeLibrary.ButtonType.WIIMOTE_TILT_BACKWARD,  // 128
@@ -2051,10 +2073,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             NativeLibrary.ButtonType.WIIMOTE_TILT_RIGHT      // 130
         )
         val tiltSigned = floatArrayOf(
-            -merged[2],   // 前倾/前晃 → 负半轴
-            +merged[3],   // 后倾/后晃 → 正半轴
-            -merged[0],   // 左倾 → 负半轴
-            +merged[1]    // 右倾 → 正半轴
+            +merged[2],   // 前倾/前晃 → Axis 127 正值（Forward 输入正 → Y 正 = 前）
+            +merged[3],   // 后倾/后晃 → Axis 128 正值（Backward 输入正 → Y 负 = 后）
+            +merged[0],   // 左倾 → Axis 129 正值（Left 输入正 → X 负 = 左）
+            +merged[1]    // 右倾 → Axis 130 正值（Right 输入正 → X 正 = 右）
         )
         for (i in tiltIds.indices) {
             if (tiltSigned[i] != wiiTiltLast[i]) {
@@ -2079,13 +2101,23 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         //   推力）合成：静态前倾走 Tilt 分量，快速推拉走 Swing 分量，
         //   二者叠加截断 —— 与"左右倾斜（静态）+ 左右挥动（动态）"
         //   的既有行为对齐。
+        //
+        // ★★★ 本轮符号根治（与上方 Tilt 同源）：Force/Swing 组合公式
+        //   （Ishiiruka ControlGroup/Force.cpp 实证）：
+        //     轴0(Y) = Down_input − Up_input
+        //     轴1(X) = Right_input − Left_input
+        //     轴2(Z) = Backward_input − Forward_input
+        //   每个方向同样要在【自己的轴】上推【正值】（上挥→120 正、左挥
+        //   →122 正、前挥→124 正……）。旧实现 U/L/F 推负值 → 上挥变下挥、
+        //   左挥变右挥、前挥变后挥 —— 六个挥动方向一半反向，与 Tilt 的
+        //   bug 叠加后体感"乱晃"。全部改为正值。
         val swingVals = floatArrayOf(
-            (-merged[2] - swingMerged[4]).coerceIn(-1f, 1f),  // F: 前倾 + 前推
-            (+merged[3] + swingMerged[5]).coerceIn(-1f, 1f),  // B: 后仰 + 后拉
-            -swingMerged[0],                     // U: 上挥 → 负半轴
-            +swingMerged[1],                     // D: 下挥 → 正半轴
-            -swingMerged[2],                     // L: 左挥 → 负半轴
-            +swingMerged[3]                      // R: 右挥 → 正半轴
+            (merged[2] + swingMerged[4]).coerceIn(0f, 1f),  // F: 前倾 + 前推 → Axis 124 正
+            (merged[3] + swingMerged[5]).coerceIn(0f, 1f),  // B: 后仰 + 后拉 → Axis 125 正
+            +swingMerged[0],                     // U: 上挥 → Axis 120 正
+            +swingMerged[1],                     // D: 下挥 → Axis 121 正
+            +swingMerged[2],                     // L: 左挥 → Axis 122 正
+            +swingMerged[3]                      // R: 右挥 → Axis 123 正
         )
         // F/B 走旧去重索引（0/1），U/D/L/R 走 wiiSwingFullLast（0..3）
         for (i in 0..1) {
@@ -2102,17 +2134,29 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             }
         }
         // ---- Shake 三轴 (132/133/134) ----
-        // Swing F/B 的甩手部分（前后晃动）会同时表现出 Shake Z 方向扰动 ——
-        // 为了避免冗余推送，这里仅在 shakeMerged 非零时才推。
+        // ★★★ 本轮根治（"摇晃毫无反应"）：WiimoteNew.ini 里 Shake/X,Y,Z
+        //   绑定的是【Button 132/133/134】（Button 表达式）—— 读的是
+        //   ButtonManager 的【按钮状态表】（onGamePadEvent 写入），而
+        //   onGamePadMoveEvent 只写【轴值表】—— 旧实现用 MoveEvent 推
+        //   shake → 按钮表达式永远读到 0 → 手机体感的摇晃分量完全是
+        //   死信号！改为跨过 0.5 阈值时发按钮按下/抬起事件（与实体手柄
+        //   BIT_L/BIT_R → Shake X/Z 的既有路径同源）。 
         val shakeIds = intArrayOf(
             NativeLibrary.ButtonType.WIIMOTE_SHAKE_X,  // 132
             NativeLibrary.ButtonType.WIIMOTE_SHAKE_Y,  // 133
             NativeLibrary.ButtonType.WIIMOTE_SHAKE_Z   // 134
         )
         for (i in 0..2) {
-            if (shakeMerged[i] != wiiShakeLast[i]) {
-                wiiShakeLast[i] = shakeMerged[i]
-                try { NativeLibrary.onGamePadMoveEvent(dev, shakeIds[i], shakeMerged[i]) } catch (_: Throwable) {}
+            val pressed = shakeMerged[i] > 0.5f
+            val wasPressed = wiiShakeLast[i] > 0.5f
+            if (pressed != wasPressed) {
+                wiiShakeLast[i] = if (pressed) 1f else 0f
+                try {
+                    NativeLibrary.onGamePadEvent(
+                        dev, shakeIds[i],
+                        if (pressed) NativeLibrary.ButtonState.PRESSED
+                        else NativeLibrary.ButtonState.RELEASED)
+                } catch (_: Throwable) {}
             }
         }
 
@@ -2126,7 +2170,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         // 在双节棍游戏里全部无作用。
         //
         // 修复：双节棍模式下把同一份体感镜像到 Nunchuk 的 Swing/Tilt 六轴 +
-        // Shake 三键（220-222 是 Button 绑定，MoveEvent 值 >0.5 即按下）。
+        // Shake 三键（★ 本轮：Shake 是 Button 绑定 —— 走 onGamePadEvent
+        // 按钮事件而非 MoveEvent 轴事件，与上方 Wiimote Shake 同款修复）。
         // 经典手柄无体感，不镜像。
         if (effectiveWiiExtension() == "nunchuk") {
             // Nunchuk Swing 六轴：F/B/U/D/L/R = 212/213/208/209/210/211
@@ -2157,16 +2202,23 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                     try { NativeLibrary.onGamePadMoveEvent(dev, nTiltIds[i], tiltSigned[i]) } catch (_: Throwable) {}
                 }
             }
-            // Nunchuk Shake 三键（Button 绑定，>0.5 = 按下）
+            // Nunchuk Shake 三键（Button 绑定 —— 按钮事件，跨 0.5 阈值触发）
             val nShakeIds = intArrayOf(
                 NativeLibrary.ButtonType.NUNCHUK_SHAKE_X,  // 220
                 NativeLibrary.ButtonType.NUNCHUK_SHAKE_Y,  // 221
                 NativeLibrary.ButtonType.NUNCHUK_SHAKE_Z   // 222
             )
             for (i in 0..2) {
-                if (shakeMerged[i] != wiiNunchukShakeLast[i]) {
-                    wiiNunchukShakeLast[i] = shakeMerged[i]
-                    try { NativeLibrary.onGamePadMoveEvent(dev, nShakeIds[i], shakeMerged[i]) } catch (_: Throwable) {}
+                val pressed = shakeMerged[i] > 0.5f
+                val wasPressed = wiiNunchukShakeLast[i] > 0.5f
+                if (pressed != wasPressed) {
+                    wiiNunchukShakeLast[i] = if (pressed) 1f else 0f
+                    try {
+                        NativeLibrary.onGamePadEvent(
+                            dev, nShakeIds[i],
+                            if (pressed) NativeLibrary.ButtonState.PRESSED
+                            else NativeLibrary.ButtonState.RELEASED)
+                    } catch (_: Throwable) {}
                 }
             }
         }

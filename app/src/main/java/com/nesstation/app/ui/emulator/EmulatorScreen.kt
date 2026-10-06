@@ -171,14 +171,19 @@ private fun gamepadKeyToBits(keyCode: Int, platform: GamePlatform): Int {
         KeyEvent.KEYCODE_BUTTON_Y      -> BTN_Y
         KeyEvent.KEYCODE_BUTTON_L1     -> lBit
         KeyEvent.KEYCODE_BUTTON_R1     -> rBit
-        KeyEvent.KEYCODE_BUTTON_L2     -> BTN_L2
-        KeyEvent.KEYCODE_BUTTON_R2     -> BTN_R2
+        // ★ L2/R2 无条件映射已删除（原在此处）：旧代码使 Kotlin when 首个
+        //   匹配命中 BTN_L2/BTN_R2，下方 N3DS 的 ZL/ZR 特判成为死代码，
+        //   3DS 物理手柄 L2/R2 失灵（MMJ/Azahar 均不认 BTN_L2）。
         KeyEvent.KEYCODE_BUTTON_THUMBL -> BTN_L3
         KeyEvent.KEYCODE_BUTTON_THUMBR -> BTN_R3
         KeyEvent.KEYCODE_BUTTON_START,
         KeyEvent.KEYCODE_MENU          -> BTN_START
         KeyEvent.KEYCODE_BUTTON_SELECT -> BTN_SELECT
-        // 3DS：物理 L2/R2 → ZL/ZR（New3DS 肩键）
+        // ★ 3DS：物理 L2/R2 → ZL/ZR（New3DS 肩键）。旧代码在上方已无条件
+        //   匹配 KEYCODE_BUTTON_L2/R2 → BTN_L2/BTN_R2（Kotlin when 首个匹配
+        //   生效），这里的 N3DS 分支是永远走不到的死代码 —— 3DS 上 L2/R2
+        //   变成无效位（MMJ/Azahar 均不认 BTN_L2）= 物理手柄 ZL/ZR 失灵。
+        //   本轮修复：L2/R2 判断仅保留这一处（带 N3DS 特判）。
         KeyEvent.KEYCODE_BUTTON_L2 -> if (platform == GamePlatform.N3DS) BTN_ZL else BTN_L2
         KeyEvent.KEYCODE_BUTTON_R2 -> if (platform == GamePlatform.N3DS) BTN_ZR else BTN_R2
         else -> 0
@@ -502,10 +507,10 @@ private fun defaultActionToBits(action: KeyActionInternal, lBit: Int, rBit: Int)
         KeyEvent.KEYCODE_BUTTON_Y      -> BTN_Y
         KeyEvent.KEYCODE_BUTTON_L1     -> lBit
         KeyEvent.KEYCODE_BUTTON_R1     -> rBit
-        KeyEvent.KEYCODE_BUTTON_L2     -> BTN_L2
-        KeyEvent.KEYCODE_BUTTON_R2     -> BTN_R2
-        KeyEvent.KEYCODE_BUTTON_THUMBL -> BTN_L3
-        KeyEvent.KEYCODE_BUTTON_THUMBR -> BTN_R3
+        KeyEvent.KEYCODE_BUTTON_L2     -> BTN_L2     // NES 连发 ta/tb 等动作
+        KeyEvent.KEYCODE_BUTTON_R2     -> BTN_R2     //（3DS 的 L2/R2→ZL/ZR 已在
+        KeyEvent.KEYCODE_BUTTON_THUMBL -> BTN_L3     //  actionToBits 的 N3DS 分支
+        KeyEvent.KEYCODE_BUTTON_THUMBR -> BTN_R3     //  提前拦截，不会到这里）
         KeyEvent.KEYCODE_BUTTON_START  -> BTN_START
         KeyEvent.KEYCODE_BUTTON_SELECT -> BTN_SELECT
         else -> 0

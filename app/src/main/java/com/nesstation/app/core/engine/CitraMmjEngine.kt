@@ -41,10 +41,13 @@ import kotlin.concurrent.thread
  *
  * 输入（原版 InputOverlay 同款，零配置免闪退）：
  *  - 数字键全部经 InputEvent(固定索引, 1f/0f)：A=0 B=1 X=2 Y=3 十字键=4..7
- *    L=8 R=9 start=10 select=11 home=12 zl=14 zr=15；
+ *    L=8 R=9 start=10 select=11 zl=14 zr=15；
+ *    ★ 绝不下发 12（本核心的 enum 12 = 加速键非 HOME，见 setPad1 注释）
+ *    ★ 真正的 HOME（切屏）是 enum 16，同样不下发（切屏走我们自己的按钮）
  *  - 摇杆经 InputEvent(索引, 模拟值)：圆盘 X=21 Y=22，C 摇杆 X=23 Y=24
- *    （Y 轴 +1=向上 —— 原版 overlay k() 实证，下发前对屏幕坐标取反）；
- *  - 底屏触摸经 TouchEvent（action 位掩码：1=按下 / 2=抬起 / 4=移动）；
+ *    （Y 为屏幕坐标约定：+1=向下 —— overlay/c.java + 上游 SetStatus(-y)
+ *    双重实证）；
+ *  - 底屏触摸经 TouchEvent（action 位掩码：1=按下 / 2=移动 / 4=抬起）；
  *  - 物理手柄由 NesStation 统一映射进 setPad1/setAnalogAxes（同通道）。
  *
  * 即时存档：MMJ so 未导出 SaveState/LoadState JNI（nm 实测），saveState
@@ -81,13 +84,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         private const val IDX_R = 9
         private const val IDX_START = 10
         private const val IDX_SELECT = 11
-        private const val IDX_HOME = 12      // 原版 overlay：new a("button_home", 12)
+        // ★ 索引 12 = 本核心的【加速(Turbo)键】（so KeyEvent 反汇编实证，
+        //   长按 ≥0.35s → frame_limit=200 即 2 倍速）—— 不是 HOME！
+        //   绝不从 setPad1 下发（幽灵按下 = “突然 2 倍速”根因，见 setPad1）。
         private const val IDX_ZL = 14        // 原版 overlay：new a("button_zl", 14)
         private const val IDX_ZR = 15        // 原版 overlay：new a("button_zr", 15)
-        // 摇杆（joystick=21 / c_stick=23；k() 模拟量通道，X=base+0，Y=base+1）
-        // ★ Y 约定与 Android 屏幕坐标相反：原版 k() 触摸上 1/3 → fArr[1]=+1 →
-        //   InputEvent(22, +1) = 圆盘向上。NesStation 的 setAnalogAxes 是屏幕
-        //   坐标（上=负），下发前取反。
+        // 摇杆（joystick=21 / c_stick=23；c.java k() 模拟量通道，X=base+0，Y=base+1）
+        // ★ Y 约定 = 屏幕坐标（+1 = 向下）：原版 c.java k() 实证
+        //   dArr[1]=(touchY-centerY)/(bottom-centerY) —— 触摸在中心下方为正；
+        //   上游 Joystick::SetStatus 内部再取反（y=clamp(-y)）进 Citra 核心。
         private const val IDX_CPAD_X = 21
         private const val IDX_CPAD_Y = 22
         private const val IDX_CSTICK_X = 23
@@ -109,7 +114,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         private const val BIT_R = 0x800
         private const val BIT_ZL = 0x10000
         private const val BIT_ZR = 0x20000
-        private const val BIT_HOME = 0x80000
+        // BIT_HOME(0x80000) 不再映射：本核心无安全可用的 HOME 通道
+        // （enum 12 = 加速键，enum 16 = 切屏热键，都与 HOME 语义不符）。
 
         @Volatile private var instance: CitraMmjEngine? = null
         fun get(): CitraMmjEngine = instance ?: synchronized(this) {
@@ -184,6 +190,11 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     /** 输入轴去重（避免重复发 MoveEvent）。[lx, ly, rx, ry]。 */
     private val stickLast = FloatArray(4)
+
+    /**
+     * ★ 最近一次模拟摇杆非零轴值的时刻（D-pad→CirclePad 合成的门控，
+     *   见 setPad1 注释；0 = 从未用过 = 十字键模式 → 合成立即生效）。 */
+    @Volatile private var lastAnalogActiveMs = 0L
 
     override fun ensureLoaded(): Boolean = CitraMmjNative.ensureLoaded()
 
@@ -562,16 +573,33 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 //   .glsl —— 首次启动 seedMmjSystemAssets 释放前（ini 写入
                 //   先于种子）也能通过校验，全局 xbr/hqx 首启即生效
                 //   （xBR/4xBR 随 APK 打包，非首次联网下载）。
-                val seeded = File(userDir(), "shaders/$shaderName.glsl").isFile
-                val inAssets = shaderName.isNotEmpty() && try {
-                    ((appContext ?: com.nesstation.app.NesApp.get())?.assets?.list("mmj/shaders") ?: arrayOf())
-                        .contains("$shaderName.glsl")
-                } catch (_: Throwable) { false }
-                val exists = shaderName.isNotEmpty() && (seeded || inAssets)
-                overrides["pp_shader_name"] = if (exists) shaderName else ""
-                if (!exists && shaderName.isNotEmpty()) {
-                    android.util.Log.w("CitraMmjEngine",
-                        "pp_shader_name '$shaderName' has no .glsl in shaders/, reset to none (crash guard)")
+                fun shaderExists(name: String): Boolean {
+                    if (name.isEmpty()) return false
+                    if (File(userDir(), "shaders/$name.glsl").isFile) return true
+                    return try {
+                        ((appContext ?: com.nesstation.app.NesApp.get())?.assets
+                            ?.list("mmj/shaders") ?: arrayOf()).contains("$name.glsl")
+                    } catch (_: Throwable) { false }
+                }
+                when {
+                    shaderExists(shaderName) ->
+                        overrides["pp_shader_name"] = shaderName
+                    // ★ 本轮加固：目标着色器文件缺失（极端：种子失败且非
+                    //   首启）时回落 SEDI —— 原版 APK 自带、随 assets/mmj
+                    //   一起释放，永远存在；同为边缘插值放大，比"完全无
+                    //   后处理"更接近用户选择的放大型滤镜效果。
+                    shaderName.isNotEmpty() && shaderExists("SEDI") -> {
+                        overrides["pp_shader_name"] = "SEDI"
+                        android.util.Log.w("CitraMmjEngine",
+                            "pp_shader_name '$shaderName' missing, fallback SEDI")
+                    }
+                    else -> {
+                        overrides["pp_shader_name"] = ""
+                        if (shaderName.isNotEmpty()) {
+                            android.util.Log.w("CitraMmjEngine",
+                                "pp_shader_name '$shaderName' has no .glsl in shaders/, reset to none (crash guard)")
+                        }
+                    }
                 }
             }
             // ★★★ 帧率限制保险（"画面像快进"根治）★★★
@@ -846,6 +874,18 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     //   （loadRom 的 loadConfig 早于此，需重读才能带上快进键）。
                     applyFastForwardConfig()
                     try { lib.loadConfig() } catch (_: Throwable) {}
+                } else {
+                    // ★★★ 全局滤镜/设置加固（本轮"对 mmj 也不生效"）★★★
+                    //   Run() 内部会自行 Config::Load（从磁盘 ini 读全部设置
+                    //   进 Settings 结构体，渲染器初始化读的就是它）。这里在
+                    //   进入 Run 前把 coreOptions（含全局滤镜映射出的
+                    //   pp_shader_name=xBR/4xBR）【最后一次】落盘 + 重读 ——
+                    //   消除 loadRom 到 Run 之间任何内部回写/竞态把值洗掉
+                    //   的可能（loadRom 里已写过一次，这里是紧贴 Run 的
+                    //   第二道保险；快进路径上面的 applyFastForwardConfig
+                    //   已含同款写入）。
+                    writeMmjIniLocked()
+                    try { lib.loadConfig() } catch (_: Throwable) {}
                 }
                 // ★ 裸路径直传（原版实证：Run(intent 的 GamePath 原样字符串）。
                 //   '!' 前缀是 Azahar 的约定，MMJ 原生无此前缀处理 —— 加了
@@ -979,12 +1019,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     /**
-     * 运行时设置推送看护线程：轮询 IsRunning（最多 ~20s），核心进入模拟
-     * 主循环后再等 600ms（越过引导期），然后首次推送；之后每 5s 重推
-     * 一次共 6 次（30s 窗口）—— 防核心启动后期任何内部 Config::Load/
-     * 状态重置把推送值洗掉（偶发"开局正常、中途狂奔"的最后保险）。
-     * setRunningSettings 幂等（同一值重写无副作用，SettingUpdate 只置
-     * 标志位下一帧 ApplySetting 消费，实测开销可忽略）。
+     * 运行时设置推送看护线程（★ 本轮：30s 窗口 → 整局生命周期看护）。
+     *
+     * 流程：轮询 IsRunning（最多 ~20s）→ 核心进入模拟主循环后再等 600ms
+     * （越过引导期）首次推送；随后前 30s 每 5s 重推一次（密集期 —— 防
+     * 核心启动后期的内部 Config::Load/状态重置把推送值洗掉）；之后降频
+     * 为每 30s 一次【贯穿整局】—— 用户实测"玩一会儿突然 2 倍速"表明
+     * 核心内部的帧率限制状态在任意时点都可能被洗掉（内部加速热键残留/
+     * 每 Config 重载），30s 窗口不够。setRunningSettings 幂等（同值重写
+     * 无副作用，SettingUpdate 只置标志位下一帧 ApplySetting 消费，30s
+     * 一次的实测开销可忽略）。
      */
     private fun startRuntimeSettingsPusher() {
         val pusher = Thread({
@@ -1001,13 +1045,19 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     //   推送不会给快进封顶（旧代码这里跳过是 [18] 恒写 100
                     //   时代的遗留防御，现已无必要）。
                     pushRunningSettingsNow()
-                    // 周期重推（30s 看护窗口）
+                    // 密集重推（30s 窗口）
                     var rePush = 0
                     while (rePush < 6 && running.get() && !Thread.currentThread().isInterrupted) {
                         try { Thread.sleep(5000) } catch (_: InterruptedException) { return@Thread }
                         if (!running.get()) return@Thread
                         pushRunningSettingsNow()
                         rePush++
+                    }
+                    // ★ 低频终身看护（本轮新增）：每 30s 重推直到退出。
+                    while (running.get() && !Thread.currentThread().isInterrupted) {
+                        try { Thread.sleep(30000) } catch (_: InterruptedException) { return@Thread }
+                        if (!running.get()) return@Thread
+                        pushRunningSettingsNow()
                     }
                     return@Thread
                 }
@@ -1214,6 +1264,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         _ffSpeed = 0
         lastErrorText = ""
         stickLast.fill(0f)
+        // ★ 模拟通道空闲门控复位（下一局若仍用十字键模式，D-pad 合成立即可用）
+        lastAnalogActiveMs = 0L
+        // ★★★ 全局滤镜/设置加固（本轮）：核心退出时会把【它自己的】当前
+        //   配置 saveConfig 回写 config-mmj.ini —— 任何核心内部的值漂移
+        //   （如加速键残留的 frame_limit=200）都会就此固化成下次启动的
+        //   初始值。这里在 Run 返回后用【我们下发的】coreOptions 重写一遍
+        //   ini，保证下次启动读到的是用户设置（pp_shader_name / frame_limit
+        //   等）。核心 saveConfig 与本回写的竞争窗口内我们后写（unload
+        //   在 emuThread join 之后执行）。
+        try { writeMmjIniLocked() } catch (_: Throwable) {}
     }
 
     // ------------------------------------------------------------------
@@ -1360,15 +1420,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     /**
      * 按键（数字通道）—— 只走 InputEvent 固定索引（原版 overlay 同款）。
      *
-     * 索引表（原版 InputOverlay 构造表反编译实证）：
+     * 索引表（原版 InputOverlay 构造表 + so KeyEvent 反汇编双向实证）：
      *   A=0 B=1 X=2 Y=3 | 十字键 up=4 down=5 left=6 right=7 | L=8 R=9 |
-     *   start=10 select=11 home=12 | zl=14 zr=15
+     *   start=10 select=11 | zl=14 zr=15
      *
-     * ★ 旧的 KeyEvent(自选id) 通道已删除：那套需要先用 setConfigInteger 把
-     *   button_* 键写成自选 id —— setConfigInteger 分发器只接受
-     *   input_overlay_alpha/scale 两键，button_* 一律 brk #1 → SIGTRAP
-     *   （"MMJ 启动游戏闪退"的根因之一）。InputEvent 通道零配置、与原版
-     *   虚拟按键完全等价，且覆盖 home/zl/zr 全键位。
+     * ★★★ 本轮两处根治（详见方法体注释）★★★
+     *   1. 绝不下发索引 12（本核心的 enum 12 是【加速键】不是 HOME ——
+     *      幽灵按下 = "玩一会儿突然 2 倍速"的真正根因）；
+     *   2. D-pad 位 → CirclePad 合成（十字键模式也能控制圆盘游戏）。
      */
     override fun setPad1(bits: Int) {
         if (!_loaded) return
@@ -1378,16 +1437,48 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             IDX_A, IDX_B, IDX_X, IDX_Y,
             IDX_L, IDX_R, IDX_START, IDX_SELECT,
             IDX_UP, IDX_DOWN, IDX_LEFT, IDX_RIGHT,
-            IDX_HOME, IDX_ZL, IDX_ZR
+            IDX_ZL, IDX_ZR
         )
         val states = booleanArrayOf(
             pressed(BIT_A), pressed(BIT_B), pressed(BIT_X), pressed(BIT_Y),
             pressed(BIT_L), pressed(BIT_R), pressed(BIT_START), pressed(BIT_SELECT),
             pressed(BIT_UP), pressed(BIT_DOWN), pressed(BIT_LEFT), pressed(BIT_RIGHT),
-            pressed(BIT_HOME), pressed(BIT_ZL), pressed(BIT_ZR)
+            pressed(BIT_ZL), pressed(BIT_ZR)
         )
         for (i in idxEvents.indices) {
             try { lib.InputEvent(idxEvents[i], if (states[i]) 1f else 0f) } catch (_: Throwable) {}
+        }
+        // ★ D-pad → CirclePad 合成（模拟摇杆空闲时启用）：
+        //   绝大多数 3DS 游戏只读圆盘不读十字键 —— 布局处于十字键模式
+        //   （inputMode=dpad，默认）时这些游戏完全没有方向输入（"方向键
+        //   也有问题"的主因）。合成规则：模拟通道近 400ms 无非零轴值
+        //   （=没人在用模拟摇杆）时，把十字键位合成为圆盘满幅输出；
+        //   摇杆一动即停用（lastAnalogActiveMs 刷新），避免与真实模拟量
+        //   打架；摇杆归零 400ms 后自动恢复。十字键原生通道照发（见上），
+        //   读十字键的游戏不受影响 —— 与 Azahar/其它核心"摇杆模式同时
+        //   发数字位+模拟量"的既有行为一致。
+        //   ★★ 双重门控（防与"静止保持"的摇杆打架）：前端的 setAnalogAxes
+        //   是事件驱动（pushAnalog 只在触摸移动/手柄轴变化时调用）——
+        //   摇杆被【静止保持】在非零位置时不再有事件，仅靠 400ms 时间门
+        //   会误判"空闲"进而用十字键覆盖用户一直按着的摇杆位置。加第二
+        //   道门：stickLast 四轴当前值全零（=摇杆物理上不在任何非零位）
+        //   才允许合成。两道门同时满足才生效。
+        val analogIdle = android.os.SystemClock.uptimeMillis() - lastAnalogActiveMs > 400L
+        val analogAtRest = stickLast[0] == 0f && stickLast[1] == 0f &&
+            stickLast[2] == 0f && stickLast[3] == 0f
+        if (analogIdle && analogAtRest) {
+            val up = states[8]; val down = states[9]
+            val left = states[10]; val right = states[11]
+            val sx = (if (right) 1f else 0f) - (if (left) 1f else 0f)
+            val sy = (if (down) 1f else 0f) - (if (up) 1f else 0f)
+            fun sendSynth(idx: Int, v: Float, lastIdx: Int) {
+                if (v != stickLast[lastIdx]) {
+                    stickLast[lastIdx] = v
+                    try { lib.InputEvent(idx, v) } catch (_: Throwable) {}
+                }
+            }
+            sendSynth(IDX_CPAD_X, sx, 0)
+            sendSynth(IDX_CPAD_Y, sy, 1)   // +1=下（屏幕坐标，与摇杆通道同约定）
         }
     }
 
@@ -1397,13 +1488,23 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     /**
      * 双摇杆：CirclePad (lx, ly) / C-Stick (rx, ry) —— InputEvent 模拟量
-     * 通道（原版 overlay/b.java k() 同款）：
+     * 通道（原版 overlay/c.java k() 同款）：
      *   圆盘 = InputEvent(21, x) / InputEvent(22, y)，C 摇杆 = 23/24。
      *
-     * ★ Y 轴符号：原版 k() 实证【+1 = 向上】（触摸上 1/3 → fArr[1]=+1）；
-     *   NesStation 的 setAnalogAxes 是屏幕坐标（上=负，AzaharEngine 同款
-     *   注释实证）—— 下发前对 Y 取反。X 轴两侧一致（左=-1 右=+1）直传。
-     * ★ 旧的 MoveEvent(自选轴码) 通道已删除（同 setPad1 注释的根因）。
+     * ★★★ Y 轴符号（本轮根治"摇杆上下是反的"）★★★
+     * 三方互证 MMJ 的 Y 约定 = 屏幕坐标（+1 = 向下）：
+     *   1. 原版摇杆类 overlay/c.java k()（jadx）：
+     *      dArr[1] = (触摸Y - 中心Y) / (bottom - 中心Y) —— 触摸在中心
+     *      【下方】为正 → InputEvent(base+1, +1) = 向下！
+     *      （此前错误依据的是 b.java k() 的三分区逻辑 —— 该方法实际只
+     *       服务 dpad(基址4)，摇杆走的是 c.java。）
+     *   2. 上游 weihuoya/citra input_manager.cpp Joystick::SetStatus：
+     *      y = clamp(-y)（"Citra uses an inverted y axis sent by the
+     *      frontend"）—— 前端发 +1(下)，核心存 -1 → 3DS 圆盘向下 ✓。
+     *   3. AzaharEngine.setAnalogAxes 同源注释：屏幕坐标（上=负）直传。
+     * 旧实现下发前取反（上=+1）→ 核心按"下"处理 → 上下颠倒。
+     * 现在 X/Y 全部直传（EmulatorScreen 的 setAnalogAxes 本就是屏幕
+     * 坐标：X 右正 Y 下正 —— 见 pushAnalog 注释）。
      */
     override fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float) {
         if (!_loaded) return
@@ -1416,9 +1517,13 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             }
         }
         send(IDX_CPAD_X, lx, 0)
-        send(IDX_CPAD_Y, -ly, 1)      // Y 取反：屏幕坐标（上=负）→ MMJ（上=+1）
+        send(IDX_CPAD_Y, ly, 1)       // ★ 屏幕坐标直传（+1=下），不再取反
         send(IDX_CSTICK_X, rx, 2)
-        send(IDX_CSTICK_Y, -ry, 3)
+        send(IDX_CSTICK_Y, ry, 3)     // ★ 同上
+        // 记录模拟通道活跃时刻（D-pad 合成倾斜用，见 setPad1 注释）
+        if (lx != 0f || ly != 0f || rx != 0f || ry != 0f) {
+            lastAnalogActiveMs = android.os.SystemClock.uptimeMillis()
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1428,14 +1533,23 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     override fun setTouchInput(x: Float, y: Float, pressed: Boolean) {
         if (!_loaded) return
         try {
-            CitraMmjNative.lib.TouchEvent(if (pressed) 1 else 2, x.toInt(), y.toInt())
+            // ★★★ 本轮根治"触屏点击变成按压"：action 语义以 so 反汇编
+            //   （TouchEvent@0x264ff8）+ 原版 X0/a + InputOverlay smali
+            //   三方互证 —— 位掩码真实含义：
+            //     bit0(1) = TouchPressed(x, y)   按下
+            //     bit1(2) = TouchMoved(x, y)     移动
+            //     bit2(4) = TouchReleased()      抬起（无坐标）
+            //   旧注释把 2/4 标反（2=抬起 / 4=移动）→ 抬手发 2（核心当
+            //   MOVE）→ 触摸永不释放 = 点击变长按；拖动发 4 → 核心当
+            //   RELEASE → 拖动断触。两个方向都错了，本轮互换。
+            CitraMmjNative.lib.TouchEvent(if (pressed) 1 else 4, x.toInt(), y.toInt())
         } catch (_: Throwable) {}
     }
 
     override fun setTouchMoved(x: Float, y: Float) {
         if (!_loaded) return
         try {
-            CitraMmjNative.lib.TouchEvent(4, x.toInt(), y.toInt())
+            CitraMmjNative.lib.TouchEvent(2, x.toInt(), y.toInt())
         } catch (_: Throwable) {}
     }
 
