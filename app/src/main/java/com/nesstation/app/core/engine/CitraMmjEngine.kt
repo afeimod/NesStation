@@ -625,13 +625,12 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
             }
             // ★★ 本轮（撤销）：删除「着色器激活时强制 screen_presentation_mode
-            //   0→1」的旧修改 —— 该假说（兼容呈现通道绕过后处理 blit）已被
-            //   原版 APK 反汇编证伪：MMJ 的后处理着色器是【Java GL 层】实现
-            //   （原版 c1/W 渲染器，getScreenTexture → 注入 .glsl 的 program →
-            //   全屏 quad），与 ini 的呈现模式无关（两轮按此方向修复均无效的
-            //   真相）。呈现模式现在只写用户自己设置的值（默认不写，保持核心
-            //   默认 0），后处理由前端的 MmjGlView（EmulatorScreen）承接。
-            //   （显式回写 0 的分支也一并删除 —— 不再用 ini 传递该状态。）
+            //   0→1」的旧修改 —— 呈现模式现在只写用户自己设置的值（默认不写，
+            //   保持核心默认 0）。后处理由核心内链承接：反汇编实证核心自建
+            //   EGL 上下文（eglCreateContext share=NULL）直绘，F1(0x4254c4)
+            //   在核心启动时于自身上下文内加载 <shaders目录><name>.glsl 并
+            //   编译应用 —— pp_shader_name 走 ini 即可，与呈现模式无关
+            //   （Java 层 GL 叠加方案因纹理跨上下文无效已废弃）。
             var applied = 0
             for ((key, value) in overrides) {
                 val section = MMJ_INI_SECTION[key]

@@ -3168,13 +3168,12 @@ fun EmulatorScreen(
                     engine = engine,
                     videoScale = padLayout.videoScale,
                     videoFilter = padLayout.videoFilter,
-                    // ★★ MMJ 后处理着色器名（本轮新增）：全局放大滤镜映射
-                    //   （xbr/hq2x→xBR，4xbr/hq4x→4xBR）优先，否则核心专属
-                    //   后处理设置（(off) 哨兵归空）。空 = 直绘层无后处理。
-                    mmjFxShader = if (engine is com.nesstation.app.core.engine.CitraMmjEngine) {
-                        (mmjShaderForGlobalFilter(padLayout.videoFilter)
-                            ?: padLayout.mmjPpShaderName.takeIf { it.isNotBlank() && it != "(off)" })
-                    } else null,
+                    // ★★ MMJ 后处理改走核心内链：pp_shader_name 由
+                    //   applyCoreOptions 写入 ini（xBR/4xBR/HQ2X/HQ4X 随
+                    //   assets/mmj/shaders 释放到 <userDir>/shaders），
+                    //   核心在自身 EGL 上下文内加载并应用 —— 不再需要
+                    //   Java 层叠加视图（独立 context 无法共享核心纹理，
+                    //   反汇编实证 eglCreateContext share=NULL）。
                     isPortrait = isPortrait,
                     platform = platform,
                     currentPlayer = currentPlayer,
@@ -4715,10 +4714,10 @@ private fun isGlobalUpscaleFilter(videoFilter: String?): Boolean =
  * FilterOverlay 绘制，不受此影响。
  */
 private fun mmjShaderForGlobalFilter(videoFilter: String?): String? = when (videoFilter) {
-    "xbr", "hq2x", "xbr_dot", "hq2x_dot",
-    "xbr_scanline", "hq2x_scanline", "xbr_tv", "hq2x_tv" -> "xBR"
-    "4xbr", "hq4x", "4xbr_dot", "hq4x_dot",
-    "4xbr_scanline", "hq4x_scanline", "4xbr_tv", "hq4x_tv" -> "4xBR"
+    "xbr", "xbr_dot", "xbr_scanline", "xbr_tv" -> "xBR"
+    "hq2x", "hq2x_dot", "hq2x_scanline", "hq2x_tv" -> "HQ2X"
+    "4xbr", "4xbr_dot", "4xbr_scanline", "4xbr_tv" -> "4xBR"
+    "hq4x", "hq4x_dot", "hq4x_scanline", "hq4x_tv" -> "HQ4X"
     else -> null
 }
 
@@ -5572,9 +5571,6 @@ private fun GameSurfaceView(
     engine: EmulatorEngine,
     videoScale: String,
     videoFilter: String,
-    // ★★ MMJ 后处理着色器名（本轮新增，非空时叠加 MmjGlView Java GL 后处理层）：
-    //   全局放大滤镜映射或核心专属后处理设置，由调用方算好传入。
-    mmjFxShader: String? = null,
     isPortrait: Boolean = false,
     platform: GamePlatform = GamePlatform.NES,
     currentPlayer: Int = 0,
@@ -6297,23 +6293,23 @@ private fun GameSurfaceView(
             },
             modifier = surfaceModifier.then(gameViewTracker)
         )
-            // ★★★★ MMJ 后处理 GL 呈现层（本轮新增，根治“mmj 核心没有生效全局滤镜
-            //   的 xbr 和 hqx，包括自带的后处理着色器也全失效了”）★★★★
-            //   根因（原版 Citra_MMJ 反编译实证）：MMJ 的后处理着色器在原版是
-            //   Java GL 层实现的（getScreenTexture → 注入 .glsl 的 program →
-            //   全屏 quad）；NesStation 纯直绘无此层 → 无论 ini 怎么写都无效。
-            //   本层 = 原版 c1/W 渲染器的 Kotlin 复刻（MmjGlView），叠加在
-            //   native 直绘 SurfaceView 之上；后处理失败/纹理无效时不绘制，
-            //   用户看到底层直绘 —— 无损降级。
-            if (mmjFxShader != null && engine is com.nesstation.app.core.engine.CitraMmjEngine) {
-                AndroidView(
-                    factory = { vctx ->
-                        MmjGlView(vctx).apply { setPostFxShader(mmjFxShader) }
-                    },
-                    update = { v -> v.setPostFxShader(mmjFxShader) },
-                    modifier = surfaceModifier
-                )
-            }
+            // ★★★★ MMJ 后处理呈现方案史（本轮回归核心内链）★★★★
+            //
+            // v1（fix1/fix2）：写 ini pp_shader_name + 呈现模式假说 —— 用户
+            //   报告 xbr/hqx 无效（当时 assets 尚无 xBR/4xBR 文件，校验层
+            //   把名字归空/回落，核心链从未拿到有效名字）。
+            // v2（上游 46ac8aa9）：新增 MmjGlView（Java GLSurfaceView 叠加层
+            //   + getScreenTexture 复刻）—— 实测【任何滤镜都黑屏】：反汇编
+            //   实证核心 eglCreateContext(share=EGL_NO_CONTEXT) 自建独立
+            //   上下文直绘 SurfaceView，getScreenTexture 返回的 texId 属于
+            //   核心上下文，在 MmjGlView 自己的上下文里是无效纹理 → 采样全
+            //   黑；且 GLSurfaceView 不透明 + setZOrderMediaOverlay 叠在直绘
+            //   层之上 → 黑帧遮盖正常画面（“自带的所有滤镜都黑”的根因）。
+            // v3（本轮）：删除叠加层，回归核心内链 —— pp_shader_name 经
+            //   applyCoreOptions → writeMmjIniLocked（带文件存在性校验）→
+            //   核心启动时 F1(0x4254c4) 在自身上下文内加载 <shaders 目录>
+            //   <name>.glsl 并编译应用，与呈现方式无关。xbr/hqx 系列映射
+            //   见 mmjShaderForGlobalFilter（HQ2X/HQ4X 本轮补齐入 assets）。
             // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot/*+扫描线/*+仿电视 drawn by Compose
             if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
                                       "tv", "xbr_scanline", "4xbr_scanline", "hq2x_scanline",
