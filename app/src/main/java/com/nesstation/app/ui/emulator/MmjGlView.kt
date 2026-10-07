@@ -287,7 +287,9 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
         /** d1.a.u 的 NesStation 版：读 <filesDir>/azahar/shaders/<name>.glsl。 */
         private fun readShaderSource(name: String): String? {
             return try {
-                val ctx = com.nesstation.app.NesApp.get()
+                // NesApp.get() 返回 NesApp?（Application 未创建时为 null）——
+                // 此处安静降级：返回 null = 直通渲染（无后处理），绝不抛错
+                val ctx = com.nesstation.app.NesApp.get() ?: return null
                 val f = File(File(ctx.filesDir, "azahar"), "shaders/$name.glsl")
                 if (f.isFile) f.readText() else null
             } catch (e: Throwable) {
