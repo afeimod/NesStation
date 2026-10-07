@@ -613,6 +613,39 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     }
                 }
             }
+            // ★★★ 本轮（fix5）：着色器激活时强制呈现模式升为「1 共享上下文」★★★
+            //
+            // 【根因（本轮反汇编 + 用户实测链完整闭环）】：
+            //   screen_presentation_mode 是核心真实存在的配置键（.so 键名表
+            //   0x11b9c7 + 运行时注册代码 0x282b58 双实证）：
+            //     0 = 兼容模式 —— 呈现走 CPU 拷贝通道，【不经过 GL 后处理
+            //         管线】→ pp_shader_name 加载了也永远不生效（设置面板
+            //         原有文案即为作者自己的反汇编结论："兼容模式的 CPU 拷贝
+            //         呈现通道不经过 GL 后处理管线，着色器会表现为「无效」"）；
+            //     1 = 共享上下文 —— GL 管线呈现，RendererOpenGL::Init
+            //         （F1=0x4254c4 后处理着色器加载）编译的 program 在最终
+            //         blit 上生效。
+            //   688e75da 曾撤销此升级（误判"与呈现模式无关"）—— 用户随即
+            //   实测"自带滤镜毫无效果、全局 xbr/hqx 对 mmj 没效果"（本根因
+            //   的直接验证）。fix1 时代该升级曾存在但当时 assets 尚无
+            //   xBR.glsl → 校验缺失 → 打开缺失文件触发 SIGSEGV（崩溃栈
+            //   F0←F1←RendererOpenGL::Init），从未被干净地验证过。
+            //   现在文件（assets/mmj/shaders，14 个 .glsl）+ 存在性校验 +
+            //   SEDI 兜底全部就绪，本升级是链路最后一环。
+            //
+            // 语义：仅当用户值为空或 "0" 时升为 "1"；用户显式选了 1/2 保持
+            // 不动（2 = 硬件缓冲，用户主动选择的呈现方式优先）。着色器关闭
+            // 时不写 —— 用户自己的设置（含 0）原样生效。
+            val activeShader = overrides["pp_shader_name"]
+            if (!activeShader.isNullOrEmpty()) {
+                val userMode = overrides["screen_presentation_mode"]
+                    ?: coreOptions["screen_presentation_mode"]
+                if (userMode == null || userMode == "0") {
+                    overrides["screen_presentation_mode"] = "1"
+                    android.util.Log.i("CitraMmjEngine",
+                        "shader '$activeShader' active -> screen_presentation_mode 0->1 (GL post-processing path)")
+                }
+            }
             // ★★★ 帧率限制保险（"画面像快进"根治）★★★
             //   本轮（v2）：不再写 use_frame_limit=false（运行中无通道能
             //   恢复，见 currentFrameLimitPct 注释；快进改为 frame_limit

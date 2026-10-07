@@ -1823,7 +1823,13 @@ fun CoreSettingsPanel(
                                "FXAA_natural" to "FXAA 自然锐化",
                                "Cel" to "赛璐璐", "Dot" to "点阵", "SEDI" to "SEDI 边缘导向",
                                "xBR" to "xBR 像素平滑 (2x)",
-                               "4xBR" to "4xBR 像素平滑 (4x 强化)"),
+                               "4xBR" to "4xBR 像素平滑 (4x 强化)",
+                               // ★ fix5 补齐：HQ2X/HQ4X 文件已随 assets/mmj/shaders
+                               //   打包（688e75da），但下拉缺失 —— 全局滤镜 hq2x/hq4x
+                               //   映射（mmjShaderForGlobalFilter）依赖同名文件，
+                               //   核心专属选择也应可选。
+                               "HQ2X" to "HQ2X 像素平滑 (2x)",
+                               "HQ4X" to "HQ4X 像素平滑 (4x)"),
                         padLayout.mmjPpShaderName
                     ) { updateLayout(padLayout.copy {mmjPpShaderName = it}) }
                     // ★ 本轮：着色器加载时机提示 + 呈现模式自动升级说明
