@@ -199,6 +199,13 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     private val stickLast = FloatArray(4)
 
     /**
+     * ★★ fix6：十字键→圆盘合成的【独立】去重状态（与 stickLast 分离）：
+     *   旧版合成把输出写进 stickLast，导致释放路径被 analogAtRest 门
+     *   自锁（合成后 stickLast 非零 → 门关 → 永不发 0 → 持续满幅移动
+     *   = "方向键变成长按的摇杆"的卡值根因）。[x, y]。 */
+    private val dpadSynthLast = FloatArray(2)
+
+    /**
      * ★ 最近一次模拟摇杆非零轴值的时刻（D-pad→CirclePad 合成的门控，
      *   见 setPad1 注释；0 = 从未用过 = 十字键模式 → 合成立即生效）。 */
     @Volatile private var lastAnalogActiveMs = 0L
@@ -657,13 +664,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (!overrides.containsKey("frame_limit")) {
                 overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
             }
-            // ★★ 本轮（撤销）：删除「着色器激活时强制 screen_presentation_mode
-            //   0→1」的旧修改 —— 呈现模式现在只写用户自己设置的值（默认不写，
-            //   保持核心默认 0）。后处理由核心内链承接：反汇编实证核心自建
-            //   EGL 上下文（eglCreateContext share=NULL）直绘，F1(0x4254c4)
-            //   在核心启动时于自身上下文内加载 <shaders目录><name>.glsl 并
-            //   编译应用 —— pp_shader_name 走 ini 即可，与呈现模式无关
-            //   （Java 层 GL 叠加方案因纹理跨上下文无效已废弃）。
+            // （注：上方 fix5 的呈现模式升级就是本链路的最终形态 —— 早期
+            //   "撤销升级 + Java 层 GLSurfaceView 叠加"方案（MmjGlView）因
+            //   核心纹理跨上下文无效已废弃，此处仅留档防止回退。）
             var applied = 0
             for ((key, value) in overrides) {
                 val section = MMJ_INI_SECTION[key]
@@ -1334,7 +1337,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         _ffSpeed = 0
         lastErrorText = ""
         stickLast.fill(0f)
-        // ★ 模拟通道空闲门控复位（下一局若仍用十字键模式，D-pad 合成立即可用）
+        // ★ 合成状态与门控复位（下一局若仍用十字键模式，D-pad 合成立即可用）
+        dpadSynthLast.fill(0f)
         lastAnalogActiveMs = 0L
         // ★★★ 全局滤镜/设置加固（本轮）：核心退出时会把【它自己的】当前
         //   配置 saveConfig 回写 config-mmj.ini —— 任何核心内部的值漂移
@@ -1568,15 +1572,54 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         for (i in idxEvents.indices) {
             try { lib.InputEvent(idxEvents[i], if (states[i]) 1f else 0f) } catch (_: Throwable) {}
         }
-        // ★★ 本轮（回归修复）：删除「D-pad → CirclePad 合成」。
-        //   旧合成在模拟摇杆空闲时把十字键满幅映射到圆盘 —— 用户实测
-        //   "方向键变成长按的摇杆"（十字键轻点变成持续满幅移动，数字键
-        //   的点按手感完全丢失）。原版 MMJ 的十字键是纯数字通道
-        //   （overlay/b.java 四键类 l()：InputEvent(base+0..3, 1f/0f)），
-        //   只读十字键的游戏照常工作；需要摇杆的游戏由用户切换摇杆
-        //   布局模式（inputMode）解决，不应由引擎私自合成。
-        //   同时保留 lastAnalogActiveMs 字段（setAnalogAxes 仍写入，
-        //   避免不必要的结构变动）。
+        // ★★★ fix6：恢复「D-pad → CirclePad 合成」（并根治旧版的卡值 bug）★★★
+        //
+        // 【为什么必须恢复】：绝大多数 3DS 游戏只读圆盘不读十字键 —— 布局
+        //   处于十字键模式（inputMode=dpad，默认）时，删掉合成会让这些游戏
+        //   完全没有方向输入（本轮用户实测"方向键上没作用了"的直接根因）。
+        //
+        // 【旧版为什么被骂"长按的摇杆"——卡值 bug 三步链】：
+        //   1. 旧合成把输出写进 stickLast（sendSynth 与真实摇杆共用去重表）；
+        //   2. 释放时 analogAtRest 门检查 stickLast 全零 —— 但合成自身已把
+        //      stickLast 写成非零 → 门永假 → 释放路径被跳过；
+        //   3. 圆盘停在 ±1 满幅 → "十字键轻点变成持续满幅移动，数字键的
+        //      点按手感完全丢失"。根因是【释放被门拦住】，不是合成本身错。
+        //
+        // 【fix6 修复】：合成状态独立（dpadSynthLast，与 stickLast 分离），
+        //   期望值归零即无条件发 0 —— 释放永远畅通：
+        //   - 门 1（时间）：模拟摇杆近 400ms 无非零事件（=没人在用摇杆）；
+        //   - 门 2（静止）：真实摇杆 stickLast 全零（=物理上不在非零位）——
+        //     只约束【按下】方向；合成自身的输出不再污染本门；
+        //   - 门关闭（摇杆接管）且合成有残留 → 立即发 0 释放，杜绝任何
+        //     场景下的卡值。
+        //   十字键原生数字通道照发（见上），读十字键的游戏不受影响 ——
+        //   与 Azahar/其它核心"摇杆模式同时发数字位+模拟量"的行为一致。
+        val analogIdle = android.os.SystemClock.uptimeMillis() - lastAnalogActiveMs > 400L
+        val synthActive = dpadSynthLast[0] != 0f || dpadSynthLast[1] != 0f
+        if (analogIdle) {
+            val up = states[8]; val down = states[9]
+            val left = states[10]; val right = states[11]
+            val stickAtRest = stickLast[0] == 0f && stickLast[1] == 0f
+            // 按下需两道门同时开；释放（目标为 0）只需当前有合成在跑
+            val allowed = stickAtRest || (dpadSynthLast[0] != 0f || dpadSynthLast[1] != 0f)
+            val sx = if (allowed) (if (right) 1f else 0f) - (if (left) 1f else 0f) else 0f
+            val sy = if (allowed) (if (down) 1f else 0f) - (if (up) 1f else 0f) else 0f
+            if (sx != dpadSynthLast[0]) {
+                dpadSynthLast[0] = sx
+                try { lib.InputEvent(IDX_CPAD_X, sx) } catch (_: Throwable) {}
+            }
+            if (sy != dpadSynthLast[1]) {
+                dpadSynthLast[1] = sy
+                try { lib.InputEvent(IDX_CPAD_Y, sy) } catch (_: Throwable) {}
+            }
+        } else if (synthActive) {
+            // 模拟通道刚活跃（真实摇杆接管）：清掉合成残留，恢复为真实
+            // 摇杆当前位置（摇杆在非零位时不清零覆掉它刚下发的值）
+            dpadSynthLast[0] = 0f
+            dpadSynthLast[1] = 0f
+            try { lib.InputEvent(IDX_CPAD_X, stickLast[0]) } catch (_: Throwable) {}
+            try { lib.InputEvent(IDX_CPAD_Y, stickLast[1]) } catch (_: Throwable) {}
+        }
     }
 
     override fun setPad2(bits: Int) {
