@@ -3168,6 +3168,13 @@ fun EmulatorScreen(
                     engine = engine,
                     videoScale = padLayout.videoScale,
                     videoFilter = padLayout.videoFilter,
+                    // ★★ MMJ 后处理着色器名（本轮新增）：全局放大滤镜映射
+                    //   （xbr/hq2x→xBR，4xbr/hq4x→4xBR）优先，否则核心专属
+                    //   后处理设置（(off) 哨兵归空）。空 = 直绘层无后处理。
+                    mmjFxShader = if (engine is com.nesstation.app.core.engine.CitraMmjEngine) {
+                        (mmjShaderForGlobalFilter(padLayout.videoFilter)
+                            ?: padLayout.mmjPpShaderName.takeIf { it.isNotBlank() && it != "(off)" })
+                    } else null,
                     isPortrait = isPortrait,
                     platform = platform,
                     currentPlayer = currentPlayer,
@@ -5565,6 +5572,9 @@ private fun GameSurfaceView(
     engine: EmulatorEngine,
     videoScale: String,
     videoFilter: String,
+    // ★★ MMJ 后处理着色器名（本轮新增，非空时叠加 MmjGlView Java GL 后处理层）：
+    //   全局放大滤镜映射或核心专属后处理设置，由调用方算好传入。
+    mmjFxShader: String? = null,
     isPortrait: Boolean = false,
     platform: GamePlatform = GamePlatform.NES,
     currentPlayer: Int = 0,
@@ -6287,6 +6297,23 @@ private fun GameSurfaceView(
             },
             modifier = surfaceModifier.then(gameViewTracker)
         )
+            // ★★★★ MMJ 后处理 GL 呈现层（本轮新增，根治“mmj 核心没有生效全局滤镜
+            //   的 xbr 和 hqx，包括自带的后处理着色器也全失效了”）★★★★
+            //   根因（原版 Citra_MMJ 反编译实证）：MMJ 的后处理着色器在原版是
+            //   Java GL 层实现的（getScreenTexture → 注入 .glsl 的 program →
+            //   全屏 quad）；NesStation 纯直绘无此层 → 无论 ini 怎么写都无效。
+            //   本层 = 原版 c1/W 渲染器的 Kotlin 复刻（MmjGlView），叠加在
+            //   native 直绘 SurfaceView 之上；后处理失败/纹理无效时不绘制，
+            //   用户看到底层直绘 —— 无损降级。
+            if (mmjFxShader != null && engine is com.nesstation.app.core.engine.CitraMmjEngine) {
+                AndroidView(
+                    factory = { vctx ->
+                        MmjGlView(vctx).apply { setPostFxShader(mmjFxShader) }
+                    },
+                    update = { v -> v.setPostFxShader(mmjFxShader) },
+                    modifier = surfaceModifier
+                )
+            }
             // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot/*+扫描线/*+仿电视 drawn by Compose
             if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
                                       "tv", "xbr_scanline", "4xbr_scanline", "hq2x_scanline",

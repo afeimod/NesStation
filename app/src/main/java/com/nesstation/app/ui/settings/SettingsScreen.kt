@@ -487,7 +487,7 @@ fun SettingsScreen(
                     // === 关于 ===
                     item {
                         SettingsSection("关于") {
-                            SettingsRow("版本", "3.7", trailing = { ValueText("3.7") })
+                            SettingsRow("版本", "3.9", trailing = { ValueText("3.9") })
                             SettingsRow("核心", "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC/NAOMI) · Azahar (3DS) · Ishiiruka (NGC/WII)",
                                 trailing = { ValueText("14 个模拟核心") })
                             SettingsRow("开源许可", "MIT License", trailing = { Arrow() }) {

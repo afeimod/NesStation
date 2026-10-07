@@ -54,6 +54,7 @@ import com.nesstation.app.ui.components.AppBackgroundState
 import com.nesstation.app.ui.fsd.FsdButtonHint
 import com.nesstation.app.ui.fsd.FsdCoverFlow
 import com.nesstation.app.ui.neon.SecBackdrop
+import com.nesstation.app.ui.neon.SecIconBackdrop
 import com.nesstation.app.ui.neon.SecBottomBar
 import com.nesstation.app.ui.neon.SecBreadcrumb
 import com.nesstation.app.ui.neon.SecButtonHints
@@ -165,7 +166,12 @@ fun OnlineGamesScreen(
     ) {
         // ★ 主题适配（Sec* 组件）：Neon 时渲染 Neon 深空风，FSD 时原样
         //   （需求："整体ui设置为neon时在线游戏…没有正确设计为neon"）
-        if (!AppBackgroundState.active) SecBackdrop()
+        // ★★ 封面背景（本轮新增）：Neon 时把选中条目的自定义图标整幅
+        //   铺满作背景（与游戏库 NeonCoverBackdrop 同款视觉，压暗层保证
+        //   前景可读）；无图标/FSD 主题回退 SecBackdrop —— 补齐
+        //   “在线游戏界面背景没有显示封面”。
+        if (!AppBackgroundState.active)
+            SecIconBackdrop(games.getOrNull(selIdx)?.iconPath)
 
         Column(modifier = Modifier.fillMaxSize()) {
             SecTopBar()

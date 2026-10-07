@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Home
@@ -435,6 +436,28 @@ fun NeonLibraryScreen(
         }
     }
 
+    // ★★ Java 平台专属：安装 JAR（与经典 UI LibraryScreen 的 jarPickerLauncher
+    //   同款链路，逻辑共享 [com.nesstation.app.core.storage.JavaGameStore.installJar]）。
+    //   J2ME 游戏是 .jar 安装包（非直接可启动镜像），必须先装进 Java 游戏库
+    //   才能启动 —— 与 3DS 的 CIA 同一逻辑层级。
+    val jarPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        var installed = 0
+        uris.forEach { uri ->
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) { }
+            if (JavaGameStore.installJar(context, uri) != null) installed++
+        }
+        statusMsg = if (installed > 0) "已安装 $installed 个 Java 游戏"
+        else "安装失败，请检查 JAR 文件是否有效"
+        onGamesChanged()
+    }
+
     // ★ 自定义图标：SAF 选图 → 拷贝到内部目录 → RomStore.setCustomIcon
     //   （与 FSD 游戏库长按菜单「自定义图标」同一套链路）
     val iconPickerLauncher = rememberLauncherForActivityResult(
@@ -549,20 +572,43 @@ fun NeonLibraryScreen(
                     if (!searchActive) searchQuery = ""
                 }
                 Spacer(Modifier.width(7.dp))
-                NeonToolbarButton(Icons.Rounded.UploadFile, "导入ROM") {
-                    runCatching { filePickerLauncher.launch(arrayOf("*/*")) }
-                }
-                Spacer(Modifier.width(7.dp))
-                NeonToolbarButton(Icons.Rounded.CreateNewFolder, "导入文件夹") {
-                    runCatching { folderPickerLauncher.launch(null) }
-                }
-                Spacer(Modifier.width(7.dp))
-                // ★★ CIA 安装入口（本轮新增 —— 与经典 UI 对齐）：3DS 数字版
-                //   游戏/更新/DLC 安装包（.cia）不能像普通 ROM 直接导入 ——
-                //   必须装进 Azahar NAND 后以「已安装标题」形式入库。
-                //   安装后自动枚举 NAND 补入库并刷新（见 ciaPickerLauncher）。
-                NeonToolbarButton(Icons.Rounded.Download, "安装CIA") {
-                    runCatching { ciaPickerLauncher.launch(arrayOf("*/*")) }
+                // ★★ 安装入口按平台对齐经典 UI（FSD LibraryScreen）：
+                //   - Java 平台：显示「安装JAR」（J2ME .jar 安装包专属入口，
+                //     不显示导入ROM/导入文件夹 —— .jar 不是直接可启动镜像）
+                //   - 3DS 平台：导入ROM/导入文件夹 + 「安装CIA」（数字版
+                //     游戏/更新/DLC 安装包入口）
+                //   - 其它平台：导入ROM/导入文件夹（不显示安装按钮 ——
+                //     旧版无条件显示「安装CIA」属于平台错配）
+                if (selectedCore == GamePlatform.JAVA) {
+                    NeonToolbarButton(Icons.Rounded.Add, "安装JAR") {
+                        try {
+                            jarPickerLauncher.launch(
+                                arrayOf("application/java-archive", "application/java", "*/*")
+                            )
+                        } catch (_: android.content.ActivityNotFoundException) {
+                            statusMsg = "系统文件选择器不可用"
+                        } catch (e: Exception) {
+                            statusMsg = "无法打开文件选择器：${e.message}"
+                        }
+                    }
+                } else {
+                    NeonToolbarButton(Icons.Rounded.UploadFile, "导入ROM") {
+                        runCatching { filePickerLauncher.launch(arrayOf("*/*")) }
+                    }
+                    Spacer(Modifier.width(7.dp))
+                    NeonToolbarButton(Icons.Rounded.CreateNewFolder, "导入文件夹") {
+                        runCatching { folderPickerLauncher.launch(null) }
+                    }
+                    if (selectedCore == GamePlatform.N3DS) {
+                        Spacer(Modifier.width(7.dp))
+                        // ★★ CIA 安装入口（3DS 专属）：3DS 数字版游戏/更新/DLC
+                        //   安装包（.cia）不能像普通 ROM 直接导入 —— 必须装进
+                        //   Azahar NAND 后以「已安装标题」形式入库。安装后自动
+                        //   枚举 NAND 补入库并刷新（见 ciaPickerLauncher）。
+                        NeonToolbarButton(Icons.Rounded.Download, "安装CIA") {
+                            runCatching { ciaPickerLauncher.launch(arrayOf("*/*")) }
+                        }
+                    }
                 }
                 Spacer(Modifier.width(7.dp))
                 NeonToolbarButton(Icons.Rounded.Refresh, "刷新") {

@@ -59,6 +59,7 @@ import com.nesstation.app.ui.fsd.FsdButtonHint
 import com.nesstation.app.ui.fsd.FsdCoverFlow
 import com.nesstation.app.ui.neon.Neon
 import com.nesstation.app.ui.neon.SecBackdrop
+import com.nesstation.app.ui.neon.SecIconBackdrop
 import com.nesstation.app.ui.neon.SecBottomBar
 import com.nesstation.app.ui.neon.SecBreadcrumb
 import com.nesstation.app.ui.neon.SecButtonHints
@@ -196,7 +197,11 @@ fun SwfListScreen(
             }
     ) {
         // FSD 深蓝壁纸（与游戏库一致）；全局背景激活时由根布局统一渲染
-        if (!AppBackgroundState.active) SecBackdrop()
+        // ★★ 封面背景（本轮新增）：Neon 时把选中 SWF 的自定义图标整幅
+        //   铺满作背景（与游戏库 NeonCoverBackdrop 同款视觉）；无图标 /
+        //   FSD 主题回退 SecBackdrop —— 补齐“swf 界面背景没有显示封面”。
+        if (!AppBackgroundState.active)
+            SecIconBackdrop(swfList.getOrNull(selIdx)?.iconPath)
 
         Column(modifier = Modifier.fillMaxSize()) {
             SecTopBar()

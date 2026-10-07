@@ -419,3 +419,55 @@ fun SecCounter(current: Int, total: Int, modifier: Modifier = Modifier) {
 /** 兼容帮助：Bitmap → ImageBitmap（Compose 扩展函数转发）。 */
 private fun android.graphics.Bitmap.asImageBitmapCompat(): androidx.compose.ui.graphics.ImageBitmap =
     this.asImageBitmap()
+
+/**
+ * ★★ 二级页面封面背景（在线游戏 / SWF 列表等封面流页面共用）★★
+ *
+ * 未设置全局背景时：把当前选中条目的自定义图标/封面整幅铺满屏幕作
+ * 背景（[androidx.compose.animation.Crossfade] 随选中切换平滑淡入淡出），
+ * 叠上下加深的压暗层保证前景文字 / 3D 封面永远可读 —— 与游戏库的
+ * [com.nesstation.app.ui.neon.NeonCoverBackdrop]（选中游戏封面全图背景）
+ * 同款视觉，补齐"在线游戏界面背景没有显示封面，包括 swf 界面"。
+ *
+ * 回退链：无选中图标 / FSD 主题 → [SecBackdrop]（原静态壁纸不变）；
+ * 全局背景激活时调用方不渲染本组件（与游戏库 NeonCoverBackdrop 的
+ * 门控一致，让全局壁纸透出来）。
+ */
+@Composable
+fun SecIconBackdrop(iconPath: String?, modifier: Modifier = Modifier) {
+    val customBmp = remember(iconPath) {
+        if (iconPath.isNullOrBlank()) null
+        else com.nesstation.app.ui.fsd.FsdImaging.decodeFile(iconPath, 1024, 1024)
+    }
+    if (!SecChrome.neon || customBmp == null) {
+        SecBackdrop(modifier)
+        return
+    }
+    Box(modifier = modifier.fillMaxSize()) {
+        androidx.compose.animation.Crossfade(
+            targetState = customBmp,
+            animationSpec = androidx.compose.animation.core.tween(durationMillis = 420),
+            label = "sec-icon-backdrop"
+        ) { b ->
+            Image(
+                bitmap = b.asImageBitmapCompat(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        // 压暗层：整体半透 + 顶/底更深（与 NeonCoverBackdrop 同款梯度）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        0f to Color(0xCC02040C),
+                        0.30f to Color(0x8C030512),
+                        0.62f to Color(0x99030614),
+                        1f to Color(0xE602030A)
+                    )
+                )
+        )
+    }
+}

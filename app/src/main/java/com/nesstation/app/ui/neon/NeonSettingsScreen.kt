@@ -486,7 +486,7 @@ fun NeonSettingsScreen(
                                 NeonSettingsRow("NGC / Wii", "Ishiiruka (Dolphin) 核心 · 后端/EFB 分辨率/CPU/控制模式", showArrow = true) { selectedCore = GamePlatform.NGCWII }
                             }
                             selectedCategory == "about" -> NeonSettingsSection("关于") {
-                                NeonSettingsRow("版本", "3.7") { }
+                                NeonSettingsRow("版本", "3.9") { }
                                 NeonSettingsRow(
                                     "核心",
                                     "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC/NAOMI) · Azahar (3DS) · Ishiiruka (NGC/WII)"

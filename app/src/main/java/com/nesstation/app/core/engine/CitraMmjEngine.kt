@@ -624,32 +624,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (!overrides.containsKey("frame_limit")) {
                 overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
             }
-            // ★★★★ 本轮（"全局xbr和hqx不生效，自带的后处理着色器里全失效"
-            //   根治）：着色器激活时强制 screen_presentation_mode=1 ★★★★
-            //
-            // 原理：MMJ 的呈现模式（[Renderer] screen_presentation_mode）：
-            //   0=兼容 / 1=共享上下文 / 2=硬件缓冲。兼容模式（默认）走
-            //   CPU 拷贝式呈现通道 —— 不经过 OpenGL 后处理 blit 管线，
-            //   pp_shader_name 加载的着色器在该通道上【不会作用到输出画面】
-            //   → 用户选任何着色器都"看不出效果"（正好是"全失效"的症状）。
-            //   呈现模式 1（共享上下文）走标准 GL 呈现 quad —— 后处理着色
-            //   器在渲染管线内，选择即生效。
-            //   仅在【用户保持默认 0（兼容）且选了着色器】时升到 1；用户
-            //   显式选过 1/2 的保持不动（同为 GL 呈现路径）。着色器关闭时
-            //   回写用户原值（清掉上一轮着色器期的提升，ini 不残留脏值）。
-            val activeShader = overrides["pp_shader_name"] ?: ""
-            val userPresentMode = overrides["screen_presentation_mode"]
-                ?: coreOptions["screen_presentation_mode"] ?: "0"
-            if (activeShader.isNotEmpty() && userPresentMode == "0") {
-                overrides["screen_presentation_mode"] = "1"
-                android.util.Log.i("CitraMmjEngine",
-                    "pp shader '$activeShader' active: screen_presentation_mode 0->1 " +
-                        "(compat present path bypasses post-processing blit)")
-            } else if (activeShader.isEmpty() && userPresentMode == "0") {
-                // 着色器关闭 + 用户设置 0：显式回写 0（覆盖 ini 里可能残留的
-                // 着色器期提升值）
-                overrides["screen_presentation_mode"] = "0"
-            }
+            // ★★ 本轮（撤销）：删除「着色器激活时强制 screen_presentation_mode
+            //   0→1」的旧修改 —— 该假说（兼容呈现通道绕过后处理 blit）已被
+            //   原版 APK 反汇编证伪：MMJ 的后处理着色器是【Java GL 层】实现
+            //   （原版 c1/W 渲染器，getScreenTexture → 注入 .glsl 的 program →
+            //   全屏 quad），与 ini 的呈现模式无关（两轮按此方向修复均无效的
+            //   真相）。呈现模式现在只写用户自己设置的值（默认不写，保持核心
+            //   默认 0），后处理由前端的 MmjGlView（EmulatorScreen）承接。
+            //   （显式回写 0 的分支也一并删除 —— 不再用 ini 传递该状态。）
             var applied = 0
             for ((key, value) in overrides) {
                 val section = MMJ_INI_SECTION[key]
@@ -1554,38 +1536,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         for (i in idxEvents.indices) {
             try { lib.InputEvent(idxEvents[i], if (states[i]) 1f else 0f) } catch (_: Throwable) {}
         }
-        // ★ D-pad → CirclePad 合成（模拟摇杆空闲时启用）：
-        //   绝大多数 3DS 游戏只读圆盘不读十字键 —— 布局处于十字键模式
-        //   （inputMode=dpad，默认）时这些游戏完全没有方向输入（"方向键
-        //   也有问题"的主因）。合成规则：模拟通道近 400ms 无非零轴值
-        //   （=没人在用模拟摇杆）时，把十字键位合成为圆盘满幅输出；
-        //   摇杆一动即停用（lastAnalogActiveMs 刷新），避免与真实模拟量
-        //   打架；摇杆归零 400ms 后自动恢复。十字键原生通道照发（见上），
-        //   读十字键的游戏不受影响 —— 与 Azahar/其它核心"摇杆模式同时
-        //   发数字位+模拟量"的既有行为一致。
-        //   ★★ 双重门控（防与"静止保持"的摇杆打架）：前端的 setAnalogAxes
-        //   是事件驱动（pushAnalog 只在触摸移动/手柄轴变化时调用）——
-        //   摇杆被【静止保持】在非零位置时不再有事件，仅靠 400ms 时间门
-        //   会误判"空闲"进而用十字键覆盖用户一直按着的摇杆位置。加第二
-        //   道门：stickLast 四轴当前值全零（=摇杆物理上不在任何非零位）
-        //   才允许合成。两道门同时满足才生效。
-        val analogIdle = android.os.SystemClock.uptimeMillis() - lastAnalogActiveMs > 400L
-        val analogAtRest = stickLast[0] == 0f && stickLast[1] == 0f &&
-            stickLast[2] == 0f && stickLast[3] == 0f
-        if (analogIdle && analogAtRest) {
-            val up = states[8]; val down = states[9]
-            val left = states[10]; val right = states[11]
-            val sx = (if (right) 1f else 0f) - (if (left) 1f else 0f)
-            val sy = (if (down) 1f else 0f) - (if (up) 1f else 0f)
-            fun sendSynth(idx: Int, v: Float, lastIdx: Int) {
-                if (v != stickLast[lastIdx]) {
-                    stickLast[lastIdx] = v
-                    try { lib.InputEvent(idx, v) } catch (_: Throwable) {}
-                }
-            }
-            sendSynth(IDX_CPAD_X, sx, 0)
-            sendSynth(IDX_CPAD_Y, sy, 1)   // +1=下（屏幕坐标，与摇杆通道同约定）
-        }
+        // ★★ 本轮（回归修复）：删除「D-pad → CirclePad 合成」。
+        //   旧合成在模拟摇杆空闲时把十字键满幅映射到圆盘 —— 用户实测
+        //   "方向键变成长按的摇杆"（十字键轻点变成持续满幅移动，数字键
+        //   的点按手感完全丢失）。原版 MMJ 的十字键是纯数字通道
+        //   （overlay/b.java 四键类 l()：InputEvent(base+0..3, 1f/0f)），
+        //   只读十字键的游戏照常工作；需要摇杆的游戏由用户切换摇杆
+        //   布局模式（inputMode）解决，不应由引擎私自合成。
+        //   同时保留 lastAnalogActiveMs 字段（setAnalogAxes 仍写入，
+        //   避免不必要的结构变动）。
     }
 
     override fun setPad2(bits: Int) {

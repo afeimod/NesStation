@@ -8,27 +8,30 @@ import android.hardware.SensorManager
 import android.view.Surface
 
 /**
- * ★★★★ V5 重写（本轮，回应用户"wii手机体感模拟更乱了……模拟6个方向，不是乱晃"）★★★★
+ * ★★★★ V6 重写（本轮，回应用户"wii的手机体感模拟依旧是有问题，根本没有
+ *   正常的六个方向模拟，全是乱七八糟的"）★★★★
  *
- * V4 的核心缺陷（本轮根治）：
- *  1.【固定锚点错误】V4 把 roll 锚死在绝对横放角 180°，但没有人能全程把手机端得
- *    水平 —— 自然握持天然带 ±5..15° 偏差 → 恒定大幅 roll 输出；握持角随动作
- *    漂移 → 输出无规律大幅摆动 = 用户看到的"乱晃"。固定锚点是"横放为中心"
- *    的错误实现：用户要的是【以自己横放握持的姿态为中心】，不是绝对水平。
- *  2.【V3 的老问题】基准取"开启瞬间姿态"——若开启时还在竖持/平放（加载画面），
- *    中心点被污染 → 方向全错。V4 为此引入固定锚点却引入了更糟的"乱晃"。
+ * V5 的两个致命缺陷（本轮根治，全部为"乱"的直接来源）：
+ *  1.【横放门控校准永不完成】V5 要求"横放可信"（平面内重力角 180°±35°
+ *    且幅值 ≥ 6.5 m/s²）才累计基线样本 —— 用户竖持启动 / 握持角偏离
+ *    锚点 / 平面内幅值不足时【永远不会校准】→ 倾斜输出恒为 0；或校准
+ *    窗口被反复整窗丢弃，首个有效姿态随机 → 方向错乱。
+ *  2.【静止重校准的"基线追赶"】V5 在近静止 600ms 且输出 < 0.10 时把基线
+ *    追到【当前姿态】—— 用户保持轻度倾斜（如持续左转）超过 600ms 就被
+ *    重采 → 之后所有方向整体错位。
  *
- * V5 模型 —— 横放门控基线捕获（"把手机横放为中心点(非平放)"的正确实现）：
- *  ★ 启动后持续采样，**仅当姿态判定为"横放可信"时**（屏幕平面内重力角接近 180°
- *    ± 35° 且平面内重力幅值足够 = 屏幕竖直面向用户，非平放/非竖持）才捕获
- *    roll+pitch 双基线 —— 中心点【必然】是一个横放握持姿态：
- *      - 进游戏前已横握 → 几百毫秒内即完成校准（无感）；
- *      - 竖持/平放启动 → 输出保持 0，直到用户转为横握才校准 —— 平放/竖持
- *        永远不会成为中心点（用户原话"非平放"的直接实现）。
- *  ★ 校准完成后：roll/pitch 均输出【相对自身横放握持姿态】的偏转 —— 手怎么
- *    拿、拿得斜一点都不产生虚假输出，倾斜多少输出多少（6 个方向可控）。
- *  ★ 静止重校准（roll+pitch 双轴）：近静止 600ms 且当前输出接近 0 且姿态
- *    仍横放可信 → 以当前姿态刷新基线（游玩中放下再拿起手机自动回中）。
+ * V6 模型 —— 极简、确定、可预测（"模拟6个方向，不是乱晃"的正确实现）：
+ *  ★ 启动后无条件捕获基线：前 CALIB_SAMPLES 个样本均值 = 用户进入游戏
+ *    时的握持姿态（进游戏前横握手机即为"横放为中心"——由使用习惯保证，
+ *    不由算法猜测；门控拒绝校准只会让基线永远缺失）。
+ *  ★ 校准完成后输出【相对自身握持基线】的重力偏移，两轴连续角度：
+ *      - roll（平面内角差）→ 左/右倾斜（方向盘式）
+ *      - pitch（gz 分量差）→ 前/后倚俯（含压向平放/抬起的连续过渡，
+ *        满程覆盖 6 个方向的姿态空间）
+ *  ★ 【绝对不自动重校准】—— 游玩中基线永不漂移；提供 [recenter]
+ *    手动接口（引擎在重启/换游戏时调用重新捕获）。
+ *  ★ 挥动（Swing 6 向）与摇晃（Shake 3 轴）维持既有标尺：线性加速度 /
+ *    角速度驱动，只响应瞬时动作，与静态倾斜互不干扰。
  *
  * 屏幕坐标系（旋转表实证：X_s 右、Y_s 上、Z_s 出屏朝用户）：
  *   - 左右倾斜（方向盘式，绕 Z_s）：向左转 → rollDev < 0 → tiltLeft
@@ -65,15 +68,6 @@ object WiiMotionSensors {
     private const val ROLL_VALID_MAG = 2.0f
     private const val ROLL_FULL_MAG = 5.0f
 
-    /** ★★★ V5 横放可信门 —— 平面内重力角与横放锚点（180°）的最大偏差（度）。
-     *   竖持时重力沿 ±X_s（角 ≈ ±90°）→ 距 180° ≈ 90°，必被拒；横握歪 ±35°
-     *   以内都认（宽松，避免校准永远不完成）。 */
-    private const val LANDSCAPE_MAX_DEV_DEG = 35.0f
-
-    /** ★★★ V5 横放可信门 —— 平面内重力幅值下限（m/s²）：sin(55°)·9.81 ≈ 8，
-     *   取 6.5 允许较斜的握持；平放时 ≈ 0 必被拒。 */
-    private const val LANDSCAPE_MIN_INPLANE = 6.5f
-
     /** 挥动触发阈值（线性加速度幅值，m/s²）。v1.4 基准 0.8；增益在 clean() 内除。 */
     private const val SWING_THRESHOLD = 0.8f
 
@@ -94,26 +88,14 @@ object WiiMotionSensors {
     private const val SWING_THRESHOLD_MIN = 0.35f
     private const val SHAKE_THRESHOLD_MIN = 0.8f
 
-    /** ★ 静止重校准：判定"近静止"的角速度上限（rad/s）。 */
-    private const val STATIONARY_GYRO = 0.06f
+    /** ★★ V6 基线捕获采样数：启动后前 N 个样本求均值作基线
+     *   （50Hz 传感器 ≈ 0.5s；无条件捕获，无姿态门控）。 */
+    private const val CALIB_SAMPLES = 25
 
-    /** ★ 静止重校准：判定"近静止"的线性加速度幅值上限（m/s²）。 */
-    private const val STATIONARY_ACCEL = 0.35f
-
-    /** ★ 静止重校准：需持续静止的时长（ms）后重新采集基准。 */
-    private const val RECENTER_HOLD_MS = 600L
-
-    /** ★★ V5 基线收敛采样数：横放可信姿态下连续积累 K 个样本求均值作基线。 */
-    private const val CALIB_SAMPLES = 12
-
-    /** ★★ V5 重校准门控：当前四向倾斜输出全部低于此值才允许重采基线 ——
-     *   防止基准"追赶"用户正在保持的倾斜。 */
-    private const val RECENTER_MAX_OUTPUT = 0.10f
-
-    /** ★★★ V5 参考锚点（仅用于"横放可信"判定，不作输出基准）：横放水平
-     *   （屏幕竖直面向自己）时屏幕平面内重力沿 -Y_s → rollDeg = 180°。
-     *   两种横屏方向（top-left / top-right）经旋转表换算后均为 180°。 */
-    private const val LANDSCAPE_ROLL_ANCHOR_DEG = 180.0f
+    /** ★★ V6 延迟校准（ms）：start() 后跳过该时长才开始捕获基线 ——
+     *   游戏加载画面期间用户可能还竖持手机，立即捕获会把竖持姿态采成
+     *   基线（V3 的老毛病）；延迟 2.5s = 加载基本完成、用户已横握就位。 */
+    private const val CALIB_DELAY_MS = 2500L
 
     /**
      * 体感状态（每次事件回调后输出，13 维）。
@@ -157,11 +139,11 @@ object WiiMotionSensors {
     /** 上一帧陀螺角速度（用于摇动检测的导数计算）。 */
     private val lastGyro = FloatArray(3)
 
-    /** ★ 静止重校准状态：近静止持续时长（计时起点 ms）。 */
-    private var stationarySinceMs = 0L
-
-    /** ★★ V5 基线收敛状态：横放可信窗口内的样本累计（不可信时整窗丢弃重计）。 */
+    /** ★★ V6 基线捕获状态：启动后前 N 样本累计（无条件，无门控）。 */
     private var calibCount = 0
+
+    /** ★★ V6 start() 时刻（uptime ms）—— 延迟校准用。 */
+    private var startUptimeMs = 0L
     private val calibSum = FloatArray(3)
 
     @Volatile private var calibrated = false
@@ -190,6 +172,7 @@ object WiiMotionSensors {
         calibrated = false
         calibCount = 0
         calibSum.fill(0f)
+        startUptimeMs = android.os.SystemClock.uptimeMillis()
         hasLinearAccel = linAcc != null
         hasGyro = gyro != null
         smoothed.fill(0f)
@@ -253,17 +236,14 @@ object WiiMotionSensors {
         smoothed[0] = alpha * gxS + (1 - alpha) * smoothed[0]
         smoothed[1] = alpha * gyS + (1 - alpha) * smoothed[1]
         smoothed[2] = alpha * gzS + (1 - alpha) * smoothed[2]
-        // ★★ V5 基线收敛（横放门控）：仅当姿态"横放可信"（近 180° 且非平放）
-        //   才累计样本；一旦姿态离开可信区 → 整窗丢弃（防止竖持/平放样本
-        //   稀释基线）。校准完成前不输出任何倾斜（宁可晚 300ms，不可错中心）。
+        // ★★ V6 基线捕获（无条件）：启动后前 CALIB_SAMPLES 个样本求均值 =
+        //   用户进入游戏时的握持姿态 —— "横放为中心"由使用习惯保证
+        //   （进游戏前横握），不由算法猜测。门控拒绝校准只会让基线
+        //   永远缺失（V5 "乱/没反应"的直接来源）。
         if (!calibrated) {
-            val inPlaneMag = kotlin.math.sqrt(gxS * gxS + gyS * gyS)
-            val rollNow = rollDegOf(gxS, gyS)
-            val landscape = isLandscapePlausible(rollNow, inPlaneMag)
-            if (!landscape) {
-                // 姿态不可信：丢弃整个收敛窗口，等用户转为横握
-                calibCount = 0
-                calibSum.fill(0f)
+            // ★★ V6 延迟校准：加载窗口内（start 后 CALIB_DELAY_MS）不捕获，
+            //   输出保持 0 —— 防竖持/平放的加载姿态污染基线。
+            if (android.os.SystemClock.uptimeMillis() - startUptimeMs < CALIB_DELAY_MS) {
                 state.tiltLeft = 0f; state.tiltRight = 0f
                 state.tiltForward = 0f; state.tiltBackward = 0f
                 try { sink(state) } catch (_: Throwable) {}
@@ -278,13 +258,12 @@ object WiiMotionSensors {
             val meanX = calibSum[0] / calibCount
             val meanY = calibSum[1] / calibCount
             val meanZ = calibSum[2] / calibCount
-            // ★★★ V5 基线 = 用户自己的横放握持姿态（roll 取平面角、pitch 取 gz 分量比）
+            // ★★★ V6 基线 = 用户自己的握持姿态（roll 取平面角、pitch 取 gz 分量比）
             baseGravity[0] = rollDegOf(meanX, meanY)
             baseGravity[1] = meanZ / 9.81f
             baseGravity[2] = kotlin.math.sqrt(meanX * meanX + meanY * meanY)
             calibrated = true
-            stationarySinceMs = 0L
-            // 收敛后首个事件：把滤波器预热到真实重力，避免首拍跳变
+            // 捕获完成：把滤波器预热到基线重力，避免首拍跳变
             smoothed[0] = meanX
             smoothed[1] = meanY
             smoothed[2] = meanZ
@@ -338,31 +317,6 @@ object WiiMotionSensors {
         state.tiltForward = cleanPitch(pitchDev)
         state.tiltBackward = cleanPitch(-pitchDev)
 
-        // ★★ 静止重校准（V5：roll+pitch 双轴，防握持角漂移）：
-        //   1) 加速度接近纯重力（总幅值 ≈ 9.8±0.35）且持续 ≥ 600ms；
-        //   2) 门控：当前四向输出全部 < RECENTER_MAX_OUTPUT（用户正在保持
-        //      倾斜时绝不重采基线 —— "往左倾斜不回正就别停止"的保证）；
-        //   3) 姿态仍横放可信（防止用户平放手机休息时把平放角采成基线）。
-        val mag = kotlin.math.sqrt(
-            smoothed[0] * smoothed[0] + smoothed[1] * smoothed[1] +
-            smoothed[2] * smoothed[2])
-        val nearStationary = kotlin.math.abs(mag - 9.81f) < STATIONARY_ACCEL
-        val outputsQuiet = tL < RECENTER_MAX_OUTPUT && tR < RECENTER_MAX_OUTPUT &&
-            state.tiltForward < RECENTER_MAX_OUTPUT && state.tiltBackward < RECENTER_MAX_OUTPUT
-        val stillLandscape = isLandscapePlausible(rollNow, inPlaneMag)
-        if (nearStationary && outputsQuiet && stillLandscape) {
-            val now = android.os.SystemClock.uptimeMillis()
-            if (stationarySinceMs == 0L) stationarySinceMs = now
-            if (now - stationarySinceMs >= RECENTER_HOLD_MS) {
-                baseGravity[0] = rollNow
-                baseGravity[1] = pitchNow
-                baseGravity[2] = inPlaneMag
-                stationarySinceMs = now
-            }
-        } else {
-            stationarySinceMs = 0L
-        }
-
         // ★ 无线性加速度传感器时：从加速度计高通得到挥动估计（fallback）
         if (!hasLinearAccel) {
             // 高通：原始加速度 - 低通重力 = 线性部分（粗略估计）
@@ -372,15 +326,6 @@ object WiiMotionSensors {
             updateSwingFromLinear(linX, linY, linZ, state)
         }
         try { sink(state) } catch (_: Throwable) {}
-    }
-
-    /** ★★★ V5 横放可信判定：平面内重力角近横放锚点（±35°）且幅值足够（非平放）。
-     *  竖持（角 ≈ ±90°）与平放（平面内幅值 ≈ 0）都判不可信。 */
-    private fun isLandscapePlausible(rollDeg: Float, inPlaneMag: Float): Boolean {
-        var dev = rollDeg - LANDSCAPE_ROLL_ANCHOR_DEG
-        if (dev > 180f) dev -= 360f
-        if (dev < -180f) dev += 360f
-        return kotlin.math.abs(dev) <= LANDSCAPE_MAX_DEV_DEG && inPlaneMag >= LANDSCAPE_MIN_INPLANE
     }
 
     /** 屏幕平面内重力方向角（度）。横放水平（重力沿 -Y_s）时 = 180°。 */
@@ -454,9 +399,6 @@ object WiiMotionSensors {
             else -> { rxS = rx; ryS = ry }
         }
         val rzS = rz
-        // ★ 陀螺近静止检测也参与重校准门控（角速度低 = 设备真静止）。
-        val gyroMag = kotlin.math.sqrt(rxS * rxS + ryS * ryS + rzS * rzS)
-        if (gyroMag > STATIONARY_GYRO) stationarySinceMs = 0L
         // 角速度突变 = 摇动（比纯加速度更可靠：甩手时角速度峰值明显）
         val dx = rxS - lastGyro[0]
         val dy = ryS - lastGyro[1]
@@ -529,10 +471,26 @@ object WiiMotionSensors {
         smoothed.fill(0f)
         hasLinearAccel = false
         hasGyro = false
-        stationarySinceMs = 0L
     }
 
     fun isRunning(): Boolean = listener != null
+
+    /**
+     * ★★ V6 手动重校准：清除当前基线，监听继续运行时下一个事件起重新
+     *   捕获（约 0.5s 完成新基线）。游玩中【绝不自动触发】（V5 的
+     * "静止重校准基线追赶"是方向错乱的直接来源，已删除）；由引擎在
+     * 重启游戏 / 换游戏的时机调用。
+     */
+    fun recenter() {
+        synchronized(this) {
+            calibrated = false
+            calibCount = 0
+            calibSum.fill(0f)
+            // 重校准同样走延迟窗口（调用方通常在场景切换时触发，
+            // 立即捕获会把切换瞬间的姿态采成基线）
+            startUptimeMs = android.os.SystemClock.uptimeMillis()
+        }
+    }
 
     /**
      * ★ 旧版兼容：4 参 sink（仅倾斜）。保留以免破坏外部调用；新代码应优先用
