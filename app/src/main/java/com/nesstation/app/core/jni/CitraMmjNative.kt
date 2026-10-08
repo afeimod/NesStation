@@ -9,6 +9,27 @@ package com.nesstation.app.core.jni
  * `org.citra.emu.NativeLibrary`。本对象只负责 loadLibrary + 可用性探测，
  * 全部原生方法经 [lib] 访问。
  *
+ * ★★★★★ 本 .so 是【二进制补丁版】，严禁用原版 APK 的 libmain.so 覆盖！★★★★★
+ *
+ * 原版 boot 主体带【包名指纹白名单】（libmain.so 反汇编实证，四道检查）：
+ *   ① settings[0x490] == 原版 versionName "f805c929d"（9 字节，GOT 0x61e5f0）
+ *   ② 包名 [0x478] ∈ {"org.citra.emu", "com.antutu.ABenchMark"}
+ *   ③ 魔数 [0x4f0] == 0x00d660c4f937902a（经 JNI 调宿主 Java 方法获取）
+ *   ④ 串 [0x4a8] == "Citra"（同上）
+ * 任一失败 → 执行"降级清理块"（boot 主体 0x267534 / 0x267630 / 0x267684 /
+ * 0x267708 四处），强制清零 use_gles[0x408]、[0x268]、[0x3fd]、[0x3ff]、
+ * [0x2a8]、[0x418] 并写 [0]=1（受限模式）—— 渲染器工厂（0x3d4f54）因此
+ * 选中桌面 GL 路径（RendererOpenGL），其后处理管线在 GLES 上下文不生效
+ * →【全部后处理滤镜（全局 xbr/hqx 映射 + 自带 SEDI/FXAA/bloom 等）静默
+ * 失效】= 用户报告的核心问题。原版 APK（包名 org.citra.emu）四检查全过，
+ * 滤镜正常。
+ *
+ * 补丁内容（scripts/patch_libcitra_mmj.py，md5 620e4c31...）：
+ *   1. 四个降级清理块整体 NOP（补丁后行为 = 原版白名单通过时行为）；
+ *   2. 渲染器工厂 0x3d4fac `cbz w8,+9` → `b +9`：永不选 Vulkan 渲染器
+ *      （Vulkan 管线不消费 pp_shader_name/.glsl，选中即全滤镜无效）。
+ * 覆盖回未补丁 so = 滤镜失效复发。
+ *
  * 仅提供 arm64-v8a（上游 MMJ 即 64 位 only）；32 位 / x86 进程加载
  * 失败时 [loaded] 为 false，UI 报告不可用而非崩溃（同 Azahar/DraStic）。
  */

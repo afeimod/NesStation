@@ -19,6 +19,16 @@ import kotlin.concurrent.thread
  * Citra_MMJ_20250220.apk 的 libmain.so）+ 原包名 JNI 契约
  * （org.citra.emu.NativeLibrary）+ 引擎类驱动生命周期。
  *
+ * ★★★ 滤镜全无效根治（本轮，libmain.so 反汇编 + 原版 APK 反编译双源实证）★★★
+ * 原版 boot 主体带包名指纹白名单（versionName "f805c929d" / 包名
+ * org.citra.emu / 魔数 0x00d660c4f937902a / "Citra" 串，四道检查），
+ * 非原版包每次启动都会命中"降级清理块"：use_gles[0x408] 等渲染标志被
+ * 强制清零 + 受限位[0]=1 → 渲染器工厂（0x3d4f54）落到桌面 GL 渲染器，
+ * 其后处理管线在 GLES 上下文静默不生效 → 全局 xbr/hqx 映射与自带
+ * 全部 .glsl 滤镜无一可见。修复 = jniLibs 里的 libcitra_mmj.so 已打
+ * 二进制补丁（四个清理块 NOP + 工厂强制走 GL 分支），详见
+ * CitraMmjNative.kt 头注释；切勿用原版未补丁 libmain.so 覆盖。
+ *
  * ★★★ 架构（本轮重构，逐项对齐原版 APK 反编译实证）★★★
  *
  * 启动序列（= 原版 MainActivity.d1.a.R → EmulationActivity.C0）：
