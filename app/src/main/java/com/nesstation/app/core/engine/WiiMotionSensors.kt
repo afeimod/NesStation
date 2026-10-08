@@ -8,74 +8,99 @@ import android.hardware.SensorManager
 import android.view.Surface
 
 /**
- * ★★★★ V8 重写（本轮，回应用户"wii手机体感模拟是神经病吧……都说了是固定六个
- *   方向的倾斜角度，根据倾斜角度保证实现对应方向的倾斜度，类似于重力感应，
- *   就像安卓的滚球游戏往哪里倾斜就一直往哪个方向保持倾斜，回正它跟着慢慢
- *   回原位"）★★★★
+ * ★★★★ V9 重写（本轮，回应用户"wii游戏……手机体感模拟有问题，横放手机往上晃动
+ *   才偶尔出现，应该是固定六个方向的倾斜角度，根据倾斜角度保证实现对应方向的
+ *   倾斜度，类似于重力感应，就像安卓的滚球游戏往哪里倾斜就一直往哪个方向保持
+ *   倾斜，回正它跟着慢慢回原位"）★★★★
  *
- * 【V8 模型 —— 固定锚点重力滚球（用户需求原话逐条落实）】：
+ * 【V9 模型 —— 大理石滚球（marble）六方向，逐条对齐用户需求原话】：
  *
- *  ★ 固定锚点（"固定"）：以【手机竖直横持、屏幕正对自己】（方向盘位）为
- *    唯一参考中心 —— 物理世界里的固定姿态，与进游戏时的握持姿态【无关】。
- *    V4~V7 全部失败的共同根源：基线捕获/校准/门控把"进游戏时的姿态"当
- *    零点 —— 用户换个姿势进游戏，整个坐标系就歪了（"恒向右偏"、"乱七八糟"、
- *    "晃一下才有反应"全部由此而来）。滚球游戏的零点就是"手机放平"，从来
- *    不需要校准 —— V8 同理：零点就是"手机拿正"，永远不需要校准。
- *
- *  ★ 六个方向（"固定六个方向的倾斜角度"）：
- *      左倾 —— 方向盘向左转（左侧边下沉）      → Tilt 左轴（129）持续输出
- *      右倾 —— 方向盘向右转（右侧边下沉）      → Tilt 右轴（130）持续输出
- *      前倾 —— 顶端推离自己（屏幕向天花板翻）  → Tilt 前轴（127）持续输出
- *      后倾 —— 顶端拉向自己（屏幕向地面翻）    → Tilt 后轴（128）持续输出
- *      上晃 —— 手机快速上提（瞬时动作）        → Swing 上轴（120）
- *      下晃 —— 手机快速下压（瞬时动作）        → Swing 下轴（121）
+ *  ★ 六个方向（"固定六个方向的倾斜角度"）—— 全部由【重力角度】连续驱动：
+ *      左倾 —— 左侧边下沉（大理石向左滚）  → Tilt 左轴（129）持续输出
+ *      右倾 —— 右侧边下沉（大理石向右滚）  → Tilt 右轴（130）持续输出
+ *      前倾 —— 顶边下沉（大理石向屏幕上方滚）→ Tilt 前轴（127）持续输出
+ *      后倾 —— 顶边抬起（大理石向怀里滚）  → Tilt 后轴（128）持续输出
+ *      上晃 —— 手机快速上提（瞬时动作）    → Swing 上轴（120）
+ *      下晃 —— 手机快速下压（瞬时动作）    → Swing 下轴（121）
  *    外加左/右/前/后晃（平移挥动，Swing 122-125）与三轴摇晃（Shake 132-134）。
  *
- *  ★ 角度比例输出（"根据倾斜角度保证实现对应方向的倾斜度"）：
- *    输出强度 = 倾角线性映射（死区 7° → 满程 30°，灵敏度增益可调），
- *    保持姿态就保持输出 —— 与滚球游戏完全一致。
+ *  ★ 大理石换算（"根据倾斜角度保证实现对应方向的倾斜度"）：
+ *    把重力比力投影到屏幕平面 —— 大理石永远向【低的一侧】滚：
+ *      marbleX = -gxS/g（+1 = 向右滚满格），marbleY = -gyS/g（+1 = 向屏幕上方滚满格）
+ *    倾角 → 输出线性映射：死区 7°(0.12) → 满程 30°(0.5)÷灵敏度增益。
+ *    该模型在【横放平贴 / 斜靠 / 立式方向盘位】任意握持角度下左右方向
+ *    都成立（gxS 的符号与握持仰角无关），前后方向以"大理石往屏幕上方
+ *    还是往怀里滚"为准 —— 与滚球游戏手感完全一致。
  *
- *  ★ 回正缓收（"回正它跟着慢慢回原位"）：输出用不对称平滑 ——
- *    攻向（倾斜加深）即时跟随，收向（回正）约 300ms 时间常数指数衰减，
- *    手感就是"回正后球慢慢滚回中心"。
+ *  ★ 静息重锚（"回正它跟着慢慢回原位"）：
+ *    零点 neutral = 大理石静止基准点。进游戏时无论什么握持角度，静置
+ *    2 秒后零点缓慢（τ≈0.8s）吸附到当前姿态 —— 输出平滑归零；一旦有
+ *    主动倾斜（输出 ≥0.15 或检测到挥动/摇晃动作），零点【冻结】——
+ *    保持倾斜就一直保持输出（"往哪里倾斜就一直往哪个方向保持倾斜"）。
+ *    攻向即时跟随、收向约 300ms 时间常数指数衰减 —— 手感就是"回正后
+ *    球慢慢滚回中心"。
  *
- * 【坐标推导（固定方向盘锚点，屏幕坐标系 X_s 右 / Y_s 上 / Z_s 出屏）】：
- *   - 竖直横持时比力（加速度计读数）指向 +Y_s（世界竖直向上）。
- *   - 左转方向盘（左侧下沉）：+X_s 轴翘向天空 → 比力获得 +X_s 分量
- *     → gxS 增大为【左倾】。（V7 把该符号标反 —— 平放锚点的约定搬到了
- *     方向盘锚点上，这是"横放手机左倾斜却输出右倾"的直接根源。）
- *   - 顶端推离（屏幕朝天翻）：+Z_s 轴翘向天空 → gzS 增大为【前倾】。
- *   - 上下晃动 = 世界竖直方向的瞬时平移 → 线性加速度 ±Y_s。
+ *  ★ 传感器看门狗（V8 "晃一下才偶尔有反应"的加固）：
+ *    部分机型的 TYPE_GRAVITY（融合重力）注册成功但不出数 —— V8 只在
+ *    start() 时按"传感器存在与否"一次性决策，撞上这种机型倾斜通道
+ *    整体哑火、只有线性加速度的挥动摇晃偶尔响应。V9 在加速度计事件里
+ *    看门狗：启动 600ms 内重力传感器没出过数 → 自动切换加速度计低通
+ *    估计重力（含晃动冻结），倾斜通道永不哑火。
+ *
+ * 【坐标推导（屏幕坐标系 X_s 右 / Y_s 上 / Z_s 出屏，比力 = 静止时的"上"）】：
+ *   - 平贴（屏幕朝上）：比力 ≈ (0, 0, +g)。
+ *   - 立式横持（屏幕正对自己）：比力 ≈ (0, +g, 0)。
+ *   - 左侧下沉 φ：比力获得 +X_s 分量 = +g·sinφ → marbleX = -sinφ < 0 → 向左滚 ✓。
+ *   - 顶边下沉 ψ：比力获得 -Y_s 分量 = -g·sinψ → marbleY = +sinψ > 0 → 向上滚 ✓。
  *
  * 【实现要点】：
- *   - 重力估计：优先 Sensor.TYPE_GRAVITY（系统融合、天然免疫晃动）；
- *     无该传感器时低通加速度计 + 晃动冻结（|总模长-9.81|>3 冻结更新），
- *     双保险保证"晃动不会漏进倾斜"（V7 "晃一下才偶尔右倾"的根因修复）。
- *   - 绝不校准、绝不自适应、绝不门控 —— 零点永远物理固定。
+ *   - 重力估计：优先 Sensor.TYPE_GRAVITY（系统融合、天然免疫晃动）+
+ *     看门狗兜底；无该传感器时低通加速度计 + 晃动冻结（|总模长-9.81|>3
+ *     冻结更新），保证"晃动不会漏进倾斜"。
+ *   - 绝不校准按钮、绝无一次性基线快照 —— 零点只随"静息姿态"缓慢吸附，
+ *     主动倾斜永不洗掉。
  */
 object WiiMotionSensors {
 
-    /** ★★ v1.4 全局灵敏度增益（设置面板「体感灵敏度」写入，默认 1.6 高）：
+    /** ★★ 全局灵敏度增益（设置面板「体感灵敏度」写入，默认 1.6 高）：
      *   1.0 = 基准；>1 更灵敏（满程所需倾角按比例缩小）。 */
     @Volatile var sensitivityGain: Float = 1.6f
 
-    /** ★★★ V8：左右倾满程重力分量（m/s²）。4.9 ≈ sin(30°)·9.81 ——
-     *   倾角 30° 达满强度；增益在 computeTilt 内除（钳下限）。 */
-    private const val FULL_ROLL = 4.9f
+    // ----------------------------------------------------------------------
+    // ★ V9 大理石模型标尺（单位 = 大理石位移 / sin(倾角)，1.0 = 45° 等效）
+    // ----------------------------------------------------------------------
 
-    /** ★★★ V8：前后倾满程重力分量（m/s²）。同 30° 满程。 */
-    private const val FULL_PITCH = 4.9f
+    /** 死区（≈ sin 7°）：自然握持的轻微歪斜不产生输出。 */
+    private const val MARBLE_DEADZONE = 0.12f
 
-    /** ★★★ V8：死区（m/s² ≈ 7°）—— 自然握持的轻微歪斜不产生输出，
-     *   有意向的倾斜立刻超过死区开始输出。 */
-    private const val DEADZONE = 1.2f
+    /** 满程基准（≈ sin 30°），实际满程 = 该值 ÷ 灵敏度增益（钳下限）。 */
+    private const val MARBLE_FULL = 0.5f
 
-    /** ★ 增益下限保护（防灵敏度拉满时标尺退化/噪声满幅）。 */
-    private const val FULL_ROLL_MIN = 2.0f
-    private const val FULL_PITCH_MIN = 2.0f
+    /** 满程下限保护（防灵敏度拉满时标尺退化/噪声满幅）。 */
+    private const val MARBLE_FULL_MIN = 0.2f
 
-    /** ★★★ V8：收向时间常数（秒）。回正后输出 ~300ms 衰减到 37%，
-     *   ~1s 基本归零 —— "回正它跟着慢慢回原位"。攻向不延迟。 */
+    /** ★ 静息重锚：静置多久开始吸附（ms）。 */
+    private const val STILL_MS = 2000L
+
+    /** ★ 静息重锚：吸附时间常数（秒）—— "慢慢回原位"的"慢慢"。 */
+    private const val ANCHOR_TAU = 0.8f
+
+    /** ★ 主动倾斜保护阈值：任一方向输出 ≥ 该值时零点冻结（防保持倾斜被洗掉）。 */
+    private const val ANCHOR_FREEZE_OUTPUT = 0.15f
+
+    /** ★ 活动检测阈值：线性加速度（m/s²）超过即视为"正在动"。 */
+    private const val ACTIVITY_LINACC = 1.2f
+
+    /** ★ 活动检测阈值：陀螺仪角速度（rad/s）超过即视为"正在动"。 */
+    private const val ACTIVITY_GYRO = 0.6f
+
+    /** ★ 看门狗：启动多少 ms 内重力传感器必须出数，否则切换加速度计估计。 */
+    private const val GRAVITY_WATCHDOG_MS = 600L
+
+    /** ★★ V8 保留：低通重力估计的晃动冻结阈值 —— 剧烈挥动中冻结重力估计。 */
+    private const val GRAVITY_FREEZE_DELTA = 3.0f
+
+    /** ★★ V8 保留：收向时间常数（秒）。回正后输出 ~300ms 衰减到 37%。 */
     private const val RELEASE_TAU = 0.3f
 
     /** 挥动触发阈值（线性加速度幅值，m/s²）。v1.4 基准 0.8；增益在 clean() 内除。 */
@@ -84,7 +109,7 @@ object WiiMotionSensors {
     /** 挥动满强度阈值（线性加速度幅值；v1.4 基准 3.5）。 */
     private const val SWING_FULL = 3.5f
 
-    /** ★★ v1.3 推/拉（前后晃动的线性加速度分量）独立阈值。v1.4 基准 0.55/2.2。 */
+    /** ★★ 推/拉（前后晃动的线性加速度分量）独立阈值。v1.4 基准 0.55/2.2。 */
     private const val SWING_FB_THRESHOLD = 0.55f
     private const val SWING_FB_FULL = 2.2f
 
@@ -98,14 +123,10 @@ object WiiMotionSensors {
     private const val SWING_THRESHOLD_MIN = 0.35f
     private const val SHAKE_THRESHOLD_MIN = 0.8f
 
-    /** ★★ V8：低通重力估计的晃动冻结阈值 —— 加速度计总模长偏离
-     *   9.81 超过该值（剧烈挥动中）时冻结重力估计，防止挥动泄漏进倾斜。 */
-    private const val GRAVITY_FREEZE_DELTA = 3.0f
-
-    /** ★★ V8：传感器采样间隔估计（默认 50Hz；按事件时间戳自适应）。 */
+    /** ★★ 传感器采样间隔估计（默认 50Hz；按事件时间戳自适应）。 */
     private var lastTimestampNs = 0L
 
-    /** ★★ V8：最近一次事件间隔（秒，缺省 20ms@50Hz）—— 收向衰减系数用。 */
+    /** ★★ 最近一次事件间隔（秒，缺省 20ms@50Hz）—— 收向/吸附系数用。 */
     private var sampleDt = 0.02f
 
     /**
@@ -136,11 +157,28 @@ object WiiMotionSensors {
     private var sensorManager: SensorManager? = null
     private var listener: SensorEventListener? = null
 
-    /** 低通后的重力估计（屏幕坐标系：X_s 右、Y_s 上、Z_s 出屏）。 */
+    /** 低通后的重力（比力）估计（屏幕坐标系：X_s 右、Y_s 上、Z_s 出屏）。 */
     private val gravity = FloatArray(3)
 
     /** 首样本尚未初始化（true = gravity 全零，下一帧直接吸附真值）。 */
     private var gravityInitialized = false
+
+    /** ★ V9 大理石零点（静息吸附基准；init (0,0) = 平贴零点）。 */
+    private var neutralX = 0f
+    private var neutralY = 0f
+
+    /** ★ V9 是否已完成首次吸附（首次吸附前无视输出保护 —— 入场姿态错位根治）。 */
+    private var everAnchored = false
+
+    /** ★ V9 最近一次"活动"时刻（ms）；重锚只在静置 STILL_MS 后进行。 */
+    private var lastActiveMs = 0L
+
+    /** ★ V9 recenter() 强制吸附标志（下一帧直接吸附到当前姿态）。 */
+    @Volatile private var forceRecenter = false
+
+    /** ★ V9 看门狗：重力传感器是否出过数。 */
+    @Volatile private var gravityEventSeen = false
+    private var startMs = 0L
 
     /** 上一帧线性加速度（用于摇动检测的导数计算）。 */
     private val lastLinAccel = FloatArray(3)
@@ -148,7 +186,7 @@ object WiiMotionSensors {
     /** 上一帧陀螺角速度（用于摇动检测的导数计算）。 */
     private val lastGyro = FloatArray(3)
 
-    /** V8 输出平滑的当前值（攻向即时 / 收向指数衰减）。 */
+    /** V9 输出平滑的当前值（攻向即时 / 收向指数衰减）。 */
     private val tiltOut = FloatArray(4)
 
     @Volatile private var hasGravitySensor = false
@@ -156,7 +194,7 @@ object WiiMotionSensors {
     @Volatile private var hasGyro = false
 
     /**
-     * 启动体感监听（V8：MotionState sink）。
+     * 启动体感监听（V9：MotionState sink）。
      *
      * @param displayRotation 当前显示旋转角（Surface.ROTATION_0/90/180/270）
      * @param sink 每次事件回调（已滤波 + 六方向解算），返回完整 13 维运动状态
@@ -170,7 +208,7 @@ object WiiMotionSensors {
         stop()
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return false
         val acc = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return false
-        // ★ V8：优先融合重力传感器（系统级低通，天然免疫挥动泄漏）
+        // ★ V9：优先融合重力传感器（系统级低通，天然免疫挥动泄漏）+ 看门狗兜底
         val grav = sm.getDefaultSensor(Sensor.TYPE_GRAVITY)
         // 可选传感器：没有也能跑（功能降级）
         val linAcc = sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
@@ -179,11 +217,18 @@ object WiiMotionSensors {
         hasGravitySensor = grav != null
         hasLinearAccel = linAcc != null
         hasGyro = gyro != null
+        gravityEventSeen = false
+        startMs = android.os.SystemClock.elapsedRealtime()
         gravity.fill(0f)
         gravityInitialized = false
         lastLinAccel.fill(0f)
         lastGyro.fill(0f)
         tiltOut.fill(0f)
+        neutralX = 0f
+        neutralY = 0f
+        everAnchored = false
+        lastActiveMs = startMs
+        forceRecenter = false
         lastTimestampNs = 0L
         sampleDt = 0.02f
 
@@ -195,10 +240,12 @@ object WiiMotionSensors {
                 when (event.sensor.type) {
                     Sensor.TYPE_GRAVITY -> handleGravity(event, rotation, state, sink)
                     Sensor.TYPE_ACCELEROMETER ->
-                        if (!hasGravitySensor) handleAccel(event, rotation, state, sink)
-                        else if (!hasLinearAccel) {
-                            // 有融合重力但无线性加速度：加速度计只做挥动高通源
+                        if (hasGravitySensor) {
+                            // 有融合重力：加速度计只做挥动高通源（+看门狗兜底）
                             handleAccelSwingOnly(event, rotation, state, sink)
+                        } else {
+                            // 无融合重力：加速度计低通估计重力 + 高通残差挥动
+                            handleAccel(event, rotation, state, sink)
                         }
                     Sensor.TYPE_LINEAR_ACCELERATION -> handleLinAccel(event, rotation, state, sink)
                     Sensor.TYPE_GYROSCOPE -> handleGyro(event, rotation, state, sink)
@@ -231,39 +278,83 @@ object WiiMotionSensors {
         }
     }
 
+    // ------------------------------------------------------------------
+    // ★★ V9 核心：大理石六方向解算 + 静息重锚
+    // ------------------------------------------------------------------
+
     /**
-     * ★★★ V8 倾斜解算（固定方向盘锚点，每事件调用）：
-     *   gxS 增大 = 左倾；gzS 增大 = 前倾（推导见类头注释）。
-     *   输出不对称平滑：攻向即时，收向按 RELEASE_TAU 指数衰减。
+     * V9 倾斜解算（每事件调用）：
+     *   1. 大理石位移 = -(比力屏幕面内分量)/g —— 永远向低的一侧滚；
+     *   2. 减去静息零点 → 四方向目标值（死区 7° → 满程 30°÷增益）；
+     *   3. 不对称平滑：攻向即时，收向按 RELEASE_TAU 指数衰减。
      */
     private fun emitTilt(state: MotionState, sink: (MotionState) -> Unit) {
-        val fullRoll = (FULL_ROLL / sensitivityGain).coerceAtLeast(FULL_ROLL_MIN)
-        val fullPitch = (FULL_PITCH / sensitivityGain).coerceAtLeast(FULL_PITCH_MIN)
-        fun lin(v: Float, full: Float): Float {
-            val a = kotlin.math.abs(v)
-            return if (a < DEADZONE) 0f
-            else ((a - DEADZONE) / (full - DEADZONE)).coerceIn(0f, 1f)
-        }
-        // ★★ V8：传感器采样间隔（事件时间差，缺省 20ms@50Hz）→ 收向衰减系数
-        val decay = kotlin.math.exp(-sampleDt / RELEASE_TAU)
+        val now = android.os.SystemClock.elapsedRealtime()
 
-        // 目标值（0..1）：物理方向 → 通道（固定符号，绝不校准）
+        // ---- 1) 大理石位移（-1..1）----
+        val g = 9.81f
+        val marbleX = (-gravity[0] / g).coerceIn(-1f, 1f)
+        val marbleY = (-gravity[1] / g).coerceIn(-1f, 1f)
+
+        // ---- 2) 静息重锚（回正它跟着慢慢回原位）----
+        val still = now - lastActiveMs > STILL_MS
+        if (forceRecenter) {
+            // 手动回正：直接吸附到当前姿态（输出随收向平滑归零）
+            neutralX = marbleX
+            neutralY = marbleY
+            forceRecenter = false
+            everAnchored = true
+        } else if (still) {
+            val lightTilt = maxOf(
+                tiltOut[0], tiltOut[1], tiltOut[2], tiltOut[3]
+            ) < ANCHOR_FREEZE_OUTPUT
+            if (!everAnchored || lightTilt) {
+                // 零点缓慢吸附当前姿态（τ≈0.8s —— "慢慢回原位"）
+                val k = 1f - kotlin.math.exp(-sampleDt / ANCHOR_TAU)
+                neutralX += (marbleX - neutralX) * k
+                neutralY += (marbleY - neutralY) * k
+                val d = kotlin.math.sqrt(
+                    (marbleX - neutralX) * (marbleX - neutralX) +
+                    (marbleY - neutralY) * (marbleY - neutralY))
+                if (d < 0.05f) everAnchored = true
+            }
+        }
+        // 有活动（未静置）时零点冻结 —— 保持倾斜就一直保持输出 ✓
+
+        // ---- 3) 四方向目标值（角度线性映射）----
+        val full = (MARBLE_FULL / sensitivityGain).coerceAtLeast(MARBLE_FULL_MIN)
+        val dx = marbleX - neutralX
+        val dy = marbleY - neutralY
+        fun lin(v: Float): Float {
+            val a = kotlin.math.abs(v)
+            return if (a < MARBLE_DEADZONE) 0f
+            else ((a - MARBLE_DEADZONE) / (full - MARBLE_DEADZONE)).coerceIn(0f, 1f)
+        }
         val target = floatArrayOf(
-            lin(gravity[0], fullRoll),    // 左倾：gxS > 0
-            lin(-gravity[0], fullRoll),   // 右倾：gxS < 0
-            lin(gravity[2], fullPitch),   // 前倾：gzS > 0（顶端推离 / 屏幕朝天翻）
-            lin(-gravity[2], fullPitch)   // 后倾：gzS < 0（顶端拉近 / 屏幕朝地翻）
+            lin(-dx),   // 左倾：大理石向左（dx < 0）
+            lin(dx),    // 右倾：大理石向右（dx > 0）
+            lin(dy),    // 前倾：大理石向屏幕上方（顶边下沉）
+            lin(-dy)    // 后倾：大理石向怀里（顶边抬起）
         )
+        // ---- 4) 不对称平滑：攻向即时 / 收向 300ms 指数衰减 ----
+        val decay = kotlin.math.exp(-sampleDt / RELEASE_TAU)
         for (i in 0 until 4) {
             val cur = tiltOut[i]
-            tiltOut[i] = if (target[i] >= cur) target[i]          // 攻向：即时
-            else target[i] + (cur - target[i]) * decay            // 收向：指数衰减
+            tiltOut[i] = if (target[i] >= cur) target[i]
+            else target[i] + (cur - target[i]) * decay
         }
         state.tiltLeft = tiltOut[0]
         state.tiltRight = tiltOut[1]
         state.tiltForward = tiltOut[2]
         state.tiltBackward = tiltOut[3]
         try { sink(state) } catch (_: Throwable) {}
+    }
+
+    /** ★ V9 活动检测登记：任何挥动/摇晃/快移都会刷新 lastActiveMs（冻结零点）。 */
+    private fun markActive(linAccMag: Float, gyroMag: Float) {
+        if (linAccMag > ACTIVITY_LINACC || gyroMag > ACTIVITY_GYRO) {
+            lastActiveMs = android.os.SystemClock.elapsedRealtime()
+        }
     }
 
     /** 按事件时间戳更新采样间隔（秒）；异常时间戳（复位/乱序）时保持缺省。 */
@@ -286,6 +377,8 @@ object WiiMotionSensors {
         gravity[0] = gxS
         gravity[1] = gyS
         gravity[2] = event.values[2]
+        gravityEventSeen = true
+        gravityInitialized = true
         updateSampleDt(event.timestamp)
         emitTilt(state, sink)
     }
@@ -306,8 +399,8 @@ object WiiMotionSensors {
         val (gxS, gyS) = toScreen(gx, gy, rotation)
         val gzS = gz
         val mag = kotlin.math.sqrt(gx * gx + gy * gy + gz * gz)
-        // ★★ V8 晃动冻结：剧烈运动中（|模长-g| 超阈值）冻结重力估计，
-        //   挥动结束后恢复 —— 晃动绝不漏进倾斜（"晃一下才偶尔右倾"根治）。
+        // ★★ 晃动冻结：剧烈运动中（|模长-g| 超阈值）冻结重力估计，
+        //   挥动结束后恢复 —— 晃动绝不漏进倾斜。
         val frozen = kotlin.math.abs(mag - 9.81f) > GRAVITY_FREEZE_DELTA
         val alpha = 0.15f
         if (!gravityInitialized) {
@@ -326,28 +419,49 @@ object WiiMotionSensors {
             val linX = gxS - gravity[0]
             val linY = gyS - gravity[1]
             val linZ = gzS - gravity[2]
+            markActive(kotlin.math.sqrt(linX * linX + linY * linY + linZ * linZ), 0f)
             updateSwingFromLinear(linX, linY, linZ, state)
             try { sink(state) } catch (_: Throwable) {}
         }
     }
 
-    /** 有融合重力但无独立线性加速度：加速度计只做挥动高通源（倾斜走重力传感器）。 */
+    /**
+     * ★ V9 重构：加速度计回调统一入口（无论融合重力是否出数都会到达）。
+     * 有融合重力但无独立线性加速度时：加速度计只做挥动高通源；
+     * 同时跑【看门狗】：启动 GRAVITY_WATCHDOG_MS 内 TYPE_GRAVITY 一直
+     * 没出数（注册成功但哑火的机型）→ 自动降级为加速度计低通估计重力，
+     * 倾斜通道永不哑火。
+     */
     private fun handleAccelSwingOnly(
         event: SensorEvent,
         rotation: Int,
         state: MotionState,
         sink: (MotionState) -> Unit
     ) {
+        // ---- 看门狗：融合重力哑火 → 降级 ----
+        if (!gravityEventSeen &&
+            android.os.SystemClock.elapsedRealtime() - startMs > GRAVITY_WATCHDOG_MS) {
+            android.util.Log.w("WiiMotionSensors",
+                "TYPE_GRAVITY registered but silent; degrade to accelerometer gravity estimation")
+            hasGravitySensor = false
+            gravityInitialized = false
+            // 落回 handleAccel 路径处理本帧与后续帧
+            handleAccel(event, rotation, state, sink)
+            return
+        }
         val (gxS, gyS) = toScreen(event.values[0], event.values[1], rotation)
         val gzS = event.values[2]
         val linX = gxS - gravity[0]
         val linY = gyS - gravity[1]
         val linZ = gzS - gravity[2]
-        updateSwingFromLinear(linX, linY, linZ, state)
-        try { sink(state) } catch (_: Throwable) {}
+        if (hasLinearAccel.not()) {
+            markActive(kotlin.math.sqrt(linX * linX + linY * linY + linZ * linZ), 0f)
+            updateSwingFromLinear(linX, linY, linZ, state)
+            try { sink(state) } catch (_: Throwable) {}
+        }
     }
 
-    /** 处理线性加速度（去重力后的纯运动）：驱动挥动。 */
+    /** 处理线性加速度（去重力后的纯运动）：驱动挥动 + 活动检测。 */
     private fun handleLinAccel(
         event: SensorEvent,
         rotation: Int,
@@ -356,6 +470,8 @@ object WiiMotionSensors {
     ) {
         val (lxS, lyS) = toScreen(event.values[0], event.values[1], rotation)
         val lzS = event.values[2]
+        markActive(
+            kotlin.math.sqrt(lxS * lxS + lyS * lyS + lzS * lzS), 0f)
         updateSwingFromLinear(lxS, lyS, lzS, state)
         // 线性加速度的瞬时变化率 = 抖动（与陀螺的角速度协同 → 更可靠的摇动检测）
         val dx = lxS - lastLinAccel[0]
@@ -365,7 +481,7 @@ object WiiMotionSensors {
         // 抖动 = 瞬时变化幅值（无陀螺时用此分支兜底）
         if (!hasGyro) {
             val jerkMag = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-            // ★ v1.4：摇晃阈值同除灵敏度增益（钳位 ≥ SHAKE_THRESHOLD_MIN）
+            // ★ 摇晃阈值同除灵敏度增益（钳位 ≥ SHAKE_THRESHOLD_MIN）
             val th = (SHAKE_THRESHOLD / sensitivityGain).coerceAtLeast(SHAKE_THRESHOLD_MIN)
             val full = (SHAKE_FULL / sensitivityGain).coerceAtLeast(th * 2f)
             val shake = ((jerkMag - th) / (full - th))
@@ -383,7 +499,7 @@ object WiiMotionSensors {
         try { sink(state) } catch (_: Throwable) {}
     }
 
-    /** 处理陀螺仪（角速度）：精确的摇动检测。 */
+    /** 处理陀螺仪（角速度）：精确的摇动检测 + 活动检测。 */
     private fun handleGyro(
         event: SensorEvent,
         rotation: Int,
@@ -392,6 +508,7 @@ object WiiMotionSensors {
     ) {
         val (rxS, ryS) = toScreen(event.values[0], event.values[1], rotation)
         val rzS = event.values[2]
+        markActive(0f, kotlin.math.sqrt(rxS * rxS + ryS * ryS + rzS * rzS))
         // 角速度突变 = 摇动（比纯加速度更可靠：甩手时角速度峰值明显）
         val dx = rxS - lastGyro[0]
         val dy = ryS - lastGyro[1]
@@ -401,7 +518,7 @@ object WiiMotionSensors {
         val magY = kotlin.math.abs(dy)
         val magZ = kotlin.math.abs(dz)
         fun s(m: Float): Float {
-            // ★ v1.4：摇晃阈值同除灵敏度增益（钳位 ≥ SHAKE_THRESHOLD_MIN）
+            // ★ 摇晃阈值同除灵敏度增益（钳位 ≥ SHAKE_THRESHOLD_MIN）
             val th = (SHAKE_THRESHOLD / sensitivityGain).coerceAtLeast(SHAKE_THRESHOLD_MIN)
             val full = (SHAKE_FULL / sensitivityGain).coerceAtLeast(th * 2f)
             return ((m - th) / (full - th)).coerceIn(0f, 1f)
@@ -415,7 +532,7 @@ object WiiMotionSensors {
 
     /**
      * 由线性加速度分量更新挥动状态（4 向 + 推/拉）。
-     * ★★ V3 方向修正：旋转表实证 Y_s 向上 —— lyS > 0 = 向上甩 → swingUp；
+     * ★ V3 方向修正保留：屏幕坐标 Y_s 向上 —— lyS > 0 = 向上甩 → swingUp；
      *   lzS > 0 = 向自己拉（Z_s 出屏朝用户）→ swingBackward。
      */
     private fun updateSwingFromLinear(
@@ -424,14 +541,14 @@ object WiiMotionSensors {
     ) {
         fun clean(v: Float): Float {
             val a = kotlin.math.abs(v)
-            // ★ v1.4：挥动阈值/满程同除灵敏度增益
+            // ★ 挥动阈值/满程同除灵敏度增益
             val th = (SWING_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN)
             val full = (SWING_FULL / sensitivityGain).coerceAtLeast(th * 2f)
             return if (a < th) 0f
             else ((a - th) / (full - th))
                 .coerceIn(0f, 1f)
         }
-        // 屏幕坐标（V3 实证）：X_s 右、Y_s 上、Z_s 出屏朝用户
+        // 屏幕坐标：X_s 右、Y_s 上、Z_s 出屏朝用户
         state.swingRight = clean(lxS)
         state.swingLeft = clean(-lxS)
         state.swingUp = clean(lyS)
@@ -440,7 +557,7 @@ object WiiMotionSensors {
         state.swingBackward = cleanFbSwing(lzS)   // 向自己拉
     }
 
-    /** ★★ v1.3 推/拉独立标尺。v1.4：同除灵敏度增益。 */
+    /** ★ 推/拉独立标尺（同除灵敏度增益）。 */
     private fun cleanFbSwing(v: Float): Float {
         val a = kotlin.math.abs(v)
         val th = (SWING_FB_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN * 0.6f)
@@ -468,19 +585,22 @@ object WiiMotionSensors {
         hasGyro = false
         lastTimestampNs = 0L
         sampleDt = 0.02f
+        neutralX = 0f
+        neutralY = 0f
+        everAnchored = false
+        forceRecenter = false
+        gravityEventSeen = false
     }
 
     fun isRunning(): Boolean = listener != null
 
     /**
-     * ★★ V8：兼容保留的空重校准接口。固定锚点模型下【不存在校准语义】——
-     *   零点永远是"手机竖直横持"，与任何时刻的握持姿态无关（V4~V7 的
-     *   基线捕获/门控重校准正是历轮"方向错乱/恒偏/乱晃"的根源，已全部删除）。
-     *   保留方法体以兼容既有调用方，调用为无操作。
+     * ★★ V9：手动回正 —— 立即把零点吸附到当前姿态（输出随收向平滑归零）。
+     * V8 时代因固定锚点改为无操作；V9 静息吸附模型下恢复真实语义
+     * （用户感觉方向基准歪了时可主动触发，无需退出重进）。
      */
-    @Deprecated("V8 固定锚点：无校准语义，调用为无操作")
     fun recenter() {
-        // 无操作 —— 固定锚点无需校准
+        forceRecenter = true
     }
 
     /**

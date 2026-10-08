@@ -38,6 +38,20 @@ import javax.microedition.khronos.opengles.GL10
  *   - 释放时 releaseScreenTexture()（复位核心导出标志）= W.e。
  *   与原版差异（均为增强）：float 精度宽高比；resolution/frame_count
  *   uniform 每帧正确赋值（原版从未赋值恒 0）；线程安全切换；失败自愈。
+ *
+ * 【★★★ 本轮根治（"全局 xbr/hqx 与后处理着色器全失效"的真正根因）★★★】
+ *   getScreenTexture JNI（0x26dae0）反汇编实证：其数据源是核心内部的
+ *   【呈现提供器全局对象】（adrp 0x77c000 + 0x688 读指针）—— 该对象在
+ *   Run() 引导后期（渲染器初始化）才创建；引导期每次调用直接返回全零
+ *   int[4]（cbz x0 → 跳过虚调用，结果保持 {0,0}）。旧实现的失败计数
+ *   FAIL_GIVE_UP=60（60fps ≈ 1 秒）在【核心还在引导的 1 秒内就永久停用】
+ *   —— 叠加层被移除、直接绘画面裸奔 —— 所有滤镜（全局 xbr/hqx 映射 +
+ *   自带后处理着色器）100% 复现失效。本轮：
+ *     ① 首次成功导出之前【永不计数】—— 引导期无条件透出直绘画面；
+ *     ② 首次成功后失败计数才生效（阈值提高到 600 帧 ≈ 10s，只防
+ *        "曾经能用、之后坏了"的真实异常），任何一次成功即清零。
+ *   另：GLSL 编译增加 #version 320 es → 310 es 回退（低版本 GLES 3.1
+ *   驱动上 320 头会编译失败回落直通 = "滤镜像没生效"的第二根因）。
  */
 class MmjGlView(context: Context) : GLSurfaceView(context) {
 
@@ -46,8 +60,12 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
     @Volatile private var onGiveUp: (() -> Unit)? = null
 
     private companion object {
-        /** 连续失败多少帧后自动停用（60fps ≈ 1 秒）。 */
-        private const val FAIL_GIVE_UP = 60
+        /** ★ 本轮：首次成功之后才计数的连续失败上限（60fps ≈ 10 秒）。
+         *  引导期（首次成功前）永不计数 —— 见类头注释的根因分析。 */
+        private const val FAIL_GIVE_UP = 600
+
+        /** 失败日志节流（每 N 次失败打一条，避免 logcat 刷屏）。 */
+        private const val FAIL_LOG_EVERY = 120
     }
 
     init {
@@ -162,9 +180,11 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
         @Volatile private var shaderName: String? = null
         @Volatile var paused = false
 
-        /** 连续取帧/纹理失败计数（成功一帧即清零；超限自动停用）。 */
+        /** 连续取帧/纹理失败计数（★ 首次成功之后才开始计数；成功即清零）。 */
         private var failStreak = 0
         private var givenUp = false
+        /** ★ 本轮：是否已成功导出过至少一帧（成功前永不 give-up）。 */
+        private var everSucceeded = false
 
         /** GL 线程内执行（setPostFxShader 经 queueEvent 转发）。 */
         fun setShaderName(name: String?) {
@@ -199,20 +219,30 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
                 null
             }
             // ★ 有效性守卫：null/长度不足（核心未就绪）、texId==0（导出通道
-            //   不可用）或 glIsTexture==false（该 ID 不属于本上下文）都视为
-            //   失败 —— 半透明清屏后透出底层直绘，绝不画黑帧。
+            //   未就绪 —— 引导期提供器全局为 null 时 JNI 返回全零数组）或
+            //   glIsTexture==false（该 ID 不属于本上下文）都视为失败 ——
+            //   半透明清屏后透出底层直绘，绝不画黑帧。
+            // ★★ 本轮根治：核心 Run() 引导期（可达数秒）提供器尚未创建，
+            //   旧实现 60 帧（~1s）就永久 give-up → 滤镜全失效。现在
+            //   【首次成功之前不计数】，成功后才有失败上限（见类头注释）。
             if (info == null || info.size < 4 ||
                 info[0] == 0 || !GLES20.glIsTexture(info[0])) {
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)   // alpha=0：透出底层
-                if (++failStreak > FAIL_GIVE_UP) {
-                    givenUp = true
-                    Log.w("MmjGlView",
-                        "getScreenTexture unusable (streak=$FAIL_GIVE_UP), overlay gives up -> direct view")
-                    try { org.citra.emu.NativeLibrary.releaseScreenTexture() } catch (_: Throwable) {}
-                    postGiveUp()
+                if (everSucceeded) {
+                    failStreak++
+                    if (failStreak > FAIL_GIVE_UP) {
+                        givenUp = true
+                        Log.w("MmjGlView",
+                            "getScreenTexture broken after first success (streak=$failStreak), overlay gives up -> direct view")
+                        try { org.citra.emu.NativeLibrary.releaseScreenTexture() } catch (_: Throwable) {}
+                        postGiveUp()
+                    } else if (failStreak % FAIL_LOG_EVERY == 0) {
+                        Log.w("MmjGlView", "getScreenTexture failing (streak=$failStreak)")
+                    }
                 }
                 return
             }
+            everSucceeded = true
             failStreak = 0
             val texId = info[0]
             val w = info[1].toFloat()
@@ -284,10 +314,17 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
             return if (prog != 0) prog else compileProgram(vsSource, defaultFs)
         }
 
-        /** c1/W.d：编译着色器（#version 320 es + 信息日志）。 */
-        private fun compileShader(source: String, type: Int): Int {
+        /**
+         * c1/W.d：编译着色器（#version 头 + 信息日志）。
+         * ★ 本轮：glslVersion 非空时先试该版本；320 头在 GLES 3.1 及以下
+         *   上下文会编译失败 —— 失败后由 compileProgram 用 310 头重试
+         *   （本文件全部 GLSL 特性 —— layout(binding)/uint/textureSize ——
+         *   均在 GLES 3.1 基线内）。
+         */
+        private fun compileShader(source: String, type: Int, glslVersion: String?): Int {
             val shader = GLES20.glCreateShader(type)
-            GLES20.glShaderSource(shader, "#version 320 es\nprecision highp int;\nprecision highp float;\n$source")
+            val header = if (glslVersion != null) "#version $glslVersion\n" else ""
+            GLES20.glShaderSource(shader, "${header}precision highp int;\nprecision highp float;\n$source")
             GLES20.glCompileShader(shader)
             val status = java.nio.IntBuffer.allocate(1)
             GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status)
@@ -298,9 +335,19 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
         }
 
         private fun compileProgram(vs: String, fs: String): Int {
-            val vsObj = compileShader(vs, GLES20.GL_VERTEX_SHADER)
+            // ★ 本轮：先按原版 #version 320 es 编译；任一阶段失败且设备上下文
+            //   版本较低时用 310 es 整链重试（两阶段都失败才回落直通）。
+            for (version in listOf("320 es", "310 es")) {
+                val prog = compileProgramWithVersion(vs, fs, version)
+                if (prog != 0) return prog
+            }
+            return 0
+        }
+
+        private fun compileProgramWithVersion(vs: String, fs: String, version: String): Int {
+            val vsObj = compileShader(vs, GLES20.GL_VERTEX_SHADER, version)
             if (vsObj == 0) return 0
-            val fsObj = compileShader(fs, GLES20.GL_FRAGMENT_SHADER)
+            val fsObj = compileShader(fs, GLES20.GL_FRAGMENT_SHADER, version)
             if (fsObj == 0) { GLES20.glDeleteShader(vsObj); return 0 }
             val prog = GLES20.glCreateProgram()
             GLES20.glAttachShader(prog, vsObj)

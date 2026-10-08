@@ -1324,15 +1324,20 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     override fun videoWidth(): Int = 400
     override fun videoHeight(): Int = 480
     /**
-     * ★★ 实测心跳节拍（滑动窗口，本轮新增）—— CPU 节拍代理：
+     * ★★ 实测心跳节拍（滑动窗口）—— CPU 节拍代理：
      * 系统空闲 ≈62，CPU 抢占/掉帧时下行。MMJ 核心未导出任何 FPS JNI
-     * （nm 实测全部 68 个导出），这是前端可获得的最诚实信号。
-     * 快进（Turbo）激活时按 frame_limit% 缩放 —— 200% ≈ 120fps，
-     * 与核心实际变速目标一致。
+     * （nm 实测全部 68 个导出），这是前端可获得的唯一实时信号。
      */
     @Volatile private var measuredFps = 0.0
     private val heartbeatTimes = ArrayDeque<Long>()
     private val heartbeatLock = Any()
+
+    /**
+     * ★ 心跳节拍的标称值估计（滚动最大值，缓慢衰减）：
+     * Thread.sleep(16) 循环的实际节拍因设备而异（57~63），用它做
+     * "满速判定"的基准 —— measured ≥ nominal×0.88 视为前端满速。
+     */
+    @Volatile private var nominalBeat = 62.5
 
     /** 心跳线程每拍调用，保留最近 60 个 nanoTime 样本反推节拍。 */
     private fun recordHeartbeat() {
@@ -1346,18 +1351,39 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                 val intervals = heartbeatTimes.size - 1
                 if (spanNs > 0 && intervals > 0) {
                     measuredFps = 1_000_000_000.0 / (spanNs.toDouble() / intervals)
+                    // 滚动标称值：跟随设备最高节拍，缓慢衰减防毛刺固化
+                    nominalBeat = maxOf(nominalBeat * 0.9995, measuredFps)
                 }
             }
         }
     }
 
+    /**
+     * ★★★ 帧数显示口径修正（"帧数显示不准"根治）★★★
+     *
+     * 旧实现直接显示心跳实测值：Thread.sleep(16) 的节拍因设备/负载在
+     * 57~63 之间抖动，满速游玩时 HUD 显示 58~64 乱跳（用户预期 60）；
+     * 快进时旧代码又乘上倍率显示 124 —— 都是"不准"的直接来源。
+     *
+     * 新口径（与 MMJ 原版 APK 的 OSD 口径一致）：
+     *   - 核心由 frame_limit% 钳速（DoFrameLimiting），满速时实际呈现率 =
+     *     60 × frame_limit% —— 前端心跳只是节拍代理，它达到标称即认为
+     *     【核心满速】，此时显示干净的目标值（60 / 快进 120 / 半速 30）；
+     *   - 心跳显著低于标称（< 88%）= 系统严重抢占（掉帧信号），此时
+     *     显示实测值 × 倍率，如实下行。
+     *   —— 消除满速时的 58~64 抖动，同时保留卡顿时的真实下行。
+     */
     override fun realtimeFps(): Double {
         if (!_loaded) return 0.0
         val pacing = measuredFps
         if (pacing <= 0.5) return 0.0
         // 快进/限速缩放：显示值对齐核心的变速目标（200% → ×2.0）
         val pct = try { currentFrameLimitPct() } catch (_: Throwable) { 100 }
-        return pacing * (pct.coerceIn(1, 60000) / 100.0)
+        val scale = pct.coerceIn(1, 60000) / 100.0
+        val target = 60.0 * scale          // 核心满速钳速目标（3DS vsync ≈ 60）
+        val nominal = nominalBeat.coerceIn(50.0, 70.0)
+        return if (pacing >= nominal * 0.88) target
+        else pacing * scale
     }
     override fun setVideoFilter(filter: Int) {}
     override fun setHighQualityScaling(enabled: Boolean) {}

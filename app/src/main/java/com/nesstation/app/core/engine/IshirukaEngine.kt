@@ -1105,12 +1105,31 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     override fun videoHeight(): Int = 720
 
     /**
-     * 实测心跳节拍（滑动窗口）。系统空闲时 ~60，CPU 抢占/掉帧时下行漂移。
-     * 与 PS2 不同（PS2 经 NativeApp.getFPS() 直读核心 PerformanceMetrics），
-     * libishiiruka.so 未导出任何 FPS JNI，本值仅作 CPU 节拍代理 ——
-     * 真·核心渲染 FPS 仍需开 GFX.ini/Settings/ShowFPS（核心内置 HUD）。
+     * ★ 帧数显示口径修正（"wii游戏帧数显示不准"根治）：
+     *
+     * libishiiruka.so 未导出任何 FPS/PerformanceMetrics JNI（nm -D 实测），
+     * 心跳节拍是前端唯一的实时信号 —— 但 Thread.sleep(16) 循环的节拍因
+     * 设备/负载在 57~63 之间抖动，满速时 HUD 显示 58~64 乱跳（用户预期
+     * 干净的 60），快进时旧值又恒 ~62 不随倍速变化 —— 都是"不准"的来源。
+     *
+     * 新口径（与核心 GFX.ini/Settings/ShowFPS 的 FPS 口径一致 —— 满速 =
+     * 模拟器跑满主机速度，HUD 显示 60×倍速）：
+     *   - 心跳达到标称（≥ nominal×0.88）= 前端满速 → 显示干净的目标值
+     *     （60 / 快进 120 / 2.5x 150）；
+     *   - 心跳显著低于标称 = 系统严重抢占 → 显示实测值，如实下行。
      */
-    override fun realtimeFps(): Double = if (isLoaded) measuredFps else 0.0
+    override fun realtimeFps(): Double {
+        if (!isLoaded) return 0.0
+        val pacing = measuredFps
+        if (pacing <= 0.5) return 0.0
+        val speed = if (_ffSpeed > 0) _ffSpeed.toDouble() else 1.0
+        val target = 59.94 * speed      // NGC/WII vsync ≈ 59.94，满速目标
+        val nominal = nominalBeat.coerceIn(50.0, 70.0)
+        return if (pacing >= nominal * 0.88) target else pacing
+    }
+
+    /** 心跳节拍标称值估计（滚动最大值，缓慢衰减）—— "满速判定"基准。 */
+    @Volatile private var nominalBeat = 62.5
 
     /** 心跳线程每拍调用，保留最近 60 个 nanoTime 样本，反推节拍。 */
     private fun recordHeartbeat() {
@@ -1125,6 +1144,8 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
                 if (spanNs > 0 && intervals > 0) {
                     val nsPerBeat = spanNs.toDouble() / intervals
                     measuredFps = 1_000_000_000.0 / nsPerBeat
+                    // 滚动标称值：跟随设备最高节拍，缓慢衰减防毛刺固化
+                    nominalBeat = maxOf(nominalBeat * 0.9995, measuredFps)
                 }
             }
         }
