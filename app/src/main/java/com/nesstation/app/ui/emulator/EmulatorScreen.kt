@@ -3169,18 +3169,23 @@ fun EmulatorScreen(
                     engine = engine,
                     videoScale = padLayout.videoScale,
                     videoFilter = padLayout.videoFilter,
-                    // ★★★ 本轮：MMJ 后处理改回【Java GL 叠加层】消费
-                    //   （原版 c1/W 渲染器架构，MmjGlView v3）：
-                    //   pp_shader_name 写 ini 的「核心内链」两轮验证均无效
-                    //   （F1 静默回落直通），原版真正生效的链路是 Java 层
-                    //   getScreenTexture → 注入 .glsl 的 program → 全屏 quad。
-                    //   全局放大滤镜映射（xbr/hq2x→xBR/HQ2X，4xbr/hq4x→
-                    //   4xBR/HQ4X）优先，否则核心专属后处理设置。
-                    //   呈现模式强制已删除（黑屏元凶），叠加层半透明自愈。
-                    mmjFxShader = if (engine is com.nesstation.app.core.engine.CitraMmjEngine) {
-                        (mmjShaderForGlobalFilter(padLayout.videoFilter)
-                            ?: padLayout.mmjPpShaderName.takeIf { it.isNotBlank() && it != "(off)" })
-                    } else null,
+                    // ★★★ v5（黑屏终裁）：MMJ 后处理【只走核心内链】，
+                    //   不再创建任何 Java GL 叠加层 ★★★
+                    //   实证链（weihuoya/citra 上游源码 + .so 双源核对）：
+                    //   ini [Renderer] pp_shader_name → Config::Load →
+                    //   Settings::values.pp_shader_name → 渲染器初始化
+                    //   InitOpenGLObjects() 从 ShaderDir(<userDir>/shaders/)
+                    //   读 <name>.glsl → #version 320 es 编译（失败静默
+                    //   回落直通，绝不黑屏）→ DrawScreens 直绘路径对上/
+                    //   下屏分别应用 —— 这就是原版 MMJ 主视图的唯一滤镜
+                    //   消费方式（原版 APK 的 c1/W Java 渲染器只用于投屏
+                    //   Presentation，jadx 反编译 V.java 实证）。
+                    //   之前叠加层黑屏的机制：模式 0（核心直绘）下核心从不
+                    //   喂"呈现提供器"，getScreenTexture 返回的纹理 ID 有效
+                    //   但内容永远为空 → glIsTexture 守卫放行 → 不透明全屏
+                    //   quad 把直绘画面盖成纯黑（纹理内容为黑，半透明 EGL
+                    //   与失败自愈都救不了）。叠加层路径整体废弃。
+                    mmjFxShader = null,
                     isPortrait = isPortrait,
                     platform = platform,
                     currentPlayer = currentPlayer,
@@ -5578,10 +5583,8 @@ private fun GameSurfaceView(
     engine: EmulatorEngine,
     videoScale: String,
     videoFilter: String,
-    // ★★★ MMJ 后处理着色器名（非 null 时叠加 MmjGlView Java GL 后处理层）：
-    //   全局放大滤镜映射或核心专属后处理设置，由调用方算好传入。
-    //   原版 c1/W 渲染器架构 —— getScreenTexture 取帧 + 注入 .glsl 的
-    //   program + 全屏 quad；半透明叠加（不绘制时透出底层直绘）。
+    // ★ v5：已废弃的 MMJ 叠加层参数（保留签名兼容）。后处理唯一消费链 =
+    //   核心内链（ini pp_shader_name → 原生渲染器），不再有 Java GL 叠加层。
     mmjFxShader: String? = null,
     isPortrait: Boolean = false,
     platform: GamePlatform = GamePlatform.NES,
@@ -6305,46 +6308,29 @@ private fun GameSurfaceView(
             },
             modifier = surfaceModifier.then(gameViewTracker)
         )
-            // ★★★★ MMJ 后处理呈现方案史（v4：Java GL 叠加层回归）★★★★
+            // ★★★ v5（黑屏终裁）：MMJ 后处理叠加层【整体移除】★★★
             //
-            // v1（fix1/fix2）：写 ini pp_shader_name + 呈现模式假说 —— 用户
-            //   报告 xbr/hqx 无效（当时 assets 尚无 xBR/4xBR 文件，校验层
-            //   把名字归空/回落，核心链从未拿到有效名字）。
-            // v2（上游 46ac8aa9）：MmjGlView 叠加层实测【任何滤镜都黑屏】——
-            //   当时把它归咎于"核心纹理跨上下文无效"，实为【双重巧合】：
-            //   ① 同时代码同时存在「着色器激活强制 screen_presentation_mode
-            //   0→1」—— 模式 1 的导出走共享上下文路径（返回核心内部纹理
-            //   ID，在叠加层上下文无效）；② v2 的 onDrawFrame 先 glClear
-            //   （不透明黑）再早退 → 黑帧遮盖底层直绘。
-            // v3：删叠加层回归核心内链（ini → F1 编译应用）—— 用户实测
-            //   【依旧全部无效】（F1 加载/编译链在核心内静默回落直通）。
-            // v4（本轮，getScreenTexture JNI 0x26dae0 反汇编定论）：原版
-            //   MMJ 的后处理消费链就是【Java GL 层】（原版 c1/W 渲染器 +
-            //   V 投屏对话框实证）—— getScreenTexture 每次调用在【调用方
-            //   GL 线程的上下文】导出最新帧纹理（呈现模式 0 / 原版默认），
-            //   跨上下文安全、与核心直绘共存不黑屏。v2 的黑屏根源（模式
-            //   强制 + 不透明清屏）已在本轮全部铲除：引擎不再写呈现模式，
-            //   MmjGlView v3 半透明 + glIsTexture 守卫 + 连续失败自愈。
-            //   核心内链（v3 的 ini 写入）保留作为兜底：叠加层覆盖直绘
-            //   画面，双滤波在视觉上不可见；叠加层停用时直绘仍有滤镜。
-            if (mmjFxShader != null && engine is com.nesstation.app.core.engine.CitraMmjEngine) {
-                key(mmjFxShader) {
-                    var overlayGone by remember { mutableStateOf(false) }
-                    if (!overlayGone) {
-                        AndroidView(
-                            factory = { vctx ->
-                                MmjGlView(vctx).apply {
-                                    setPostFxShader(mmjFxShader)
-                                    setOnGiveUp { overlayGone = true }
-                                }
-                            },
-                            update = { v -> v.setPostFxShader(mmjFxShader) },
-                            onRelease = { v -> v.releaseFx() },
-                            modifier = surfaceModifier
-                        )
-                    }
-                }
-            }
+            // 呈现方案史（完整存档）：
+            //   v1：写 ini pp_shader_name —— 当时 assets 尚无 xBR/4xBR 文件，
+            //       校验层把名字归空/回落，核心链从未拿到有效名字（"无效"）。
+            //   v2：MmjGlView 叠加层 + 着色器激活强制呈现模式 0→1 —— 模式 1
+            //       返回核心内部纹理 ID（叠加层上下文无效）+ 不透明清屏 → 黑屏。
+            //   v3：删叠加层回归核心内链 —— 当时 assets/mmj/shaders 种子链
+            //       尚未就位（ini 名字校验不过被归空），用户实测依旧无效。
+            //   v4：叠加层回归（半透明 + glIsTexture 守卫 + 失败自愈）——
+            //       用户实测【任何滤镜都黑屏】：模式 0（核心直绘，原版默认）
+            //       下核心从不喂数据给"呈现提供器"，getScreenTexture 返回的
+            //       纹理 ID 有效但内容永远为空 → 守卫放行 → 不透明全屏 quad
+            //       把核心直绘画面盖成纯黑。半透明 EGL / 自愈计数全部无效，
+            //       因为"成功导出"本身就是假阳性。
+            //   v5（本轮）：叠加层代码路径整体移除。后处理唯一消费链 =
+            //       核心内链（原版 MMJ 主视图架构，上游 renderer_opengl.cpp
+            //       InitOpenGLObjects 实证）：ini → Settings → ShaderDir 读
+            //       .glsl → #version 320 es 编译 → DrawScreens 应用。编译
+            //       失败静默回落直通，结构上不可能黑屏。着色器文件随 APK
+            //       assets/mmj/shaders 种子释放（xBR/4xBR/HQ2X/HQ4X +
+            //       原版 10 个），全局滤镜映射 + 核心专属设置都走 ini 下发。
+            //
             // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot/*+扫描线/*+仿电视 drawn by Compose
             if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
                                       "tv", "xbr_scanline", "4xbr_scanline", "hq2x_scanline",

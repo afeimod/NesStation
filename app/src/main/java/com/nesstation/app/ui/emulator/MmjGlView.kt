@@ -9,6 +9,17 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
+ * ★★★ v5：本类已废弃（DEPRECATED）—— 不要在任何界面再创建它 ★★★
+ *
+ * v5 定论（weihuoya/citra 上游源码 + jadx 反编译原版 APK 双源实证）：
+ *   原版 MMJ 主视图的后处理由【原生渲染器】消费（ini pp_shader_name →
+ *   InitOpenGLObjects 读 ShaderDir 的 .glsl → DrawScreens 应用），本类
+ *   复刻的 c1/W Java 渲染器在原版只用于【投屏 Presentation】（外接显示
+ *   器，V.java 实证）—— 那条链路的 getScreenTexture 依赖投屏会话喂数据；
+ *   挪到主屏后，模式 0（核心直绘）下呈现提供器永远为空 → 纹理 ID 有效
+ *   但内容为黑 → 不透明全屏 quad 盖死直绘画面 = 用户实测的"任何滤镜
+ *   都黑屏"。主屏滤镜一律走核心内链，本类仅存档留作投屏功能参考。
+ *
  * ★★★★ MMJ 后处理着色器 GL 呈现层（v3 重写，根治"mmj 依旧没有生效全局滤镜
  *   xbr 和 hqx，以及自带的所有滤镜"）★★★★
  *

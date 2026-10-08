@@ -35,9 +35,12 @@ const float XBR_SCALE          = 3.0;
 
 const float3 rgbw = float3(14.352, 28.176, 5.472);   // = 48 * (0.299, 0.587, 0.114)
 
-float4 delta   = float4(1.0 / XBR_SCALE, 1.0 / XBR_SCALE, 1.0 / XBR_SCALE, 1.0 / XBR_SCALE);
-float4 delta_l = float4(0.5 / XBR_SCALE, 1.0 / XBR_SCALE, 0.5 / XBR_SCALE, 1.0 / XBR_SCALE);
-float4 delta_u = delta_l.yxwz;
+// ★ GLSL ES 3.20 严格规则：全局变量只能用【常量表达式】初始化 ——
+//   必须全部声明为 const（否则原生编译失败 → 静默回落直通 = "滤镜无效"）。
+//   delta_u 引用 delta_l 的分量（常量向量的域选择）也是合法常量表达式。
+const float4 delta   = float4(1.0 / XBR_SCALE, 1.0 / XBR_SCALE, 1.0 / XBR_SCALE, 1.0 / XBR_SCALE);
+const float4 delta_l = float4(0.5 / XBR_SCALE, 1.0 / XBR_SCALE, 0.5 / XBR_SCALE, 1.0 / XBR_SCALE);
+const float4 delta_u = delta_l.yxwz;
 
 const float4 Ao = float4( 1.0, -1.0, -1.0,  1.0 );
 const float4 Bo = float4( 1.0,  1.0, -1.0, -1.0 );

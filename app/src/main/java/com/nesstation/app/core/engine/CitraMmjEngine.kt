@@ -280,8 +280,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     if (!children.isNullOrEmpty()) {
                         walk(assetPath, outFile)
                     } else {
-                        // 幂等：已存在且非空跳过（原版 overwrite=FALSE 语义）
-                        if (outFile.isFile && outFile.length() > 0L) continue
+                        // ★★★ v5：shaders 目录【无条件覆盖】★★★
+                        //   其余目录保持幂等跳过（原版 overwrite=FALSE 语义，
+                        //   用户数据/系统 title 不能被种子回滚）。着色器不同：
+                        //   它们是随 APK 分发的"代码"，v5 曾修复 xBR.glsl 的
+                        //   GLSL ES 3.20 常量表达式编译错误 —— 旧包种下去的
+                        //   坏文件如果靠"存在即跳过"永远留在用户设备上，
+                        //   原生编译失败静默回落直通 = "滤镜无效"复发。
+                        //   14 个小文件（~100KB）每次启动覆盖成本可忽略。
+                        val forceOverwrite = assetPath.startsWith("shaders/")
+                        if (!forceOverwrite && outFile.isFile && outFile.length() > 0L) continue
                         try {
                             am.open(assetPath).use { ins ->
                                 java.io.FileOutputStream(outFile).use { fos ->
@@ -298,8 +306,10 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             }
             walk("mmj", root)
             if (copied > 0) {
+                // v5：shaders/ 每次启动都会覆盖 → copied 几乎总是 > 0，
+                //   日志不再叫 "first launch"（避免误导排查）。
                 android.util.Log.i("CitraMmjEngine",
-                    "seeded $copied MMJ system files (first launch)")
+                    "seeded $copied MMJ system files (shaders force-refreshed)")
             }
         } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "seedMmjSystemAssets failed", t)
@@ -626,6 +636,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             //   原版从不写这个键（设置 UI 无此项）→ 永远跑在默认 0 的
             //   跨上下文安全导出路径上。NesStation 现在同样【只写用户自己
             //   选择的值】（默认 0），叠加层（MmjGlView）即可安全取帧。
+            // ★★★ v5：呈现模式无条件钳制为 0（对齐原版有效行为）★★★
+            //
+            //   原版 MMJ 从不写这个键（设置 UI 无此项）→ 永远跑默认 0（核心
+            //   直绘）。NesStation 的两个 Java 呈现消费者（MmjGlView 主屏
+            //   叠加层 v5 已移除 / 投屏功能不存在）都不在了 —— 写 1（共享
+            //   上下文）/2（硬件缓冲）会让核心跑离屏渲染路径、等一个不存在
+            //   的 Java 呈现器 → 主屏无输出 = 黑屏。无论 UI/旧 ini 存的
+            //   是什么值，这里一律钳回 "0"（修复 v2 时代残留脏值的黑屏）。
+            overrides["screen_presentation_mode"] = "0"
             // ★★★ 帧率限制保险（"画面像快进"根治）★★★
             //   本轮（v2）：不再写 use_frame_limit=false（运行中无通道能
             //   恢复，见 currentFrameLimitPct 注释；快进改为 frame_limit
