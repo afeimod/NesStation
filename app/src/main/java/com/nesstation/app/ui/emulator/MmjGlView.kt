@@ -9,45 +9,53 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * ★★★★ MMJ 后处理着色器 GL 呈现层（本轮新增，根治"mmj 核心没有生效全局滤镜
- *   的 xbr 和 hqx，包括自带的后处理着色器也全失效了"）★★★★
+ * ★★★★ MMJ 后处理着色器 GL 呈现层（v3 重写，根治"mmj 依旧没有生效全局滤镜
+ *   xbr 和 hqx，以及自带的所有滤镜"）★★★★
  *
- * 【根因（原版 Citra_MMJ_20250220.apk 反编译实证）】：
- *   MMJ 的后处理着色器【不是】native 渲染管线的一部分 —— 原版是在
- *   【Java GL 层】实现的：核心把画面渲染到离屏 texture（doFrame 触发），
- *   Java 层 GLSurfaceView.Renderer（原版 c1/W 类，反编译全文在案）每帧
- *   调 NativeLibrary.getScreenTexture() 拿 [texId, w, h, fmt]，用
- *   「直通 program（RGB/BGR 两种）+ 用户选择的 .glsl 后处理源码注入」
- *   画一个全屏 quad 上屏。NesStation 此前用 SurfaceView 直绘（native
- *   自己 EGL present），Java 后处理层完全不存在 —— pp_shader_name 写进
- *   ini 也永远不会有效果（两轮 ini/呈现模式修复方向错误的真相）。
+ * 【原版管线（Citra_MMJ_20250220.apk 反编译全文在案，逐行复刻）】：
+ *   MMJ 的后处理着色器由【Java GL 层】消费：核心照常直绘（原生自建上下文），
+ *   Java 层 GLSurfaceView.Renderer（原版 c1/W 类）每帧调
+ *   NativeLibrary.getScreenTexture() 取 [texId, w, h, fmt]，
+ *   用「直通 program（RGB/BGR 两种）+ .glsl 后处理源码注入」画全屏 quad。
+ *   getScreenTexture JNI（0x26dae0）在【调用方 GL 线程的上下文】里导出
+ *   最新帧纹理（呈现模式 0 / 原版默认路径）→ 跨上下文安全。
  *
- * 【本类 = 原版 c1/W 的逐行 Kotlin 复刻】：
- *   - GLSL 常量（顶点着色器 / RGB-BGR 直通片元 / FX 头 + Sample 辅助）
- *     逐字取自反编译的 c1/W 构造器；
- *   - 编译链 d()（#version 320 es 头 + glCompileShader + 信息日志）；
- *   - program 构造 b()：后处理着色器激活时拼 header+helpers+用户源码，
- *     编译失败回落直通（原版同款降级）；
- *   - 纹理绑定 f()：fmt==1 → BGR program，否则 RGB program（纹理格式
- *     两种变体，原版同款）；
- *   - onDrawFrame：getScreenTexture → 变化检测 → glDrawArrays 全屏 quad。
- *   与原版差异（均为增强）：aspect 用 float 精确计算（原版 int 除法截断
- *   是移植 bug）；FX 的 resolution / frame_count uniform 每帧正确赋值
- *   （原版从未赋值 = 恒 0，xBR 等不依赖它们的着色器无影响，依赖
- *   GetResolution() 的着色器得到正确值）。
+ * 【v2 黑屏的真正根源（本轮反汇编定论，v2 误判为"跨上下文无效"）】：
+ *   v2 时代同时存在「着色器激活强制 screen_presentation_mode 0→1」——
+ *   模式 1 走共享上下文导出（返回核心内部纹理 ID，在叠加层上下文无效）
+ *   → 采样全黑；且 v2 的 onDrawFrame【先 glClear 再早退】（不透明清屏
+ *   盖住底层直绘）→ 黑帧。本轮两处根治：
+ *     ① 引擎侧删除呈现模式强制（见 CitraMmjEngine）—— 永远跑默认 0；
+ *     ② 本层半透明 EGL 配置 + 不绘制时清 alpha=0（透出底层直绘）+
+ *        glIsTexture 有效性守卫 + 连续失败自动停用 —— 黑屏在结构上不可能。
  *
- * 【视图层级】：setZOrderMediaOverlay(true) —— 叠在 native 直绘的
- *   SurfaceView 之上（底层保留直绘作为无后处理的兜底画面，本层用后处理
- *   画面覆盖；getScreenTexture 失败/纹理无效时本层不绘制，用户看到的
- *   就是底层直绘 —— 无损降级）。
+ * 【与原版 c1/W 的对应关系】：
+ *   - GLSL 常量逐字取自反编译的 W 构造器（顶点 / RGB-BGR 直通 / FX 头 /
+ *     Sample 辅助 RGB-BGR 两变体）；
+ *   - 编译链（#version 320 es 头 + glGetShaderInfoLog）= W.c/d；
+ *   - program 构造（FX 激活时拼 头+辅助+用户源码；失败回落直通）= W.b；
+ *   - 纹理绑定（fmt==1 → BGR program）= W.f；宽高比 letterbox = W.a；
+ *   - 释放时 releaseScreenTexture()（复位核心导出标志）= W.e。
+ *   与原版差异（均为增强）：float 精度宽高比；resolution/frame_count
+ *   uniform 每帧正确赋值（原版从未赋值恒 0）；线程安全切换；失败自愈。
  */
 class MmjGlView(context: Context) : GLSurfaceView(context) {
 
     private val fxRenderer = Renderer()
+    /** 连续取帧失败自动停用后通知 UI 隐藏本视图（主线程回调）。 */
+    @Volatile private var onGiveUp: (() -> Unit)? = null
+
+    private companion object {
+        /** 连续失败多少帧后自动停用（60fps ≈ 1 秒）。 */
+        private const val FAIL_GIVE_UP = 60
+    }
 
     init {
         setEGLContextClientVersion(3)
-        // 叠加在普通 SurfaceView（native 直绘层）之上
+        // ★★★ 半透明 EGL 配置：不绘制时透出底层直绘画面 —— 黑屏在结构上不可能
+        setEGLConfigChooser(8, 8, 8, 8, 0, 0)
+        holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+        // 叠加在核心直绘 SurfaceView 之上（仍低于 Compose 手柄层 → 手柄可见可点）
         setZOrderMediaOverlay(true)
         setRenderer(fxRenderer)
         renderMode = RENDERMODE_CONTINUOUSLY
@@ -58,7 +66,7 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
      * 变化时渲染线程重建 program（原版 e() + 下次 b() 的重建语义）。
      */
     fun setPostFxShader(name: String?) {
-        fxRenderer.setShaderName(name)
+        queueEvent { fxRenderer.setShaderName(name) }
     }
 
     /** 暂停/恢复后处理层的绘制（Activity 生命周期同步）。 */
@@ -66,12 +74,17 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
         fxRenderer.paused = paused
     }
 
-    /** 释放 GL 资源（GL 线程内执行）。 */
+    /** 注册"连续取帧失败自动停用"回调（主线程调用）。 */
+    fun setOnGiveUp(listener: (() -> Unit)?) {
+        onGiveUp = listener
+    }
+
+    /** 释放 GL 资源并复位核心导出标志（GL 线程内执行）。 */
     fun releaseFx() {
         queueEvent { fxRenderer.release() }
     }
 
-    private class Renderer : GLSurfaceView.Renderer {
+    private inner class Renderer : GLSurfaceView.Renderer {
 
         // ---- c1/W 构造器中的 GLSL 常量（逐字复刻）----
         private val vsSource = (
@@ -106,7 +119,7 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
                 "    frag_color = vec4(color.bgr, 1.0f);\n" +
                 "}")
 
-        /** FX 公共头（c1/W.n）：Hyllian/Sedi 类着色器的兼容层。 */
+        /** FX 公共头（c1/W 构造器第 4 个字符串）：Hyllian/Sedi 类着色器兼容层。 */
         private val fxHeader = (
                 "#define float2 vec2\n#define float3 vec3\n#define float4 vec4\n" +
                 "#define uint2 uvec2\n#define uint3 uvec3\n#define uint4 uvec4\n" +
@@ -123,47 +136,51 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
                 "uint GetTime() { return frame_count; }\n" +
                 "void SetOutput(float4 color) { output_color = color; }")
 
-        /** Sample 辅助（RGB 变体，c1/W.o）。 */
+        /** Sample 辅助（RGB 变体）。 */
         private val fxHelpersRgb = (
                 "float4 Sample() { return texture(color_texture, frag_tex_coord); }\n" +
                 "float4 SampleLocation(float2 location) { return texture(color_texture, location); }\n" +
                 "float4 SampleFetch(int2 location) { return texelFetch(color_texture, location, 0); }\n")
 
-        /** Sample 辅助（BGR 变体，c1/W.p）。 */
+        /** Sample 辅助（BGR 变体）。 */
         private val fxHelpersBgr = (
                 "float4 Sample() { return texture(color_texture, frag_tex_coord).bgra; }\n" +
                 "float4 SampleLocation(float2 location) { return texture(color_texture, location).bgra; }\n" +
                 "float4 SampleFetch(int2 location) { return texelFetch(color_texture, location, 0).bgra; }\n")
 
         // ---- 状态（对应 c1/W 字段）----
-        private var progRgb = 0        // this.a：RGB 直通/后处理 program
-        private var progBgr = 0        // this.b：BGR 直通/后处理 program
-        private var curProgram = 0     // this.h
-        private var curFmt = -1        // this.i
-        private var lastTexId = -1     // this.g
-        private var lastW = 0f         // this.e
-        private var lastH = 0f         // this.f
-        private var viewW = 1          // this.c
-        private var viewH = 1          // this.d
+        private var progRgb = 0        // W.a：RGB 直通/后处理 program
+        private var progBgr = 0        // W.b：BGR 直通/后处理 program
+        private var curProgram = 0     // W.h
+        private var curFmt = -1        // W.i
+        private var lastTexId = -1     // W.g
+        private var lastW = 0f         // W.e
+        private var lastH = 0f         // W.f
+        private var viewW = 1          // W.c
+        private var viewH = 1          // W.d
         private var frameCount = 0L
         @Volatile private var shaderName: String? = null
         @Volatile var paused = false
 
+        /** 连续取帧/纹理失败计数（成功一帧即清零；超限自动停用）。 */
+        private var failStreak = 0
+        private var givenUp = false
+
+        /** GL 线程内执行（setPostFxShader 经 queueEvent 转发）。 */
         fun setShaderName(name: String?) {
             val norm = name?.trim()?.takeIf { it.isNotEmpty() && it != "(off)" }
             if (norm == shaderName) return
             shaderName = norm
-            // 着色器变化 → 丢弃两个缓存 program（GL 线程里重建；
-            // 简单起见直接置零，旧 program 由 GL 上下文丢弃/重建覆盖，
-            // 原版 e() 同款语义）
-            progRgb = 0
-            progBgr = 0
+            // 着色器变化 → 丢弃两个缓存 program（GL 线程里重建，原版 e() 语义）
+            if (progRgb != 0) { GLES20.glDeleteProgram(progRgb); progRgb = 0 }
+            if (progBgr != 0) { GLES20.glDeleteProgram(progBgr); progBgr = 0 }
             curProgram = 0
             curFmt = -1
         }
 
         override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-            // 原版为空实现（program 懒创建在 f() 里）
+            // 原版为空实现（program 懒创建在 f() 里）；半透明清屏色
+            GLES20.glClearColor(0f, 0f, 0f, 0f)
         }
 
         override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -175,25 +192,40 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
         }
 
         override fun onDrawFrame(gl: GL10?) {
-            if (paused) return
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+            if (paused || givenUp) return
             val info = try {
                 org.citra.emu.NativeLibrary.getScreenTexture()
             } catch (_: Throwable) {
                 null
-            } ?: return
-            if (info.size < 4) return
+            }
+            // ★ 有效性守卫：null/长度不足（核心未就绪）、texId==0（导出通道
+            //   不可用）或 glIsTexture==false（该 ID 不属于本上下文）都视为
+            //   失败 —— 半透明清屏后透出底层直绘，绝不画黑帧。
+            if (info == null || info.size < 4 ||
+                info[0] == 0 || !GLES20.glIsTexture(info[0])) {
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)   // alpha=0：透出底层
+                if (++failStreak > FAIL_GIVE_UP) {
+                    givenUp = true
+                    Log.w("MmjGlView",
+                        "getScreenTexture unusable (streak=$FAIL_GIVE_UP), overlay gives up -> direct view")
+                    try { org.citra.emu.NativeLibrary.releaseScreenTexture() } catch (_: Throwable) {}
+                    postGiveUp()
+                }
+                return
+            }
+            failStreak = 0
             val texId = info[0]
             val w = info[1].toFloat()
             val h = info[2].toFloat()
             val fmt = info[3]
-            if (texId == 0) return
+            if (w <= 0f || h <= 0f) return
             if (texId != lastTexId || w != lastW || h != lastH) {
                 bindTextureProgram(texId, w, h, fmt)
             }
-            // FX uniform：resolution / frame_count（增强：原版未赋值恒 0）
+            // FX uniform：location1 = resolution（屏上尺寸，GetOnScreenSize 语义），
+            // location2 = frame_count（GetTime 语义）。原版从未赋值恒 0。
             try {
-                GLES20.glUniform2f(1, w, h)
+                GLES20.glUniform2f(1, viewW.toFloat(), viewH.toFloat())
                 GLES20.glUniform1i(2, (frameCount and 0xffffffffL).toInt())
             } catch (_: Throwable) {}
             frameCount++
@@ -298,13 +330,24 @@ class MmjGlView(context: Context) : GLSurfaceView(context) {
             }
         }
 
-        /** c1/W.e：释放（原版同时调 releaseScreenTexture —— 这里保守不调，
-         *  直绘层可能还在消费纹理；只删 program）。 */
+        /**
+         * c1/W.e：释放（原版同时调 releaseScreenTexture 复位核心导出标志 ——
+         * 本层停用/退出时必须复位，核心直绘呈现通道不受影响）。
+         */
         fun release() {
             if (progRgb != 0) { GLES20.glDeleteProgram(progRgb); progRgb = 0 }
             if (progBgr != 0) { GLES20.glDeleteProgram(progBgr); progBgr = 0 }
             curProgram = 0
             curFmt = -1
+            givenUp = true
+            try { org.citra.emu.NativeLibrary.releaseScreenTexture() } catch (_: Throwable) {}
+        }
+
+        private fun postGiveUp() {
+            // 回调切主线程（onGiveUp 只做 UI 隐藏，无重活）
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try { onGiveUp?.invoke() } catch (_: Throwable) {}
+            }
         }
     }
 }

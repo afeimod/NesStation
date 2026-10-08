@@ -198,18 +198,6 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     /** 输入轴去重（避免重复发 MoveEvent）。[lx, ly, rx, ry]。 */
     private val stickLast = FloatArray(4)
 
-    /**
-     * ★★ fix6：十字键→圆盘合成的【独立】去重状态（与 stickLast 分离）：
-     *   旧版合成把输出写进 stickLast，导致释放路径被 analogAtRest 门
-     *   自锁（合成后 stickLast 非零 → 门关 → 永不发 0 → 持续满幅移动
-     *   = "方向键变成长按的摇杆"的卡值根因）。[x, y]。 */
-    private val dpadSynthLast = FloatArray(2)
-
-    /**
-     * ★ 最近一次模拟摇杆非零轴值的时刻（D-pad→CirclePad 合成的门控，
-     *   见 setPad1 注释；0 = 从未用过 = 十字键模式 → 合成立即生效）。 */
-    @Volatile private var lastAnalogActiveMs = 0L
-
     override fun ensureLoaded(): Boolean = CitraMmjNative.ensureLoaded()
 
     fun probeAvailability(): Pair<Boolean, String?> {
@@ -620,39 +608,24 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     }
                 }
             }
-            // ★★★ 本轮（fix5）：着色器激活时强制呈现模式升为「1 共享上下文」★★★
+            // ★★★ 本轮：删除「着色器激活时强制 screen_presentation_mode 0→1」★★★
             //
-            // 【根因（本轮反汇编 + 用户实测链完整闭环）】：
-            //   screen_presentation_mode 是核心真实存在的配置键（.so 键名表
-            //   0x11b9c7 + 运行时注册代码 0x282b58 双实证）：
-            //     0 = 兼容模式 —— 呈现走 CPU 拷贝通道，【不经过 GL 后处理
-            //         管线】→ pp_shader_name 加载了也永远不生效（设置面板
-            //         原有文案即为作者自己的反汇编结论："兼容模式的 CPU 拷贝
-            //         呈现通道不经过 GL 后处理管线，着色器会表现为「无效」"）；
-            //     1 = 共享上下文 —— GL 管线呈现，RendererOpenGL::Init
-            //         （F1=0x4254c4 后处理着色器加载）编译的 program 在最终
-            //         blit 上生效。
-            //   688e75da 曾撤销此升级（误判"与呈现模式无关"）—— 用户随即
-            //   实测"自带滤镜毫无效果、全局 xbr/hqx 对 mmj 没效果"（本根因
-            //   的直接验证）。fix1 时代该升级曾存在但当时 assets 尚无
-            //   xBR.glsl → 校验缺失 → 打开缺失文件触发 SIGSEGV（崩溃栈
-            //   F0←F1←RendererOpenGL::Init），从未被干净地验证过。
-            //   现在文件（assets/mmj/shaders，14 个 .glsl）+ 存在性校验 +
-            //   SEDI 兜底全部就绪，本升级是链路最后一环。
-            //
-            // 语义：仅当用户值为空或 "0" 时升为 "1"；用户显式选了 1/2 保持
-            // 不动（2 = 硬件缓冲，用户主动选择的呈现方式优先）。着色器关闭
-            // 时不写 —— 用户自己的设置（含 0）原样生效。
-            val activeShader = overrides["pp_shader_name"]
-            if (!activeShader.isNullOrEmpty()) {
-                val userMode = overrides["screen_presentation_mode"]
-                    ?: coreOptions["screen_presentation_mode"]
-                if (userMode == null || userMode == "0") {
-                    overrides["screen_presentation_mode"] = "1"
-                    android.util.Log.i("CitraMmjEngine",
-                        "shader '$activeShader' active -> screen_presentation_mode 0->1 (GL post-processing path)")
-                }
-            }
+            // 【为什么删除（getScreenTexture JNI 0x26dae0 反汇编定论）】：
+            //   原版 MMJ 的后处理消费链 = Java GL 层（c1/W 渲染器）每帧调
+            //   NativeLibrary.getScreenTexture() —— 该 JNI 会按 settings 里
+            //   的呈现模式字节【选择两个虚表导出实现之一】（slot 0x90/0x98）：
+            //     0（兼容模式，原版默认）→ 每次调用时在【调用方 GL 线程的
+            //        上下文】里把最新帧导出成纹理 —— 跨上下文安全（原版
+            //        V 投屏对话框（GLSurfaceView + W 渲染器）就是走这条路，
+            //        与核心自绘共存不黑屏）；
+            //     1（共享上下文）→ 返回核心内部纹理 ID —— 仅在共享上下文
+            //        结构下有效；NesStation 的核心自建上下文（share=NULL），
+            //        前端叠加层拿到的是【无效纹理】→ 采样全黑 —— 上轮
+            //        "开滤镜必黑屏"的真正根源（v2 叠加层 + 本强制同时上，
+            //        黑锅背给了叠加层）。
+            //   原版从不写这个键（设置 UI 无此项）→ 永远跑在默认 0 的
+            //   跨上下文安全导出路径上。NesStation 现在同样【只写用户自己
+            //   选择的值】（默认 0），叠加层（MmjGlView）即可安全取帧。
             // ★★★ 帧率限制保险（"画面像快进"根治）★★★
             //   本轮（v2）：不再写 use_frame_limit=false（运行中无通道能
             //   恢复，见 currentFrameLimitPct 注释；快进改为 frame_limit
@@ -664,9 +637,6 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             if (!overrides.containsKey("frame_limit")) {
                 overrides["frame_limit"] = coreOptions["frame_limit"] ?: "100"
             }
-            // （注：上方 fix5 的呈现模式升级就是本链路的最终形态 —— 早期
-            //   "撤销升级 + Java 层 GLSurfaceView 叠加"方案（MmjGlView）因
-            //   核心纹理跨上下文无效已废弃，此处仅留档防止回退。）
             var applied = 0
             for ((key, value) in overrides) {
                 val section = MMJ_INI_SECTION[key]
@@ -1337,9 +1307,6 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         _ffSpeed = 0
         lastErrorText = ""
         stickLast.fill(0f)
-        // ★ 合成状态与门控复位（下一局若仍用十字键模式，D-pad 合成立即可用）
-        dpadSynthLast.fill(0f)
-        lastAnalogActiveMs = 0L
         // ★★★ 全局滤镜/设置加固（本轮）：核心退出时会把【它自己的】当前
         //   配置 saveConfig 回写 config-mmj.ini —— 任何核心内部的值漂移
         //   （如加速键残留的 frame_limit=200）都会就此固化成下次启动的
@@ -1572,54 +1539,26 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         for (i in idxEvents.indices) {
             try { lib.InputEvent(idxEvents[i], if (states[i]) 1f else 0f) } catch (_: Throwable) {}
         }
-        // ★★★ fix6：恢复「D-pad → CirclePad 合成」（并根治旧版的卡值 bug）★★★
+        // ★★★ 本轮：恢复【纯数字十字键】（对齐参考 APK —— overlay/b.java
+        //   四键类 l() = InputEvent(4..7, 1f/0f)；input-layout.ini 里 dpad 与
+        //   joystick 是两个独立控件，互不代役）。
         //
-        // 【为什么必须恢复】：绝大多数 3DS 游戏只读圆盘不读十字键 —— 布局
-        //   处于十字键模式（inputMode=dpad，默认）时，删掉合成会让这些游戏
-        //   完全没有方向输入（本轮用户实测"方向键上没作用了"的直接根因）。
-        //
-        // 【旧版为什么被骂"长按的摇杆"——卡值 bug 三步链】：
-        //   1. 旧合成把输出写进 stickLast（sendSynth 与真实摇杆共用去重表）；
-        //   2. 释放时 analogAtRest 门检查 stickLast 全零 —— 但合成自身已把
-        //      stickLast 写成非零 → 门永假 → 释放路径被跳过；
-        //   3. 圆盘停在 ±1 满幅 → "十字键轻点变成持续满幅移动，数字键的
-        //      点按手感完全丢失"。根因是【释放被门拦住】，不是合成本身错。
-        //
-        // 【fix6 修复】：合成状态独立（dpadSynthLast，与 stickLast 分离），
-        //   期望值归零即无条件发 0 —— 释放永远畅通：
-        //   - 门 1（时间）：模拟摇杆近 400ms 无非零事件（=没人在用摇杆）；
-        //   - 门 2（静止）：真实摇杆 stickLast 全零（=物理上不在非零位）——
-        //     只约束【按下】方向；合成自身的输出不再污染本门；
-        //   - 门关闭（摇杆接管）且合成有残留 → 立即发 0 释放，杜绝任何
-        //     场景下的卡值。
-        //   十字键原生数字通道照发（见上），读十字键的游戏不受影响 ——
-        //   与 Azahar/其它核心"摇杆模式同时发数字位+模拟量"的行为一致。
-        val analogIdle = android.os.SystemClock.uptimeMillis() - lastAnalogActiveMs > 400L
-        val synthActive = dpadSynthLast[0] != 0f || dpadSynthLast[1] != 0f
-        if (analogIdle) {
-            val up = states[8]; val down = states[9]
-            val left = states[10]; val right = states[11]
-            val stickAtRest = stickLast[0] == 0f && stickLast[1] == 0f
-            // 按下需两道门同时开；释放（目标为 0）只需当前有合成在跑
-            val allowed = stickAtRest || (dpadSynthLast[0] != 0f || dpadSynthLast[1] != 0f)
-            val sx = if (allowed) (if (right) 1f else 0f) - (if (left) 1f else 0f) else 0f
-            val sy = if (allowed) (if (down) 1f else 0f) - (if (up) 1f else 0f) else 0f
-            if (sx != dpadSynthLast[0]) {
-                dpadSynthLast[0] = sx
-                try { lib.InputEvent(IDX_CPAD_X, sx) } catch (_: Throwable) {}
-            }
-            if (sy != dpadSynthLast[1]) {
-                dpadSynthLast[1] = sy
-                try { lib.InputEvent(IDX_CPAD_Y, sy) } catch (_: Throwable) {}
-            }
-        } else if (synthActive) {
-            // 模拟通道刚活跃（真实摇杆接管）：清掉合成残留，恢复为真实
-            // 摇杆当前位置（摇杆在非零位时不清零覆掉它刚下发的值）
-            dpadSynthLast[0] = 0f
-            dpadSynthLast[1] = 0f
-            try { lib.InputEvent(IDX_CPAD_X, stickLast[0]) } catch (_: Throwable) {}
-            try { lib.InputEvent(IDX_CPAD_Y, stickLast[1]) } catch (_: Throwable) {}
-        }
+        // 【删除「D-pad → CirclePad 合成」的理由】：合成让十字键同时在圆盘上
+        //   输出满幅 ±1.0 —— 用户实测手感就是「方向键变成了摇杆输出」（本轮
+        //   用户原话："mmj核心的方向键你怎么改成摇杆的输出了，神经病吧，
+        //   3ds的方向键你不知道吗"）。3DS 硬件上十字键与圆盘本就是两个独立
+        //   输入，各司其职：
+        //     - 十字键（IDX 4..7）→ 纯数字通道（菜单导航 / 纯十字键游戏）；
+        //     - 圆盘（IDX 21/22）→ 模拟通道（摇杆拖动 / inputMode=analog 的
+        //       虚拟摇杆 / 实体手柄左摇杆 —— setAnalogAxes 通道）；
+        //     - C 摇杆（IDX 23/24）→ 右摇杆。
+        //   只读圆盘的游戏由用户切【摇杆模式】（inputMode=analog，原版 MMJ
+        //   同款机制）或用实体摇杆解决，不应由引擎私合成 —— 合成的代价是
+        //   数字点按手感全部丢失（历轮「长按的摇杆」「卡值」「十字键变摇杆」
+        //   三轮回归的公共根源）。
+        //   一并删除：dpadSynthLast 独立去重、analogIdle/stickAtRest 双门、
+        //   lastAnalogActiveMs 字段（已无消费者）。
+
     }
 
     override fun setPad2(bits: Int) {
@@ -1660,10 +1599,6 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         send(IDX_CPAD_Y, ly, 1)       // ★ 屏幕坐标直传（+1=下），不再取反
         send(IDX_CSTICK_X, rx, 2)
         send(IDX_CSTICK_Y, ry, 3)     // ★ 同上
-        // 记录模拟通道活跃时刻（D-pad 合成倾斜用，见 setPad1 注释）
-        if (lx != 0f || ly != 0f || rx != 0f || ry != 0f) {
-            lastAnalogActiveMs = android.os.SystemClock.uptimeMillis()
-        }
     }
 
     // ------------------------------------------------------------------

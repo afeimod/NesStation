@@ -76,6 +76,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -3168,12 +3169,18 @@ fun EmulatorScreen(
                     engine = engine,
                     videoScale = padLayout.videoScale,
                     videoFilter = padLayout.videoFilter,
-                    // ★★ MMJ 后处理改走核心内链：pp_shader_name 由
-                    //   applyCoreOptions 写入 ini（xBR/4xBR/HQ2X/HQ4X 随
-                    //   assets/mmj/shaders 释放到 <userDir>/shaders），
-                    //   核心在自身 EGL 上下文内加载并应用 —— 不再需要
-                    //   Java 层叠加视图（独立 context 无法共享核心纹理，
-                    //   反汇编实证 eglCreateContext share=NULL）。
+                    // ★★★ 本轮：MMJ 后处理改回【Java GL 叠加层】消费
+                    //   （原版 c1/W 渲染器架构，MmjGlView v3）：
+                    //   pp_shader_name 写 ini 的「核心内链」两轮验证均无效
+                    //   （F1 静默回落直通），原版真正生效的链路是 Java 层
+                    //   getScreenTexture → 注入 .glsl 的 program → 全屏 quad。
+                    //   全局放大滤镜映射（xbr/hq2x→xBR/HQ2X，4xbr/hq4x→
+                    //   4xBR/HQ4X）优先，否则核心专属后处理设置。
+                    //   呈现模式强制已删除（黑屏元凶），叠加层半透明自愈。
+                    mmjFxShader = if (engine is com.nesstation.app.core.engine.CitraMmjEngine) {
+                        (mmjShaderForGlobalFilter(padLayout.videoFilter)
+                            ?: padLayout.mmjPpShaderName.takeIf { it.isNotBlank() && it != "(off)" })
+                    } else null,
                     isPortrait = isPortrait,
                     platform = platform,
                     currentPlayer = currentPlayer,
@@ -5571,6 +5578,11 @@ private fun GameSurfaceView(
     engine: EmulatorEngine,
     videoScale: String,
     videoFilter: String,
+    // ★★★ MMJ 后处理着色器名（非 null 时叠加 MmjGlView Java GL 后处理层）：
+    //   全局放大滤镜映射或核心专属后处理设置，由调用方算好传入。
+    //   原版 c1/W 渲染器架构 —— getScreenTexture 取帧 + 注入 .glsl 的
+    //   program + 全屏 quad；半透明叠加（不绘制时透出底层直绘）。
+    mmjFxShader: String? = null,
     isPortrait: Boolean = false,
     platform: GamePlatform = GamePlatform.NES,
     currentPlayer: Int = 0,
@@ -6293,23 +6305,46 @@ private fun GameSurfaceView(
             },
             modifier = surfaceModifier.then(gameViewTracker)
         )
-            // ★★★★ MMJ 后处理呈现方案史（本轮回归核心内链）★★★★
+            // ★★★★ MMJ 后处理呈现方案史（v4：Java GL 叠加层回归）★★★★
             //
             // v1（fix1/fix2）：写 ini pp_shader_name + 呈现模式假说 —— 用户
             //   报告 xbr/hqx 无效（当时 assets 尚无 xBR/4xBR 文件，校验层
             //   把名字归空/回落，核心链从未拿到有效名字）。
-            // v2（上游 46ac8aa9）：新增 MmjGlView（Java GLSurfaceView 叠加层
-            //   + getScreenTexture 复刻）—— 实测【任何滤镜都黑屏】：反汇编
-            //   实证核心 eglCreateContext(share=EGL_NO_CONTEXT) 自建独立
-            //   上下文直绘 SurfaceView，getScreenTexture 返回的 texId 属于
-            //   核心上下文，在 MmjGlView 自己的上下文里是无效纹理 → 采样全
-            //   黑；且 GLSurfaceView 不透明 + setZOrderMediaOverlay 叠在直绘
-            //   层之上 → 黑帧遮盖正常画面（“自带的所有滤镜都黑”的根因）。
-            // v3（本轮）：删除叠加层，回归核心内链 —— pp_shader_name 经
-            //   applyCoreOptions → writeMmjIniLocked（带文件存在性校验）→
-            //   核心启动时 F1(0x4254c4) 在自身上下文内加载 <shaders 目录>
-            //   <name>.glsl 并编译应用，与呈现方式无关。xbr/hqx 系列映射
-            //   见 mmjShaderForGlobalFilter（HQ2X/HQ4X 本轮补齐入 assets）。
+            // v2（上游 46ac8aa9）：MmjGlView 叠加层实测【任何滤镜都黑屏】——
+            //   当时把它归咎于"核心纹理跨上下文无效"，实为【双重巧合】：
+            //   ① 同时代码同时存在「着色器激活强制 screen_presentation_mode
+            //   0→1」—— 模式 1 的导出走共享上下文路径（返回核心内部纹理
+            //   ID，在叠加层上下文无效）；② v2 的 onDrawFrame 先 glClear
+            //   （不透明黑）再早退 → 黑帧遮盖底层直绘。
+            // v3：删叠加层回归核心内链（ini → F1 编译应用）—— 用户实测
+            //   【依旧全部无效】（F1 加载/编译链在核心内静默回落直通）。
+            // v4（本轮，getScreenTexture JNI 0x26dae0 反汇编定论）：原版
+            //   MMJ 的后处理消费链就是【Java GL 层】（原版 c1/W 渲染器 +
+            //   V 投屏对话框实证）—— getScreenTexture 每次调用在【调用方
+            //   GL 线程的上下文】导出最新帧纹理（呈现模式 0 / 原版默认），
+            //   跨上下文安全、与核心直绘共存不黑屏。v2 的黑屏根源（模式
+            //   强制 + 不透明清屏）已在本轮全部铲除：引擎不再写呈现模式，
+            //   MmjGlView v3 半透明 + glIsTexture 守卫 + 连续失败自愈。
+            //   核心内链（v3 的 ini 写入）保留作为兜底：叠加层覆盖直绘
+            //   画面，双滤波在视觉上不可见；叠加层停用时直绘仍有滤镜。
+            if (mmjFxShader != null && engine is com.nesstation.app.core.engine.CitraMmjEngine) {
+                key(mmjFxShader) {
+                    var overlayGone by remember { mutableStateOf(false) }
+                    if (!overlayGone) {
+                        AndroidView(
+                            factory = { vctx ->
+                                MmjGlView(vctx).apply {
+                                    setPostFxShader(mmjFxShader)
+                                    setOnGiveUp { overlayGone = true }
+                                }
+                            },
+                            update = { v -> v.setPostFxShader(mmjFxShader) },
+                            onRelease = { v -> v.releaseFx() },
+                            modifier = surfaceModifier
+                        )
+                    }
+                }
+            }
             // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot/*+扫描线/*+仿电视 drawn by Compose
             if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
                                       "tv", "xbr_scanline", "4xbr_scanline", "hq2x_scanline",
@@ -14174,13 +14209,14 @@ private fun SettingsPanel(
                     listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式, 方向旋转补偿)", ),
                     padLayout.irWiiOrientation
                 ) { onLayoutChange(padLayout.copy {irWiiOrientation = it}) }
-                // ★★ 手机体感模拟开关（游戏内快捷入口，本轮新增）：
-                //   开启后手机加速度计 → 左右倾斜（Tilt L/R）+ 前后晃动
-                //   （Swing F/B + Tilt F/B），与虚拟按键 L2/R2/L3/R3 叠加。
+                // ★★ 手机体感模拟开关（游戏内快捷入口，V8 固定锚点模型）：
+                //   手机竖直横持屏幕正对自己为中心，往哪倾斜就持续向哪输出
+                //   （滚球式，回正慢慢归零）；快速挥动/抖动 = Swing/Shake，
+                //   与虚拟按键 L2/R2/L3/R3 叠加。
                 //   写 padLayout.wiiMotionSensor 后，EmulatorScreen 顶层的
                 //   DisposableEffect 会自动重启 WiiMotionSensors（即时生效）。
                 SwitchSetting("手机体感模拟",
-                    "倾斜手机 = 左右倾斜，前后晃动 = Wii 挥动（需加速度计）",
+                    "横持手机屏幕正对自己为中心：倾斜=持续转向（回正即停），快速挥动=体感动作",
                     padLayout.wiiMotionSensor
                 ) { onLayoutChange(padLayout.copy { wiiMotionSensor = it }) }
 

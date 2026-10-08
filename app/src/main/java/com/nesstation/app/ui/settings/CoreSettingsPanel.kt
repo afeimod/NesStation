@@ -1996,32 +1996,35 @@ fun CoreSettingsPanel(
                         listOf("vertical" to "竖持 (双节棍/指向玩法)", "horizontal" to "横持 (NES 式)"),
                         padLayout.irWiiOrientation
                     ) { updateLayout(padLayout.copy {irWiiOrientation = it}) }
-                    // ★★ 手机体感模拟 Wii 体感（本轮新增，需求："并加入手机
-                    //    体感模拟wii体感"）：加速度计+陀螺仪 → Wii Tilt/Swing/Shake
-                    //    全维度（与 L2/R2/L3/R3 按钮倾斜叠加）。开启时以当前
-                    //    握持角为基准（相对倾斜），静止 0.6s 自动重校准防漂移。
+                    // ★★ 手机体感模拟 Wii 体感（V8 固定锚点模型）：重力方向
+                    //    → 六方向持续输出（左右倾斜=方向盘，顶端推离/拉近=
+                    //    前后倾，保持姿态=持续输出）；回正慢慢回原位（滚球式）。
+                    //    零点固定 = 手机竖直横持屏幕正对自己，与进游戏时姿态无关，
+                    //    永不校准。上下/左右/前后快速挥动=Swing；抖动=Shake。
                     //    无传感器的设备自动退化。默认开启。
                     DropdownRow("手机体感模拟",
-                        listOf("disabled" to "关闭", "enabled" to "开启 (默认·重力+陀螺仪模拟体感)"),
+                        listOf("disabled" to "关闭", "enabled" to "开启 (默认·重力感应式体感)"),
                         if (padLayout.wiiMotionSensor) "enabled" else "disabled"
                     ) { updateLayout(padLayout.copy {wiiMotionSensor = it == "enabled"}) }
-                    // ★ v3 角度制模型（本轮重写）：手机【面向自己竖持】（横/
-                    //   竖皆可）——左右倾斜=方向盘（保持倾斜=持续转向，回正
-                    //   才停）；上下晃动/前后推拉=挥动；轻晃/抖动=摇晃。
-                    //   满程角度随增益缩小：1.0=14° / 1.6≈9°(默认) / 2.2≈6.5°。
+                    // ★ V8 固定锚点模型：以【手机竖直横持、屏幕正对自己】为
+                    //   固定中心（方向盘位，无需校准）：往哪倾斜就持续向哪输出
+                    //   （角度比例，保持姿态=保持输出）；回正后约 0.3s 平滑归零
+                    //   （滚球式）。满程角度随增益缩小：1.0=30° / 1.6≈19°(默认) /
+                    //   2.2≈14°。快速挥动/抖动另行触发 Swing/Shake。
                     DropdownRow("体感灵敏度",
                         listOf(
-                            "1.0" to "标准 (满程 14°)",
-                            "1.6" to "高 (默认, 满程 ≈9°, 轻倾即满)",
-                            "2.2" to "极高 (满程 ≈6.5°, 微倾即反应)"),
+                            "1.0" to "标准 (满程 30°)",
+                            "1.6" to "高 (默认, 满程 ≈19°, 轻倾即满)",
+                            "2.2" to "极高 (满程 ≈14°, 微倾即反应)"),
                         padLayout.wiiMotionSensitivity
                     ) { updateLayout(padLayout.copy {wiiMotionSensitivity = it}) }
                     Text(
                         "虚拟按键随所选控制器变化：GameCube 手柄 → GC 键组；" +
                         "经典手柄 → ABXY + ZL/ZR + 双摇杆；双节棍 → 竖持 Wiimote + C/Z + 摇杆；" +
                         "无扩展 + 横持 → NES 式十字键 + A/B/1/2 + L/R 摇晃 + HOME + IR±（体感/红外齐全）。" +
-                        "体感四键：L2=左倾 / R2=右倾 / L3=前倾 / R3=后倾（实体键位可在按键映射页自定义），" +
-                        "开启手机体感后重力感应与按钮叠加。",
+                        "体感四键：L2=左倾 / R2=右倾 / L3=前倾 / R3=后倾（实体键位可在按键映射页自定义）。" +
+                        "手机体感（V8 固定锚点）：手机竖直横持屏幕正对自己为中心，往哪倾就持续向哪输出" +
+                        "（角度比例），回正慢慢归零；快速挥动/抖动触发 Swing/Shake，与按钮叠加。",
                         color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 SettingsSection("NGC/WII (Ishiiruka) · 性能 / 图形") {
