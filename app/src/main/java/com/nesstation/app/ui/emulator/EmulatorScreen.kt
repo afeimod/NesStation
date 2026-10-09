@@ -3169,23 +3169,35 @@ fun EmulatorScreen(
                     engine = engine,
                     videoScale = padLayout.videoScale,
                     videoFilter = padLayout.videoFilter,
-                    // ★★★ v5（黑屏终裁）：MMJ 后处理【只走核心内链】，
-                    //   不再创建任何 Java GL 叠加层 ★★★
-                    //   实证链（weihuoya/citra 上游源码 + .so 双源核对）：
-                    //   ini [Renderer] pp_shader_name → Config::Load →
-                    //   Settings::values.pp_shader_name → 渲染器初始化
-                    //   InitOpenGLObjects() 从 ShaderDir(<userDir>/shaders/)
-                    //   读 <name>.glsl → #version 320 es 编译（失败静默
-                    //   回落直通，绝不黑屏）→ DrawScreens 直绘路径对上/
-                    //   下屏分别应用 —— 这就是原版 MMJ 主视图的唯一滤镜
-                    //   消费方式（原版 APK 的 c1/W Java 渲染器只用于投屏
-                    //   Presentation，jadx 反编译 V.java 实证）。
-                    //   之前叠加层黑屏的机制：模式 0（核心直绘）下核心从不
-                    //   喂"呈现提供器"，getScreenTexture 返回的纹理 ID 有效
-                    //   但内容永远为空 → glIsTexture 守卫放行 → 不透明全屏
-                    //   quad 把直绘画面盖成纯黑（纹理内容为黑，半透明 EGL
-                    //   与失败自愈都救不了）。叠加层路径整体废弃。
-                    mmjFxShader = null,
+                    // ★★★ V11（"mmj 全局滤镜无效果"根治）：MMJ 后处理叠加层回归 ★★★
+                    //
+                    // V5 时代移除 Java GL 叠加层、只走核心内链（ini pp_shader_name →
+                    // 原生 OpenGL 渲染器 InitOpenGLObjects 读 .glsl → DrawScreens 应用）。
+                    // 但用户实测【所有滤镜仍无效果】—— 二进制补丁 + assets 着色器种子
+                    // + ini 写入三重准备都到位，但核心内链的着色器加载在 GLES 上下文 /
+                    // VFS 路径上静默失败（多源实证：MmjGlView 注释 + .so 反汇编 0x4254c4
+                    // shader loader）。
+                    //
+                    // V11 修复：重新激活 Java GL 叠加层，但用【完全不同的捕获机制】——
+                    // 不再依赖 getScreenTexture()（模式 0 下永远返回空内容），改用
+                    // SurfaceTexture 中转（参考 Ps2CurvedView / DraSticGlView 的成熟模式）：
+                    //   1. 创建 OES 外部纹理 + SurfaceTexture；
+                    //   2. 把 Surface(SurfaceTexture) 交给 MMJ 核心作为渲染目标 ——
+                    //      核心仍看到真实 ANativeWindow，boot/Run 契约不变；
+                    //   3. 每帧 updateTexImage 取为 OES 纹理 → FBO 拷贝成 sampler2D →
+                    //      用 MMJ 兼容头 + 用户选定 .glsl 编译的 program 绘制上屏。
+                    // 兼容头（fxHeader）提供 MMJ 滤镜期望的 GetCoordinates /
+                    // SampleLocation / SetOutput 等辅助函数，让 assets/mmj/shaders
+                    // 下原版 .glsl 在我们自己的 GLES 2.0 上下文里直接编译运行 ——
+                    // xBR / 4xBR / HQ2X / HQ4X / SEDI / FXAA 等全部生效。
+                    //
+                    // 仅当 MMJ 引擎 + 用户选定了一个非空滤镜时才传非 null 值（其它
+                    // 平台 / "(off)" 都传 null = 走普通直绘 SurfaceView，零开销）。
+                    mmjFxShader = if (engine is com.nesstation.app.core.engine.CitraMmjEngine) {
+                        val mmjGlobalFx = mmjShaderForGlobalFilter(padLayout.videoFilter)
+                        val raw = mmjGlobalFx ?: padLayout.mmjPpShaderName
+                        raw?.takeIf { it.isNotBlank() && it != "(off)" }
+                    } else null,
                     isPortrait = isPortrait,
                     platform = platform,
                     currentPlayer = currentPlayer,
@@ -5635,6 +5647,13 @@ private fun GameSurfaceView(
     // PS2 弧面显示路径（Ps2CurvedView）的 EGL 失败标志：失败时回退普通
     // SurfaceView + 平面 FilterOverlay（画面可能无凸起，但绝不黑屏）。
     val ps2GlFailed = remember { mutableStateOf(false) }
+    // ★★★ V11：MMJ 滤镜叠加层路径（MmjFilterView）的 EGL 失败标志 ★★★
+    // 失败时回退普通 SurfaceView + 直绘（无滤镜，但绝不黑屏）。
+    val mmjFilterGlFailed = remember { mutableStateOf(false) }
+    // 是否走 MMJ 滤镜叠加层：MMJ 引擎 + 用户选定了非空滤镜 + EGL 未失败
+    val useMmjFilter = platform == GamePlatform.N3DS &&
+        engine is com.nesstation.app.core.engine.CitraMmjEngine &&
+        !mmjFxShader.isNullOrEmpty() && !mmjFilterGlFailed.value
     // In custom layout mode the user controls position/size directly, so the
     // surface is anchored top-start and moved via offset; otherwise align the
     // game to top (portrait) or center (landscape).
@@ -6149,7 +6168,22 @@ private fun GameSurfaceView(
         }
         AndroidView(
             factory = { ctx ->
-                SurfaceView(ctx).apply {
+                // ★★★ V11：MMJ 滤镜叠加层路径 ★★★
+                // useMmjFilter=true 时实例化 MmjFilterView（自带 EGL/GL 线程
+                // + SurfaceTexture 中转 + MMJ 兼容头滤镜），否则实例化普通
+                // SurfaceView（直绘，零开销）。两者都是 SurfaceView 子类，
+                // 触摸/按键/生命周期回调完全一致。
+                val baseView: SurfaceView = if (useMmjFilter) {
+                    com.nesstation.app.ui.emulator.MmjFilterView(ctx).apply {
+                        engine = this@GameSurfaceView.engine
+                        shaderName = mmjFxShader
+                        uiBlocked = this@GameSurfaceView.uiBlocked
+                        onGlFailed = { mmjFilterGlFailed.value = true }
+                    }
+                } else {
+                    SurfaceView(ctx)
+                }
+                baseView.apply {
                     // Set the pixel format BEFORE registering the surface
                     // callback — otherwise the first surfaceCreated may fire
                     // with the default OPAQUE format and the first frame will
@@ -6162,18 +6196,40 @@ private fun GameSurfaceView(
                     // abandoned BufferQueue: black screen, audio OK), and
                     // surfaceDestroyed gives the engine a chance to release
                     // its swapchain. Default engine implementations are no-ops.
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {
-                            engine.setSurface(holder.surface)
-                        }
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                            engine.onSurfaceChanged(holder.surface, width, height)
-                        }
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            engine.onSurfaceDestroyed()
-                            engine.setSurface(null)
-                        }
-                    })
+                    //
+                    // ★ V11：MmjFilterView 自己在 surfaceCreated 里启动 GL 线程
+                    //   并把 SurfaceTexture 包装的 Surface 交给引擎，不需要
+                    //   这里再调 engine.setSurface（会与 MmjFilterView 内部
+                    //   ensureCoreSurface 重复 / 冲突）。普通 SurfaceView 才走
+                    //   原来的 setSurface(holder.surface) 路径。
+                    if (useMmjFilter) {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                // MmjFilterView 内部 surfaceCreated 已启动 GL
+                                // 线程并接管 surface —— 这里无需额外动作
+                            }
+                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                                // MmjFilterView 自己在 surfaceChanged 里更新
+                                // surfaceW/surfaceH，无需此处再调引擎
+                            }
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                // MmjFilterView 内部 stopGlThread 会撤下引擎 surface
+                            }
+                        })
+                    } else {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                engine.setSurface(holder.surface)
+                            }
+                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                                engine.onSurfaceChanged(holder.surface, width, height)
+                            }
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                engine.onSurfaceDestroyed()
+                                engine.setSurface(null)
+                            }
+                        })
+                    }
                     // NDS touchscreen input: capture touch events on the
                     // game surface and forward them to the engine.
                     //
@@ -6263,6 +6319,13 @@ private fun GameSurfaceView(
                     sv.isFocusable = true
                     sv.isFocusableInTouchMode = true
                     sv.requestFocus()
+                }
+                // ★ V11：MmjFilterView 路径下，把最新的 shaderName 同步过去。
+                //   用户在设置面板切换 xBR/4xBR/HQ2X/HQ4X/SEDI/FXAA 时，
+                //   GL 线程会在下次绘制前检测到名字变化并重建 program。
+                if (sv is com.nesstation.app.ui.emulator.MmjFilterView) {
+                    sv.shaderName = mmjFxShader
+                    sv.uiBlocked = uiBlocked
                 }
                 // NDS touchscreen: update touch listener in case the engine
                 // instance changed (defensive — normally it's the same engine).

@@ -94,8 +94,15 @@ object WiiMotionSensors {
     /** ★★ V8 保留：低通重力估计的晃动冻结阈值 —— 剧烈挥动中冻结重力估计。 */
     private const val GRAVITY_FREEZE_DELTA = 3.0f
 
-    /** ★★ V8 保留：收向时间常数（秒）。回正后输出 ~300ms 衰减到 37%。 */
-    private const val RELEASE_TAU = 0.3f
+    /**
+     * ★★ V11：收向时间常数（秒）。回正后输出 ~tau 秒衰减到 37%。
+     *
+     * V10 用 0.3s（300ms）—— 用户反馈"停不住立刻回正了"。V11 提到 0.6s，
+     * 给"球慢慢滚回中心"的手感更长一段缓冲；与 V11 lin() 符号方向性修复
+     * 配合后，攻向（按住倾斜）仍即时跟随、收向（松开回正）有约 600ms 的
+     * 平滑收尾，自然不突兀。
+     */
+    private const val RELEASE_TAU = 0.6f
 
     /** 挥动触发阈值（线性加速度幅值，m/s²）。v1.4 基准 0.8；增益在 clean() 内除。 */
     private const val SWING_THRESHOLD = 0.8f
@@ -273,10 +280,31 @@ object WiiMotionSensors {
     // ------------------------------------------------------------------
 
     /**
-     * V9 倾斜解算（每事件调用）：
-     *   1. 大理石位移 = -(比力屏幕面内分量)/g —— 永远向低的一侧滚；
-     *   2. 减去静息零点 → 四方向目标值（死区 7° → 满程 30°÷增益）；
-     *   3. 不对称平滑：攻向即时，收向按 RELEASE_TAU 指数衰减。
+     * ★★★ V11 倾斜解算修复（"六个方向没有一个对的"根治）★★★
+     *
+     * V10 及之前版本的核心缺陷：`lin()` 函数对输入取绝对值后做线性映射，
+     * 导致 `lin(-dx)` 永远等于 `lin(dx)`，对立方向的输出【始终相等】：
+     *   - tiltLeft == tiltRight（无论 dx 符号）
+     *   - tiltForward == tiltBackward（无论 dy 符号）
+     * 引擎 pushWiiTilt() 把这两根半轴同时下发到核心后，Ishiiruka 内部
+     * 的 sBind 表对 Forward/Left 取 -1.0f、对 Backward/Right 取 +1.0f，
+     * 差分 (Forward - Backward) 或 (Right - Left)【必然为 0】——
+     * 即任何方向倾斜都被对消成零信号，六方向全失效。
+     *
+     * V11 修复：目标值按【大理石位移的符号】方向性激活，每一时刻对立
+     * 方向中只有【真正朝低侧滚动的那一侧】输出非零，另一侧强制清零：
+     *   - dx < 0（大理石向左）→ 只激活 tiltLeft，清零 tiltRight
+     *   - dx > 0（大理石向右）→ 只激活 tiltRight，清零 tiltLeft
+     *   - dy > 0（大理石向屏幕上方滚，顶边下沉）→ 只激活 tiltForward
+     *   - dy < 0（大理石向怀里滚，顶边抬起）→ 只激活 tiltBackward
+     * 配合 pushWiiTilt 的差分逻辑后，引擎收到带符号的真实方向信号，
+     * 游戏读到正确的左右/前后倾斜分量 —— "横放左右倾斜无反应" /
+     * "前后翻转变成右倾斜" / "停不住立刻回正" 三大现象均源于此 bug，
+     * 一次修复。
+     *
+     * 模型不变（与 V10 同）：大理石位移 = -(比力屏幕面内分量)/g，
+     * 永远向低的一侧滚；零点在首次启动/手动回正时锚定；不对称平滑
+     * （攻向即时、收向按 RELEASE_TAU 指数衰减）保留。
      */
     private fun emitTilt(state: MotionState, sink: (MotionState) -> Unit) {
         // ---- 1) 大理石位移（-1..1）----
@@ -301,6 +329,8 @@ object WiiMotionSensors {
         //   回到零点附近输出自然归零 —— "手机不回正他也不回正" ✓
 
         // ---- 3) 四方向目标值（角度线性映射）----
+        // ★★ V11：符号方向性激活 —— 一次只激活对立方向中的一侧，
+        //   避免左右/前后同时输出相等值导致引擎差分对消成零。
         val full = (MARBLE_FULL / sensitivityGain).coerceAtLeast(MARBLE_FULL_MIN)
         val dx = marbleX - neutralX
         val dy = marbleY - neutralY
@@ -309,13 +339,16 @@ object WiiMotionSensors {
             return if (a < MARBLE_DEADZONE) 0f
             else ((a - MARBLE_DEADZONE) / (full - MARBLE_DEADZONE)).coerceIn(0f, 1f)
         }
+        // ★ V11 符号方向性激活：lin() 内部对 |v| 做归一化，不再让
+        //   lin(-dx) 与 lin(dx) 同时输出；只有真正朝低侧滚的那一侧
+        //   才被激活。dx/dy 为正/负的方向见各分支注释。
         val target = floatArrayOf(
-            lin(-dx),   // 左倾：大理石向左（dx < 0）
-            lin(dx),    // 右倾：大理石向右（dx > 0）
-            lin(dy),    // 前倾：大理石向屏幕上方（顶边下沉）
-            lin(-dy)    // 后倾：大理石向怀里（顶边抬起）
+            if (dx < 0f) lin(-dx) else 0f,    // 左倾：仅 dx < 0（大理石向左滚）时激活
+            if (dx > 0f) lin(dx) else 0f,    // 右倾：仅 dx > 0（大理石向右滚）时激活
+            if (dy > 0f) lin(dy) else 0f,    // 前倾：仅 dy > 0（顶边下沉、大理石向屏幕上方滚）时激活
+            if (dy < 0f) lin(-dy) else 0f    // 后倾：仅 dy < 0（顶边抬起、大理石向怀里滚）时激活
         )
-        // ---- 4) 不对称平滑：攻向即时 / 收向 300ms 指数衰减 ----
+        // ---- 4) 不对称平滑：攻向即时 / 收向 ~600ms 指数衰减 ----
         val decay = kotlin.math.exp(-sampleDt / RELEASE_TAU)
         for (i in 0 until 4) {
             val cur = tiltOut[i]

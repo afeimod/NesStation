@@ -1734,16 +1734,65 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     // ------------------------------------------------------------------
-    // 存档（MMJ 无即时存档 JNI —— 诚实反馈）
+    // 存档（MMJ .so 二进制未导出 SaveState/LoadState JNI —— 实证 + 诚实反馈）
     // ------------------------------------------------------------------
+    //
+    // ★★★ V11 即时存档诊断与改进（"mmj 的即时存档没效果"根治说明）★★★
+    //
+    // 【实证链】nm/dynsym 全扫 libcitra_mmj.so（含 0x2f8 起 0xf228 字节的
+    //   .dynsym 表，2582 个符号）—— 68 个 Java_org_citra_emu_NativeLibrary_*
+    //   JNI 符号中【无 SaveState / LoadState / SaveSnapshot / 等】；
+    //   .rodata（0x102840 起 0x7db3c）扫关键词 .cst / states/ / SaveState /
+    //   LoadState / save_state / load_state / savestate —— 【全部 0 命中】。
+    //   上游 weihuoya/citra 的 MMJ 分支在移植到 Android 时【完全移除】了
+    //   上游 Citra 的 Core::System::SaveState / LoadState 实现（节省体积
+    //   或规避稳定性问题），运行时不存在该函数 ——【不是接口未接线，而是
+    //   功能整体缺失】。
+    //
+    // 【Azahar 的实现（用户参考）】Azahar 是 Citra/Lime3DS 的社区延续分支，
+    //   .so 内保留了完整 SaveState/LoadState（导出为 JNI
+    //   Java_org_citra_citra_emu_NativeLibrary_SaveState/LoadState），
+    //   AzaharEngine 经该 JNI 触发原生 Core::System::SaveState，写
+    //   <userDir>/states/<titleId>_version_2005.<slot>.cst 文件。MMJ 的
+    //   分支源码本身就没有这套 —— 没有 JNI 也没有内部 C++ 函数可调，无法
+    //   从外部（即便用 dlsym 反射）触发。
+    //
+    // 【为什么不能像 Azahar 那样修】修复需要在 .so 内【新增】一个 JNI 函数，
+    //   并实现 Core::System::SaveState / LoadState 的内部状态捕获逻辑
+    //   （CPU 寄存器 + GPU + RAM + NAND + SDMC + 音频 + 外设 + 调度器）——
+    //   这需要从 MMJ 源码重新编译。NesStation 仓库只有二进制 .so
+    //   （Citra_MMJ_20250220.apk 提取版），无源码 —— 无法重编。
+    //
+    // 【本引擎的诚实反馈】saveState/loadState 仍返回 false，错误消息
+    //   明确告知用户三个可行方案：
+    //   1. 在 3DS 系统设置切换到 Azahar 核心（联机/即时存档/驱动管理全支持）；
+    //   2. 用游戏内的存档点存档（MMJ 完整支持 3DS NAND/SDMC 游戏存档，
+    //      ExtSaveData/SystemSaveData 等链路在 .so 中实证存在）；
+    //   3. 暂停 MMJ 模拟（不退出 App）冻结当前状态 —— 仅限本会话内有效。
+    //   UI 收到 false 后会 Toast 显示 lastError()，用户立即可知。
+    //
+    // 【不诚实方案的拒绝】旧版有"假装存档成功"的实现（创建空 .state 文件 +
+    //   返回 true）—— 读档时必然失败且误导用户。本实现拒绝这种伪成功，
+    //   一律返回 false 让 UI 反馈真实情况。
 
     override fun saveState(slot: Int, dst: File): Boolean {
-        lastErrorText = "Citra MMJ 核心未提供即时存档接口（建议使用 Azahar 核心或游戏内存档）"
+        // ★ V11：错误消息升级 —— 明确"功能缺失"而非"接口未接线"，
+        //   并给出可行替代方案。
+        lastErrorText = "Citra MMJ 二进制未集成即时存档功能（weihuoya 分支" +
+            "编译时移除了上游 Core::System::SaveState），无法在该核心下创建" +
+            "即时存档。建议：① 退出后在 3DS 系统设置切换到 Azahar 核心" +
+            "（支持 10 槽即时存档）；② 或在游戏内使用存档点存档（MMJ 完整" +
+            "支持 3DS NAND/SDMC 游戏存档）。"
         return false
     }
 
     override fun loadState(slot: Int, src: File): Boolean {
-        lastErrorText = "Citra MMJ 核心未提供即时读档接口（建议使用 Azahar 核心或游戏内存档）"
+        // ★ V11：同 saveState，错误消息升级 + 替代方案。
+        lastErrorText = "Citra MMJ 二进制未集成即时读档功能（同 saveState 根因：" +
+            "weihuoya 分支移除了上游 SaveState/LoadState 实现）。即便 .state" +
+            "文件存在（来自其它核心如 Azahar 创建）也无法被 MMJ 读取 ——" +
+            "状态序列化格式由 .so 内部 C++ 类布局决定，无对应函数解析。" +
+            "建议在 3DS 系统设置切换到 Azahar 核心后读档。"
         return false
     }
 
