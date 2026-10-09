@@ -265,15 +265,35 @@ object NativeLibrary {
      */
     @Keep
     @JvmStatic
-    fun RemoteFileOpen(path: String, mode: String): Any? = try {
+    fun RemoteFileOpen(path: String, mode: String): Any? {
+        return try {
         val p = path.removePrefix("!")
         if (p.startsWith("content://")) {
             // content:// 统一走 SafOpen 的 ContentResolver 通道（同款流式句柄）
             SafOpen(path, mode)
         } else {
-            RemoteFileHandle.open(p, mode)
+            // ★★ 相对路径根治（本轮）：核心后处理 shader 加载器
+            //   （renderer_opengl 0x4255d0）用 ShaderDir 前缀 + 名字 +
+            //   ".glsl" 拼路径。若前缀是相对形式（"shaders/"），Java 侧
+            //   File() 相对进程 cwd 必失败 → null → 核心 cbz 静默跳过后
+            //   处理 → 全部 .glsl 滤镜无效（xbr/hqx/自带滤镜都走此链）。
+            //   统一解析：相对路径 → <filesDir>/azahar（与 CitraMmjEngine
+            //   .userDir() 同源；引擎在 seedMmjSystemAssets 已把
+            //   assets/mmj/shaders/*.glsl 种子到 <userDir>/shaders/）。
+            val resolved = if (p.startsWith("/")) p else {
+                val base = hostContext?.filesDir?.let { java.io.File(it, "azahar") } ?: return null
+                java.io.File(base, p).absolutePath
+            }
+            if (vfsLogCount.getAndIncrement() < 20) {
+                android.util.Log.d("CitraMmjVFS", "RemoteFileOpen path='$path' mode='$mode' -> resolved='$resolved'")
+            }
+            RemoteFileHandle.open(resolved, mode)
         }
-    } catch (_: Throwable) { null }
+        } catch (_: Throwable) { null }
+    }
+
+    /** VFS 诊断日志计数器（仅前若干次调用打日志，避免高频刷屏）。 */
+    private val vfsLogCount = java.util.concurrent.atomic.AtomicInteger(0)
 
     @Keep
     @JvmStatic

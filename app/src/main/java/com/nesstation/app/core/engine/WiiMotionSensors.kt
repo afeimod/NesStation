@@ -8,12 +8,12 @@ import android.hardware.SensorManager
 import android.view.Surface
 
 /**
- * ★★★★ V9 重写（本轮，回应用户"wii游戏……手机体感模拟有问题，横放手机往上晃动
+ * ★★★★ V10 重写（本轮，回应用户"wii游戏……手机体感模拟有问题，横放手机往上晃动
  *   才偶尔出现，应该是固定六个方向的倾斜角度，根据倾斜角度保证实现对应方向的
  *   倾斜度，类似于重力感应，就像安卓的滚球游戏往哪里倾斜就一直往哪个方向保持
  *   倾斜，回正它跟着慢慢回原位"）★★★★
  *
- * 【V9 模型 —— 大理石滚球（marble）六方向，逐条对齐用户需求原话】：
+ * 【V10 模型 —— 大理石滚球（marble）六方向，逐条对齐用户需求原话】：
  *
  *  ★ 六个方向（"固定六个方向的倾斜角度"）—— 全部由【重力角度】连续驱动：
  *      左倾 —— 左侧边下沉（大理石向左滚）  → Tilt 左轴（129）持续输出
@@ -27,21 +27,21 @@ import android.view.Surface
  *  ★ 大理石换算（"根据倾斜角度保证实现对应方向的倾斜度"）：
  *    把重力比力投影到屏幕平面 —— 大理石永远向【低的一侧】滚：
  *      marbleX = -gxS/g（+1 = 向右滚满格），marbleY = -gyS/g（+1 = 向屏幕上方滚满格）
- *    倾角 → 输出线性映射：死区 7°(0.12) → 满程 30°(0.5)÷灵敏度增益。
+ *    倾角 → 输出线性映射：死区 ~3°(0.05) → 满程（0.34÷灵敏度增益）。
  *    该模型在【横放平贴 / 斜靠 / 立式方向盘位】任意握持角度下左右方向
  *    都成立（gxS 的符号与握持仰角无关），前后方向以"大理石往屏幕上方
  *    还是往怀里滚"为准 —— 与滚球游戏手感完全一致。
  *
- *  ★ 静息重锚（"回正它跟着慢慢回原位"）：
- *    零点 neutral = 大理石静止基准点。进游戏时无论什么握持角度，静置
- *    2 秒后零点缓慢（τ≈0.8s）吸附到当前姿态 —— 输出平滑归零；一旦有
- *    主动倾斜（输出 ≥0.15 或检测到挥动/摇晃动作），零点【冻结】——
- *    保持倾斜就一直保持输出（"往哪里倾斜就一直往哪个方向保持倾斜"）。
- *    攻向即时跟随、收向约 300ms 时间常数指数衰减 —— 手感就是"回正后
- *    球慢慢滚回中心"。
+ *  ★ 零点策略（V10，"手机不回正他也不回正"）：
+ *    零点 neutral = 大理石基准点，只在【首次启动】与【手动回正(recenter)】
+ *    时锚定到当前握持姿态；此后零点【固定不漂移】—— 只要手机偏离该姿态，
+ *    对应方向输出就一直保持；回到零点附近输出自然归零。不再做静息吸附：
+ *    V9 的 2 秒静息重锚会把小幅倾斜（<0.15）当"姿态漂移"洗掉，
+ *    正是"左右倾斜没反应"的直接成因。攻向即时跟随、收向约 300ms 时间
+ *    常数指数衰减 —— 手感就是"回正后球慢慢滚回中心"。
  *
- *  ★ 传感器看门狗（V8 "晃一下才偶尔有反应"的加固）：
- *    部分机型的 TYPE_GRAVITY（融合重力）注册成功但不出数 —— V8 只在
+ *  ★ 传感器看门狗（V9 "晃一下才偶尔有反应"的加固）：
+ *    部分机型的 TYPE_GRAVITY（融合重力）注册成功但不出数 —— V9 只在
  *    start() 时按"传感器存在与否"一次性决策，撞上这种机型倾斜通道
  *    整体哑火、只有线性加速度的挥动摇晃偶尔响应。V9 在加速度计事件里
  *    看门狗：启动 600ms 内重力传感器没出过数 → 自动切换加速度计低通
@@ -57,8 +57,8 @@ import android.view.Surface
  *   - 重力估计：优先 Sensor.TYPE_GRAVITY（系统融合、天然免疫晃动）+
  *     看门狗兜底；无该传感器时低通加速度计 + 晃动冻结（|总模长-9.81|>3
  *     冻结更新），保证"晃动不会漏进倾斜"。
- *   - 绝不校准按钮、绝无一次性基线快照 —— 零点只随"静息姿态"缓慢吸附，
- *     主动倾斜永不洗掉。
+ *   - 零点只在首样本与手动回正时锚定，之后固定 —— 倾斜持续保持，
+ *     回正才归位。
  */
 object WiiMotionSensors {
 
@@ -70,29 +70,23 @@ object WiiMotionSensors {
     // ★ V9 大理石模型标尺（单位 = 大理石位移 / sin(倾角)，1.0 = 45° 等效）
     // ----------------------------------------------------------------------
 
-    /** 死区（≈ sin 7°）：自然握持的轻微歪斜不产生输出。 */
-    private const val MARBLE_DEADZONE = 0.12f
+    /** 死区（≈ sin 3°）：自然握持的轻微歪斜不产生输出。 */
+    private const val MARBLE_DEADZONE = 0.05f
 
-    /** 满程基准（≈ sin 30°），实际满程 = 该值 ÷ 灵敏度增益（钳下限）。 */
-    private const val MARBLE_FULL = 0.5f
+    /** 满程基准（≈ sin 20°），实际满程 = 该值 ÷ 灵敏度增益（钳下限）。 */
+    private const val MARBLE_FULL = 0.34f
 
     /** 满程下限保护（防灵敏度拉满时标尺退化/噪声满幅）。 */
-    private const val MARBLE_FULL_MIN = 0.2f
+    private const val MARBLE_FULL_MIN = 0.15f
 
-    /** ★ 静息重锚：静置多久开始吸附（ms）。 */
-    private const val STILL_MS = 2000L
-
-    /** ★ 静息重锚：吸附时间常数（秒）—— "慢慢回原位"的"慢慢"。 */
-    private const val ANCHOR_TAU = 0.8f
-
-    /** ★ 主动倾斜保护阈值：任一方向输出 ≥ 该值时零点冻结（防保持倾斜被洗掉）。 */
-    private const val ANCHOR_FREEZE_OUTPUT = 0.15f
-
-    /** ★ 活动检测阈值：线性加速度（m/s²）超过即视为"正在动"。 */
-    private const val ACTIVITY_LINACC = 1.2f
-
-    /** ★ 活动检测阈值：陀螺仪角速度（rad/s）超过即视为"正在动"。 */
-    private const val ACTIVITY_GYRO = 0.6f
+    /**
+     * ★ V10 零点策略：不再做静息漂移吸附。
+     * 零点只在【首次启动】与【手动回正(recenter)】时锚定到当前姿态；
+     * 此后任何倾斜输出（越过死区）都会保持，直到姿态回到零点 ——
+     * 正是"手机不回正他也不回正、回正他慢慢回原位"的语义。
+     * 旧 V9 的 2s 静息吸附会把用户的小幅倾斜（<0.15）当"静置"洗掉，
+     * 是"左右倾斜没反应"的直接成因。
+     */
 
     /** ★ 看门狗：启动多少 ms 内重力传感器必须出数，否则切换加速度计估计。 */
     private const val GRAVITY_WATCHDOG_MS = 600L
@@ -170,9 +164,6 @@ object WiiMotionSensors {
     /** ★ V9 是否已完成首次吸附（首次吸附前无视输出保护 —— 入场姿态错位根治）。 */
     private var everAnchored = false
 
-    /** ★ V9 最近一次"活动"时刻（ms）；重锚只在静置 STILL_MS 后进行。 */
-    private var lastActiveMs = 0L
-
     /** ★ V9 recenter() 强制吸附标志（下一帧直接吸附到当前姿态）。 */
     @Volatile private var forceRecenter = false
 
@@ -227,7 +218,6 @@ object WiiMotionSensors {
         neutralX = 0f
         neutralY = 0f
         everAnchored = false
-        lastActiveMs = startMs
         forceRecenter = false
         lastTimestampNs = 0L
         sampleDt = 0.02f
@@ -289,37 +279,26 @@ object WiiMotionSensors {
      *   3. 不对称平滑：攻向即时，收向按 RELEASE_TAU 指数衰减。
      */
     private fun emitTilt(state: MotionState, sink: (MotionState) -> Unit) {
-        val now = android.os.SystemClock.elapsedRealtime()
-
         // ---- 1) 大理石位移（-1..1）----
         val g = 9.81f
         val marbleX = (-gravity[0] / g).coerceIn(-1f, 1f)
         val marbleY = (-gravity[1] / g).coerceIn(-1f, 1f)
 
-        // ---- 2) 静息重锚（回正它跟着慢慢回原位）----
-        val still = now - lastActiveMs > STILL_MS
+        // ---- 2) V10 零点：首次启动 / 手动回正才锚定；之后固定不漂移 ----
         if (forceRecenter) {
-            // 手动回正：直接吸附到当前姿态（输出随收向平滑归零）
+            // 手动回正：零点吸附到当前姿态 → 输出随收向平滑归零
             neutralX = marbleX
             neutralY = marbleY
             forceRecenter = false
             everAnchored = true
-        } else if (still) {
-            val lightTilt = maxOf(
-                tiltOut[0], tiltOut[1], tiltOut[2], tiltOut[3]
-            ) < ANCHOR_FREEZE_OUTPUT
-            if (!everAnchored || lightTilt) {
-                // 零点缓慢吸附当前姿态（τ≈0.8s —— "慢慢回原位"）
-                val k = 1f - kotlin.math.exp(-sampleDt / ANCHOR_TAU)
-                neutralX += (marbleX - neutralX) * k
-                neutralY += (marbleY - neutralY) * k
-                val d = kotlin.math.sqrt(
-                    (marbleX - neutralX) * (marbleX - neutralX) +
-                    (marbleY - neutralY) * (marbleY - neutralY))
-                if (d < 0.05f) everAnchored = true
-            }
+        } else if (!everAnchored) {
+            // 首次进入：以当前握持姿态为零点（入场姿态不误报为倾斜）
+            neutralX = marbleX
+            neutralY = marbleY
+            everAnchored = true
         }
-        // 有活动（未静置）时零点冻结 —— 保持倾斜就一直保持输出 ✓
+        // ★ 零点固定后：只要姿态偏离零点，输出就一直保持；
+        //   回到零点附近输出自然归零 —— "手机不回正他也不回正" ✓
 
         // ---- 3) 四方向目标值（角度线性映射）----
         val full = (MARBLE_FULL / sensitivityGain).coerceAtLeast(MARBLE_FULL_MIN)
@@ -348,13 +327,6 @@ object WiiMotionSensors {
         state.tiltForward = tiltOut[2]
         state.tiltBackward = tiltOut[3]
         try { sink(state) } catch (_: Throwable) {}
-    }
-
-    /** ★ V9 活动检测登记：任何挥动/摇晃/快移都会刷新 lastActiveMs（冻结零点）。 */
-    private fun markActive(linAccMag: Float, gyroMag: Float) {
-        if (linAccMag > ACTIVITY_LINACC || gyroMag > ACTIVITY_GYRO) {
-            lastActiveMs = android.os.SystemClock.elapsedRealtime()
-        }
     }
 
     /** 按事件时间戳更新采样间隔（秒）；异常时间戳（复位/乱序）时保持缺省。 */
@@ -419,7 +391,6 @@ object WiiMotionSensors {
             val linX = gxS - gravity[0]
             val linY = gyS - gravity[1]
             val linZ = gzS - gravity[2]
-            markActive(kotlin.math.sqrt(linX * linX + linY * linY + linZ * linZ), 0f)
             updateSwingFromLinear(linX, linY, linZ, state)
             try { sink(state) } catch (_: Throwable) {}
         }
@@ -455,7 +426,6 @@ object WiiMotionSensors {
         val linY = gyS - gravity[1]
         val linZ = gzS - gravity[2]
         if (hasLinearAccel.not()) {
-            markActive(kotlin.math.sqrt(linX * linX + linY * linY + linZ * linZ), 0f)
             updateSwingFromLinear(linX, linY, linZ, state)
             try { sink(state) } catch (_: Throwable) {}
         }
@@ -470,8 +440,6 @@ object WiiMotionSensors {
     ) {
         val (lxS, lyS) = toScreen(event.values[0], event.values[1], rotation)
         val lzS = event.values[2]
-        markActive(
-            kotlin.math.sqrt(lxS * lxS + lyS * lyS + lzS * lzS), 0f)
         updateSwingFromLinear(lxS, lyS, lzS, state)
         // 线性加速度的瞬时变化率 = 抖动（与陀螺的角速度协同 → 更可靠的摇动检测）
         val dx = lxS - lastLinAccel[0]
@@ -508,7 +476,6 @@ object WiiMotionSensors {
     ) {
         val (rxS, ryS) = toScreen(event.values[0], event.values[1], rotation)
         val rzS = event.values[2]
-        markActive(0f, kotlin.math.sqrt(rxS * rxS + ryS * ryS + rzS * rzS))
         // 角速度突变 = 摇动（比纯加速度更可靠：甩手时角速度峰值明显）
         val dx = rxS - lastGyro[0]
         val dy = ryS - lastGyro[1]

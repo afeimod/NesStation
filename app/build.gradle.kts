@@ -95,6 +95,12 @@ android {
         jvmTarget = "17"
         freeCompilerArgs += listOf(
             "-Xjvm-default=all",
+            // ★ Termux 构建：EmulatorScreen.kt（1.5 万行）让 Compose K1 的
+            //   LiveLiterals 生成类（LiveLiterals$EmulatorScreenKt）方法数超
+            //   65535 → ClassTooLargeException。LiveLiterals 只服务 IDE 预览。
+            //   Compose 1.5.1 有两个开关（liveLiterals=V1、liveLiteralsEnabled=V2），
+            //   AGP 8.1 又会对 debug 变体默认注入 liveLiterals=true，与直接传参冲突
+            //   （plugin option 不允许重复值），故统一在文件末尾 afterEvaluate 强制覆盖。
             "-opt-in=kotlin.RequiresOptIn",
             "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
             "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"
@@ -248,4 +254,44 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+}
+
+// ★ Termux 构建（必须放在文件末尾、变体评估完成后执行）：
+//   AGP 8.1 的 Compose 支持会对 debug 变体自动注入 liveLiterals=true（V1），
+//   EmulatorScreen.kt（~1.5 万行）会让 Composer 给该文件生成 LiveLiterals$EmulatorScreenKt，
+//   方法数超 65535 → ClassTooLargeException。Compose 1.5.1 插件选项不允许重复值，
+//   故在变体评估后把所有 liveLiterals* 开关统一重写为 false
+//   （liveLiterals 对 V1、liveLiteralsEnabled 对 V2）。
+afterEvaluate {
+    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+        // AGP 8.1 注入 compose 编译器参数用的是【分体形式】：freeCompilerArgs 里
+        // 依次是 "-P" 与 "plugin:androidx.compose.compiler.plugins.kotlin:sourceInformation=true"
+        // 两个独立字符串。Kotlin 常规编译（compileDebugKotlin）能消费这种格式，
+        // 但 kaptGenerateStubs 的解析器不认识：裸 "plugin:..." 会被当成源文件 →
+        // "Source file or directory not found"。这里把所有分体/裸 plugin 项统一剥离，
+        // 再以单字符串 "-P=plugin:...:" 形式注入我们强制关闭的 LiveLiterals 开关。
+        val raw = compilerOptions.freeCompilerArgs.get()
+        val cleaned = ArrayList<String>()
+        var i = 0
+        while (i < raw.size) {
+            val t = raw[i].trim()
+            when {
+                // 分体的 "-P"：连同其后的 "plugin:..." 一起丢弃
+                t == "-P" -> { i += 2; continue }
+                // 裸 "plugin:<id>:<opt>=<val>"（-P 的后半段）：丢弃
+                t.startsWith("plugin:") -> { i += 1; continue }
+                // 单字符串完整形式中属于 compose liveLiterals 的：丢弃（由我们统一重写）
+                raw[i].startsWith("-P=") && t.removePrefix("-P=").removePrefix("-P").trim()
+                    .startsWith("plugin:androidx.compose.compiler.plugins.kotlin:") -> { i += 1; continue }
+                else -> { cleaned.add(raw[i]); i += 1 }
+            }
+        }
+        val finalArgs = (cleaned + listOf(
+            "-P=plugin:androidx.compose.compiler.plugins.kotlin:liveLiterals=false",
+            "-P=plugin:androidx.compose.compiler.plugins.kotlin:liveLiteralsEnabled=false"
+        )).distinct()
+        compilerOptions.freeCompilerArgs.set(finalArgs)
+        println(">>> KOTLIN_ARGS[${this.name}] <<<")
+        finalArgs.forEach { println("    $it") }
+    }
 }

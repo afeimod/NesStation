@@ -747,6 +747,29 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         } catch (_: Throwable) { null }
     }
 
+    /**
+     * 十字键"上"失效诊断：把 config-mmj.ini 中与 D-PAD / 圆盘绑定相关的
+     * 键值行（button_* / circle_pad_* / touchscreen / 段头）打到 logcat，
+     * 用于核对核心绑定数组[4] 与 8 个轴槽的运行时配置来源。
+     */
+    private fun dumpBindingConfig() {
+        try {
+            val iniFile = File(userDir(), "config/config-mmj.ini")
+            if (!iniFile.isFile) return
+            val sb = StringBuilder("config binding keys:")
+            java.io.BufferedReader(java.io.FileReader(iniFile)).use { br ->
+                br.forEachLine { raw ->
+                    val line = raw.trim()
+                    if (line.startsWith("[") || line.contains("button_") ||
+                        line.contains("circle_pad_") || line.contains("touchscreen") ||
+                        line.contains("dpad") || line.contains("analog")
+                    ) sb.append("\n  ").append(line)
+                }
+            }
+            android.util.Log.i("CitraMmjEngine", sb.toString())
+        } catch (_: Throwable) {}
+    }
+
     // ------------------------------------------------------------------
     // 生命周期
     // ------------------------------------------------------------------
@@ -817,6 +840,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             try { lib.SetUserPath(userDir()) } catch (_: Throwable) {}
             try { lib.loadConfig() } catch (_: Throwable) {}
             try { lib.setConfigBoolean("input_overlay_hide", true) } catch (_: Throwable) {}
+            // ★ 十字键"上"失效排查诊断：dump config-mmj.ini 中 D-PAD/圆盘
+            //   相关绑定键（button_up 等），判断数组[4]/轴槽被何值污染。
+            dumpBindingConfig()
         } catch (t: Throwable) {
             android.util.Log.w("CitraMmjEngine", "init failed", t)
         }

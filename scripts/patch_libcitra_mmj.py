@@ -16,13 +16,24 @@ Background (reverse engineering findings):
   changes the renderer/feature configuration vs the original APK.
 - Fix: NOP all four degradation blocks (0x267534/0x267630/0x267684/0x267708).
   Behaviour then equals the original whitelisted APK.
-- Also force the renderer factory GL path (never Vulkan): 0x3d4fac
-  `cbz w8, .+0x24` -> `b .+0x24` (Vulkan renderer has no pp-shader support).
+- Force the renderer factory GL path (never Vulkan), two-stage:
+  v1: 0x3d4fac `cbz w8, .+0x24` -> `b .+0x24` (skip capability check,
+      unconditional use_gles test) — Vulkan renderer has no pp-shader.
+  v2: 0x3d4fec `mov w0,#0x1a8` (Vulkan alloc) -> `b 0x3d5004` + NOP the
+      5-instruction Vulkan allocation block.  Even when use_gles!=0 and the
+      virtual-method capability bit returns 0 (would choose Vulkan), we now
+      always reach the OpenGL renderer (0x3d5004 -> alloc 0x258 ->
+      ctor 0x4251a0) which contains the pp-shader loader (0x4254c4/0x4255d0).
+      use_gles!=0 then selects the GLES subobject (0x426a90) at 0x425378.
 """
-import struct, sys, hashlib
+import struct, sys, hashlib, os
 
-SRC = '/home/z/my-project/repo/app/src/main/jniLibs/arm64-v8a/libcitra_mmj.so'
-DST = '/home/z/my-project/repo/app/src/main/jniLibs/arm64-v8a/libcitra_mmj.so'
+ROOT = os.path.dirname(os.path.abspath(__file__))
+# default: current checkout's jniLibs. Override with
+#   patch_libcitra_mmj.py <src_so> [<dst_so>]
+default = os.path.join(ROOT, '..', 'app', 'src', 'main', 'jniLibs', 'arm64-v8a', 'libcitra_mmj.so')
+SRC = sys.argv[1] if len(sys.argv) > 1 else default
+DST = sys.argv[2] if len(sys.argv) > 2 else SRC
 
 NOP = 0xD503201F
 
@@ -40,6 +51,7 @@ EXPECT = {
     0x267684: 0x52800028,
     0x267708: 0x52800028,
     0x3d4fac: 0x34000128,  # cbz w8, .+0x24
+    0x3d4fec: 0x52803500,  # mov w0, #0x1a8  (Vulkan alloc size)
 }
 
 with open(SRC, 'rb') as f:
@@ -117,12 +129,21 @@ for name, (lo, hi) in BLOCKS.items():
         wr(a, NOP)
     print(f"  {name}: {hi-lo:#x} bytes NOPed")
 
-# factory: force GL (never Vulkan): cbz w8,+9 -> b +9
+# factory v1: force GL (never Vulkan): cbz w8,+9 -> b +9
 w = rd(0x3d4fac)
 print(f"\nfactory 0x3d4fac before: {w:08x}")
 assert (w & 0xFF000000) == 0x34000000, "expected cbz"
 wr(0x3d4fac, 0x14000009)
 print(f"factory 0x3d4fac after:  {rd(0x3d4fac):08x} (b .+0x24)")
+
+# factory v2: never run the Vulkan renderer ctor even if use_gles!=0 and the
+# virtual-method capability bit is clear -> always fall into OpenGL (0x3d5004)
+print(f"\nfactory v2 0x3d4fec before: {rd(0x3d4fec):08x}")
+wr(0x3d4fec, 0x14000006)  # b 0x3d5004
+for a in (0x3d4ff0, 0x3d4ff4, 0x3d4ff8, 0x3d4ffc, 0x3d5000):
+    wr(a, NOP)
+print(f"factory v2 0x3d4fec after:  {rd(0x3d4fec):08x} (b 0x3d5004)")
+print(f"factory v2 0x3d4ff0-0x3d5000 NOPed")
 
 with open(DST, 'wb') as f:
     f.write(data)

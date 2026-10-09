@@ -24,10 +24,19 @@ package com.nesstation.app.core.jni
  * 失效】= 用户报告的核心问题。原版 APK（包名 org.citra.emu）四检查全过，
  * 滤镜正常。
  *
- * 补丁内容（scripts/patch_libcitra_mmj.py，md5 620e4c31...）：
+ * 补丁内容（scripts/patch_libcitra_mmj.py，md5 1ef2fd20...）：
  *   1. 四个降级清理块整体 NOP（补丁后行为 = 原版白名单通过时行为）；
- *   2. 渲染器工厂 0x3d4fac `cbz w8,+9` → `b +9`：永不选 Vulkan 渲染器
- *      （Vulkan 管线不消费 pp_shader_name/.glsl，选中即全滤镜无效）。
+ *   2. 渲染器工厂 v1：0x3d4fac `cbz w8,+9` → `b +9`：无条件进入
+ *      use_gles[0x408] 检查（原版先查能力位 [x23,#0x26a] 再查 use_gles）；
+ *   3. 渲染器工厂 v2：0x3d4fec（Vulkan 分配块入口）→ `b 0x3d5004`，
+ *      0x3d4ff0..0x3d5000 五条 NOP：即便 use_gles≠0 且虚方法能力位返回
+ *      0（原路径 = Vulkan 渲染器 0x3e2254），也强制落入 OpenGL 渲染器
+ *      0x4251a0（分配 0x258 + 构造）—— OpenGL 渲染器是唯一消费
+ *      pp_shader_name → <userDir>/shaders/<name>.glsl 后处理链的渲染器
+ *      （0x4254c4/0x4255d0，VFS RemoteFileOpen 打开失败静默回落直通）。
+ *      补丁后 use_gles 值不再决定渲染器族：任何初始值都走 GL 后处理管线。
+ *      use_gles 的 boot 初始值本身由 0x266b10 从运行时配置对象
+ *      （0x61e580→0xf7d2b8，[+0x30] 字节 cset ne）推导，随设备/驱动不同。
  * 覆盖回未补丁 so = 滤镜失效复发。
  *
  * 仅提供 arm64-v8a（上游 MMJ 即 64 位 only）；32 位 / x86 进程加载
