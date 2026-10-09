@@ -332,7 +332,13 @@ class MmjFilterView @JvmOverloads constructor(
         if (!EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) return false
 
         // ★ V11.2：优先尝试 GLES 3.0 上下文，失败回落 GLES 2.0
-        if (!eglChooseAndCreate(surface, EGL14.EGL_OPENGL_ES3_BIT, 3)) {
+        // ★ V11.2.2 修复：EGL_OPENGL_ES3_BIT 不在 Android EGL14 类中暴露
+        //   （属于 EGL 1.5 / EGL_KHR_create_context 扩展常量）。所有支持
+        //   GLES 3.0 的 config 都同时支持 GLES 2.0（3.0 是 2.0 的超集），
+        //   所以用 EGL_OPENGL_ES2_BIT 选 config，再用 CLIENT_VERSION=3
+        //   创建 GLES 3.0 上下文 —— 这是 Android 上创建 GLES 3.0 上下文
+        //   的标准做法（参考 Ps2CurvedView / GameSurfaceView 同款模式）。
+        if (!eglChooseAndCreate(surface, EGL14.EGL_OPENGL_ES2_BIT, 3)) {
             Log.w(TAG, "GLES 3.0 context unavailable, fallback to GLES 2.0")
             // GLES 2.0 回落（滤镜编译会失败，自动直通 —— 至少画面不黑）
             if (!eglChooseAndCreate(surface, EGL14.EGL_OPENGL_ES2_BIT, 2)) {
