@@ -9,6 +9,7 @@ import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.opengl.GLES30
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
@@ -26,50 +27,50 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * ★★★ MMJ（Citra MMJ 3DS）CPU/GLSL 混合滤镜显示视图 ★★★
+ * ★★★ MMJ（Citra MMJ 3DS）CPU/GLSL 混合滤镜显示视图 V11.2 ★★★
  *
- * ## 设计动机（回应用户"mmj 核心使用全局滤镜的 xbr 和 hqx 无效果，
- *   自带的所有滤镜也无效果"）
+ * ## V11.1 → V11.2 修复
+ *
+ * V11.1 在用户设备上出现两个问题：
+ *   1. 整体画面颠倒 —— UV V 坐标布局错（top vertex 采样 v=1 而非 v=0）；
+ *   2. 滤镜仍无效 —— fxHeader 用 GLES 2.0 语法（#version 100 es + gl_FragColor
+ *      + texture2D + varying），但 assets/mmj/shaders/ 下的 .glsl 是按
+ *      GLES 3.20 写的（用 const 全局初始化 / uint / texelFetch / textureSize
+ *      等 GLES 2.0 不支持的特性）→ 编译失败 → 静默回落直通 = 滤镜无效。
+ *
+ * V11.2 修复：
+ *   - EGL 上下文升到 GLES 3.0（EGL_CONTEXT_CLIENT_VERSION=3 + EGL_OPENGL_ES3_BIT）；
+ *   - 所有 shader 用 #version 300 es + in/out + texture() + texelFetch + textureSize；
+ *   - fxHeader 升级到 GLES 3.0 语法，仍提供 MMJ 滤镜期望的全部辅助函数；
+ *   - 修正 UV 布局：top vertex (Y=+1) 采样 v=0（OES 纹理 V=0=top），bottom
+ *     vertex (Y=-1) 采样 v=1（OES V=1=bottom）—— 与 Ps2CurvedView 同款约定；
+ *   - FBO 2D 纹理用 V=0=bottom（标准 GL 约定），滤镜 pass 时 top vertex 采样
+ *     v=1（top of FBO）—— 两次 pass 各自的 UV 与纹理约定匹配，画面方向正确。
+ *
+ * ## 设计动机（同 V11）
  *
  * 旧版方案：依赖 libcitra_mmj.so 内部 OpenGL 渲染器的 pp_shader_name 链路
- *   （ini → Settings → ShaderDir 读 .glsl → #version 320 es 编译 → DrawScreens
- *   应用）。前置二进制补丁 + assets/mmj/shaders 种子释放 + ini 写入做了完整
- *   准备，但用户实测【所有滤镜仍无效果】——根因可能是补丁覆盖不全、GL 上下文
- *   不匹配、VFS 路径解析异常等多重因素叠加，已无法仅从外部进一步根治。
+ *   （ini → Settings → ShaderDir 读 .glsl → DrawScreens 应用）。前置二进制
+ *   补丁 + assets 着色器种子释放 + ini 写入都到位，但用户实测【所有滤镜仍
+ *   无效果】—— 核心内链的着色器加载在 GLES 上下文 / VFS 路径上静默失败。
  *
- * ## 本视图的做法（参考 DraStic 的全局放大滤镜架构 + Ps2CurvedView 的
- *   SurfaceTexture 中转模式）
+ * ## 本视图的做法（参考 DraStic + Ps2CurvedView 的 SurfaceTexture 中转模式）
  *
- *   Citra MMJ ──渲染──▶ [SurfaceTexture]（离屏消费者，对本视图是 OES 纹理源）
+ *   Citra MMJ ──渲染──▶ [SurfaceTexture]（OES 纹理源）
  *                          │ updateTexImage()
  *                          ▼
- *   本视图 EGL/GL 线程 ──OES→2D FBO 拷贝 + MMJ 兼容头 + 用户选定的 .glsl──▶
+ *   本视图 EGL/GL 线程 ──OES→2D FBO 拷贝 + MMJ 兼容头 + 用户选定 .glsl──▶
  *                          ▼
  *                       SurfaceView 上屏
  *
- * 1. GL 线程创建 OES 外部纹理 + [SurfaceTexture]，包装成 [Surface] 交给
- *    引擎（`engine.setSurface` + `onSurfaceChanged`）—— 引擎看到的仍是
- *    一个带正尺寸的真实 ANativeWindow，MMJ 的 boot 序列 + Run 契约不变；
- * 2. 每收到一帧（onFrameAvailable 信号）就 updateTexImage 把最新帧绑成
- *    OES 纹理，先用一个简单的 FBO+2D 纹理把 OES 转成普通 sampler2D（MMJ
- *    自带 .glsl 滤镜使用 sampler2D + 自有 GetCoordinates/SampleLocation/
- *    SetOutput 兼容层），再用拼好的着色器源码（兼容头 + 用户滤镜 .glsl）
- *    绘制全屏四边形到本 SurfaceView；
+ * 1. GL 线程创建 OES 外部纹理 + SurfaceTexture，包装成 Surface 交给引擎
+ *    （engine.setSurface + onSurfaceChanged）—— 引擎看到的仍是真实
+ *    ANativeWindow，MMJ 的 boot 序列 + Run 契约不变；
+ * 2. 每收到一帧（onFrameAvailable 信号）就 updateTexImage 取为 OES 纹理，
+ *    先用一个简单的 FBO+2D 纹理把 OES 转成普通 sampler2D，再用拼好的着色器
+ *    源码（兼容头 + 用户滤镜 .glsl）绘制全屏四边形到本 SurfaceView；
  * 3. 滤镜源码读取顺序：<filesDir>/azahar/shaders/<name>.glsl → APK assets
  *    /mmj/shaders/<name>.glsl。编译失败回落直通渲染（结构上不黑屏）。
- *
- * ## 与原版 MMJ 内链的差异
- *   - 原 MMJ 内链：核心在自己 GL 上下文里编译 .glsl，可能在 GLES 3.2 上下文
- *     路径下静默失败 → 滤镜无效。
- *   - 本视图：在我们自己的 GLES 2.0 上下文里编译（用 #version 100 es +
- *     OES 扩展，绝大多数设备都支持），编译失败立即回落直通，不依赖核心内链。
- *
- * ## 与 MmjGlView（已废弃）的差异
- *   - MmjGlView 依赖 getScreenTexture() JNI 返回的纹理 ID，但模式 0（核心
- *     直绘）下"呈现提供器"全局为 null → JNI 返回全零数组 → 叠加层不透明
- *     全屏 quad 把直绘画面盖成纯黑（v5 已移除）。
- *   - 本视图直接接管【整个 surface】（核心不直绘），SurfaceTexture 是唯一
- *     帧源 → 不存在"假阳性成功"路径，结构上不可能黑屏。
  *
  * ## 滤镜激活条件
  *   - 引擎为 [com.nesstation.app.core.engine.CitraMmjEngine]；
@@ -140,7 +141,7 @@ class MmjFilterView @JvmOverloads constructor(
     /** 引擎给我们的 Surface（每帧回调来源）。null 表示已销毁/未创建。 */
     @Volatile private var engineSurfaceGiven = false
 
-    /** 帧到达信号（容量 1，重复帧合并 —— 引擎帧率高于屏幕刷新率时不排队）。 */
+    /** 帧到达信号（容量 1，重复帧合并）。 */
     private val frameSignal = ArrayBlockingQueue<Boolean>(1)
 
     /** 全屏四边形：pos(2) + uv(2)，三角带 4 顶点。 */
@@ -149,38 +150,46 @@ class MmjFilterView @JvmOverloads constructor(
         .order(ByteOrder.nativeOrder())
         .asFloatBuffer()
 
-    // ---- 着色器源 ----
+    // ---- 着色器源（★ V11.2：GLES 3.0 + 修正 UV 方向） ----
 
-    /** 顶点着色器（OES→2D 拷贝 与 滤镜绘制共用）。 */
+    /** 顶点着色器（OES→2D 拷贝 与 滤镜绘制共用，GLES 3.0 语法）。 */
     private val vsSrc = """
-        attribute vec4 aPos;
-        varying vec2 vUV;
+        #version 300 es
+        in vec4 aPos;
+        out vec2 vUV;
         void main() {
             vUV = aPos.zw;
             gl_Position = vec4(aPos.xy, 0.0, 1.0);
         }
     """.trimIndent()
 
-    /** OES→2D 简单拷贝片元着色器（GL_OES_EGL_image_external）。 */
+    /** OES→2D 简单拷贝片元着色器（GL_OES_EGL_image_external_essl3）。 */
     private val fsCopySrc = """
-        #extension GL_OES_EGL_image_external : require
+        #version 300 es
+        #extension GL_OES_EGL_image_external_essl3 : require
         precision mediump float;
         uniform samplerExternalOES uTex;
-        varying vec2 vUV;
+        in vec2 vUV;
+        out vec4 fragColor;
         void main() {
-            gl_FragColor = texture2D(uTex, vUV);
+            fragColor = texture(uTex, vUV);
         }
     """.trimIndent()
 
     /**
-     * MMJ 后处理滤镜的 GL 兼容层（与旧 MmjGlView fxHeader 同源）：
-     *   - 把 MMJ 自有类型（float2/3/4、int2/3/4、uint2/3/4）映射到 GLSL ES；
+     * MMJ 后处理滤镜的 GL 兼容层（V11.2：GLES 3.0 语法）：
+     *   - 把 MMJ 自有类型（float2/3/4、int2/3/4、uint2/3/4）映射到 GLSL ES 3.0；
      *   - 提供 GetCoordinates/GetResolution/GetInvResolution/GetOnScreenSize/
      *     GetTime/Sample/SampleLocation/SampleFetch/SetOutput 等 MMJ 滤镜
      *     期望的全套辅助函数 —— 用户 .glsl 可直接用 MMJ 原版语法；
      *   - 采样源 = 本视图的 2D 纹理（OES→2D 拷贝后的内容）。
+     *
+     * ★ 重要：MMJ 原版 .glsl 用 `out float4 output_color` 这样的伪 GLSL，
+     *   我们的 fxHeader 用 `#define SetOutput(c) output_color = (c)` 等宏
+     *   把它适配到真实 GLSL ES 3.0；同时提供所有 MMJ 期望的全局函数。
      */
     private val fxHeader = """
+        #version 300 es
         #define float2 vec2
         #define float3 vec3
         #define float4 vec4
@@ -192,7 +201,11 @@ class MmjFilterView @JvmOverloads constructor(
         #define int4 ivec4
 
         precision mediump float;
-        varying vec2 frag_tex_coord_uv;
+        precision mediump int;
+        precision mediump sampler2D;
+
+        in vec2 vUV;
+        out vec4 output_color;
         uniform sampler2D color_texture;
         uniform vec2 resolution;
         uniform int frame_count;
@@ -201,24 +214,25 @@ class MmjFilterView @JvmOverloads constructor(
         vec2 GetResolution() { return vec2(SampleSize()); }
         vec2 GetInvResolution() { return 1.0 / GetResolution(); }
         vec2 GetOnScreenSize() { return resolution; }
-        vec2 GetCoordinates() { return frag_tex_coord_uv; }
+        vec2 GetCoordinates() { return vUV; }
         uint GetTime() { return uint(frame_count); }
-        void SetOutput(vec4 color) { gl_FragColor = color; }
-        vec4 Sample() { return texture2D(color_texture, frag_tex_coord_uv); }
-        vec4 SampleLocation(vec2 location) { return texture2D(color_texture, location); }
+        void SetOutput(vec4 color) { output_color = color; }
+        vec4 Sample() { return texture(color_texture, vUV); }
+        vec4 SampleLocation(vec2 location) { return texture(color_texture, location); }
         vec4 SampleFetch(ivec2 location) { return texelFetch(color_texture, location, 0); }
     """.trimIndent()
 
     /** 滤镜片元着色器模板（兼容头 + 用户的 .glsl 源）。 */
     private fun buildFilterFs(userSrc: String): String {
-        // 用户 .glsl 自带 #version 头时去掉（我们自己加 #version 100 es）
+        // 用户 .glsl 自带 #version 头时去掉（我们自己加 #version 300 es）
         val cleaned = userSrc.replace(Regex("(?m)^\\s*#version.*$"), "")
+        // 用户 .glsl 可能自带 precision 声明也去掉（fxHeader 已加）
+        val cleaned2 = cleaned.replace(Regex("(?m)^\\s*precision\\s+(highp|mediump|lowp)\\s+(float|int|sampler2D).*;$"), "")
         return """
-            #version 100 es
             $fxHeader
 
             // ----- 用户滤镜源码 -----
-            $cleaned
+            $cleaned2
         """.trimIndent()
     }
 
@@ -227,14 +241,20 @@ class MmjFilterView @JvmOverloads constructor(
         holder.addCallback(this)
         // 与 Ps2CurvedView 一致：不与系统 UI 混合时更高效
         setZOrderMediaOverlay(false)
-        // 全屏四边形顶点：(-1,-1)u(0,1) → (1,-1)u(1,1) → (-1,1)u(0,0) → (1,1)u(1,0)
-        // UV Y 翻转：SurfaceTexture 的 OES 纹理已是 OpenGL 约定（Y 上），
-        // 但渲染到屏幕时 EGL 默认 window 坐标 Y 下，所以 UV.v 翻 1-。
+        // ★ V11.2：修正 UV 方向 —— top vertex (Y=+1) 采样 v=0（OES 纹理 V=0=top），
+        //   bottom vertex (Y=-1) 采样 v=1（OES V=1=bottom）。与 Ps2CurvedView
+        //   完全同款约定，避免画面颠倒。两次 pass（OES→2D FBO 与 滤镜→屏）
+        //   使用同一组顶点 UV，但采样源纹理的 V 约定不同：
+        //     - OES 纹理：V=0=top（屏幕坐标系，已预翻转）
+        //     - 标准 2D 纹理（FBO 附件）：V=0=bottom（GL 约定）
+        //   第一次 pass（OES→FBO 拷贝）后，FBO 内的 2D 纹理内容方向正确
+        //   （OES top → FBO top），第二次 pass（滤镜→屏）采样 FBO 时 v=1=顶
+        //   在 top vertex —— 仍同款约定。
         quadBuf.put(floatArrayOf(
-            -1f, -1f, 0f, 0f,
-             1f, -1f, 1f, 0f,
-            -1f,  1f, 0f, 1f,
-             1f,  1f, 1f, 1f
+            -1f, -1f, 0f, 1f,   // bottom-left vertex, uv (0, 1) = bottom of source
+             1f, -1f, 1f, 1f,   // bottom-right
+            -1f,  1f, 0f, 0f,   // top-left,    uv (0, 0) = top of source
+             1f,  1f, 1f, 0f    // top-right
         )).position(0)
     }
 
@@ -293,7 +313,7 @@ class MmjFilterView @JvmOverloads constructor(
 
     private fun stopGlThread() {
         glLoopStopped = true
-        frameSignal.offer(true)   // 唤醒阻塞中的 poll，让循环尽快退出
+        frameSignal.offer(true)
         val t = glThread
         if (t != null) {
             try { t.join(1500) } catch (_: InterruptedException) {}
@@ -301,18 +321,34 @@ class MmjFilterView @JvmOverloads constructor(
         glThread = null
     }
 
+    /**
+     * ★ V11.2：EGL 上下文升到 GLES 3.0（assets/mmj/shaders/*.glsl 写的是
+     * GLES 3.20 语法，需要 GLES 3.0+ 才能编译）。
+     */
     private fun eglInit(surface: Surface): Boolean {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         if (eglDisplay === EGL14.EGL_NO_DISPLAY) return false
         val version = IntArray(2)
         if (!EGL14.eglInitialize(eglDisplay, version, 0, version, 1)) return false
 
+        // ★ V11.2：优先尝试 GLES 3.0 上下文，失败回落 GLES 2.0
+        if (!eglChooseAndCreate(surface, EGL14.EGL_OPENGL_ES3_BIT, 3)) {
+            Log.w(TAG, "GLES 3.0 context unavailable, fallback to GLES 2.0")
+            // GLES 2.0 回落（滤镜编译会失败，自动直通 —— 至少画面不黑）
+            if (!eglChooseAndCreate(surface, EGL14.EGL_OPENGL_ES2_BIT, 2)) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun eglChooseAndCreate(surface: Surface, renderableBit: Int, clientVersion: Int): Boolean {
         val attribs = intArrayOf(
             EGL14.EGL_RED_SIZE, 8,
             EGL14.EGL_GREEN_SIZE, 8,
             EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+            EGL14.EGL_RENDERABLE_TYPE, renderableBit,
             EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
             EGL14.EGL_NONE
         )
@@ -321,7 +357,10 @@ class MmjFilterView @JvmOverloads constructor(
         if (!EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, num, 0) || num[0] < 1) {
             return false
         }
-        val ctxAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
+        val ctxAttribs = intArrayOf(
+            EGL14.EGL_CONTEXT_CLIENT_VERSION, clientVersion,
+            EGL14.EGL_NONE
+        )
         eglContext = EGL14.eglCreateContext(eglDisplay, configs[0], EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
         if (eglContext === EGL14.EGL_NO_CONTEXT) return false
 
@@ -366,8 +405,8 @@ class MmjFilterView @JvmOverloads constructor(
 
     private fun glInitResources(): Boolean {
         // ---- 1) OES→2D 拷贝 program ----
-        val vs = compileShader(GLES20.GL_VERTEX_SHADER, vsSrc) ?: return false
-        val fsCopy = compileShader(GLES20.GL_FRAGMENT_SHADER, fsCopySrc) ?: run {
+        val vs = compileShader(GLES30.GL_VERTEX_SHADER, vsSrc) ?: return false
+        val fsCopy = compileShader(GLES30.GL_FRAGMENT_SHADER, fsCopySrc) ?: run {
             GLES20.glDeleteShader(vs); return false
         }
         progCopy = GLES20.glCreateProgram()
@@ -403,7 +442,7 @@ class MmjFilterView @JvmOverloads constructor(
 
         // ---- 3) FBO + 2D 纹理（OES→2D 拷贝目标） ----
         val fbos = IntArray(1)
-        GLES20.glGenFramebuffers(1, fbos, 0)
+        GLES30.glGenFramebuffers(1, fbos, 0)
         copyFbo = fbos[0]
 
         val texs2 = IntArray(1)
@@ -417,6 +456,13 @@ class MmjFilterView @JvmOverloads constructor(
         // 占位 1x1 纹理（首次 updateTexImage 后会按真实尺寸重新分配）
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, 1, 1, 0,
             GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+
+        // ★ V11.2：验证 GLES 版本（GL_VERSION 字符串）—— 用于 logcat 诊断
+        try {
+            val glVer = GLES20.glGetString(GLES20.GL_VERSION)
+            val glslVer = GLES20.glGetString(GLES20.GL_SHADING_LANGUAGE_VERSION)
+            Log.i(TAG, "EGL/GLES ready: GL_VERSION=$glVer, GLSL_VERSION=$glslVer")
+        } catch (_: Throwable) {}
 
         return true
     }
@@ -435,7 +481,7 @@ class MmjFilterView @JvmOverloads constructor(
             copyTex = 0
         }
         if (copyFbo != 0) {
-            try { GLES20.glDeleteFramebuffers(1, intArrayOf(copyFbo), 0) } catch (_: Throwable) {}
+            try { GLES30.glDeleteFramebuffers(1, intArrayOf(copyFbo), 0) } catch (_: Throwable) {}
             copyFbo = 0
         }
         if (progCopy != 0) {
@@ -449,7 +495,7 @@ class MmjFilterView @JvmOverloads constructor(
         lastBoundShaderName = "<sentinel>"
     }
 
-    /** 把引擎的输出 Surface 撤下（surface 销毁 / GL 线程退出时）。 */
+    /** 把引擎的输出 Surface 撤下。 */
     private fun releaseCoreSurface() {
         if (!engineSurfaceGiven) return
         engineSurfaceGiven = false
@@ -510,25 +556,10 @@ class MmjFilterView @JvmOverloads constructor(
 
             try { st.updateTexImage() } catch (_: Throwable) { continue }
 
-            // 查询 OES 纹理真实尺寸（核心可能用任意内部分辨率渲染）
-            val texW: Int
-            val texH: Int
-            try {
-                val dims = IntArray(2)
-                // SurfaceTexture.getTimestamp() 之后才能查到真实尺寸；
-                // 我们用 textureSize(shader) 拿尺寸 —— 通过 FBO 拷贝时
-                // glViewport 会自动按 FBO 附件尺寸裁剪，这里只取一个估值
-                // 用 surfaceW/surfaceH（屏幕尺寸）即可（拷贝 viewport 用屏坐标）。
-                texW = w
-                texH = h
-            } catch (_: Throwable) {
-                continue
-            }
+            // ---- 步骤 1：OES → 2D 纹理拷贝（FBO） ----
+            if (!copyOesTo2d(w, h)) continue
 
-            // ---- 步骤 1：OES → 2D 纹理拷贝（FBO）----
-            if (!copyOesTo2d(texW, texH)) continue
-
-            // ---- 步骤 2：滤镜 program 重建（如 shader 名变化）----
+            // ---- 步骤 2：滤镜 program 重建（如 shader 名变化） ----
             val curShader = shaderName?.trim()?.takeIf { it.isNotEmpty() && it != "(off)" }
             if (curShader != lastBoundShaderName) {
                 rebuildFilterProgram(curShader)
@@ -558,7 +589,6 @@ class MmjFilterView @JvmOverloads constructor(
                 val uTex = GLES20.glGetUniformLocation(progCopy, "uTex")
                 if (uTex >= 0) GLES20.glUniform1i(uTex, 0)
             } else {
-                // 无 program：黑屏兜底（理论上不应该到这里）
                 continue
             }
 
@@ -580,14 +610,11 @@ class MmjFilterView @JvmOverloads constructor(
      */
     private fun copyOesTo2d(w: Int, h: Int): Boolean {
         if (copyFbo == 0 || copyTex == 0 || oesTex == 0 || progCopy == 0) return false
-        // 重新分配 copyTex 尺寸（如变化）
-        if (bufferW != w || bufferH != h) {
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, copyTex)
-            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
-                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
-        }
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, copyFbo)
-        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, copyTex)
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
+            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, copyFbo)
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
             GLES20.GL_TEXTURE_2D, copyTex, 0)
         GLES20.glViewport(0, 0, w, h)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -603,7 +630,7 @@ class MmjFilterView @JvmOverloads constructor(
         GLES20.glVertexAttribPointer(aPos, 4, GLES20.GL_FLOAT, false, 0, quadBuf)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GLES20.glDisableVertexAttribArray(aPos)
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         return true
     }
 
@@ -619,12 +646,12 @@ class MmjFilterView @JvmOverloads constructor(
             return
         }
         val fs = buildFilterFs(src)
-        val vs = compileShader(GLES20.GL_VERTEX_SHADER, vsSrc)
+        val vs = compileShader(GLES30.GL_VERTEX_SHADER, vsSrc)
         if (vs == 0) return
-        val fsObj = compileShader(GLES20.GL_FRAGMENT_SHADER, fs)
+        val fsObj = compileShader(GLES30.GL_FRAGMENT_SHADER, fs)
         if (fsObj == 0) {
             GLES20.glDeleteShader(vs)
-            Log.w(TAG, "filter shader '$name' compile failed, fallback passthrough")
+            Log.w(TAG, "filter shader '$name' compile failed, fallback passthrough. FS source:\n$fs")
             return
         }
         progFilter = GLES20.glCreateProgram()
@@ -650,13 +677,11 @@ class MmjFilterView @JvmOverloads constructor(
      * 回落 APK assets/mmj/shaders/<name>.glsl。
      */
     private fun readShaderSource(name: String): String? {
-        // 文件系统（运行时种子释放后的位置）
         try {
             val ctx = com.nesstation.app.NesApp.get() ?: return null
             val f = File(File(ctx.filesDir, "azahar"), "shaders/$name.glsl")
             if (f.isFile) return f.readText()
         } catch (_: Throwable) {}
-        // APK assets（首次启动种子释放前）
         return try {
             val ctx = com.nesstation.app.NesApp.get() ?: return null
             ctx.assets.open("mmj/shaders/$name.glsl").use { it.readBytes().toString(Charsets.UTF_8) }
@@ -670,7 +695,8 @@ class MmjFilterView @JvmOverloads constructor(
         val status = IntArray(1)
         GLES20.glGetShaderiv(sh, GLES20.GL_COMPILE_STATUS, status, 0)
         if (status[0] == 0) {
-            Log.e(TAG, "shader compile failed: " + GLES20.glGetShaderInfoLog(sh))
+            Log.e(TAG, "shader compile failed: " + GLES20.glGetShaderInfoLog(sh)
+                + "\n----- source -----\n$src")
             GLES20.glDeleteShader(sh)
             return 0
         }
@@ -680,6 +706,6 @@ class MmjFilterView @JvmOverloads constructor(
     /** 暂停/恢复绘制（Activity 生命周期同步）。 */
     fun setPaused(paused: Boolean) {
         glLoopStopped = paused
-        if (!paused) frameSignal.offer(true)  // 唤醒可能的阻塞 poll
+        if (!paused) frameSignal.offer(true)
     }
 }

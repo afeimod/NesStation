@@ -70,8 +70,13 @@ object WiiMotionSensors {
     // ★ V9 大理石模型标尺（单位 = 大理石位移 / sin(倾角)，1.0 = 45° 等效）
     // ----------------------------------------------------------------------
 
-    /** 死区（≈ sin 3°）：自然握持的轻微歪斜不产生输出。 */
-    private const val MARBLE_DEADZONE = 0.05f
+    /**
+     * 死区（≈ sin 5°）：自然握持的轻微歪斜不产生输出。
+     * ★ V11.2：从 sin 3° (0.05) 提到 sin 5° (0.087) —— 中心点稳定性加固。
+     *   低通滤波后仍有微抖动残留在 sin 3°~5° 之间，扩大死区把这些"几乎垂直
+     *   但抖了一下"的状态也压成 0，配合 alpha=0.2 低通后中心点彻底稳定。
+     */
+    private const val MARBLE_DEADZONE = 0.087f
 
     /** 满程基准（≈ sin 20°），实际满程 = 该值 ÷ 灵敏度增益（钳下限）。 */
     private const val MARBLE_FULL = 0.34f
@@ -371,7 +376,16 @@ object WiiMotionSensors {
         lastTimestampNs = timestampNs
     }
 
-    /** 处理融合重力传感器（最优路径：天然分离重力与运动）。 */
+    /**
+     * 处理融合重力传感器（最优路径：天然分离重力与运动）。
+     *
+     * ★★ V11.2 中心点稳定性加固：用户反馈"中心点（回正点）不太稳"。
+     *   即使是系统融合的 TYPE_GRAVITY 也有传感器噪声（每帧抖动 ~0.1 m/s²），
+     *   marble 数学把这种抖动直接放大到倾斜值，导致零点附近持续微抖动。
+     *   修复：对融合重力也跑低通滤波（与 handleAccel 一致的 alpha=0.2），
+     *   时间常数 ~5 个采样周期 ≈ 100ms @ 50Hz —— 既过滤高频抖动、又保留
+     *   用户主动倾斜的实时响应。首样本直接吸附（避免低通从 0 爬升的瞬态）。
+     */
     private fun handleGravity(
         event: SensorEvent,
         rotation: Int,
@@ -379,11 +393,17 @@ object WiiMotionSensors {
         sink: (MotionState) -> Unit
     ) {
         val (gxS, gyS) = toScreen(event.values[0], event.values[1], rotation)
-        gravity[0] = gxS
-        gravity[1] = gyS
-        gravity[2] = event.values[2]
+        val gzS = event.values[2]
+        val alpha = 0.2f  // 低通时间常数 ~5 帧 @ 50Hz ≈ 100ms
+        if (!gravityInitialized) {
+            gravity[0] = gxS; gravity[1] = gyS; gravity[2] = gzS
+            gravityInitialized = true
+        } else {
+            gravity[0] = alpha * gxS + (1 - alpha) * gravity[0]
+            gravity[1] = alpha * gyS + (1 - alpha) * gravity[1]
+            gravity[2] = alpha * gzS + (1 - alpha) * gravity[2]
+        }
         gravityEventSeen = true
-        gravityInitialized = true
         updateSampleDt(event.timestamp)
         emitTilt(state, sink)
     }
