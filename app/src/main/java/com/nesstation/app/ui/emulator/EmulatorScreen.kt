@@ -6175,10 +6175,14 @@ private fun GameSurfaceView(
                 // 触摸/按键/生命周期回调完全一致。
                 val baseView: SurfaceView = if (useMmjFilter) {
                     com.nesstation.app.ui.emulator.MmjFilterView(ctx).apply {
-                        engine = this@GameSurfaceView.engine
-                        shaderName = mmjFxShader
-                        uiBlocked = this@GameSurfaceView.uiBlocked
-                        onGlFailed = { mmjFilterGlFailed.value = true }
+                        // ★ 注意：apply{} 内 this = MmjFilterView；外层函数参数
+                        // engine/uiBlocked 与 MmjFilterView 同名属性冲突，必须用
+                        // this. 前缀指代属性（赋值给 MmjFilterView 的字段），
+                        // 裸 engine 会被解析为函数参数（val 不可重赋值 → 编译错）。
+                        this.engine = engine
+                        this.shaderName = mmjFxShader
+                        this.uiBlocked = uiBlocked
+                        this.onGlFailed = { mmjFilterGlFailed.value = true }
                     }
                 } else {
                     SurfaceView(ctx)
