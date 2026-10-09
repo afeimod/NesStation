@@ -322,7 +322,7 @@ class MmjFilterView @JvmOverloads constructor(
     }
 
     /**
-     * ★ V11.2：EGL 上下文升到 GLES 3.0（assets/mmj/shaders/*.glsl 写的是
+     * ★ V11.2：EGL 上下文升到 GLES 3.0（assets/mmj/shaders 下的 .glsl 写的是
      * GLES 3.20 语法，需要 GLES 3.0+ 才能编译）。
      */
     private fun eglInit(surface: Surface): Boolean {
