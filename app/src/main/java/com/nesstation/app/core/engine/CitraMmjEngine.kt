@@ -525,7 +525,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     // ------------------------------------------------------------------
-    // ★★ V13 前端滤镜原生布局（MmjFilterView 原生分辨率中转的配套）★★
+    // ★★ V14 前端滤镜原生布局（MmjFilterView 原生分辨率中转的配套）★★
     // ------------------------------------------------------------------
     //
     // 【为什么需要】像素网格类后处理滤镜（xBR/4xBR/HQ2X/HQ4X/SEDI）假设
@@ -534,15 +534,33 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     // 已被核心双线性放大的窗口分辨率图像上完全退化（"滤镜编译成功但
     // 无效果"的根因）。
     //
-    // 【机制】滤镜激活时（MmjFilterView.setMmjNativeFilterMode(true)）：
-    //   1. 把核心双屏布局强制为【已知几何的自定义布局】（portrait_custom_
-    //      layout/landscape_custom_layout=true + 16 矩形键 = 原生像素坐标），
-    //      每次写 ini 都由 writeMmjIniLocked 的钩子重新强制（不被
-    //      applyCoreOptions 批量重写洗掉）；
-    //   2. SurfaceTexture 缓冲同步切到原生布局尺寸（竖屏堆叠 400×480 /
-    //      横屏并排 720×240）→ 核心在缓冲内 1:1 画出原生像素网格；
-    //   3. 前端滤镜着色器以原生纹理为源等比放大（letterbox），几何与
-    //      核心自布局一致，滤镜在真正的原生网格上工作。
+    // 【机制】滤镜激活时（MmjFilterView → mmjNativeFilterLayout + setMmjNativeFilterMode(true)）：
+    //   1. 把核心双屏布局强制为【已知几何的自定义布局】（portrait/landscape
+    //      custom_layout=true + 16 矩形键 = 原生像素坐标），每次写 ini 都由
+    //      writeMmjIniLocked 的钩子重新强制（不被 applyCoreOptions 批量
+    //      重写洗掉）；
+    //   2. SurfaceTexture 缓冲同步切到原生布局尺寸 → 核心在缓冲内 1:1
+    //      画出原生像素网格；
+    //   3. 前端滤镜着色器以原生纹理为源，按 fit 语义放大绘制 ——
+    //      滤镜在真正的原生网格上工作。
+    //
+    // ★★ V14 根治（"滤镜生效但画面被放大"）★★
+    //   V13 无视窗口宽高比，硬编码"竖屏堆叠 400×480 / 横屏并排 720×240"
+    //   + letterbox 居中 —— 与核心默认布局（framebuffer_layout.cpp
+    //   DefaultFrameLayout）完全不符：
+    //     - 核心默认布局【与旋转家族无关】，只取决于窗口宽高比：
+    //       宽窗（H/W < 1.2）= 两行网格（上屏居中于上半行、下屏居中于
+    //       下半行，行高各半窗 → 内容铺满整窗）；长窗（H/W ≥ 1.2）= 同
+    //       标尺上下堆叠且【顶部对齐】（内容下方留黑）；
+    //       横屏手机（H/W ≈ 0.45）走"两行网格"，每屏只有半窗高 ——
+    //       V13 强设并排 720×240 → 每屏放大 ~1.48×（用户截图实证）；
+    //       竖屏走堆叠但 V13 letterbox 居中 ≠ 核心顶对齐（位置漂移）。
+    //   - V14：按【视图真实宽高】复刻 DefaultFrameLayout / SideFrameLayout
+    //     的精确几何（上屏锚定 400×240 原生像素），缓冲 = 同宽高比原生
+    //     网格；前端按 fit 语义绘制：宽窗=铺满（与核心满窗绘制一致）、
+    //     长窗=顶对齐、并排=居中。滤镜生效且画面几何与无滤镜时逐像素一致。
+    //   - 矩形随 swap_screen（上/下屏交换）同步对调；家族布局随视图尺寸
+    //     变化由视图逐帧查询刷新（存储 + ini 重写 + loadConfig 热生效）。
     //
     // 【不劫持的用户设置】前端自定义布局编辑器（portrait/landscape_custom_
     // layout=true 时）优先 —— 原生模式自动退出；单屏/大屏布局函数的专属
@@ -573,17 +591,200 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         "bottom_left", "bottom_top", "bottom_right", "bottom_bottom"
     )
 
+    // ---- 前端视口拟合语义（MmjFilterView 按 fit 绘制缓冲）----
+    /** letterbox 居中（并排布局 / 用户自定义布局的包围盒 —— V13 行为）。 */
+    val MMJ_NATIVE_FIT_CENTERED = 0
+    /** 铺满整窗（宽窗两行网格：核心本就满窗绘制，缓冲与窗口同宽高比）。 */
+    val MMJ_NATIVE_FIT_STRETCH = 1
+    /** 顶部对齐（长窗堆叠：核心默认布局内容顶对齐、下方留黑）。 */
+    val MMJ_NATIVE_FIT_TOP_ALIGNED = 2
+
+    /** 每个旋转家族的原生布局：矩形键值 + 缓冲尺寸 + 前端视口拟合方式。 */
+    internal data class NativeFamilyLayout(
+        val rects: Map<String, String>,
+        val bufW: Int,
+        val bufH: Int,
+        val fit: Int
+    )
+
+    /** 视图查询时存储的各家族布局（writeMmjIniLocked 钩子落盘用）。 */
+    @Volatile private var storedNativeLayoutPortrait: NativeFamilyLayout? = null
+    @Volatile private var storedNativeLayoutLandscape: NativeFamilyLayout? = null
+
     /**
-     * 查询前端滤镜原生缓冲尺寸（MmjFilterView 决定 SurfaceTexture 缓冲用）。
+     * 查询前端滤镜原生缓冲布局（MmjFilterView 决定 SurfaceTexture 缓冲 +
+     * 视口拟合用），并存储供 ini 钩子落盘。
+     *
+     * 查询到与上次不同的布局（旋转 / 窗口比例 / 交换屏幕变化）时：
+     * 若原生滤镜模式已激活则立即重写 ini + loadConfig/WindowChanged 热生效
+     * —— 视图随后重设缓冲尺寸并再次 onSurfaceChanged，核心按新矩形重排。
+     * 查询返回 null（当前设置不支持原生中转）时清空该家族存储 → ini 钩子
+     * 自愈关闭原生模式。
      *
      * @param portraitFamily true = 竖屏旋转家族（ROTATION_0/180）
-     * @return 缓冲 (宽, 高)；null = 当前布局设置不支持原生中转
+     * @param viewW/viewH    视图（SurfaceView）真实像素尺寸
+     * @return 原生布局；null = 当前布局设置不支持原生中转
      */
-    fun mmjNativeFilterLayoutSize(portraitFamily: Boolean): Pair<Int, Int>? =
+    internal fun mmjNativeFilterLayout(portraitFamily: Boolean, viewW: Int, viewH: Int): NativeFamilyLayout? =
         synchronized(lifecycleLock) {
-            try { computeNativeFamilyLayout(portraitFamily)?.let { Pair(it.bufW, it.bufH) } }
-            catch (_: Throwable) { null }
+            val layout = try {
+                computeNativeFamilyLayout(portraitFamily, viewW, viewH)
+            } catch (_: Throwable) { null }
+            val prev = if (portraitFamily) storedNativeLayoutPortrait else storedNativeLayoutLandscape
+            if (layout != prev) {
+                if (portraitFamily) storedNativeLayoutPortrait = layout
+                else storedNativeLayoutLandscape = layout
+                // 家族几何变化 → 落盘新矩形（两家族）+ 热生效。核心下次
+                // WindowChanged 即按新矩形重排（缓冲尺寸由视图同步重设）。
+                if (_loaded && nativeFilterLayout) {
+                    writeMmjIniLocked()
+                    applyLayoutHotReloadIfNeeded(*MMJ_FILTER_LAYOUT_KEYS.toTypedArray())
+                }
+            }
+            layout
         }
+
+    /**
+     * 计算一个旋转家族的原生布局。返回 null = 该家族当前设置不支持
+     * 原生中转（调用方整体退出，不半支持）。
+     *
+     * 支持情形（★ V14 起几何与核心默认布局函数逐像素同构）：
+     *   - 默认布局（opt 0）：宽窗 = 两行网格（缓冲同宽高比 + 铺满）；
+     *     长窗 = 同标尺堆叠（400×480 + 顶对齐）；
+     *   - 并排布局（opt 3）：长窗 = 堆叠变体（400×540 + 顶对齐，下屏
+     *     等宽上屏 —— 核心原样怪癖）；否则 = 左右并排（720×240 + 居中）；
+     *   - 用户自定义布局：矩形等比缩放到原生网格（上屏宽 400 锚定），
+     *     缓冲 = 缩放后矩形包围盒（letterbox 居中 —— V13 行为保留）。
+     */
+    private fun computeNativeFamilyLayout(portraitFamily: Boolean, viewW: Int, viewH: Int): NativeFamilyLayout? {
+        val prefix = if (portraitFamily) "portrait" else "landscape"
+        if (coreOptions["${prefix}_custom_layout"] == "true") {
+            // 用户自定义布局：等比缩放（防负/零宽矩形）
+            val tl = coreOptions["${prefix}_top_left"]?.toIntOrNull()
+            val tr = coreOptions["${prefix}_top_right"]?.toIntOrNull()
+            if (tl == null || tr == null || tr <= tl) return null
+            val k = 400f / (tr - tl)
+            if (k <= 0f || k > 8f) return null
+            val rects = LinkedHashMap<String, String>()
+            var maxR = 0
+            var maxB = 0
+            for (suffix in MMJ_RECT_SUFFIXES) {
+                val v = coreOptions["${prefix}_$suffix"]?.toIntOrNull() ?: 0
+                val scaled = (v * k).toInt().coerceIn(0, 4095)
+                rects["${prefix}_$suffix"] = scaled.toString()
+                if ((suffix == "top_right" || suffix == "bottom_right") && scaled > maxR) maxR = scaled
+                if ((suffix == "top_bottom" || suffix == "bottom_bottom") && scaled > maxB) maxB = scaled
+            }
+            if (maxR <= 0 || maxB <= 0) return null
+            return NativeFamilyLayout(rects, maxR, maxB, MMJ_NATIVE_FIT_CENTERED)
+        }
+        val opt = coreOptions[if (portraitFamily) "layout_option" else "landscape_layout_option"] ?: "0"
+        val swap = coreOptions[if (portraitFamily) "portrait_swap_screen" else "landscape_swap_screen"] == "true"
+        return when {
+            // 默认布局（opt 0，两家族同构 —— 核心几何只取决于窗口宽高比）
+            opt == "0" -> defaultNativeLayout(viewW, viewH, prefix, swap)
+            // 并排布局（opt 3，两家族同构）
+            opt == "3" -> sideNativeLayout(viewW, viewH, prefix, swap)
+            // 单屏(1)/大屏(2)：布局函数专属几何，不强行替代
+            else -> null
+        }
+    }
+
+    /** 写入某屏矩形键（left/top/right/bottom）。 */
+    private fun putNativeRect(
+        rects: LinkedHashMap<String, String>,
+        prefix: String,
+        screen: String,
+        l: Int, t: Int, r: Int, b: Int
+    ) {
+        rects["${prefix}_${screen}_left"] = l.toString()
+        rects["${prefix}_${screen}_top"] = t.toString()
+        rects["${prefix}_${screen}_right"] = r.toString()
+        rects["${prefix}_${screen}_bottom"] = b.toString()
+    }
+
+    /**
+     * 默认布局（opt 0）的原生几何 —— 与核心 DefaultFrameLayout
+     * （framebuffer_layout.cpp）逐像素同构，上屏锚定 400×240（1:1 网格）：
+     *
+     * 宽窗（H/W < 1.2）：两行网格。核心窗口内：上屏 scale=min(W, H/1.2)
+     * 居中于上半行、下屏 scale'=min(W, H/1.6) 居中于下半行，行高各半窗
+     * → 内容铺满整窗。原生等比：缓冲 H/W×480×480（行高各 240），上屏
+     * 400×240 居中于上半行、下屏 320×240 居中于下半行，前端【铺满】。
+     *
+     * 长窗（H/W ≥ 1.2）：同标尺堆叠、顶部对齐。核心窗口内：上屏 W×0.6W
+     * 在 y=0、下屏 0.8W×0.6W 居中于其下，内容高 1.2W 下方留黑。原生
+     * 等比：缓冲 400×480，上屏 (0,0,400,240)、下屏 (40,240,360,480)，
+     * 前端【顶部对齐】。
+     */
+    private fun defaultNativeLayout(viewW: Int, viewH: Int, prefix: String, swap: Boolean): NativeFamilyLayout {
+        val rects = LinkedHashMap<String, String>()
+        val wide = viewW > 0 && viewH > 0 &&
+            (viewH.toFloat() / viewW.toFloat()) < 1.2f
+        if (wide) {
+            // 两行网格：缓冲与窗口同宽高比（行高各 240 原生像素）
+            val bufW = kotlin.math.roundToInt(viewW.toDouble() / viewH.toDouble() * 480.0)
+                .coerceIn(400, 4095)
+            val topL = (bufW - 400) / 2          // 上屏 400×240 居中
+            val botL = (bufW - 320) / 2          // 下屏 320×240 居中
+            if (swap) {
+                // 交换屏幕（核心 swapped 分支：上屏移到下半行、下屏留上半行）
+                // —— 矩形键标识"哪块屏"：top_* = 上屏（400×240，下半行），
+                //     bottom_* = 下屏（320×240，上半行）
+                putNativeRect(rects, prefix, "top", topL, 240, topL + 400, 480)
+                putNativeRect(rects, prefix, "bottom", botL, 0, botL + 320, 240)
+            } else {
+                putNativeRect(rects, prefix, "top", topL, 0, topL + 400, 240)
+                putNativeRect(rects, prefix, "bottom", botL, 240, botL + 320, 480)
+            }
+            return NativeFamilyLayout(rects, bufW, 480, MMJ_NATIVE_FIT_STRETCH)
+        }
+        if (swap) {
+            // 长窗堆叠 + 交换：下屏在上（320×240 居中），上屏在下
+            putNativeRect(rects, prefix, "top", 0, 240, 400, 480)
+            putNativeRect(rects, prefix, "bottom", 40, 0, 360, 240)
+        } else {
+            putNativeRect(rects, prefix, "top", 0, 0, 400, 240)
+            putNativeRect(rects, prefix, "bottom", 40, 240, 360, 480)
+        }
+        return NativeFamilyLayout(rects, 400, 480, MMJ_NATIVE_FIT_TOP_ALIGNED)
+    }
+
+    /**
+     * 并排布局（opt 3）的原生几何 —— 与核心 SideFrameLayout 同构：
+     *
+     * 长窗（H > 1.5W）：堆叠变体。核心窗口内：上屏 W×0.6W 顶对齐，下屏
+     * 绘制矩形 = 上屏【等宽】（W×0.75W，位于其下）—— 下屏以 1.25× 上屏
+     * 标尺绘制（核心原样怪癖，比例仍 4:3 不变形）。原生等比：缓冲
+     * 400×540，上屏 (0,0,400,240)、下屏 (0,240,400,540)，前端【顶对齐】。
+     *
+     * 其余窗口：左右并排 fit-inside 居中 → 缓冲 720×240，上屏
+     * (0,0,400,240)、下屏 (400,0,720,240)，前端【居中】（letterbox）。
+     */
+    private fun sideNativeLayout(viewW: Int, viewH: Int, prefix: String, swap: Boolean): NativeFamilyLayout {
+        val rects = LinkedHashMap<String, String>()
+        val stacked = viewW > 0 && viewH > 0 && viewH > viewW + viewW / 2
+        if (stacked) {
+            if (swap) {
+                // 交换：下屏矩形在上（0,0,400,300），上屏矩形在其下
+                putNativeRect(rects, prefix, "top", 0, 300, 400, 540)
+                putNativeRect(rects, prefix, "bottom", 0, 0, 400, 300)
+            } else {
+                putNativeRect(rects, prefix, "top", 0, 0, 400, 240)
+                putNativeRect(rects, prefix, "bottom", 0, 240, 400, 540)
+            }
+            return NativeFamilyLayout(rects, 400, 540, MMJ_NATIVE_FIT_TOP_ALIGNED)
+        }
+        if (swap) {
+            // 交换：下屏在左，上屏在右（核心 swapped 分支同款）
+            putNativeRect(rects, prefix, "top", 320, 0, 720, 240)
+            putNativeRect(rects, prefix, "bottom", 0, 0, 320, 240)
+        } else {
+            putNativeRect(rects, prefix, "top", 0, 0, 400, 240)
+            putNativeRect(rects, prefix, "bottom", 400, 0, 720, 240)
+        }
+        return NativeFamilyLayout(rects, 720, 240, MMJ_NATIVE_FIT_CENTERED)
+    }
 
     /**
      * 前端滤镜原生布局开关（MmjFilterView 挂载/卸载核心 surface 时调用）。
@@ -615,77 +816,6 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             applyLayoutHotReloadIfNeeded("layout_option")
             android.util.Log.i("CitraMmjEngine",
                 "V13 native filter layout mode -> $active (restored=${!active})")
-        }
-    }
-
-    /** 每个旋转家族的原生布局：矩形键值 + 缓冲尺寸。 */
-    private data class NativeFamilyLayout(
-        val rects: Map<String, String>,
-        val bufW: Int,
-        val bufH: Int
-    )
-
-    /**
-     * 计算一个旋转家族的原生布局。返回 null = 该家族当前设置不支持
-     * 原生中转（调用方整体退出，不半支持）。
-     *
-     * 支持情形：
-     *   - 默认布局（opt 0）：竖屏 = 堆叠 400×480；横屏 = 并排 720×240；
-     *   - 竖屏选并排（opt 3）：720×240；
-     *   - 用户自定义布局：矩形等比缩放到原生网格（上屏宽 400 锚定），
-     *     缓冲 = 缩放后矩形包围盒。
-     */
-    private fun computeNativeFamilyLayout(portraitFamily: Boolean): NativeFamilyLayout? {
-        val prefix = if (portraitFamily) "portrait" else "landscape"
-        if (coreOptions["${prefix}_custom_layout"] == "true") {
-            // 用户自定义布局：等比缩放（防负/零宽矩形）
-            val tl = coreOptions["${prefix}_top_left"]?.toIntOrNull()
-            val tr = coreOptions["${prefix}_top_right"]?.toIntOrNull()
-            if (tl == null || tr == null || tr <= tl) return null
-            val k = 400f / (tr - tl)
-            if (k <= 0f || k > 8f) return null
-            val rects = LinkedHashMap<String, String>()
-            var maxR = 0
-            var maxB = 0
-            for (suffix in MMJ_RECT_SUFFIXES) {
-                val v = coreOptions["${prefix}_$suffix"]?.toIntOrNull() ?: 0
-                val scaled = (v * k).toInt().coerceIn(0, 4095)
-                rects["${prefix}_$suffix"] = scaled.toString()
-                if ((suffix == "top_right" || suffix == "bottom_right") && scaled > maxR) maxR = scaled
-                if ((suffix == "top_bottom" || suffix == "bottom_bottom") && scaled > maxB) maxB = scaled
-            }
-            if (maxR <= 0 || maxB <= 0) return null
-            return NativeFamilyLayout(rects, maxR, maxB)
-        }
-        val opt = coreOptions[if (portraitFamily) "layout_option" else "landscape_layout_option"] ?: "0"
-        return when {
-            // 竖屏默认：上下堆叠（上屏 400×240 + 下屏 320×240 居中，零间隙同标尺）
-            portraitFamily && (opt == "0") ->
-                NativeFamilyLayout(defaultRects(prefix, stacked = true), 400, 480)
-            // 竖屏选并排 / 横屏默认或并排：左右排布
-            (portraitFamily && opt == "3") || (!portraitFamily && (opt == "0" || opt == "3")) ->
-                NativeFamilyLayout(defaultRects(prefix, stacked = false), 720, 240)
-            // 单屏(1)/大屏(2)：布局函数专属几何，不强行替代
-            else -> null
-        }
-    }
-
-    /** 原生双屏矩形（像素坐标，相对核心窗口 = 原生缓冲）。 */
-    private fun defaultRects(prefix: String, stacked: Boolean): Map<String, String> {
-        return if (stacked) {
-            mapOf(
-                "${prefix}_top_left" to "0", "${prefix}_top_top" to "0",
-                "${prefix}_top_right" to "400", "${prefix}_top_bottom" to "240",
-                "${prefix}_bottom_left" to "40", "${prefix}_bottom_top" to "240",
-                "${prefix}_bottom_right" to "360", "${prefix}_bottom_bottom" to "480"
-            )
-        } else {
-            mapOf(
-                "${prefix}_top_left" to "0", "${prefix}_top_top" to "0",
-                "${prefix}_top_right" to "400", "${prefix}_top_bottom" to "240",
-                "${prefix}_bottom_left" to "400", "${prefix}_bottom_top" to "0",
-                "${prefix}_bottom_right" to "720", "${prefix}_bottom_bottom" to "240"
-            )
         }
     }
 
@@ -755,6 +885,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             for ((k, v) in coreOptions) overrides[k] = v
             overrides.putAll(extra)
             overrides["input_overlay_hide"] = "true"
+            // ★★★ 本轮：MMJ 自带帧数角标恒关（用户要求去除）★★★
+            //   [Renderer] show_fps 上游默认 true（main_settings.cpp SHOW_FPS
+            //   缺省值）—— OSD（on_screen_display.cpp 0x420 附近）按它绘制
+            //   左上角 FPS。NesStation 无此用户设置项 → 恒写 false（与
+            //   input_overlay_hide 同款硬编码覆盖语义）。键已注册于
+            //   MMJ_INI_SECTION（[Renderer]）与 MMJ_LAYOUT_HOT_KEYS
+            //   （游戏中写该键走 loadConfig+WindowChanged 热生效链）。
+            overrides["show_fps"] = "false"
             // ★★★ 闪退根治（本轮，崩溃栈逐帧反汇编定位）★★★
             //
             // 用户 tombstone（Redmi socrates / Android 15）：
@@ -851,16 +989,21 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             }
             // ★ 旧版 [Controls] 布局族残留清理（见 cleanupLegacyControlsLayoutKeys）
             cleanupLegacyControlsLayoutKeys(sections)
-            // ★★★ V13：前端滤镜原生布局强制/恢复（见「前端滤镜原生布局」组注释）★★★
+            // ★★★ V14：前端滤镜原生布局强制/恢复（见「前端滤镜原生布局」组注释）★★★
             if (nativeFilterLayout) {
-                val pLayout = computeNativeFamilyLayout(true)
-                val lLayout = computeNativeFamilyLayout(false)
+                // 优先用视图逐帧查询时存储的真实窗口几何（与前端缓冲严格
+                // 一致）；尚无存储（boot 竞态防御）按家族假设几何兜底：
+                // 竖屏家族 = 长窗（堆叠）；横屏家族 = 20:9 宽窗（两行网格）。
+                val pLayout = storedNativeLayoutPortrait
+                    ?: computeNativeFamilyLayout(true, 400, 800)
+                val lLayout = storedNativeLayoutLandscape
+                    ?: computeNativeFamilyLayout(false, 2400, 1080)
                 if (pLayout == null || lLayout == null) {
                     // 当前设置不支持原生中转（单屏/大屏/坏矩形）→ 自愈关闭 + 还原
                     nativeFilterLayout = false
                     restoreLayoutPending = true
                     android.util.Log.i("CitraMmjEngine",
-                        "V13 native filter layout unsupported by current layout opts -> self-disabled")
+                        "V14 native filter layout unsupported by current layout opts -> self-disabled")
                 } else {
                     val layoutSec = sections.getOrPut("Layout") { LinkedHashMap() }
                     layoutSec["portrait_custom_layout"] = "true"
@@ -977,6 +1120,10 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             return false
         }
         cleanupLocked()
+        // ★ 十字键去重表重置：新核心实例从全零按键状态启动，pad1LastSent
+        //   若残留上一局"已按下"记录，首帧 setPad1 不会重发仍按住的键 →
+        //   "按住十字键进游戏后失灵"。重置后首帧按真实状态重发。
+        pad1LastSent.fill(false)
 
         appContext = appContext ?: com.nesstation.app.NesApp.get()
         if (appContext == null) {
@@ -1789,11 +1936,25 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      *   A=0 B=1 X=2 Y=3 | 十字键 up=4 down=5 left=6 right=7 | L=8 R=9 |
      *   start=10 select=11 | zl=14 zr=15
      *
-     * ★★★ 本轮两处根治（详见方法体注释）★★★
-     *   1. 绝不下发索引 12（本核心的 enum 12 是【加速键】不是 HOME ——
-     *      幽灵按下 = "玩一会儿突然 2 倍速"的真正根因）；
-     *   2. D-pad 位 → CirclePad 合成（十字键模式也能控制圆盘游戏）。
+     * ★★★ 本轮根治（"十字键上无效果/输出不对"）★★★
+     *   原生 InputManager 里 button_up/button_down 绑定【同一个轴码 16】
+     *   （默认 "code:16,dir:-" / "code:16,dir:+"），button_left/right 共用
+     *   轴码 15 —— 每个码上的所有 AnalogButton 设备共享同一 axis 值，
+     *   【后写覆盖先写】（ChangeButtonValue 顺序循环全部同码设备）。
+     *   旧实现每次全量重发 14 键（含未按下键的 0f）：按下"上"时
+     *   InputEvent(4,1f)→axis16=-1（上按下），紧随的 InputEvent(5,0f)
+     *   →axis16=0 → "上"在同一毫秒内被"下"的 0f 清掉 —— 游戏每帧读到
+     *   的永远是 0 → "十字键上无效果"；"左"同理被"右"的 0f 清掉。
+     *   原版 InputOverlay 的四键类 b.java l() 【只发变化键值】
+     *   （if (z2 != f6644a[i4]) InputEvent(...)）—— 从不重发未变化键，
+     *   所以原版没有此问题。修复 = 同款只发变化（按索引去重）。
+     *   （对齐 Azahar 的 PressKey/ReleaseKey 状态机语义：十字键 = 纯
+     *   数字按键，绝不做圆盘合成。）
+     *
+     * ★ 索引 12 绝不下发（本核心的 enum 12 是【加速键】不是 HOME）。
      */
+    private val pad1LastSent = BooleanArray(14)
+
     override fun setPad1(bits: Int) {
         if (!_loaded) return
         val lib = CitraMmjNative.lib
@@ -1810,29 +1971,22 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             pressed(BIT_UP), pressed(BIT_DOWN), pressed(BIT_LEFT), pressed(BIT_RIGHT),
             pressed(BIT_ZL), pressed(BIT_ZR)
         )
+        // ★ 只发变化键值（原版 overlay b.java l() 同款），且【两遍发送：
+        //   先全部释放、再全部按下】—— 上/下共用轴码 16、左/右共用轴码
+        //   15（同码设备共享 axis 值、后写覆盖先写）。若按索引序单遍发送，
+        //   拇指从"下"滑到"上"时 UP 的 1f 先发、DOWN 的 0f 后发 → 轴值被
+        //   覆盖回 0（原版 overlay 同样存在此共享轴码怪癖）。先释放后按下
+        //   保证最终轴值 = 仍按住的方向。
         for (i in idxEvents.indices) {
-            try { lib.InputEvent(idxEvents[i], if (states[i]) 1f else 0f) } catch (_: Throwable) {}
+            if (states[i] || !pad1LastSent[i]) continue
+            pad1LastSent[i] = false
+            try { lib.InputEvent(idxEvents[i], 0f) } catch (_: Throwable) {}
         }
-        // ★★★ 本轮：恢复【纯数字十字键】（对齐参考 APK —— overlay/b.java
-        //   四键类 l() = InputEvent(4..7, 1f/0f)；input-layout.ini 里 dpad 与
-        //   joystick 是两个独立控件，互不代役）。
-        //
-        // 【删除「D-pad → CirclePad 合成」的理由】：合成让十字键同时在圆盘上
-        //   输出满幅 ±1.0 —— 用户实测手感就是「方向键变成了摇杆输出」（本轮
-        //   用户原话："mmj核心的方向键你怎么改成摇杆的输出了，神经病吧，
-        //   3ds的方向键你不知道吗"）。3DS 硬件上十字键与圆盘本就是两个独立
-        //   输入，各司其职：
-        //     - 十字键（IDX 4..7）→ 纯数字通道（菜单导航 / 纯十字键游戏）；
-        //     - 圆盘（IDX 21/22）→ 模拟通道（摇杆拖动 / inputMode=analog 的
-        //       虚拟摇杆 / 实体手柄左摇杆 —— setAnalogAxes 通道）；
-        //     - C 摇杆（IDX 23/24）→ 右摇杆。
-        //   只读圆盘的游戏由用户切【摇杆模式】（inputMode=analog，原版 MMJ
-        //   同款机制）或用实体摇杆解决，不应由引擎私合成 —— 合成的代价是
-        //   数字点按手感全部丢失（历轮「长按的摇杆」「卡值」「十字键变摇杆」
-        //   三轮回归的公共根源）。
-        //   一并删除：dpadSynthLast 独立去重、analogIdle/stickAtRest 双门、
-        //   lastAnalogActiveMs 字段（已无消费者）。
-
+        for (i in idxEvents.indices) {
+            if (!states[i] || pad1LastSent[i]) continue
+            pad1LastSent[i] = true
+            try { lib.InputEvent(idxEvents[i], 1f) } catch (_: Throwable) {}
+        }
     }
 
     override fun setPad2(bits: Int) {

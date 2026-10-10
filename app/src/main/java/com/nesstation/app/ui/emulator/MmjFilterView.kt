@@ -54,8 +54,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   4. 直通路径（无滤镜/编译失败回落）：沿用原生缓冲 + 同款 letterbox
  *      视口，GPU 线性放大 ≈ 核心直绘观感，无回归；
  *   5. 用户自定义布局/单屏/大屏等不支持原生中转的情形
- *      （mmjNativeFilterLayoutSize 返回 null）自动保持 V12 窗口缓冲
+ *      （mmjNativeFilterLayout 返回 null）自动保持 V12 窗口缓冲
  *      行为 —— 滤镜效果退化但不破坏布局。
+ *
+ * ## V13 → V14 根治（"滤镜生效了，但画面被放大"）★
+ *
+ * V13 无视窗口宽高比硬编码"竖屏堆叠 400×480 / 横屏并排 720×240"+letterbox
+ * 居中，与核心默认布局（framebuffer_layout.cpp DefaultFrameLayout）不符：
+ * 核心默认布局与旋转家族无关，只取决于窗口宽高比 —— 宽窗（H/W<1.2）=
+ * 两行网格（每屏只有半窗高，内容铺满整窗）；长窗（H/W≥1.2）= 同标尺
+ * 堆叠且【顶部对齐】。横屏手机（H/W≈0.45）核心原画面是两行小屏，V13
+ * 强设并排 → 每屏放大 ~1.48×（"画面被无情放大"实证）。
+ *
+ * V14 方案：引擎按【视图真实宽高】复刻 DefaultFrameLayout/SideFrameLayout
+ * 的精确几何（上屏锚定 400×240 原生像素），缓冲 = 同宽高比原生网格；
+ * 本视图按 fit 语义绘制：宽窗=铺满整窗（与核心满窗绘制一致）、长窗=
+ * 顶对齐、并排=居中。滤镜开启前后画面大小/位置逐像素一致。
  *
  * ------------------------------------------------------------------
  *
@@ -149,6 +163,15 @@ class MmjFilterView @JvmOverloads constructor(
 
     private companion object {
         const val TAG = "MmjFilterView"
+
+        // ★ V14：前端视口拟合语义（引擎 mmjNativeFilterLayout 返回 fit）——
+        //   复刻核心默认布局的绘制几何，滤镜开启前后画面大小/位置逐像素一致：
+        //   CENTERED  = letterbox 居中（并排布局 / 自定义布局包围盒，V13 行为）
+        //   STRETCH   = 铺满整窗（宽窗两行网格：核心本就满窗绘制）
+        //   TOP_ALIGN = 顶部对齐（长窗堆叠：核心默认布局内容顶对齐下方留黑）
+        const val FIT_CENTERED = 0
+        const val FIT_STRETCH = 1
+        const val FIT_TOP_ALIGNED = 2
     }
 
     private val glThreadRunning = AtomicBoolean(false)
@@ -178,6 +201,9 @@ class MmjFilterView @JvmOverloads constructor(
     /** 当前核心缓冲尺寸（原生模式下 = 原生布局尺寸；窗口模式 = 窗口尺寸）。 */
     private var bufW = 0
     private var bufH = 0
+
+    /** ★ V14：当前视口拟合语义（引擎按核心默认布局几何给出）。 */
+    @Volatile private var nativeFit = FIT_CENTERED
 
     /** GetTime() 帧计数（旧恒 0，个别动画类滤镜依赖）。 */
     private var frameCount = 0L
@@ -538,23 +564,29 @@ class MmjFilterView @JvmOverloads constructor(
         val w = surfaceW.coerceAtLeast(1)
         val h = surfaceH.coerceAtLeast(1)
 
-        // ★★★ V13：滤镜激活且布局设置支持时，把核心渲染缓冲切到
+        // ★★★ V13/V14：滤镜激活且布局设置支持时，把核心渲染缓冲切到
         //   【原生双屏布局尺寸】，让像素网格类滤镜工作在原生像素网格上。
-        //   失败/不支持 → 保持窗口缓冲（V12 行为，滤镜效果退化但无回归）。
+        //   V14：布局由引擎按视图真实宽高复刻核心默认布局几何（宽窗两行
+        //   网格 / 长窗堆叠 / 并排），并给出视口拟合语义。失败/不支持 →
+        //   保持窗口缓冲（V12 行为，滤镜效果退化但无回归）。
         var bw = w
         var bh = h
+        nativeFit = FIT_CENTERED
         val curShader = shaderName?.trim()?.takeIf { it.isNotEmpty() && it != "(off)" }
         if (curShader != null && eng is com.nesstation.app.core.engine.CitraMmjEngine) {
-            val native = try { eng.mmjNativeFilterLayoutSize(isPortraitRotation()) } catch (_: Throwable) { null }
+            val native = try {
+                eng.mmjNativeFilterLayout(isPortraitRotation(), w, h)
+            } catch (_: Throwable) { null }
             if (native != null) {
-                bw = native.first
-                bh = native.second
+                bw = native.bufW
+                bh = native.bufH
+                nativeFit = native.fit
                 try { eng.setMmjNativeFilterMode(true) } catch (_: Throwable) {
-                    bw = w; bh = h
+                    bw = w; bh = h; nativeFit = FIT_CENTERED
                 }
                 nativeFilterMode = bw != w || bh != h
                 if (nativeFilterMode) {
-                    Log.i(TAG, "V13 native filter buffer: ${bw}x${bh} (window ${w}x${h})")
+                    Log.i(TAG, "V14 native filter buffer: ${bw}x${bh} fit=${nativeFit} (window ${w}x${h})")
                 }
             }
         }
@@ -596,21 +628,32 @@ class MmjFilterView @JvmOverloads constructor(
             val h = surfaceH
             if (w <= 0 || h <= 0) continue
 
-            // ★ V13：旋转家族变化 → 原生缓冲尺寸随之切换（竖屏堆叠 400×480
-            //   ⇄ 横屏并排 720×240）。只重设缓冲尺寸 + 通知引擎重算布局；
-            //   矩形（两家族）已在 setMmjNativeFilterMode(true) 时同时落盘。
+            // ★ V14：布局变化（旋转家族 / 窗口比例 / 交换屏幕 / 切布局选项）
+            //   → 原生缓冲尺寸与视口拟合随之切换。引擎查询侧已把新矩形落盘
+            //   + loadConfig/WindowChanged 热生效；这里只重设缓冲尺寸 + 通知
+            //   引擎重算布局。查询返回 null（如切到单屏/大屏）→ 退回窗口
+            //   缓冲 + 全窗视口（V12 行为，布局绝不破坏）。
             if (nativeFilterMode) {
                 val native = try {
                     (engine as? com.nesstation.app.core.engine.CitraMmjEngine)
-                        ?.mmjNativeFilterLayoutSize(isPortraitRotation())
+                        ?.mmjNativeFilterLayout(isPortraitRotation(), w, h)
                 } catch (_: Throwable) { null }
-                if (native != null && (native.first != bufW || native.second != bufH)) {
-                    bufW = native.first
-                    bufH = native.second
+                if (native == null) {
+                    nativeFilterMode = false
+                    nativeFit = FIT_CENTERED
+                    try {
+                        st.setDefaultBufferSize(w, h)
+                        engine?.onSurfaceChanged(coreSurface, w, h)
+                        Log.i(TAG, "V14 native mode exited (layout unsupported) -> window buffer ${w}x${h}")
+                    } catch (_: Throwable) {}
+                } else if (native.bufW != bufW || native.bufH != bufH || native.fit != nativeFit) {
+                    bufW = native.bufW
+                    bufH = native.bufH
+                    nativeFit = native.fit
                     try {
                         st.setDefaultBufferSize(bufW, bufH)
                         engine?.onSurfaceChanged(coreSurface, bufW, bufH)
-                        Log.i(TAG, "V13 native buffer reconfigured: ${bufW}x${bufH}")
+                        Log.i(TAG, "V14 native buffer reconfigured: ${bufW}x${bufH} fit=${nativeFit}")
                     } catch (_: Throwable) {}
                 }
             }
@@ -632,15 +675,33 @@ class MmjFilterView @JvmOverloads constructor(
             val prog = if (progFilter != 0 && curShader != null) progFilter else progPassthrough
             if (prog == 0) continue
 
-            // ★ V13 视口：原生模式 = 缓冲等比 letterbox 居中（与核心在窗口内
-            //   自布局的 fit-inside 几何一致，内容只放大不变形）；窗口模式 = 全屏。
+            // ★ V14 视口：按引擎给出的拟合语义复刻核心默认布局几何 ——
+            //   STRETCH   = 铺满整窗（宽窗两行网格，缓冲≈窗口宽高比，与核心
+            //               满窗绘制逐像素一致）；
+            //   TOP_ALIGN = 等比放大、顶部对齐（长窗堆叠：核心内容顶对齐、
+            //               下方留黑，GL 的 y 原点在底部 → y 偏移 = h-vh）；
+            //   CENTERED  = 等比 letterbox 居中（并排/自定义包围盒，V13 行为）；
+            //   窗口模式（非原生）= 全屏。
             var vw = w
             var vh = h
             if (nativeFilterMode && bufW > 0 && bufH > 0) {
-                val scale = minOf(w.toFloat() / bufW, h.toFloat() / bufH)
-                vw = (bufW * scale).toInt().coerceAtLeast(1)
-                vh = (bufH * scale).toInt().coerceAtLeast(1)
-                GLES20.glViewport((w - vw) / 2, (h - vh) / 2, vw, vh)
+                when (nativeFit) {
+                    FIT_STRETCH -> {
+                        vw = w; vh = h
+                    }
+                    FIT_TOP_ALIGNED -> {
+                        val scale = minOf(w.toFloat() / bufW, h.toFloat() / bufH)
+                        vw = (bufW * scale).toInt().coerceAtLeast(1)
+                        vh = (bufH * scale).toInt().coerceAtLeast(1)
+                        GLES20.glViewport((w - vw) / 2, h - vh, vw, vh)
+                    }
+                    else -> {
+                        val scale = minOf(w.toFloat() / bufW, h.toFloat() / bufH)
+                        vw = (bufW * scale).toInt().coerceAtLeast(1)
+                        vh = (bufH * scale).toInt().coerceAtLeast(1)
+                        GLES20.glViewport((w - vw) / 2, (h - vh) / 2, vw, vh)
+                    }
+                }
             }
 
             GLES20.glUseProgram(prog)
