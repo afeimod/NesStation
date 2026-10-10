@@ -524,6 +524,187 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         }
     }
 
+    // ------------------------------------------------------------------
+    // ★★ V13 前端滤镜原生布局（MmjFilterView 原生分辨率中转的配套）★★
+    // ------------------------------------------------------------------
+    //
+    // 【为什么需要】像素网格类后处理滤镜（xBR/4xBR/HQ2X/HQ4X/SEDI）假设
+    // color_texture 是原生低分辨率 framebuffer（上屏 400×240）。前端
+    // MmjFilterView 的 SurfaceTexture 中转原本按窗口尺寸渲染 —— 滤镜在
+    // 已被核心双线性放大的窗口分辨率图像上完全退化（"滤镜编译成功但
+    // 无效果"的根因）。
+    //
+    // 【机制】滤镜激活时（MmjFilterView.setMmjNativeFilterMode(true)）：
+    //   1. 把核心双屏布局强制为【已知几何的自定义布局】（portrait_custom_
+    //      layout/landscape_custom_layout=true + 16 矩形键 = 原生像素坐标），
+    //      每次写 ini 都由 writeMmjIniLocked 的钩子重新强制（不被
+    //      applyCoreOptions 批量重写洗掉）；
+    //   2. SurfaceTexture 缓冲同步切到原生布局尺寸（竖屏堆叠 400×480 /
+    //      横屏并排 720×240）→ 核心在缓冲内 1:1 画出原生像素网格；
+    //   3. 前端滤镜着色器以原生纹理为源等比放大（letterbox），几何与
+    //      核心自布局一致，滤镜在真正的原生网格上工作。
+    //
+    // 【不劫持的用户设置】前端自定义布局编辑器（portrait/landscape_custom_
+    // layout=true 时）优先 —— 原生模式自动退出；单屏/大屏布局函数的专属
+    // 几何不强行替代 —— 同样退出（滤镜效果退化，布局绝不破坏）。
+    // 关闭滤镜时恢复启用前保存的矩形键原值 + 开关回用户值（不污染
+    // 自定义布局编辑器的数据）。
+
+    /** 原生滤镜布局强制中（true 时 writeMmjIniLocked 每次落盘重新强制）。 */
+    @Volatile private var nativeFilterLayout = false
+
+    /** 关闭后待恢复标志（下一次 writeMmjIniLocked 归还原值）。 */
+    @Volatile private var restoreLayoutPending = false
+
+    /** 启用前保存的用户布局键原值（来自 ini；关闭时恢复）。 */
+    private var savedLayoutValues: Map<String, String>? = null
+
+    /** 滤镜布局劫持涉及的全部 ini 键（16 矩形 + 2 开关）。 */
+    private val MMJ_FILTER_LAYOUT_KEYS = listOf(
+        "portrait_custom_layout", "landscape_custom_layout",
+        "portrait_top_left", "portrait_top_top", "portrait_top_right", "portrait_top_bottom",
+        "portrait_bottom_left", "portrait_bottom_top", "portrait_bottom_right", "portrait_bottom_bottom",
+        "landscape_top_left", "landscape_top_top", "landscape_top_right", "landscape_top_bottom",
+        "landscape_bottom_left", "landscape_bottom_top", "landscape_bottom_right", "landscape_bottom_bottom"
+    )
+
+    private val MMJ_RECT_SUFFIXES = listOf(
+        "top_left", "top_top", "top_right", "top_bottom",
+        "bottom_left", "bottom_top", "bottom_right", "bottom_bottom"
+    )
+
+    /**
+     * 查询前端滤镜原生缓冲尺寸（MmjFilterView 决定 SurfaceTexture 缓冲用）。
+     *
+     * @param portraitFamily true = 竖屏旋转家族（ROTATION_0/180）
+     * @return 缓冲 (宽, 高)；null = 当前布局设置不支持原生中转
+     */
+    fun mmjNativeFilterLayoutSize(portraitFamily: Boolean): Pair<Int, Int>? =
+        synchronized(lifecycleLock) {
+            try { computeNativeFamilyLayout(portraitFamily)?.let { Pair(it.bufW, it.bufH) } }
+            catch (_: Throwable) { null }
+        }
+
+    /**
+     * 前端滤镜原生布局开关（MmjFilterView 挂载/卸载核心 surface 时调用）。
+     *
+     * 启用：保存用户布局键原值（ini 现值）→ 置标志 → 立即落盘（钩子强制
+     * 矩形）+ loadConfig/WindowChanged 热生效；未加载时仅记状态 ——
+     * loadRom/启动线程随后的 writeMmjIniLocked 会带上钩子（boot 必然
+     * 在本调用之后，因为 boot 线程等待的正是本视图交出的 surface）。
+     *
+     * 关闭：清标志 + 置恢复待处理 → 落盘（钩子归还原值）+ 热生效。
+     */
+    fun setMmjNativeFilterMode(active: Boolean) {
+        synchronized(lifecycleLock) {
+            if (nativeFilterLayout == active && !restoreLayoutPending) return
+            nativeFilterLayout = active
+            if (active) {
+                // 保存 ini 里布局键的用户现值（无键 = 原本就没设）
+                val saved = LinkedHashMap<String, String>()
+                for (key in MMJ_FILTER_LAYOUT_KEYS) {
+                    readMmjIniValue(key)?.let { saved[key] = it }
+                }
+                savedLayoutValues = saved
+                restoreLayoutPending = false
+            } else {
+                restoreLayoutPending = true
+            }
+            if (!_loaded) return
+            writeMmjIniLocked()
+            applyLayoutHotReloadIfNeeded("layout_option")
+            android.util.Log.i("CitraMmjEngine",
+                "V13 native filter layout mode -> $active (restored=${!active})")
+        }
+    }
+
+    /** 每个旋转家族的原生布局：矩形键值 + 缓冲尺寸。 */
+    private data class NativeFamilyLayout(
+        val rects: Map<String, String>,
+        val bufW: Int,
+        val bufH: Int
+    )
+
+    /**
+     * 计算一个旋转家族的原生布局。返回 null = 该家族当前设置不支持
+     * 原生中转（调用方整体退出，不半支持）。
+     *
+     * 支持情形：
+     *   - 默认布局（opt 0）：竖屏 = 堆叠 400×480；横屏 = 并排 720×240；
+     *   - 竖屏选并排（opt 3）：720×240；
+     *   - 用户自定义布局：矩形等比缩放到原生网格（上屏宽 400 锚定），
+     *     缓冲 = 缩放后矩形包围盒。
+     */
+    private fun computeNativeFamilyLayout(portraitFamily: Boolean): NativeFamilyLayout? {
+        val prefix = if (portraitFamily) "portrait" else "landscape"
+        if (coreOptions["${prefix}_custom_layout"] == "true") {
+            // 用户自定义布局：等比缩放（防负/零宽矩形）
+            val tl = coreOptions["${prefix}_top_left"]?.toIntOrNull()
+            val tr = coreOptions["${prefix}_top_right"]?.toIntOrNull()
+            if (tl == null || tr == null || tr <= tl) return null
+            val k = 400f / (tr - tl)
+            if (k <= 0f || k > 8f) return null
+            val rects = LinkedHashMap<String, String>()
+            var maxR = 0
+            var maxB = 0
+            for (suffix in MMJ_RECT_SUFFIXES) {
+                val v = coreOptions["${prefix}_$suffix"]?.toIntOrNull() ?: 0
+                val scaled = (v * k).toInt().coerceIn(0, 4095)
+                rects["${prefix}_$suffix"] = scaled.toString()
+                if ((suffix == "top_right" || suffix == "bottom_right") && scaled > maxR) maxR = scaled
+                if ((suffix == "top_bottom" || suffix == "bottom_bottom") && scaled > maxB) maxB = scaled
+            }
+            if (maxR <= 0 || maxB <= 0) return null
+            return NativeFamilyLayout(rects, maxR, maxB)
+        }
+        val opt = coreOptions[if (portraitFamily) "layout_option" else "landscape_layout_option"] ?: "0"
+        return when {
+            // 竖屏默认：上下堆叠（上屏 400×240 + 下屏 320×240 居中，零间隙同标尺）
+            portraitFamily && (opt == "0") ->
+                NativeFamilyLayout(defaultRects(prefix, stacked = true), 400, 480)
+            // 竖屏选并排 / 横屏默认或并排：左右排布
+            (portraitFamily && opt == "3") || (!portraitFamily && (opt == "0" || opt == "3")) ->
+                NativeFamilyLayout(defaultRects(prefix, stacked = false), 720, 240)
+            // 单屏(1)/大屏(2)：布局函数专属几何，不强行替代
+            else -> null
+        }
+    }
+
+    /** 原生双屏矩形（像素坐标，相对核心窗口 = 原生缓冲）。 */
+    private fun defaultRects(prefix: String, stacked: Boolean): Map<String, String> {
+        return if (stacked) {
+            mapOf(
+                "${prefix}_top_left" to "0", "${prefix}_top_top" to "0",
+                "${prefix}_top_right" to "400", "${prefix}_top_bottom" to "240",
+                "${prefix}_bottom_left" to "40", "${prefix}_bottom_top" to "240",
+                "${prefix}_bottom_right" to "360", "${prefix}_bottom_bottom" to "480"
+            )
+        } else {
+            mapOf(
+                "${prefix}_top_left" to "0", "${prefix}_top_top" to "0",
+                "${prefix}_top_right" to "400", "${prefix}_top_bottom" to "240",
+                "${prefix}_bottom_left" to "400", "${prefix}_bottom_top" to "0",
+                "${prefix}_bottom_right" to "720", "${prefix}_bottom_bottom" to "240"
+            )
+        }
+    }
+
+    /** 恢复用户布局键原值（custom 开关回用户值，矩形键还原/删除）。 */
+    private fun restoreUserLayoutLocked(
+        sections: LinkedHashMap<String, LinkedHashMap<String, String>>
+    ) {
+        val layout = sections.getOrPut("Layout") { LinkedHashMap() }
+        layout["portrait_custom_layout"] = coreOptions["portrait_custom_layout"] ?: "false"
+        layout["landscape_custom_layout"] = coreOptions["landscape_custom_layout"] ?: "false"
+        val saved = savedLayoutValues
+        for (key in MMJ_FILTER_LAYOUT_KEYS) {
+            if (key == "portrait_custom_layout" || key == "landscape_custom_layout") continue
+            val v = saved?.get(key)
+            if (v != null) layout[key] = v else layout.remove(key)
+        }
+        savedLayoutValues = null
+    }
+
     /**
      * 把 coreOptions 合并写入 <userDir>/config/config-mmj.ini。
      *
@@ -670,6 +851,28 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             }
             // ★ 旧版 [Controls] 布局族残留清理（见 cleanupLegacyControlsLayoutKeys）
             cleanupLegacyControlsLayoutKeys(sections)
+            // ★★★ V13：前端滤镜原生布局强制/恢复（见「前端滤镜原生布局」组注释）★★★
+            if (nativeFilterLayout) {
+                val pLayout = computeNativeFamilyLayout(true)
+                val lLayout = computeNativeFamilyLayout(false)
+                if (pLayout == null || lLayout == null) {
+                    // 当前设置不支持原生中转（单屏/大屏/坏矩形）→ 自愈关闭 + 还原
+                    nativeFilterLayout = false
+                    restoreLayoutPending = true
+                    android.util.Log.i("CitraMmjEngine",
+                        "V13 native filter layout unsupported by current layout opts -> self-disabled")
+                } else {
+                    val layoutSec = sections.getOrPut("Layout") { LinkedHashMap() }
+                    layoutSec["portrait_custom_layout"] = "true"
+                    layoutSec["landscape_custom_layout"] = "true"
+                    for ((k, v) in pLayout.rects) layoutSec[k] = v
+                    for ((k, v) in lLayout.rects) layoutSec[k] = v
+                }
+            }
+            if (restoreLayoutPending && !nativeFilterLayout) {
+                restoreLayoutPending = false
+                restoreUserLayoutLocked(sections)
+            }
             // 3) 写回
             val sb = StringBuilder()
             for ((section, kv) in sections) {

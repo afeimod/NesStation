@@ -26,10 +26,41 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * ★★★ MMJ（Citra MMJ 3DS）GLSL 滤镜显示视图 V12 ★★★
+ * ★★★ MMJ（Citra MMJ 3DS）GLSL 滤镜显示视图 V13 ★★★
+ *
+ * ## V12 → V13 根治（"滤镜编译都成功了，但 xBR/HQx/SEDI 依然看不出效果"）★★★
+ *
+ * V12 修好了着色器编译（textureSize lod + highp），但【滤镜的输入源】
+ * 仍是错的：本视图把窗口尺寸的 SurfaceTexture 交给核心，核心把最终
+ * 合成帧按【窗口分辨率】渲染进来 —— 像素网格类滤镜（xBR/4xBR/HQ2X/
+ * HQ4X/SEDI 全族）的算法假设 color_texture 是【原生低分辨率 framebuffer】
+ * （3DS 上屏 400×240）：
+ *   - HQ2X/4xBR 的 `fract(dc * GetResolution())` 在窗口分辨率输入下，
+ *     每个纹素 ≈ 1 屏幕像素 → 边缘检测网格退化 → 输出 ≈ 直通；
+ *   - 源图已被核心双线性放大过（像素已被混合），边缘导向插值无边缘
+ *     可重建 → "编译成功但毫无视觉效果"。
+ *
+ * V13 方案：【原生分辨率中转 + 前端放大】（对齐核心内链的工作方式）：
+ *   1. 滤镜激活时把 SurfaceTexture 默认缓冲设为【原生双屏布局尺寸】
+ *      （竖屏堆叠 400×480 / 横屏并排 720×240），核心经自定义布局矩形
+ *      1:1 渲染原生像素网格（见 CitraMmjEngine.setMmjNativeFilterMode）；
+ *   2. 本视图的滤镜着色器以原生纹理为源，等比放大（letterbox 视口）
+ *      绘满窗口 —— 几何与核心自布局完全一致，但 xBR/HQx 现在工作在
+ *      真正的原生像素网格上 → 滤镜效果立现；
+ *   3. 解析 .glsl 的 `//! mag_filter = nearest|linear` 指令并应用到
+ *      OES 纹理采样（Citra 原生同款语义）：xBR/HQx/Dot 声明 nearest
+ *      —— 最近邻采样保住原生像素的锐利边缘（线性采样会先糊开像素，
+ *      是滤镜无效的帮凶之一）；min_filter 恒 LINEAR（前端只放大）；
+ *   4. 直通路径（无滤镜/编译失败回落）：沿用原生缓冲 + 同款 letterbox
+ *      视口，GPU 线性放大 ≈ 核心直绘观感，无回归；
+ *   5. 用户自定义布局/单屏/大屏等不支持原生中转的情形
+ *      （mmjNativeFilterLayoutSize 返回 null）自动保持 V12 窗口缓冲
+ *      行为 —— 滤镜效果退化但不破坏布局。
+ *
+ * ------------------------------------------------------------------
  *
  * ## V11.3 → V12 根治（"全部滤镜（全局 xbr/hqx 映射 + 自带 14 个 .glsl）
- *   依然无任何效果"的最终根因）★
+ *   依然无任何效果"的编译层根因）★
  *
  * V11.3 的兼容头里写的是【单参数】textureSize：
  * ```glsl
@@ -139,6 +170,17 @@ class MmjFilterView @JvmOverloads constructor(
     // 滤镜 program（用户选定 .glsl + MMJ 兼容头）
     private var progFilter = 0
     @Volatile private var lastBoundShaderName: String? = "<sentinel>"
+
+    // ---- ★ V13 原生分辨率滤镜模式状态 ----
+    /** true = 核心正渲染到原生布局尺寸缓冲（需 letterbox 视口 + 布局恢复）。 */
+    @Volatile private var nativeFilterMode = false
+
+    /** 当前核心缓冲尺寸（原生模式下 = 原生布局尺寸；窗口模式 = 窗口尺寸）。 */
+    private var bufW = 0
+    private var bufH = 0
+
+    /** GetTime() 帧计数（旧恒 0，个别动画类滤镜依赖）。 */
+    private var frameCount = 0L
 
     @Volatile private var engineSurfaceGiven = false
 
@@ -462,6 +504,11 @@ class MmjFilterView @JvmOverloads constructor(
         engineSurfaceGiven = false
         try {
             val eng = engine
+            // ★ V13：退出原生滤镜模式时恢复用户布局（ini 矩形键/开关原值）
+            if (nativeFilterMode && eng is com.nesstation.app.core.engine.CitraMmjEngine) {
+                try { eng.setMmjNativeFilterMode(false) } catch (_: Throwable) {}
+            }
+            nativeFilterMode = false
             eng?.onSurfaceDestroyed()
             eng?.setSurface(null)
         } catch (_: Throwable) {}
@@ -469,20 +516,58 @@ class MmjFilterView @JvmOverloads constructor(
         coreSurface = null
     }
 
+    /**
+     * ★ V13：当前 display rotation 是否属竖屏家族（决定原生布局家族：
+     * 竖屏 = 堆叠 400×480；横屏 = 并排 720×240）。与引擎 onSurfaceChanged
+     * 下发给核心的 rotation 同源（同一 display），保证布局家族一致。
+     */
+    private fun isPortraitRotation(): Boolean {
+        val rot = try {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE)
+                as? android.view.WindowManager
+            @Suppress("DEPRECATION") val r = wm?.defaultDisplay?.rotation
+            r ?: Surface.ROTATION_0
+        } catch (_: Throwable) { Surface.ROTATION_0 }
+        return rot == Surface.ROTATION_0 || rot == Surface.ROTATION_180
+    }
+
     private fun ensureCoreSurface() {
         if (engineSurfaceGiven) return
         val st = surfaceTexture ?: return
+        val eng = engine
         val w = surfaceW.coerceAtLeast(1)
         val h = surfaceH.coerceAtLeast(1)
-        st.setDefaultBufferSize(w, h)
+
+        // ★★★ V13：滤镜激活且布局设置支持时，把核心渲染缓冲切到
+        //   【原生双屏布局尺寸】，让像素网格类滤镜工作在原生像素网格上。
+        //   失败/不支持 → 保持窗口缓冲（V12 行为，滤镜效果退化但无回归）。
+        var bw = w
+        var bh = h
+        val curShader = shaderName?.trim()?.takeIf { it.isNotEmpty() && it != "(off)" }
+        if (curShader != null && eng is com.nesstation.app.core.engine.CitraMmjEngine) {
+            val native = try { eng.mmjNativeFilterLayoutSize(isPortraitRotation()) } catch (_: Throwable) { null }
+            if (native != null) {
+                bw = native.first
+                bh = native.second
+                try { eng.setMmjNativeFilterMode(true) } catch (_: Throwable) {
+                    bw = w; bh = h
+                }
+                nativeFilterMode = bw != w || bh != h
+                if (nativeFilterMode) {
+                    Log.i(TAG, "V13 native filter buffer: ${bw}x${bh} (window ${w}x${h})")
+                }
+            }
+        }
+        bufW = bw
+        bufH = bh
+        st.setDefaultBufferSize(bw, bh)
         val surf = Surface(st)
         coreSurface = surf
-        val eng = engine
         if (eng != null) {
             eng.setSurface(surf)
-            eng.onSurfaceChanged(surf, w, h)
+            eng.onSurfaceChanged(surf, bw, bh)
             engineSurfaceGiven = true
-            Log.i(TAG, "MMJ core surface attached: ${w}x${h}")
+            Log.i(TAG, "MMJ core surface attached: ${bw}x${bh}")
         }
     }
 
@@ -511,6 +596,25 @@ class MmjFilterView @JvmOverloads constructor(
             val h = surfaceH
             if (w <= 0 || h <= 0) continue
 
+            // ★ V13：旋转家族变化 → 原生缓冲尺寸随之切换（竖屏堆叠 400×480
+            //   ⇄ 横屏并排 720×240）。只重设缓冲尺寸 + 通知引擎重算布局；
+            //   矩形（两家族）已在 setMmjNativeFilterMode(true) 时同时落盘。
+            if (nativeFilterMode) {
+                val native = try {
+                    (engine as? com.nesstation.app.core.engine.CitraMmjEngine)
+                        ?.mmjNativeFilterLayoutSize(isPortraitRotation())
+                } catch (_: Throwable) { null }
+                if (native != null && (native.first != bufW || native.second != bufH)) {
+                    bufW = native.first
+                    bufH = native.second
+                    try {
+                        st.setDefaultBufferSize(bufW, bufH)
+                        engine?.onSurfaceChanged(coreSurface, bufW, bufH)
+                        Log.i(TAG, "V13 native buffer reconfigured: ${bufW}x${bufH}")
+                    } catch (_: Throwable) {}
+                }
+            }
+
             try { st.updateTexImage() } catch (_: Throwable) { continue }
 
             // 滤镜 program 重建（如 shader 名变化）
@@ -528,6 +632,17 @@ class MmjFilterView @JvmOverloads constructor(
             val prog = if (progFilter != 0 && curShader != null) progFilter else progPassthrough
             if (prog == 0) continue
 
+            // ★ V13 视口：原生模式 = 缓冲等比 letterbox 居中（与核心在窗口内
+            //   自布局的 fit-inside 几何一致，内容只放大不变形）；窗口模式 = 全屏。
+            var vw = w
+            var vh = h
+            if (nativeFilterMode && bufW > 0 && bufH > 0) {
+                val scale = minOf(w.toFloat() / bufW, h.toFloat() / bufH)
+                vw = (bufW * scale).toInt().coerceAtLeast(1)
+                vh = (bufH * scale).toInt().coerceAtLeast(1)
+                GLES20.glViewport((w - vw) / 2, (h - vh) / 2, vw, vh)
+            }
+
             GLES20.glUseProgram(prog)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
@@ -538,10 +653,12 @@ class MmjFilterView @JvmOverloads constructor(
 
             if (prog == progFilter) {
                 val uRes = GLES20.glGetUniformLocation(prog, "resolution")
-                if (uRes >= 0) GLES20.glUniform2f(uRes, w.toFloat(), h.toFloat())
+                // ★ V13：GetOnScreenSize() 语义 = 实际绘制内容区（letterbox 后）
+                if (uRes >= 0) GLES20.glUniform2f(uRes, vw.toFloat(), vh.toFloat())
                 val uFc = GLES20.glGetUniformLocation(prog, "frame_count")
-                if (uFc >= 0) GLES20.glUniform1i(uFc, 0)
+                if (uFc >= 0) GLES20.glUniform1i(uFc, (frameCount and 0xffffffffL).toInt())
             }
+            frameCount++
 
             val aPos = GLES20.glGetAttribLocation(prog, "aPos")
             quadBuf.position(0)
@@ -563,6 +680,12 @@ class MmjFilterView @JvmOverloads constructor(
             Log.w(TAG, "shader '$name' source not found, fallback passthrough")
             return
         }
+        // ★★ V13：解析 //! mag_filter / min_filter 指令（Citra 原生同款语义）。
+        //   xBR/4xBR/HQ2X/HQ4X/Dot 声明 nearest —— 像素网格类滤镜必须最近邻
+        //   采样源纹理：线性采样会把原生像素先糊开，边缘检测全废（滤镜
+        //   无效的帮凶之一）。min_filter 恒 LINEAR（前端只放大不缩小）。
+        val magNearest = Regex("!\\s*mag_filter\\s*=\\s*nearest").containsMatchIn(src)
+        val minNearest = Regex("!\\s*min_filter\\s*=\\s*nearest").containsMatchIn(src)
         val fs = buildFilterFs(src)
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, vsSrc)
         if (vs == 0) return
@@ -586,7 +709,18 @@ class MmjFilterView @JvmOverloads constructor(
             GLES20.glDeleteProgram(progFilter)
             progFilter = 0
         } else {
-            Log.i(TAG, "filter program '$name' compiled OK")
+            // ★ V13：按 .glsl 指令设置 OES 纹理采样模式（纹理对象状态，
+            //   设一次持续有效；直通 program 不经此处 —— 切回直通时
+            //   glReleaseResources/glInitResources 会重建纹理为默认 LINEAR）。
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTex)
+            GLES20.glTexParameteri(
+                GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER,
+                if (magNearest) GLES20.GL_NEAREST else GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(
+                GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER,
+                if (minNearest) GLES20.GL_NEAREST else GLES20.GL_LINEAR)
+            Log.i(TAG, "filter program '$name' compiled OK " +
+                "(mag=${if (magNearest) "nearest" else "linear"})")
         }
     }
 

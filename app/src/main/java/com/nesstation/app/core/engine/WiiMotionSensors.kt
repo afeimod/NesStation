@@ -8,10 +8,34 @@ import android.hardware.SensorManager
 import android.view.Surface
 
 /**
- * ★★★★ V10 重写（本轮，回应用户"wii游戏……手机体感模拟有问题，横放手机往上晃动
- *   才偶尔出现，应该是固定六个方向的倾斜角度，根据倾斜角度保证实现对应方向的
- *   倾斜度，类似于重力感应，就像安卓的滚球游戏往哪里倾斜就一直往哪个方向保持
- *   倾斜，回正它跟着慢慢回原位"）★★★★
+ * ★★★ V12（本轮，回应用户"前后和上下晃动有时候会串，灵敏度也不够，
+ *   左右倾斜有时候也会串的"）★★★★
+ *
+ *  1.【倾斜轴解耦根治】V9..V11 的 marble 模型把屏幕面内重力分量当位移：
+ *     marbleX=-u.x / marbleY=-u.y。只有【平贴零点】时轴间才解耦 —— 零点
+ *     锚定在任意握持角（斜靠 30°~45°）后，纯横滚（左右倾斜）会让 u.y 按
+ *     cos(φ) 缩放 → 前后轴跟着漂移（"左右倾斜偶尔串出前后"）；横滚叠加
+ *     时俯仰同理反向串。V12 改为【角度域精确分解】：
+ *       φ = asin(u.x)              （横滚，u.x=sinφ 无俯仰耦合）
+ *       ψ = asin(-u.y / cos φ)      （俯仰，除以 cosφ 抵消横滚耦合）
+ *     推导：姿态 = Rx(ψ)·Ry(φ) 作用于竖直重力 →
+ *       u = (sinφ, -cosφ·sinψ, cosφ·cosψ) —— 纯横滚只动 φ、纯俯仰只动 ψ，
+ *     任意握持角下两轴数学上严格解耦。输出 = 相对零点的角度线性映射
+ *     （死区 2.5° → 满程 16°/增益），小角度线性度也比 marble 模型更好。
+ *
+ *  2.【挥动防串（前后↔上下）】旧实现六向分量各自独立过阈值：带弧线的
+ *     推拉/提压同时点亮相邻两轴；单帧尖峰直接满幅输出。V12 三层治理：
+ *       · 主导轴胜出（幅值 < 0.6×最大者的伴生分量清零，真斜向保留）；
+ *       · 阈值上移（快速倾斜的旋转伪迹 ≤ ~1.5 m/s²，真实挥动 ≥ 3 ——
+ *         阈值 0.8→1.2/满程 3.2，推拉 0.55→0.9/2.6，伪迹落入阈下弱区，
+ *         对真实动作反而更灵敏）；
+ *       · 攻向即时/收向 120ms 指数衰减包络，单帧毛刺不再直达输出。
+ *
+ *  3.【灵敏度】收向时间常数 0.6s→0.45s（拖尾感是"灵敏度不够"的体感
+ *     成分之一）；满程角 16°/增益（默认 1.6 ≈ 10° 满程，比旧
+ *     12.2° 满程更灵敏），死区 5°→2.5°。
+ *
+ * ------------------------------------------------------------------
  *
  * 【V10 模型 —— 大理石滚球（marble）六方向，逐条对齐用户需求原话】：
  *
@@ -71,18 +95,17 @@ object WiiMotionSensors {
     // ----------------------------------------------------------------------
 
     /**
-     * 死区（≈ sin 5°）：自然握持的轻微歪斜不产生输出。
-     * ★ V11.2：从 sin 3° (0.05) 提到 sin 5° (0.087) —— 中心点稳定性加固。
-     *   低通滤波后仍有微抖动残留在 sin 3°~5° 之间，扩大死区把这些"几乎垂直
-     *   但抖了一下"的状态也压成 0，配合 alpha=0.2 低通后中心点彻底稳定。
+     * ★ V12 死区角（度）：自然握持的轻微歪斜/低通残留抖动不产生输出。
+     * 角度域下 2.5° 死区的中心稳定性优于旧 sin5° 死区（角度分解天然
+     * 抑制轴间耦合抖动，可以放心收窄）。
      */
-    private const val MARBLE_DEADZONE = 0.087f
+    private const val TILT_DEADZONE_DEG = 2.5f
 
-    /** 满程基准（≈ sin 20°），实际满程 = 该值 ÷ 灵敏度增益（钳下限）。 */
-    private const val MARBLE_FULL = 0.34f
+    /** ★ V12 满程基准角（度，增益 1.0 时），实际满程 = 该值 ÷ 灵敏度增益。 */
+    private const val TILT_FULL_DEG = 16f
 
     /** 满程下限保护（防灵敏度拉满时标尺退化/噪声满幅）。 */
-    private const val MARBLE_FULL_MIN = 0.15f
+    private const val TILT_FULL_MIN_DEG = 6f
 
     /**
      * ★ V10 零点策略：不再做静息漂移吸附。
@@ -100,24 +123,32 @@ object WiiMotionSensors {
     private const val GRAVITY_FREEZE_DELTA = 3.0f
 
     /**
-     * ★★ V11：收向时间常数（秒）。回正后输出 ~tau 秒衰减到 37%。
+     * ★★ 收向时间常数（秒）。回正后输出 ~tau 秒衰减到 37%。
      *
-     * V10 用 0.3s（300ms）—— 用户反馈"停不住立刻回正了"。V11 提到 0.6s，
-     * 给"球慢慢滚回中心"的手感更长一段缓冲；与 V11 lin() 符号方向性修复
-     * 配合后，攻向（按住倾斜）仍即时跟随、收向（松开回正）有约 600ms 的
-     * 平滑收尾，自然不突兀。
+     * V11 用 0.6s —— 本轮（V12）收到 0.45s：用户反馈"灵敏度也不够"，
+     * 600ms 拖尾是迟钝感的体感成分之一；0.45s 仍保留"球慢慢滚回中心"
+     * 的缓冲，攻向（按住倾斜）依旧即时跟随。
      */
-    private const val RELEASE_TAU = 0.6f
+    private const val RELEASE_TAU = 0.45f
 
-    /** 挥动触发阈值（线性加速度幅值，m/s²）。v1.4 基准 0.8；增益在 clean() 内除。 */
-    private const val SWING_THRESHOLD = 0.8f
+    /**
+     * ★★ V12 挥动触发阈值（线性加速度幅值，m/s²）。0.8 → 1.2。
+     * 依据：快速倾斜/转动手机时传感器伪迹（切向+向心加速度，r≈5-10cm）
+     * 峰值 ≤ ~1.5 m/s²；真实挥动平移 3~15 m/s²。旧阈值 0.8 落在伪迹带内
+     * —— 正是"倾斜时串出挥动"的成因。真实挥动在 1.2/3.2 标尺下依旧
+     * 轻松满幅（对真实动作更灵敏，对伪迹更免疫）。
+     */
+    private const val SWING_THRESHOLD = 1.2f
 
-    /** 挥动满强度阈值（线性加速度幅值；v1.4 基准 3.5）。 */
-    private const val SWING_FULL = 3.5f
+    /** 挥动满强度阈值（线性加速度幅值）。 */
+    private const val SWING_FULL = 3.2f
 
-    /** ★★ 推/拉（前后晃动的线性加速度分量）独立阈值。v1.4 基准 0.55/2.2。 */
-    private const val SWING_FB_THRESHOLD = 0.55f
-    private const val SWING_FB_FULL = 2.2f
+    /** ★★ 推/拉（前后晃动的线性加速度分量）独立阈值。0.55/2.2 → 0.9/2.6。 */
+    private const val SWING_FB_THRESHOLD = 0.9f
+    private const val SWING_FB_FULL = 2.6f
+
+    /** ★★ V12 挥动收向时间常数（秒）：单帧毛刺不再直达输出。 */
+    private const val SWING_RELEASE_TAU = 0.12f
 
     /** 摇晃触发阈值（瞬时角速度变化，rad/s；v1.4 基准 2.2）。 */
     private const val SHAKE_THRESHOLD = 2.2f
@@ -126,7 +157,7 @@ object WiiMotionSensors {
     private const val SHAKE_FULL = 7.0f
 
     /** ★ 增益下限保护：挥动/摇晃阈值最低值（防高增益时噪声触发）。 */
-    private const val SWING_THRESHOLD_MIN = 0.35f
+    private const val SWING_THRESHOLD_MIN = 0.5f
     private const val SHAKE_THRESHOLD_MIN = 0.8f
 
     /** ★★ 传感器采样间隔估计（默认 50Hz；按事件时间戳自适应）。 */
@@ -169,9 +200,9 @@ object WiiMotionSensors {
     /** 首样本尚未初始化（true = gravity 全零，下一帧直接吸附真值）。 */
     private var gravityInitialized = false
 
-    /** ★ V9 大理石零点（静息吸附基准；init (0,0) = 平贴零点）。 */
-    private var neutralX = 0f
-    private var neutralY = 0f
+    /** ★ V12 零点姿态角（弧度）：首次启动/手动回正时锚定，之后固定。 */
+    private var neutralPhi = 0f
+    private var neutralPsi = 0f
 
     /** ★ V9 是否已完成首次吸附（首次吸附前无视输出保护 —— 入场姿态错位根治）。 */
     private var everAnchored = false
@@ -191,6 +222,9 @@ object WiiMotionSensors {
 
     /** V9 输出平滑的当前值（攻向即时 / 收向指数衰减）。 */
     private val tiltOut = FloatArray(4)
+
+    /** ★ V12 挥动包络状态（U/D/L/R/F/B，攻向即时 / 收向指数衰减）。 */
+    private val swingOut = FloatArray(6)
 
     @Volatile private var hasGravitySensor = false
     @Volatile private var hasLinearAccel = false
@@ -227,8 +261,9 @@ object WiiMotionSensors {
         lastLinAccel.fill(0f)
         lastGyro.fill(0f)
         tiltOut.fill(0f)
-        neutralX = 0f
-        neutralY = 0f
+        swingOut.fill(0f)
+        neutralPhi = 0f
+        neutralPsi = 0f
         everAnchored = false
         forceRecenter = false
         lastTimestampNs = 0L
@@ -281,79 +316,85 @@ object WiiMotionSensors {
     }
 
     // ------------------------------------------------------------------
-    // ★★ V9 核心：大理石六方向解算 + 静息重锚
+    // ★★ V12 核心：角度域解耦六方向解算（倾斜轴互不串扰）
     // ------------------------------------------------------------------
 
     /**
-     * ★★★ V11 倾斜解算修复（"六个方向没有一个对的"根治）★★★
+     * ★★★ V12 倾斜解算重构（"前后和上下晃动会串 / 左右倾斜偶尔也串"根治）★★★
      *
-     * V10 及之前版本的核心缺陷：`lin()` 函数对输入取绝对值后做线性映射，
-     * 导致 `lin(-dx)` 永远等于 `lin(dx)`，对立方向的输出【始终相等】：
-     *   - tiltLeft == tiltRight（无论 dx 符号）
-     *   - tiltForward == tiltBackward（无论 dy 符号）
-     * 引擎 pushWiiTilt() 把这两根半轴同时下发到核心后，Ishiiruka 内部
-     * 的 sBind 表对 Forward/Left 取 -1.0f、对 Backward/Right 取 +1.0f，
-     * 差分 (Forward - Backward) 或 (Right - Left)【必然为 0】——
-     * 即任何方向倾斜都被对消成零信号，六方向全失效。
+     * V11 及之前的 marble 模型把屏幕面内重力分量直接当位移用：
+     *   marbleX = -u.x, marbleY = -u.y（u = 重力/g，屏幕坐标系）
+     * 该模型只有【手机平贴、零点锚在平贴位】时轴间才天然解耦。零点锚定
+     * 在任意握持角（斜靠 30°~45°，横放手机游戏时的常态）后：
+     *   - 纯横滚（左右倾斜）会让 u.y 按 cos(φ) 缩放 → marbleY 漂移
+     *     → 左右倾斜串出前后输出（横滚到 30° 时漂移 ~13%，正落在输出
+     *       线性区的可感区间）；
+     *   - 横滚基础上做俯仰，u.x 也被耦合 → 前后倾反过来串出左右。
+     * 这就是用户"前后和上下晃动有时候会串 / 左右倾斜有时候也会串"里
+     * 倾斜通道互串的数学根源。
      *
-     * V11 修复：目标值按【大理石位移的符号】方向性激活，每一时刻对立
-     * 方向中只有【真正朝低侧滚动的那一侧】输出非零，另一侧强制清零：
-     *   - dx < 0（大理石向左）→ 只激活 tiltLeft，清零 tiltRight
-     *   - dx > 0（大理石向右）→ 只激活 tiltRight，清零 tiltLeft
-     *   - dy > 0（大理石向屏幕上方滚，顶边下沉）→ 只激活 tiltForward
-     *   - dy < 0（大理石向怀里滚，顶边抬起）→ 只激活 tiltBackward
-     * 配合 pushWiiTilt 的差分逻辑后，引擎收到带符号的真实方向信号，
-     * 游戏读到正确的左右/前后倾斜分量 —— "横放左右倾斜无反应" /
-     * "前后翻转变成右倾斜" / "停不住立刻回正" 三大现象均源于此 bug，
-     * 一次修复。
+     * V12 改为【角度域精确分解】（刚体姿态学公式，非近似）：
+     *   设 u = 重力单位向量（屏幕坐标 X_s 右 / Y_s 上），
+     *     横滚角 φ = asin(u.x)                —— u.x = sinφ，严格无俯仰耦合
+     *     俯仰角 ψ = asin(-u.y / cos φ)        —— 除以 cosφ 抵消横滚耦合
+     *   推导：姿态 = Rx(ψ)·Ry(φ) 作用于竖直重力 →
+     *     u = (sinφ, -cosφ·sinψ, cosφ·cosψ)
+     *   任意握持角下纯横滚只动 φ、纯俯仰只动 ψ —— 两轴数学上严格解耦。
      *
-     * 模型不变（与 V10 同）：大理石位移 = -(比力屏幕面内分量)/g，
-     * 永远向低的一侧滚；零点在首次启动/手动回正时锚定；不对称平滑
-     * （攻向即时、收向按 RELEASE_TAU 指数衰减）保留。
+     * 输出 = (当前角 − 零点角) 的【角度】线性映射（死区 2.5° → 满程
+     * 16°/灵敏度增益），比 marble 的 sin 域映射小角度线性度更好。
+     * 方向约定与旧版完全一致（左侧下沉 → tiltLeft；顶边下沉 → tiltForward）。
+     * 零点策略不变（首次启动 / 手动回正锚定，之后固定不漂移）；
+     * 不对称平滑不变（攻向即时 / 收向按 RELEASE_TAU 指数衰减）。
      */
     private fun emitTilt(state: MotionState, sink: (MotionState) -> Unit) {
-        // ---- 1) 大理石位移（-1..1）----
+        // ---- 1) 角度分解（横滚 φ / 俯仰 ψ，弧度）----
         val g = 9.81f
-        val marbleX = (-gravity[0] / g).coerceIn(-1f, 1f)
-        val marbleY = (-gravity[1] / g).coerceIn(-1f, 1f)
+        val ux = (gravity[0] / g).coerceIn(-0.999f, 0.999f)
+        val uy = (gravity[1] / g).coerceIn(-0.999f, 0.999f)
+        val phi = kotlin.math.asin(ux)
+        // φ→±90°（屏立式）时俯仰在数学上退化：除数下限保护 + asin 域钳制。
+        // 立式姿态下俯仰零点同位锚定，dPsi 仍正确（见下方减法）。
+        val cosPhi = kotlin.math.cos(phi).coerceAtLeast(0.25f)
+        val psi = kotlin.math.asin(((-uy) / cosPhi).coerceIn(-0.999f, 0.999f))
 
-        // ---- 2) V10 零点：首次启动 / 手动回正才锚定；之后固定不漂移 ----
+        // ---- 2) 零点：首次启动 / 手动回正才锚定；之后固定不漂移 ----
         if (forceRecenter) {
             // 手动回正：零点吸附到当前姿态 → 输出随收向平滑归零
-            neutralX = marbleX
-            neutralY = marbleY
+            neutralPhi = phi
+            neutralPsi = psi
             forceRecenter = false
             everAnchored = true
         } else if (!everAnchored) {
             // 首次进入：以当前握持姿态为零点（入场姿态不误报为倾斜）
-            neutralX = marbleX
-            neutralY = marbleY
+            neutralPhi = phi
+            neutralPsi = psi
             everAnchored = true
         }
         // ★ 零点固定后：只要姿态偏离零点，输出就一直保持；
         //   回到零点附近输出自然归零 —— "手机不回正他也不回正" ✓
 
-        // ---- 3) 四方向目标值（角度线性映射）----
-        // ★★ V11：符号方向性激活 —— 一次只激活对立方向中的一侧，
-        //   避免左右/前后同时输出相等值导致引擎差分对消成零。
-        val full = (MARBLE_FULL / sensitivityGain).coerceAtLeast(MARBLE_FULL_MIN)
-        val dx = marbleX - neutralX
-        val dy = marbleY - neutralY
-        fun lin(v: Float): Float {
-            val a = kotlin.math.abs(v)
-            return if (a < MARBLE_DEADZONE) 0f
-            else ((a - MARBLE_DEADZONE) / (full - MARBLE_DEADZONE)).coerceIn(0f, 1f)
+        // ---- 3) 相对角 → 四方向目标（角度线性映射，方向性激活）----
+        // ★ 符号方向性激活（V11 语义保留）：每一时刻对立方向只有
+        //   真正加深的那一侧输出非零。
+        //   dPhi > 0 = 左侧下沉加深（u.x = sinφ 随左倾增大）
+        //   dPsi > 0 = 顶边下沉加深（u.y = -cosφ·sinψ 随前倾更负）
+        val radToDeg = 57.29577951f
+        val dPhi = (phi - neutralPhi) * radToDeg
+        val dPsi = (psi - neutralPsi) * radToDeg
+        val fullDeg = (TILT_FULL_DEG / sensitivityGain).coerceAtLeast(TILT_FULL_MIN_DEG)
+        fun lin(deg: Float): Float {
+            val a = kotlin.math.abs(deg)
+            return if (a < TILT_DEADZONE_DEG) 0f
+            else ((a - TILT_DEADZONE_DEG) / (fullDeg - TILT_DEADZONE_DEG)).coerceIn(0f, 1f)
         }
-        // ★ V11 符号方向性激活：lin() 内部对 |v| 做归一化，不再让
-        //   lin(-dx) 与 lin(dx) 同时输出；只有真正朝低侧滚的那一侧
-        //   才被激活。dx/dy 为正/负的方向见各分支注释。
         val target = floatArrayOf(
-            if (dx < 0f) lin(-dx) else 0f,    // 左倾：仅 dx < 0（大理石向左滚）时激活
-            if (dx > 0f) lin(dx) else 0f,    // 右倾：仅 dx > 0（大理石向右滚）时激活
-            if (dy > 0f) lin(dy) else 0f,    // 前倾：仅 dy > 0（顶边下沉、大理石向屏幕上方滚）时激活
-            if (dy < 0f) lin(-dy) else 0f    // 后倾：仅 dy < 0（顶边抬起、大理石向怀里滚）时激活
+            if (dPhi > 0f) lin(dPhi) else 0f,    // 左倾：左侧下沉
+            if (dPhi < 0f) lin(-dPhi) else 0f,   // 右倾：右侧下沉
+            if (dPsi > 0f) lin(dPsi) else 0f,    // 前倾：顶边下沉
+            if (dPsi < 0f) lin(-dPsi) else 0f    // 后倾：顶边抬起
         )
-        // ---- 4) 不对称平滑：攻向即时 / 收向 ~600ms 指数衰减 ----
+        // ---- 4) 不对称平滑：攻向即时 / 收向指数衰减（~RELEASE_TAU）----
         val decay = kotlin.math.exp(-sampleDt / RELEASE_TAU)
         for (i in 0 until 4) {
             val cur = tiltOut[i]
@@ -552,6 +593,20 @@ object WiiMotionSensors {
 
     /**
      * 由线性加速度分量更新挥动状态（4 向 + 推/拉）。
+     *
+     * ★★ V12 重构（"前后晃动和上下晃动互相串"根治）★★
+     *
+     * 旧实现把六向分量【各自独立】过阈值输出：带弧线的推拉/提压会同时
+     * 点亮相邻两轴（串扰）；单帧尖峰直接满幅输出（快速倾斜的旋转伪迹
+     * 直达游戏）。V12 三层治理：
+     *
+     *   1.【主导轴胜出】六向候选按清洗后幅值比较，只有最大者全额输出，
+     *      其余幅值 < 0.6×最大者清零 —— 真实 45° 斜向仍保留次轴（≥0.6×），
+     *      单轴动作的伴生毛刺分量被切除（前后↔上下互串的直接修复）；
+     *   2.【阈值上移】见 SWING_THRESHOLD 注释 —— 旋转伪迹落阈下弱区；
+     *   3.【包络】攻向即时 / 收向 120ms 指数衰减（swingOut 状态）——
+     *      单帧尖峰不再直达输出。
+     *
      * ★ V3 方向修正保留：屏幕坐标 Y_s 向上 —— lyS > 0 = 向上甩 → swingUp；
      *   lzS > 0 = 向自己拉（Z_s 出屏朝用户）→ swingBackward。
      */
@@ -559,31 +614,45 @@ object WiiMotionSensors {
         lxS: Float, lyS: Float, lzS: Float,
         state: MotionState
     ) {
-        fun clean(v: Float): Float {
+        fun clean(v: Float, th: Float, full: Float): Float {
             val a = kotlin.math.abs(v)
-            // ★ 挥动阈值/满程同除灵敏度增益
-            val th = (SWING_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN)
-            val full = (SWING_FULL / sensitivityGain).coerceAtLeast(th * 2f)
-            return if (a < th) 0f
-            else ((a - th) / (full - th))
-                .coerceIn(0f, 1f)
+            return if (a < th) 0f else ((a - th) / (full - th)).coerceIn(0f, 1f)
         }
-        // 屏幕坐标：X_s 右、Y_s 上、Z_s 出屏朝用户
-        state.swingRight = clean(lxS)
-        state.swingLeft = clean(-lxS)
-        state.swingUp = clean(lyS)
-        state.swingDown = clean(-lyS)
-        state.swingForward = cleanFbSwing(-lzS)   // 向前推（远离自己）
-        state.swingBackward = cleanFbSwing(lzS)   // 向自己拉
-    }
+        // ★ 挥动阈值/满程同除灵敏度增益（钳下限）
+        val thU = (SWING_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN)
+        val fullU = (SWING_FULL / sensitivityGain).coerceAtLeast(thU * 2f)
+        val thFb = (SWING_FB_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN * 0.6f)
+        val fullFb = (SWING_FB_FULL / sensitivityGain).coerceAtLeast(thFb * 2f)
 
-    /** ★ 推/拉独立标尺（同除灵敏度增益）。 */
-    private fun cleanFbSwing(v: Float): Float {
-        val a = kotlin.math.abs(v)
-        val th = (SWING_FB_THRESHOLD / sensitivityGain).coerceAtLeast(SWING_THRESHOLD_MIN * 0.6f)
-        val full = (SWING_FB_FULL / sensitivityGain).coerceAtLeast(th * 2f)
-        return if (a < th) 0f
-        else ((a - th) / (full - th)).coerceIn(0f, 1f)
+        // 屏幕坐标：X_s 右、Y_s 上、Z_s 出屏朝用户（U/D/L/R/F/B 六候选）
+        val target = floatArrayOf(
+            clean(lyS, thU, fullU),            // 上挥
+            clean(-lyS, thU, fullU),           // 下挥
+            clean(-lxS, thU, fullU),           // 左挥
+            clean(lxS, thU, fullU),            // 右挥
+            clean(-lzS, thFb, fullFb),         // 前推（远离自己）
+            clean(lzS, thFb, fullFb)           // 后拉（向自己）
+        )
+        // ---- 1) 主导轴胜出：伴生分量（< 0.6×最大）清零 ----
+        var maxV = 0f
+        for (v in target) if (v > maxV) maxV = v
+        if (maxV > 0f) {
+            for (i in target.indices) {
+                if (target[i] < maxV * 0.6f) target[i] = 0f
+            }
+        }
+        // ---- 2) 包络：攻向即时 / 收向 120ms 指数衰减 ----
+        val decay = kotlin.math.exp(-sampleDt / SWING_RELEASE_TAU)
+        for (i in swingOut.indices) {
+            swingOut[i] = if (target[i] >= swingOut[i]) target[i]
+            else target[i] + (swingOut[i] - target[i]) * decay
+        }
+        state.swingUp = swingOut[0]
+        state.swingDown = swingOut[1]
+        state.swingLeft = swingOut[2]
+        state.swingRight = swingOut[3]
+        state.swingForward = swingOut[4]
+        state.swingBackward = swingOut[5]
     }
 
     /** 停止监听（幂等）。 */
@@ -598,6 +667,7 @@ object WiiMotionSensors {
         gravity.fill(0f)
         gravityInitialized = false
         tiltOut.fill(0f)
+        swingOut.fill(0f)
         lastLinAccel.fill(0f)
         lastGyro.fill(0f)
         hasGravitySensor = false
@@ -605,8 +675,8 @@ object WiiMotionSensors {
         hasGyro = false
         lastTimestampNs = 0L
         sampleDt = 0.02f
-        neutralX = 0f
-        neutralY = 0f
+        neutralPhi = 0f
+        neutralPsi = 0f
         everAnchored = false
         forceRecenter = false
         gravityEventSeen = false

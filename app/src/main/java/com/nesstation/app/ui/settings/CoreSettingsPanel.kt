@@ -2011,14 +2011,15 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {wiiMotionSensor = it == "enabled"}) }
                     // ★ V8 固定锚点模型：以【手机竖直横持、屏幕正对自己】为
                     //   固定中心（方向盘位，无需校准）：往哪倾斜就持续向哪输出
-                    //   （角度比例，保持姿态=保持输出）；回正后约 0.3s 平滑归零
-                    //   （滚球式）。满程角度随增益缩小：1.0=30° / 1.6≈19°(默认) /
-                    //   2.2≈14°。快速挥动/抖动另行触发 Swing/Shake。
+                    //   （角度比例，保持姿态=保持输出）；回正后约 0.45s 平滑归零
+                    //   （滚球式）。满程角度随增益缩小：1.0=16° / 1.6≈10°(默认) /
+                    //   2.2≈7°。快速挥动/抖动另行触发 Swing/Shake（V12 角度域
+                    //   解耦：左右/前后倾斜互不串扰）。
                     DropdownRow("体感灵敏度",
                         listOf(
-                            "1.0" to "标准 (满程 30°)",
-                            "1.6" to "高 (默认, 满程 ≈19°, 轻倾即满)",
-                            "2.2" to "极高 (满程 ≈14°, 微倾即反应)"),
+                            "1.0" to "标准 (满程 16°)",
+                            "1.6" to "高 (默认, 满程 ≈10°, 轻倾即满)",
+                            "2.2" to "极高 (满程 ≈7°, 微倾即反应)"),
                         padLayout.wiiMotionSensitivity
                     ) { updateLayout(padLayout.copy {wiiMotionSensitivity = it}) }
                     Text(
