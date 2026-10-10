@@ -8,6 +8,7 @@ import org.citra.emu.NativeLibrary
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import kotlin.math.roundToInt
 
 /**
  * ★★ Citra MMJ（3DS）核心引擎 —— NesStation 集成 ★★
@@ -723,7 +724,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             (viewH.toFloat() / viewW.toFloat()) < 1.2f
         if (wide) {
             // 两行网格：缓冲与窗口同宽高比（行高各 240 原生像素）
-            val bufW = kotlin.math.roundToInt(viewW.toDouble() / viewH.toDouble() * 480.0)
+            val bufW = (viewW.toDouble() / viewH.toDouble() * 480.0).roundToInt()
                 .coerceIn(400, 4095)
             val topL = (bufW - 400) / 2          // 上屏 400×240 居中
             val botL = (bufW - 320) / 2          // 下屏 320×240 居中
