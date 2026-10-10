@@ -613,13 +613,16 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     @Volatile private var storedNativeLayoutLandscape: NativeFamilyLayout? = null
 
     /**
-     * 查询前端滤镜原生缓冲布局（MmjFilterView 决定 SurfaceTexture 缓冲 +
-     * 视口拟合用），并存储供 ini 钩子落盘。
+     * 查询前端滤镜布局（MmjFilterView 决定 uGridSize 网格注入 + 触发
+     * ini 钩子落盘用）。
+     *
+     * ★ V15：矩形 = 窗口像素坐标（核心窗口 = 真实窗口，直绘清晰）；
+     *   bufW/bufH = 原生网格尺寸（滤镜网格相位注入）。缓冲不再切换。
      *
      * 查询到与上次不同的布局（旋转 / 窗口比例 / 交换屏幕变化）时：
      * 若原生滤镜模式已激活则立即重写 ini + loadConfig/WindowChanged 热生效
-     * —— 视图随后重设缓冲尺寸并再次 onSurfaceChanged，核心按新矩形重排。
-     * 查询返回 null（当前设置不支持原生中转）时清空该家族存储 → ini 钩子
+     * —— 核心按新矩形重排（缓冲恒为窗口尺寸，无需重设）。
+     * 查询返回 null（当前布局设置不支持）时清空该家族存储 → ini 钩子
      * 自愈关闭原生模式。
      *
      * @param portraitFamily true = 竖屏旋转家族（ROTATION_0/180）
@@ -660,7 +663,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     private fun computeNativeFamilyLayout(portraitFamily: Boolean, viewW: Int, viewH: Int): NativeFamilyLayout? {
         val prefix = if (portraitFamily) "portrait" else "landscape"
         if (coreOptions["${prefix}_custom_layout"] == "true") {
-            // 用户自定义布局：等比缩放（防负/零宽矩形）
+            // 用户自定义布局：矩形键本就是【窗口像素坐标】（编辑器拖动
+            // 所见即所得），V15 起原样下发（V14 曾错误缩放到原生网格）。
+            // 网格尺寸 = 上屏锚定 400 宽的等比网格（uGridSize 注入用）。
             val tl = coreOptions["${prefix}_top_left"]?.toIntOrNull()
             val tr = coreOptions["${prefix}_top_right"]?.toIntOrNull()
             if (tl == null || tr == null || tr <= tl) return null
@@ -671,13 +676,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             var maxB = 0
             for (suffix in MMJ_RECT_SUFFIXES) {
                 val v = coreOptions["${prefix}_$suffix"]?.toIntOrNull() ?: 0
-                val scaled = (v * k).toInt().coerceIn(0, 4095)
-                rects["${prefix}_$suffix"] = scaled.toString()
-                if ((suffix == "top_right" || suffix == "bottom_right") && scaled > maxR) maxR = scaled
-                if ((suffix == "top_bottom" || suffix == "bottom_bottom") && scaled > maxB) maxB = scaled
+                rects["${prefix}_$suffix"] = v.coerceIn(0, 8191).toString()
+                if ((suffix == "top_right" || suffix == "bottom_right") && v > maxR) maxR = v
+                if ((suffix == "top_bottom" || suffix == "bottom_bottom") && v > maxB) maxB = v
             }
             if (maxR <= 0 || maxB <= 0) return null
-            return NativeFamilyLayout(rects, maxR, maxB, MMJ_NATIVE_FIT_CENTERED)
+            // 网格：用户内容包围盒等比映射到 400 宽网格
+            val gridW = (maxR * k).toInt().coerceIn(400, 8191)
+            val gridH = (maxB * k).toInt().coerceIn(400, 8191)
+            return NativeFamilyLayout(rects, gridW, gridH, MMJ_NATIVE_FIT_CENTERED)
         }
         val opt = coreOptions[if (portraitFamily) "layout_option" else "landscape_layout_option"] ?: "0"
         val swap = coreOptions[if (portraitFamily) "portrait_swap_screen" else "landscape_swap_screen"] == "true"
@@ -708,45 +715,62 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      * 默认布局（opt 0）的原生几何 —— 与核心 DefaultFrameLayout
      * （framebuffer_layout.cpp）逐像素同构，上屏锚定 400×240（1:1 网格）：
      *
-     * 宽窗（H/W < 1.2）：两行网格。核心窗口内：上屏 scale=min(W, H/1.2)
-     * 居中于上半行、下屏 scale'=min(W, H/1.6) 居中于下半行，行高各半窗
-     * → 内容铺满整窗。原生等比：缓冲 H/W×480×480（行高各 240），上屏
-     * 400×240 居中于上半行、下屏 320×240 居中于下半行，前端【铺满】。
+     * ★★★ V15：矩形 = 【窗口像素坐标】（bufW×bufH = 原生网格尺寸）★★★
      *
-     * 长窗（H/W ≥ 1.2）：同标尺堆叠、顶部对齐。核心窗口内：上屏 W×0.6W
-     * 在 y=0、下屏 0.8W×0.6W 居中于其下，内容高 1.2W 下方留黑。原生
-     * 等比：缓冲 400×480，上屏 (0,0,400,240)、下屏 (40,240,360,480)，
-     * 前端【顶部对齐】。
+     * V14 把矩形锚定在原生网格坐标系（400×480 等低分辨率缓冲），核心把
+     * 画面渲染进低分辨率缓冲再由前端拉伸 —— 画面模糊、mmj OSD 角标
+     * （字体 = 8/layout.width × density）被放大 2.25×~2.7×（用户实测
+     * "帧数文本变得非常大，画面非常模糊"）。V15 核心窗口 = 真实窗口，
+     * 矩形直接用窗口像素（自定义布局矩形键本就是窗口坐标语义），核心
+     * 直绘清晰分辨率；前端滤镜的网格相位由 uGridSize 注入补偿。
+     *
+     * 宽窗（H/W < 1.2）：两行网格。网格 bufW×480（bufW = W/H×480），
+     * 缩放比 s = H/480（窗口px/网格px）—— 矩形 = 网格矩形 × s：
+     *   上屏 400×240 居中于上半行、下屏 320×240 居中于下半行。
+     *   网格与窗口同宽高比 → 铺满整窗，与核心满窗绘制逐像素一致。
+     *
+     * 长窗（H/W ≥ 1.2）：同标尺堆叠、顶部对齐。网格 400×480，s = W/400：
+     *   上屏 (0,0,400,240)×s = W×0.6W 顶对齐、下屏 (40,240,360,480)×s =
+     *   0.8W×0.6W 居中于其下，内容高 1.2W 下方留黑 —— 与核心窗口内
+     *   几何一致，且网格相位天然对齐（offset = 0）。
      */
     private fun defaultNativeLayout(viewW: Int, viewH: Int, prefix: String, swap: Boolean): NativeFamilyLayout {
         val rects = LinkedHashMap<String, String>()
         val wide = viewW > 0 && viewH > 0 &&
             (viewH.toFloat() / viewW.toFloat()) < 1.2f
         if (wide) {
-            // 两行网格：缓冲与窗口同宽高比（行高各 240 原生像素）
-            val bufW = (viewW.toDouble() / viewH.toDouble() * 480.0).roundToInt()
-                .coerceIn(400, 4095)
-            val topL = (bufW - 400) / 2          // 上屏 400×240 居中
-            val botL = (bufW - 320) / 2          // 下屏 320×240 居中
+            // 两行网格：网格 bufW×480（与窗口同宽高比），s = H/480
+            val gridW = (viewW.toDouble() / viewH.toDouble() * 480.0).roundToInt()
+                .coerceIn(400, 8191)
+            val s = viewH.toDouble() / 480.0
+            val topL = ((gridW - 400) / 2.0 * s).roundToInt()   // 上屏 400×240 居中
+            val botL = ((gridW - 320) / 2.0 * s).roundToInt()   // 下屏 320×240 居中
+            val rowH = (240.0 * s).roundToInt()                 // 半行高（窗口px）
+            val topW = (400.0 * s).roundToInt()
+            val botW = (320.0 * s).roundToInt()
             if (swap) {
                 // 交换屏幕（核心 swapped 分支：上屏移到下半行、下屏留上半行）
-                // —— 矩形键标识"哪块屏"：top_* = 上屏（400×240，下半行），
-                //     bottom_* = 下屏（320×240，上半行）
-                putNativeRect(rects, prefix, "top", topL, 240, topL + 400, 480)
-                putNativeRect(rects, prefix, "bottom", botL, 0, botL + 320, 240)
+                putNativeRect(rects, prefix, "top", topL, rowH, topL + topW, rowH * 2)
+                putNativeRect(rects, prefix, "bottom", botL, 0, botL + botW, rowH)
             } else {
-                putNativeRect(rects, prefix, "top", topL, 0, topL + 400, 240)
-                putNativeRect(rects, prefix, "bottom", botL, 240, botL + 320, 480)
+                putNativeRect(rects, prefix, "top", topL, 0, topL + topW, rowH)
+                putNativeRect(rects, prefix, "bottom", botL, rowH, botL + botW, rowH * 2)
             }
-            return NativeFamilyLayout(rects, bufW, 480, MMJ_NATIVE_FIT_STRETCH)
+            return NativeFamilyLayout(rects, gridW, 480, MMJ_NATIVE_FIT_STRETCH)
         }
+        // 长窗堆叠：网格 400×480 顶对齐，s = W/400（offset=0，相位对齐）
+        val s = if (viewW > 0) viewW.toDouble() / 400.0 else 1.0
+        val scrW = (400.0 * s).roundToInt()      // 上屏宽 = 全窗宽
+        val scrH = (240.0 * s).roundToInt()      // 每屏高 = 0.6W
+        val botL = (40.0 * s).roundToInt()       // 下屏 0.8W 居中
+        val botW = (320.0 * s).roundToInt()
         if (swap) {
             // 长窗堆叠 + 交换：下屏在上（320×240 居中），上屏在下
-            putNativeRect(rects, prefix, "top", 0, 240, 400, 480)
-            putNativeRect(rects, prefix, "bottom", 40, 0, 360, 240)
+            putNativeRect(rects, prefix, "top", 0, scrH, scrW, scrH * 2)
+            putNativeRect(rects, prefix, "bottom", botL, 0, botL + botW, scrH)
         } else {
-            putNativeRect(rects, prefix, "top", 0, 0, 400, 240)
-            putNativeRect(rects, prefix, "bottom", 40, 240, 360, 480)
+            putNativeRect(rects, prefix, "top", 0, 0, scrW, scrH)
+            putNativeRect(rects, prefix, "bottom", botL, scrH, botL + botW, scrH * 2)
         }
         return NativeFamilyLayout(rects, 400, 480, MMJ_NATIVE_FIT_TOP_ALIGNED)
     }
@@ -754,35 +778,53 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     /**
      * 并排布局（opt 3）的原生几何 —— 与核心 SideFrameLayout 同构：
      *
-     * 长窗（H > 1.5W）：堆叠变体。核心窗口内：上屏 W×0.6W 顶对齐，下屏
-     * 绘制矩形 = 上屏【等宽】（W×0.75W，位于其下）—— 下屏以 1.25× 上屏
-     * 标尺绘制（核心原样怪癖，比例仍 4:3 不变形）。原生等比：缓冲
-     * 400×540，上屏 (0,0,400,240)、下屏 (0,240,400,540)，前端【顶对齐】。
+     * ★ V15：矩形 = 窗口像素坐标（bufW×bufH = 原生网格尺寸），同
+     *   defaultNativeLayout 的 V15 语义。
      *
-     * 其余窗口：左右并排 fit-inside 居中 → 缓冲 720×240，上屏
-     * (0,0,400,240)、下屏 (400,0,720,240)，前端【居中】（letterbox）。
+     * 长窗（H > 1.5W）：堆叠变体。网格 400×540，s = W/400 —— 上屏
+     * W×0.6W 顶对齐，下屏绘制矩形 = 上屏【等宽】（W×0.75W，位于其下
+     * —— 核心原样怪癖，比例仍 4:3 不变形）。
+     *
+     * 其余窗口：左右并排 fit-inside —— 网格 720×240，s = min(W/720,
+     * H/240)，水平/垂直【居中】，offset 取整到网格步长 s 的整数倍
+     * （黑边 ± 几像素无感知，保证滤镜网格相位对齐）。
      */
     private fun sideNativeLayout(viewW: Int, viewH: Int, prefix: String, swap: Boolean): NativeFamilyLayout {
         val rects = LinkedHashMap<String, String>()
         val stacked = viewW > 0 && viewH > 0 && viewH > viewW + viewW / 2
         if (stacked) {
+            val s = viewW.toDouble() / 400.0
+            val scrW = (400.0 * s).roundToInt()
+            val topH = (240.0 * s).roundToInt()      // 上屏 W×0.6W
+            val botH = (300.0 * s).roundToInt()      // 下屏 W×0.75W（等宽怪癖）
             if (swap) {
-                // 交换：下屏矩形在上（0,0,400,300），上屏矩形在其下
-                putNativeRect(rects, prefix, "top", 0, 300, 400, 540)
-                putNativeRect(rects, prefix, "bottom", 0, 0, 400, 300)
+                // 交换：下屏矩形在上，上屏矩形在其下
+                putNativeRect(rects, prefix, "top", 0, botH, scrW, botH + topH)
+                putNativeRect(rects, prefix, "bottom", 0, 0, scrW, botH)
             } else {
-                putNativeRect(rects, prefix, "top", 0, 0, 400, 240)
-                putNativeRect(rects, prefix, "bottom", 0, 240, 400, 540)
+                putNativeRect(rects, prefix, "top", 0, 0, scrW, topH)
+                putNativeRect(rects, prefix, "bottom", 0, topH, scrW, topH + botH)
             }
             return NativeFamilyLayout(rects, 400, 540, MMJ_NATIVE_FIT_TOP_ALIGNED)
         }
+        // 左右并排：网格 720×240，s = fit-inside，offset 对齐网格
+        val s = if (viewW > 0 && viewH > 0)
+            minOf(viewW.toDouble() / 720.0, viewH.toDouble() / 240.0) else 1.0
+        val gridWpx = (720.0 * s).roundToInt()
+        val gridHpx = (240.0 * s).roundToInt()
+        // 居中 offset 取整到 s 的整数倍（网格步长）→ 滤镜相位对齐
+        val offX = kotlin.math.round((viewW - gridWpx) / 2.0 / s).roundToInt() * s.roundToInt()
+        val offY = kotlin.math.round((viewH - gridHpx) / 2.0 / s).roundToInt() * s.roundToInt()
+        val topW = (400.0 * s).roundToInt()
+        val botW = (320.0 * s).roundToInt()
+        val scrH = gridHpx
         if (swap) {
             // 交换：下屏在左，上屏在右（核心 swapped 分支同款）
-            putNativeRect(rects, prefix, "top", 320, 0, 720, 240)
-            putNativeRect(rects, prefix, "bottom", 0, 0, 320, 240)
+            putNativeRect(rects, prefix, "top", offX + botW, offY, offX + gridWpx, offY + scrH)
+            putNativeRect(rects, prefix, "bottom", offX, offY, offX + botW, offY + scrH)
         } else {
-            putNativeRect(rects, prefix, "top", 0, 0, 400, 240)
-            putNativeRect(rects, prefix, "bottom", 400, 0, 720, 240)
+            putNativeRect(rects, prefix, "top", offX, offY, offX + topW, offY + scrH)
+            putNativeRect(rects, prefix, "bottom", offX + topW, offY, offX + gridWpx, offY + scrH)
         }
         return NativeFamilyLayout(rects, 720, 240, MMJ_NATIVE_FIT_CENTERED)
     }
@@ -990,13 +1032,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             }
             // ★ 旧版 [Controls] 布局族残留清理（见 cleanupLegacyControlsLayoutKeys）
             cleanupLegacyControlsLayoutKeys(sections)
-            // ★★★ V14：前端滤镜原生布局强制/恢复（见「前端滤镜原生布局」组注释）★★★
+            // ★★★ V15：前端滤镜布局强制/恢复（见「前端滤镜原生布局」组注释）★★★
             if (nativeFilterLayout) {
-                // 优先用视图逐帧查询时存储的真实窗口几何（与前端缓冲严格
+                // 优先用视图逐帧查询时存储的真实窗口几何（与核心窗口严格
                 // 一致）；尚无存储（boot 竞态防御）按家族假设几何兜底：
-                // 竖屏家族 = 长窗（堆叠）；横屏家族 = 20:9 宽窗（两行网格）。
+                // 竖屏家族 = 长窗（堆叠，1080×2400）；横屏家族 = 宽窗
+                // （两行网格，2400×1080）。★ V15 矩形 = 窗口像素坐标。
                 val pLayout = storedNativeLayoutPortrait
-                    ?: computeNativeFamilyLayout(true, 400, 800)
+                    ?: computeNativeFamilyLayout(true, 1080, 2400)
                 val lLayout = storedNativeLayoutLandscape
                     ?: computeNativeFamilyLayout(false, 2400, 1080)
                 if (pLayout == null || lLayout == null) {

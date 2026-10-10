@@ -26,9 +26,33 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * ★★★ MMJ（Citra MMJ 3DS）GLSL 滤镜显示视图 V13 ★★★
+ * ★★★ MMJ（Citra MMJ 3DS）GLSL 滤镜显示视图 V15 ★★★
  *
- * ## V12 → V13 根治（"滤镜编译都成功了，但 xBR/HQx/SEDI 依然看不出效果"）★★★
+ * ## V14 → V15 根治（"帧数文本变得非常大，画面非常模糊"）★★★
+ *
+ * V13/V14 的【原生分辨率中转】（核心渲染进 400×480 / bufW×480 低分辨率
+ * 缓冲、前端拉伸上屏）带来两个用户实测硬伤：
+ *   1. 画面模糊：3D 内容先被核心压进原生网格（细节丢失）、再被前端
+ *      拉伸到窗口 —— 两重采样损失；
+ *   2. mmj 自带 OSD 角标（"FPS:xx - VPS:xx - SPD:xx"，native
+ *      on_screen_display.cpp 绘制）字体 = 8/layout.width × density，
+ *      画在低分辨率缓冲上再放大 ≈ 2.25×~2.7× → 文本巨大。
+ *
+ * V15 方案：【窗口尺寸缓冲 + 原生网格 uniform 注入】
+ *   1. 核心渲染缓冲恒为【窗口尺寸】，布局矩形升级为窗口像素坐标
+ *      （引擎按核心默认布局几何给出，与自定义布局键的窗口坐标语义
+ *      一致）—— 核心直绘清晰分辨率，画面不再模糊；
+ *   2. 滤镜网格相位数学（xBR/HQx/SEDI 的 fract(dc×GetResolution)）所需
+ *      的"原生像素网格"改由 uGridSize uniform 注入（引擎布局给出网格
+ *      划分数；SampleSize/GetResolution 优先消费）—— 网格相位在 uv
+ *      空间保持与核心绘制的原生像素块对齐，滤镜效果保留；
+ *   3. 视口恒全窗 1:1（核心矩形已含全部几何，无二次 letterbox）；
+ *   4. mmj OSD 角标由 libcitra_mmj.so 补丁彻底禁用（开关检查
+ *      ldrb w8, [x22, #0x268] → mov w8, #0，见修复包说明）；
+ *   5. 引擎查询失败/不支持（单屏/大屏）→ uGridSize=(0,0) 自动回落
+ *      纹理实际尺寸（V12 语义），显示绝不破坏。
+ *
+ * ## V12 → V13 根治（"滤镜编译都成功了，但 xBR/HQx/SEDI 依然看不出效果"）
  *
  * V12 修好了着色器编译（textureSize lod + highp），但【滤镜的输入源】
  * 仍是错的：本视图把窗口尺寸的 SurfaceTexture 交给核心，核心把最终
@@ -194,15 +218,20 @@ class MmjFilterView @JvmOverloads constructor(
     private var progFilter = 0
     @Volatile private var lastBoundShaderName: String? = "<sentinel>"
 
-    // ---- ★ V13 原生分辨率滤镜模式状态 ----
-    /** true = 核心正渲染到原生布局尺寸缓冲（需 letterbox 视口 + 布局恢复）。 */
+    // ---- ★ V15 原生网格注入模式状态 ----
+    /** true = 引擎提供了滤镜网格（uGridSize 已注入；矩形经引擎落盘/下发）。 */
     @Volatile private var nativeFilterMode = false
 
-    /** 当前核心缓冲尺寸（原生模式下 = 原生布局尺寸；窗口模式 = 窗口尺寸）。 */
+    /** 核心渲染缓冲尺寸（★ V15 起恒为窗口尺寸；仅日志/兼容保留）。 */
     private var bufW = 0
     private var bufH = 0
 
-    /** ★ V14：当前视口拟合语义（引擎按核心默认布局几何给出）。 */
+    /** ★ V15：原生像素网格尺寸（引擎布局给出；uGridSize uniform 数据源）。
+     *  (0,0) = 未注入，兼容头回落纹理实际尺寸。 */
+    @Volatile private var gridW = 0f
+    @Volatile private var gridH = 0f
+
+    /** 引擎布局拟合语义（V15 起仅作诊断记录；视口恒全窗 1:1）。 */
     @Volatile private var nativeFit = FIT_CENTERED
 
     /** GetTime() 帧计数（旧恒 0，个别动画类滤镜依赖）。 */
@@ -243,7 +272,6 @@ class MmjFilterView @JvmOverloads constructor(
             fragColor = texture(uTex, vUV);
         }
     """.trimIndent()
-
     /**
      * MMJ 后处理滤镜的 GL 兼容层（V12：GLES 3.0 + samplerExternalOES + highp）：
      *   - 把 MMJ 自有类型（float2/3/4、int2/3/4、uint2/3/4）映射到 GLSL ES 3.0；
@@ -287,7 +315,25 @@ class MmjFilterView @JvmOverloads constructor(
         uniform vec2 resolution;
         uniform int frame_count;
 
-        ivec2 SampleSize() { return textureSize(color_texture, 0); }
+        // ★★★ V15：原生网格注入 ★★★
+        //
+        // 缓冲已升为窗口尺寸（V15，治"画面模糊 + OSD 角标巨大"），纹理
+        // 物理分辨率 ≠ 原生像素网格。xBR/HQx/SEDI 全族的网格相位数学
+        //   fp = fract(dc * GetResolution())   /   ps = GetInvResolution()
+        // 需要的其实是【核心布局的原生网格划分数】—— 由引擎布局计算后
+        // 经 uGridSize uniform 注入（引擎不给 = (0,0) → 回落纹理实际
+        // 尺寸 = V12 语义，显示绝不破坏）。
+        //
+        // 采样坐标 SampleLocation(loc ± ps·k) 仍落在 uv 空间"相邻原生像
+        // 素"的相位点上：核心直绘时每原生像素占 uv 宽 = 1/grid.x、高 =
+        // 1/grid.y（矩形与网格同比例缩放的几何保证），网格相位对齐成立。
+        uniform vec2 uGridSize;
+
+        ivec2 SampleSize() {
+            return uGridSize.x > 0.0 && uGridSize.y > 0.0
+                ? ivec2(uGridSize)
+                : textureSize(color_texture, 0);
+        }
         vec2 GetResolution() { return vec2(SampleSize()); }
         vec2 GetInvResolution() { return 1.0 / GetResolution(); }
         vec2 GetOnScreenSize() { return resolution; }
@@ -564,30 +610,47 @@ class MmjFilterView @JvmOverloads constructor(
         val w = surfaceW.coerceAtLeast(1)
         val h = surfaceH.coerceAtLeast(1)
 
-        // ★★★ V13/V14：滤镜激活且布局设置支持时，把核心渲染缓冲切到
-        //   【原生双屏布局尺寸】，让像素网格类滤镜工作在原生像素网格上。
-        //   V14：布局由引擎按视图真实宽高复刻核心默认布局几何（宽窗两行
-        //   网格 / 长窗堆叠 / 并排），并给出视口拟合语义。失败/不支持 →
-        //   保持窗口缓冲（V12 行为，滤镜效果退化但无回归）。
+        // ★★★ V15：核心渲染缓冲恒为【窗口尺寸】★★★
+        //
+        // 【为什么放弃 V13/V14 的原生分辨率中转】用户实测反馈（2026-10）：
+        //   1. 原生低分辨率缓冲（400×480 / bufW×480）被前端拉伸到全窗
+        //      → 画面整体模糊（3D 内容先被核心降采样进原生网格、再被
+        //      前端放大，两重损失）；
+        //   2. mmj 核心的 OSD（FPS:xx - VPS:xx - SPD:xx 角标，on_screen_
+        //      display.cpp）字体大小 = 8/layout.width × density —— 画在
+        //      480 高的缓冲上再被放大 ≈ 2.25×~2.7× → 角标文本巨大。
+        //
+        // V15：缓冲 = 窗口尺寸（核心直绘清晰、OSD 文本恢复正常大小；
+        //      配合 libcitra_mmj.so 补丁 OSD 已彻底禁用）。滤镜的"原生
+        //      像素网格"信息改由【uGridSize uniform 注入】（见 fxHeader
+        //      的 SampleSize/GetResolution）—— 滤镜网格数学工作在 uv
+        //      空间的网格相位上，与纹理物理分辨率无关，效果保留。
+        //
+        // 引擎布局查询仍照常执行：给出各家族的网格尺寸（gridW/gridH）
+        // 与窗口坐标矩形（ini 钩子落盘 / setCustomLayout 下发），失败或
+        // 不支持（单屏/大屏/坏矩形）→ uGridSize=(0,0)，SampleSize 回落
+        // 纹理实际尺寸（V12 语义，滤镜效果退化但绝不破坏显示）。
         var bw = w
         var bh = h
-        nativeFit = FIT_CENTERED
+        gridW = 0f
+        gridH = 0f
         val curShader = shaderName?.trim()?.takeIf { it.isNotEmpty() && it != "(off)" }
         if (curShader != null && eng is com.nesstation.app.core.engine.CitraMmjEngine) {
             val native = try {
                 eng.mmjNativeFilterLayout(isPortraitRotation(), w, h)
             } catch (_: Throwable) { null }
             if (native != null) {
-                bw = native.bufW
-                bh = native.bufH
+                // ★ V15：缓冲不再切到原生网格 —— 只取网格尺寸给 shader。
+                gridW = native.bufW.toFloat()
+                gridH = native.bufH.toFloat()
                 nativeFit = native.fit
+                nativeFilterMode = true
                 try { eng.setMmjNativeFilterMode(true) } catch (_: Throwable) {
-                    bw = w; bh = h; nativeFit = FIT_CENTERED
+                    gridW = 0f; gridH = 0f
+                    nativeFit = FIT_CENTERED
+                    nativeFilterMode = false
                 }
-                nativeFilterMode = bw != w || bh != h
-                if (nativeFilterMode) {
-                    Log.i(TAG, "V14 native filter buffer: ${bw}x${bh} fit=${nativeFit} (window ${w}x${h})")
-                }
+                Log.i(TAG, "V15 window buffer ${bw}x${bh}, filter grid ${gridW.toInt()}x${gridH.toInt()} fit=$nativeFit")
             }
         }
         bufW = bw
@@ -628,11 +691,10 @@ class MmjFilterView @JvmOverloads constructor(
             val h = surfaceH
             if (w <= 0 || h <= 0) continue
 
-            // ★ V14：布局变化（旋转家族 / 窗口比例 / 交换屏幕 / 切布局选项）
-            //   → 原生缓冲尺寸与视口拟合随之切换。引擎查询侧已把新矩形落盘
-            //   + loadConfig/WindowChanged 热生效；这里只重设缓冲尺寸 + 通知
-            //   引擎重算布局。查询返回 null（如切到单屏/大屏）→ 退回窗口
-            //   缓冲 + 全窗视口（V12 行为，布局绝不破坏）。
+            // ★ V15：布局变化（旋转家族 / 窗口比例 / 交换屏幕 / 切布局选项）
+            //   → 只刷新网格尺寸（shader 网格注入）+ 通知引擎重算矩形。
+            //   缓冲恒为窗口尺寸，不再重设；查询返回 null（单屏/大屏）→
+            //   网格清零（SampleSize 回落纹理尺寸，显示绝不破坏）。
             if (nativeFilterMode) {
                 val native = try {
                     (engine as? com.nesstation.app.core.engine.CitraMmjEngine)
@@ -641,20 +703,15 @@ class MmjFilterView @JvmOverloads constructor(
                 if (native == null) {
                     nativeFilterMode = false
                     nativeFit = FIT_CENTERED
-                    try {
-                        st.setDefaultBufferSize(w, h)
-                        engine?.onSurfaceChanged(coreSurface, w, h)
-                        Log.i(TAG, "V14 native mode exited (layout unsupported) -> window buffer ${w}x${h}")
-                    } catch (_: Throwable) {}
-                } else if (native.bufW != bufW || native.bufH != bufH || native.fit != nativeFit) {
-                    bufW = native.bufW
-                    bufH = native.bufH
+                    gridW = 0f
+                    gridH = 0f
+                    Log.i(TAG, "V15 native mode exited (layout unsupported) -> grid passthrough")
+                } else if (native.bufW.toFloat() != gridW || native.bufH.toFloat() != gridH ||
+                    native.fit != nativeFit) {
+                    gridW = native.bufW.toFloat()
+                    gridH = native.bufH.toFloat()
                     nativeFit = native.fit
-                    try {
-                        st.setDefaultBufferSize(bufW, bufH)
-                        engine?.onSurfaceChanged(coreSurface, bufW, bufH)
-                        Log.i(TAG, "V14 native buffer reconfigured: ${bufW}x${bufH} fit=${nativeFit}")
-                    } catch (_: Throwable) {}
+                    Log.i(TAG, "V15 filter grid updated: ${gridW.toInt()}x${gridH.toInt()} fit=$nativeFit")
                 }
             }
 
@@ -675,34 +732,12 @@ class MmjFilterView @JvmOverloads constructor(
             val prog = if (progFilter != 0 && curShader != null) progFilter else progPassthrough
             if (prog == 0) continue
 
-            // ★ V14 视口：按引擎给出的拟合语义复刻核心默认布局几何 ——
-            //   STRETCH   = 铺满整窗（宽窗两行网格，缓冲≈窗口宽高比，与核心
-            //               满窗绘制逐像素一致）；
-            //   TOP_ALIGN = 等比放大、顶部对齐（长窗堆叠：核心内容顶对齐、
-            //               下方留黑，GL 的 y 原点在底部 → y 偏移 = h-vh）；
-            //   CENTERED  = 等比 letterbox 居中（并排/自定义包围盒，V13 行为）；
-            //   窗口模式（非原生）= 全屏。
+            // ★ V15 视口：缓冲=窗口尺寸、核心已按窗口坐标矩形绘制 ——
+            //   恒全窗 1:1 上屏（无 letterbox/顶对齐二次计算；核心布局
+            //   几何由引擎矩形完全决定）。vw/vh 仅作为 GetOnScreenSize
+            //   的 uniform 语义（= 视口尺寸）。
             var vw = w
             var vh = h
-            if (nativeFilterMode && bufW > 0 && bufH > 0) {
-                when (nativeFit) {
-                    FIT_STRETCH -> {
-                        vw = w; vh = h
-                    }
-                    FIT_TOP_ALIGNED -> {
-                        val scale = minOf(w.toFloat() / bufW, h.toFloat() / bufH)
-                        vw = (bufW * scale).toInt().coerceAtLeast(1)
-                        vh = (bufH * scale).toInt().coerceAtLeast(1)
-                        GLES20.glViewport((w - vw) / 2, h - vh, vw, vh)
-                    }
-                    else -> {
-                        val scale = minOf(w.toFloat() / bufW, h.toFloat() / bufH)
-                        vw = (bufW * scale).toInt().coerceAtLeast(1)
-                        vh = (bufH * scale).toInt().coerceAtLeast(1)
-                        GLES20.glViewport((w - vw) / 2, (h - vh) / 2, vw, vh)
-                    }
-                }
-            }
 
             GLES20.glUseProgram(prog)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -716,6 +751,11 @@ class MmjFilterView @JvmOverloads constructor(
                 val uRes = GLES20.glGetUniformLocation(prog, "resolution")
                 // ★ V13：GetOnScreenSize() 语义 = 实际绘制内容区（letterbox 后）
                 if (uRes >= 0) GLES20.glUniform2f(uRes, vw.toFloat(), vh.toFloat())
+                // ★ V15：原生网格尺寸注入 —— SampleSize()/GetResolution() 的
+                //   数据源（滤镜网格相位数学）。(0,0) = 未注入 → 兼容头自动
+                //   回落纹理实际尺寸（V12 语义）。
+                val uGrid = GLES20.glGetUniformLocation(prog, "uGridSize")
+                if (uGrid >= 0) GLES20.glUniform2f(uGrid, gridW, gridH)
                 val uFc = GLES20.glGetUniformLocation(prog, "frame_count")
                 if (uFc >= 0) GLES20.glUniform1i(uFc, (frameCount and 0xffffffffL).toInt())
             }
