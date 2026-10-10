@@ -26,7 +26,36 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * ★★★ MMJ（Citra MMJ 3DS）GLSL 滤镜显示视图 V11.3 ★★★
+ * ★★★ MMJ（Citra MMJ 3DS）GLSL 滤镜显示视图 V12 ★★★
+ *
+ * ## V11.3 → V12 根治（"全部滤镜（全局 xbr/hqx 映射 + 自带 14 个 .glsl）
+ *   依然无任何效果"的最终根因）★
+ *
+ * V11.3 的兼容头里写的是【单参数】textureSize：
+ * ```glsl
+ *   ivec2 SampleSize() { return textureSize(color_texture); }
+ * ```
+ * GLSL ES 3.00 规范（第 8.8 节）中 textureSize 的【所有】重载都要求
+ * 第二个 lod 参数，OES_EGL_image_external_essl3 扩展新增的外部纹理
+ * 重载同样如此（ivec2 textureSize(samplerExternalOES, int lod)）。
+ * 单参数调用在【任何 GLES 3.0 驱动上都是编译错误】—— SampleSize()
+ * 位于所有滤镜共用的兼容头里 → 14 个滤镜 program 全部编译失败 →
+ * rebuildFilterProgram 静默回落直通 → 全局 xbr/hqx 映射（xBR/4xBR/
+ * HQ2X/HQ4X）与自带 SEDI/FXAA/bloom/spline36 等无一可见。
+ * （v3 时代的 MmjGlView 写的是正确的 textureSize(color_texture, 0)，
+ *   V11 重写兼容头时把 lod 参数丢了 —— 这就是 V11 滤镜全无效的根因。）
+ *
+ * 同时修正：兼容头 precision mediump → highp。xBR/HQx/SEDI/FXAA 全族
+ * 依赖纹素级坐标数学（fract(dc * resolution)、1/resolution 偏移）。
+ * mediump 在主流移动 GPU 上是 fp16（精确整数上限 2048，尾数 10bit）：
+ * 分辨率超过 2048 或坐标小数精度不足时 fract()/偏移全错，滤镜要么
+ * 产生严重伪影要么输出退化为直通观感。ES 3.0 片元着色器【强制】支持
+ * highp（GLSL ES 3.00 规范要求），直接声明 highp 零风险。
+ *
+ * 另加固：glLoop 启动竞态 —— surfaceCreated 与 surfaceChanged 之间
+ * GL 线程可能先跑，ensureCoreSurface 读到 0×0 时 coerceAtLeast(1)
+ * 会把核心锁进 1×1 SurfaceTexture（首帧后永不重设 → 画面模糊/黑屏）。
+ * 现在等到真实尺寸到位才把 surface 交给引擎。
  *
  * ## V11.2 → V11.3 重构（彻底修复画面颠倒 + 滤镜无效）
  *
@@ -148,15 +177,25 @@ class MmjFilterView @JvmOverloads constructor(
     """.trimIndent()
 
     /**
-     * MMJ 后处理滤镜的 GL 兼容层（V11.3：GLES 3.0 + samplerExternalOES）：
+     * MMJ 后处理滤镜的 GL 兼容层（V12：GLES 3.0 + samplerExternalOES + highp）：
      *   - 把 MMJ 自有类型（float2/3/4、int2/3/4、uint2/3/4）映射到 GLSL ES 3.0；
      *   - 提供 GetCoordinates/GetResolution/GetInvResolution/GetOnScreenSize/
      *     GetTime/Sample/SampleLocation/SetOutput 等 MMJ 滤镜期望的全部辅助函数；
      *   - 采样源 = 本视图的 OES 外部纹理（来自 SurfaceTexture）。
      *
+     * ★★★ V12 修复（滤镜全无效的最终根因）★★★
+     *   1. textureSize(color_texture) → textureSize(color_texture, 0)：
+     *      GLSL ES 3.00 所有 textureSize 重载（含 OES 扩展新增的）都要求
+     *      lod 参数，单参调用在任何 GLES 3.0 驱动上都是编译错误 —— 旧头
+     *      导致全部滤镜 program 编译失败 → 静默回落直通 → 滤镜全无效。
+     *   2. precision mediump → highp：xBR/HQx/SEDI/FXAA 全族依赖纹素级
+     *      坐标数学（fract(dc*resolution)、1/resolution 偏移），mediump
+     *      （fp16，精确整数上限 2048）在大屏上必然出错；ES 3.0 片元着色
+     *      器强制支持 highp，直接声明零风险。
+     *
      * ★ 重要：assets/mmj/shaders/ 下 14 个 .glsl 经扫描确认全部只用
      *   SampleLocation/Sample（不依赖 SampleFetch/texelFetch），可安全
-     *   切到 OES 纹理（OES 不支持 texelFetch）。
+     *   采样 OES 纹理。
      */
     private val fxHeader = """
         #version 300 es
@@ -171,8 +210,8 @@ class MmjFilterView @JvmOverloads constructor(
         #define int3 ivec3
         #define int4 ivec4
 
-        precision mediump float;
-        precision mediump int;
+        precision highp float;
+        precision highp int;
 
         in vec2 vUV;
         out vec4 output_color;
@@ -180,7 +219,7 @@ class MmjFilterView @JvmOverloads constructor(
         uniform vec2 resolution;
         uniform int frame_count;
 
-        ivec2 SampleSize() { return textureSize(color_texture); }
+        ivec2 SampleSize() { return textureSize(color_texture, 0); }
         vec2 GetResolution() { return vec2(SampleSize()); }
         vec2 GetInvResolution() { return 1.0 / GetResolution(); }
         vec2 GetOnScreenSize() { return resolution; }
@@ -449,6 +488,20 @@ class MmjFilterView @JvmOverloads constructor(
 
     private fun glLoop() {
         val st = surfaceTexture ?: return
+
+        // ★★★ V12 启动竞态加固 ★★★
+        //   surfaceCreated 立即启动 GL 线程，surfaceChanged（真实宽高）稍后
+        //   才到。旧实现在此直接 ensureCoreSurface()：读到 0×0 时
+        //   coerceAtLeast(1) 会以 1×1 尺寸 setDefaultBufferSize + 把核心
+        //   锁进 1×1 SurfaceTexture（engineSurfaceGiven 一次性门永不重设）
+        //   → 核心只渲染 1×1 → 画面模糊/黑块。现在等真实尺寸到位（上限
+        //   3s，与引擎启动等待窗口对齐）再挂核心 surface。
+        var waitedForSize = 0
+        while ((surfaceW <= 0 || surfaceH <= 0) && !glLoopStopped && waitedForSize < 3000) {
+            try { Thread.sleep(16) } catch (_: InterruptedException) { break }
+            waitedForSize += 16
+        }
+
         ensureCoreSurface()
 
         while (!glLoopStopped) {

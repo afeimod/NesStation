@@ -6166,6 +6166,18 @@ private fun GameSurfaceView(
             }
             else -> Modifier.fillMaxSize() // stretch (default)
         }
+        // ★★★ V12：滤镜热切换根治（"设置里选了滤镜要重进游戏才生效"）★★★
+        //   AndroidView 的 factory 只在节点首次创建时执行一次：若进入游戏时
+        //   未选滤镜（useMmjFilter=false → 普通 SurfaceView），之后在设置里
+        //   开启滤镜只是重组（update 代码块只在 sv is MmjFilterView 时才同步
+        //   shaderName）→ 视图永远停在普通 SurfaceView → 滤镜永远不生效。
+        //   用 key(useMmjFilter) 让开关状态变化时强制重建节点（↔ MmjFilterView
+        //   与普通 SurfaceView 正确互换）；已在 MmjFilterView 内切换不同滤镜
+        //   名时仍走 update 代码块的热重建 program 路径（不重建视图）。
+        //   旧视图的 surfaceDestroyed 与新视图 surfaceCreated 按 Android
+        //   视图事务顺序（先拆旧、后建新）执行；引擎侧 attach 守卫与
+        //   MmjFilterView 的等尺寸挂载加固共同保证安全重建。
+        key(useMmjFilter) {
         AndroidView(
             factory = { ctx ->
                 // ★★★ V11：MMJ 滤镜叠加层路径 ★★★
@@ -6375,9 +6387,9 @@ private fun GameSurfaceView(
             },
             modifier = surfaceModifier.then(gameViewTracker)
         )
-            // ★★★ v5（黑屏终裁）：MMJ 后处理叠加层【整体移除】★★★
+        }
+            // ★★★ 呈现方案史存档（v1→v5→V11→V12）★★★
             //
-            // 呈现方案史（完整存档）：
             //   v1：写 ini pp_shader_name —— 当时 assets 尚无 xBR/4xBR 文件，
             //       校验层把名字归空/回落，核心链从未拿到有效名字（"无效"）。
             //   v2：MmjGlView 叠加层 + 着色器激活强制呈现模式 0→1 —— 模式 1
@@ -6390,13 +6402,21 @@ private fun GameSurfaceView(
             //       纹理 ID 有效但内容永远为空 → 守卫放行 → 不透明全屏 quad
             //       把核心直绘画面盖成纯黑。半透明 EGL / 自愈计数全部无效，
             //       因为"成功导出"本身就是假阳性。
-            //   v5（本轮）：叠加层代码路径整体移除。后处理唯一消费链 =
-            //       核心内链（原版 MMJ 主视图架构，上游 renderer_opengl.cpp
-            //       InitOpenGLObjects 实证）：ini → Settings → ShaderDir 读
-            //       .glsl → #version 320 es 编译 → DrawScreens 应用。编译
-            //       失败静默回落直通，结构上不可能黑屏。着色器文件随 APK
-            //       assets/mmj/shaders 种子释放（xBR/4xBR/HQ2X/HQ4X +
-            //       原版 10 个），全局滤镜映射 + 核心专属设置都走 ini 下发。
+            //   v5：叠加层代码路径整体移除，只走核心内链（ini pp_shader_name）。
+            //       种子链就位后用户实测【依旧全部无效】—— 核心内链的后处理
+            //       管线在本集成的 GLES 环境下不生效（VFS 可打开 .glsl，但
+            //       渲染器内部编译/应用链路静默失败，双源实证：MmjGlView 注释
+            //       + 用户实测）。
+            //   V11：重新激活叠加层，改用 SurfaceTexture 中转捕获
+            //       （不依赖 getScreenTexture）：核心画进 Surface(SurfaceTexture)，
+            //       本视图 GL 线程取帧 + MMJ 兼容头滤镜后上屏 —— 机制正确，
+            //       但兼容头里 textureSize 丢了 lod 参数（GLSL ES 3.0 编译
+            //       错误）→ 滤镜 program 全部编译失败静默回落直通 →
+            //       "全局 xbr/hqx 映射 + 自带 14 个滤镜依然全部无效"。
+            //   V12（本轮）：修复兼容头 textureSize 缺参 + mediump→highp；
+            //       滤镜开关热切换用 key(useMmjFilter) 重建视图；引擎侧 ini
+            //       不再下发 pp_shader_name（避免内链意外生效时双重滤镜）。
+            //       MmjFilterView 现在是唯一滤镜消费链。
             //
             // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot/*+扫描线/*+仿电视 drawn by Compose
             if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",

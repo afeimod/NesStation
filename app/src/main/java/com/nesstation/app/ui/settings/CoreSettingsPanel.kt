@@ -1832,11 +1832,14 @@ fun CoreSettingsPanel(
                                "HQ4X" to "HQ4X 像素平滑 (4x)"),
                         padLayout.mmjPpShaderName
                     ) { updateLayout(padLayout.copy {mmjPpShaderName = it}) }
-                    // ★ 本轮：着色器加载时机提示 + 呈现模式自动升级说明
+                    // ★ V12：滤镜由前端 MmjFilterView 消费（SurfaceTexture 中转 +
+                    //   我们自己的 GLES 上下文编译 .glsl），不再依赖核心内链。
+                    //   游戏中切换滤镜即时生效（开关切换重建滤镜视图；同视图内
+                    //   换滤镜名热重建 program），无需重进游戏。
                     Text(
-                        "提示：后处理着色器在进入游戏时加载（游戏中修改需重进生效）。\n" +
-                            "选择任一着色器时引擎自动把呈现模式升为「共享上下文」—— 兼容模式的" +
-                            "CPU 拷贝呈现通道不经过 GL 后处理管线，着色器会表现为「无效」。",
+                        "提示：滤镜由前端 GL 层应用（全局滤镜 xbr/hqx 映射与本列表共用同一条链）。\n" +
+                            "游戏中切换滤镜即时生效，无需重进游戏；叠加类外观（扫描线/点阵/仿电视）" +
+                            "仍由画面叠加层绘制，可与本滤镜同时生效。",
                         color = if (com.nesstation.app.ui.neon.NeonUi.isNeon)
                             com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF8899AA),
                         fontSize = 10.sp, lineHeight = 13.sp)

@@ -593,41 +593,30 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
             //   修复：任何值先校验 <userDir>/shaders/<name>.glsl 真实存在，
             //   不存在一律归一为空串 —— 空串时 F1 在 0x4255ec cbz 直接
             //   跳过文件加载（内置直通渲染），与原版"无后处理"语义一致。
-            val shaderName = overrides.remove("pp_shader_name")
-            if (shaderName != null) {
-                // ★ 本轮：存在性校验同时接受 APK assets/mmj/shaders 内的
-                //   .glsl —— 首次启动 seedMmjSystemAssets 释放前（ini 写入
-                //   先于种子）也能通过校验，全局 xbr/hqx 首启即生效
-                //   （xBR/4xBR 随 APK 打包，非首次联网下载）。
-                fun shaderExists(name: String): Boolean {
-                    if (name.isEmpty()) return false
-                    if (File(userDir(), "shaders/$name.glsl").isFile) return true
-                    return try {
-                        ((appContext ?: com.nesstation.app.NesApp.get())?.assets
-                            ?.list("mmj/shaders") ?: arrayOf()).contains("$name.glsl")
-                    } catch (_: Throwable) { false }
-                }
-                when {
-                    shaderExists(shaderName) ->
-                        overrides["pp_shader_name"] = shaderName
-                    // ★ 本轮加固：目标着色器文件缺失（极端：种子失败且非
-                    //   首启）时回落 SEDI —— 原版 APK 自带、随 assets/mmj
-                    //   一起释放，永远存在；同为边缘插值放大，比"完全无
-                    //   后处理"更接近用户选择的放大型滤镜效果。
-                    shaderName.isNotEmpty() && shaderExists("SEDI") -> {
-                        overrides["pp_shader_name"] = "SEDI"
-                        android.util.Log.w("CitraMmjEngine",
-                            "pp_shader_name '$shaderName' missing, fallback SEDI")
-                    }
-                    else -> {
-                        overrides["pp_shader_name"] = ""
-                        if (shaderName.isNotEmpty()) {
-                            android.util.Log.w("CitraMmjEngine",
-                                "pp_shader_name '$shaderName' has no .glsl in shaders/, reset to none (crash guard)")
-                        }
-                    }
-                }
-            }
+            // ★★★ V12 根治（"mmj 全部滤镜无效"最终修复，滤镜消费链唯一化）★★★
+            //
+            // 【历史】本函数曾把用户选定的滤镜名写进 ini pp_shader_name，指望
+            //   核心内链（渲染器初始化 0x4254c4 读名 → VFS 打开
+            //   <userDir>/shaders/<name>.glsl → DrawScreens 应用）吃掉滤镜。
+            //   实测（种子链就位 + 渲染器工厂已补丁 + VFS 相对路径解析就位后）
+            //   【依旧全部无效】—— 核心内链的后处理管线在本集成的 GLES 环境
+            //   下静默失败（着色器编译/应用链路断在核心内部，无法从外部修复）。
+            //
+            // 【V11 后滤镜的真实消费链】前端 MmjFilterView（SurfaceTexture 中转
+            //   + MMJ 兼容头 .glsl 滤镜，见该类头注释 V12 根因说明）—— 它直接
+            //   读 <filesDir>/azahar/shaders/<name>.glsl / assets/mmj/shaders，
+            //   在我们自己的 GLES 上下文里编译，不依赖核心内链，全局 xbr/hqx
+            //   映射与核心专属「后处理着色器」设置都经它生效。
+            //
+            // 【为什么 ini 恒写空串】
+            //   1. 避免双重滤镜：若内链在个别设备/未来固件上意外生效，
+            //      前端叠加层 + 核心内链会对同一帧各放大一次（画质劣化）；
+            //   2. 绕开核心崩溃路径：内链加载器 F0(0x541484) 对 VFS 打开
+            //      失败返回的空指针【无检查】直接解引用（SIGSEGV，见下方
+            //      历史注释）—— 空名时 F1 在 0x4255ec cbz 直接跳过整个加载；
+            //   3. 清理存量：旧版本写进 ini 的非空 pp_shader_name（含已失效
+            //      的名字）由本恒写空串统一复位，与原版"无后处理"语义一致。
+            overrides["pp_shader_name"] = ""
             // ★★★ 本轮：删除「着色器激活时强制 screen_presentation_mode 0→1」★★★
             //
             // 【为什么删除（getScreenTexture JNI 0x26dae0 反汇编定论）】：
@@ -960,15 +949,14 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
                     applyFastForwardConfig()
                     try { lib.loadConfig() } catch (_: Throwable) {}
                 } else {
-                    // ★★★ 全局滤镜/设置加固（本轮"对 mmj 也不生效"）★★★
+                    // ★★ 设置/滤镜落盘保险（V12 更新）★★
                     //   Run() 内部会自行 Config::Load（从磁盘 ini 读全部设置
-                    //   进 Settings 结构体，渲染器初始化读的就是它）。这里在
-                    //   进入 Run 前把 coreOptions（含全局滤镜映射出的
-                    //   pp_shader_name=xBR/4xBR）【最后一次】落盘 + 重读 ——
-                    //   消除 loadRom 到 Run 之间任何内部回写/竞态把值洗掉
-                    //   的可能（loadRom 里已写过一次，这里是紧贴 Run 的
-                    //   第二道保险；快进路径上面的 applyFastForwardConfig
-                    //   已含同款写入）。
+                    //   进 Settings 结构体）。这里在进入 Run 前把 coreOptions
+                    //   【最后一次】落盘 + 重读 —— 消除 loadRom 到 Run 之间
+                    //   任何内部回写/竞态把值洗掉的可能（loadRom 里已写过
+                    //   一次，这里是紧贴 Run 的第二道保险）。V12 起 ini 的
+                    //   pp_shader_name 恒为空串（滤镜唯一消费链 = 前端
+                    //   MmjFilterView，见 writeMmjIniLocked 的 V12 注释）。
                     writeMmjIniLocked()
                     try { lib.loadConfig() } catch (_: Throwable) {}
                 }
@@ -1362,13 +1350,15 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         _ffSpeed = 0
         lastErrorText = ""
         stickLast.fill(0f)
-        // ★★★ 全局滤镜/设置加固（本轮）：核心退出时会把【它自己的】当前
-        //   配置 saveConfig 回写 config-mmj.ini —— 任何核心内部的值漂移
-        //   （如加速键残留的 frame_limit=200）都会就此固化成下次启动的
-        //   初始值。这里在 Run 返回后用【我们下发的】coreOptions 重写一遍
-        //   ini，保证下次启动读到的是用户设置（pp_shader_name / frame_limit
-        //   等）。核心 saveConfig 与本回写的竞争窗口内我们后写（unload
-        //   在 emuThread join 之后执行）。
+        // ★★ 全局滤镜/设置加固（V12 更新：pp_shader_name 恒空串）★★：核心
+        //   退出时会把【它自己的】当前配置 saveConfig 回写 config-mmj.ini ——
+        //   任何核心内部的值漂移（如加速键残留的 frame_limit=200）都会就此
+        //   固化成下次启动的初始值。这里在 Run 返回后用【我们下发的】
+        //   coreOptions 重写一遍 ini，保证下次启动读到的是用户设置
+        //   （frame_limit 等）；pp_shader_name 由 writeMmjIniLocked 恒写空串
+        //   （滤镜唯一消费链 = 前端 MmjFilterView，不再依赖核心内链）。核心
+        //   saveConfig 与本回写的竞争窗口内我们后写（unload 在 emuThread
+        //   join 之后执行）。
         try { writeMmjIniLocked() } catch (_: Throwable) {}
     }
 
