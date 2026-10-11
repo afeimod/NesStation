@@ -226,9 +226,22 @@
              配置/存档位于 <externalFilesDir>/PSP（经 <filesDir>/memstick_dir.txt
              预置，避免首启弹存储位置选择器）。
              launchMode singleInstance 与上游一致（渲染循环对 Activity 重建敏感）。
+
+             ★ android:process=":ppsspp" —— 独立进程隔离（崩溃根治）：
+               libppsspp_jni.so 是官方预编译、依赖 libc++_shared.so；主进程里
+               还驻留多套"自带静态 libc++ 且导出其符号"的核心（emucore_4k/
+               citra_mmj/azahar/ishiiruka，tombstone 实证 __cxa_throw 跨库
+               串扰 → dlopen 静态构造期 std::bad_cast → abort，PSP 游戏秒崩）。
+               独立进程内只会加载 libppsspp_jni.so + libc++_shared.so + 系统
+               库，运行时环境与官方独立 PPSSPP APK 完全一致（同机实测可正常
+               运行），从构造上排除双运行时冲突；主进程也不再受 PPSSPP 侧
+               任何原生异常波及。NesApp.onCreate 全懒加载 + tryInit 包裹，
+               在 :ppsspp 进程内重入安全；PPSSPP 配置/存档全部走文件路径，
+               跨进程无共享状态依赖。
              ================================================================= -->
         <activity
             android:name="org.ppsspp.ppsspp.PpssppActivity"
+            android:process=":ppsspp"
             android:configChanges="locale|keyboard|keyboardHidden|navigation|uiMode"
             android:theme="@style/ppsspp_style"
             android:launchMode="singleInstance"

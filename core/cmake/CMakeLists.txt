@@ -18,6 +18,36 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # ---------------------------------------------------------------------------
+# ★★★ 多核心 C++ 运行时隔离（PSP 启动即崩 std::bad_cast 的根治）★★★
+#
+# 本工程 CMake 侧全部核心库用 ANDROID_STL=c++_static（见 app/build.gradle.kts），
+# 静态 libc++/libc++abi 的符号（__cxa_throw、__cxa_allocate_exception、
+# _Znwm/_ZdlPv、std::locale::* 等）默认会被放进各 .so 的动态符号表并导出。
+# 而 jniLibs 里 libppsspp_jni.so（PPSSPP 官方预编译）依赖 libc++_shared.so。
+# 当进程内同时存在"多个导出 libc++ 符号的静态运行时核心"（emucore_4k、
+# libcitra_mmj、libazahar、libishiiruka 都实测导出 __cxa_throw）与
+# libc++_shared.so 时，动态链接器的符号解析会跨库串扰：
+#   tombstone 实证（Redmi socrates / Android 15）：
+#   PpssppActivity.<clinit> → dlopen libppsspp_jni.so → 静态构造
+#   CPUInfo::Detect → GetCPUString(std::ifstream/getline)
+#   → libc++_shared 的 locale::use_facet 抛 std::bad_cast
+#   → 异常却经 libemucore_4k.so 的 __cxa_throw 路径 → 双运行时错乱 → abort。
+#
+# -Wl,--exclude-libs,ALL 把"从静态库(.a)归档引入的全部符号"从每个目标的
+# 动态符号表中隐藏（等价于对 libc++.a/libc++abi.a/libunwind.a 全量
+# --exclude-libs）：
+#   · 各核心自己的对象文件符号（JNIEXPORT 函数、retro_*、hook 函数等）
+#     不受影响，照常导出 —— dlsym/JNI 查找全部正常；
+#   · 静态 libc++ 的运行时符号变为各 .so 私有，进程内不再互窜，
+#     libc++_shared.so 成为唯一对外提供 C++ 运行时的库（hook 四件套与
+#     libppsspp_jni.so 共用），与官方独立 PPSSPP 的单运行时环境一致。
+#
+# add_link_options 作用于本目录及之后 add_subdirectory 的全部目标
+# （mgba 259 行 / ARMSX2 660 行 / melonds 694 行均在此之后，全部继承）。
+# ---------------------------------------------------------------------------
+add_link_options(-Wl,--exclude-libs,ALL)
+
+# ---------------------------------------------------------------------------
 # NES/FC core = NostalgiaLite's fceux engine (core/fceux), REPLACING the
 # previous libretro-fceumm core. This is the engine that plays the previously
 # gray-screening games (e.g. 天使之翼2中文版) correctly in the reference app.
