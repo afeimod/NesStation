@@ -162,6 +162,15 @@ android {
             // 与各核心运行时 dlopen 预编译 libretro 核心 .so 的加载路径在
             // 解压态下最可靠；代价仅为安装包占用略增。
             useLegacyPackaging = true
+            // libc++_shared.so 双源重复：jniLibs 里的预装副本（PPSSPP
+            // libppsspp_jni.so 运行依赖它，其余预编译核心 azahar/mmj/
+            // ishiiruka 均为 c++_static 不依赖）与 externalNativeBuild
+            // CMake 构建产物里各 ABI 的副本会同时进入 mergeReleaseNativeLibs，
+            // AGP 遇到同路径多来源直接报
+            // "2 files found with path 'lib/<abi>/libc++_shared.so'"。
+            // 用 pickFirst 保留第一份即可——两个副本同为 NDK libc++，
+            // ABI 稳定、运行时可互换。覆盖全部 ABI（arm64-v8a/v7a/x86_64）。
+            pickFirsts += "**/libc++_shared.so"
         }
         resources {
             excludes += setOf(

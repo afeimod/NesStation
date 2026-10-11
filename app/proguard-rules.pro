@@ -192,3 +192,17 @@
 # DirectoryInitializationService、ButtonType/TouchScreenDevice 常量）同样被
 # 引擎层直接调用，保持 keep。
 -keep class org.dolphinemu.ishiiruka.** { *; }
+
+# ─── PPSSPP（PSP）核心 JNI 契约 ───────────────────────────────────────────
+# libppsspp_jni.so（官方 v1.20.4 预编译，arm64-v8a/armeabi-v7a/x86_64 三份）
+# 通过 JNI 符号名（Java_org_ppsspp_ppsspp_*）与 JNI_OnLoad / RegisterNatives
+# 前后的 FindClass/GetMethodID/GetStaticMethodID/GetFieldID 字符串查找
+# org.ppsspp.ppsspp 下的类与回调：PpssppActivity 及其全部内部类（EmuThread、
+# InputListener、onNative* 回调、runVulkanRenderLoop/registerCallbacks 等
+# native 方法宿主）、CameraHelper、ContentUri、TextRenderer、ShortcutActivity、
+# ImageResultProxyActivity、DocumentResultProxyActivity、NativeApp 等 ——
+# 这些引用对 R8 完全不可见，不 keep 会在 release 构建被整体裁剪/混淆，
+# 库加载或运行回调时抛 NoSuchMethodError/UnsatisfiedLinkError → SIGABRT
+# （与 Azahar/Dolphin 契约同型问题，见上方历史教训）。整个包 keep。
+-keep class org.ppsspp.ppsspp.** { *; }
+-dontwarn org.ppsspp.ppsspp.**
