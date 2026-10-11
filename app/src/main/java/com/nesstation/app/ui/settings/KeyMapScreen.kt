@@ -316,6 +316,9 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         // KeyActionInternal n3ds_* / ngc_* 表，引擎按项目位布局直收。
         GamePlatform.N3DS   -> N3DS_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.NGCWII -> NGCWII_ACTIONS.map { it.copy(id = it.id + suffix) }
+        // PSP（PPSSPP）：输入由 PPSSPP 原生触控/手柄层处理（PpssppActivity），
+        // NesStation 不提供按键映射 —— 返回空表（键位映射页显示为空）。
+        GamePlatform.PSP    -> emptyList()
     }
 }
 

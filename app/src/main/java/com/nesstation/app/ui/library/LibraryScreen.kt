@@ -163,6 +163,10 @@ val ROM_EXTENSIONS = listOf(
     // .lst = Naomi 合并 ROM 清单；.chd/.cue/.iso 共用上面的 CD 镜像段，
     // 由平台页 hint 消歧；.zip/.7z 在 DC 页导入时归 NAOMI 街机（见 detectFromExtensions）。
     "gdi", "cdi", "lst",
+    // Sony PSP (PPSSPP) — .cso = PSP 专属压缩 ISO（自动识别）；
+    // .pbp/.elf 在 PSP 平台页导入时按 PSP 解析（见 PlatformDetector 的
+    // PSP hint 消歧），.iso/.chd 沿用 CD 镜像通道由平台页消歧。
+    "cso", "elf",
     // Arcade (FBNeo) — archives only; the filename IS the driver name
     "zip", "7z", "gz"
 )
@@ -1372,7 +1376,8 @@ fun LibraryScreen(
                     GamePlatform.PSX,
                     GamePlatform.PS2,
                     GamePlatform.JAVA,
-                    GamePlatform.DC
+                    GamePlatform.DC,
+                    GamePlatform.PSP
                 )) { platform ->
                     FilterChip(
                         text = platform.displayName,
@@ -2403,6 +2408,7 @@ private fun FsdPlatformBadge(platform: GamePlatform, modifier: Modifier = Modifi
         GamePlatform.DC    -> "DC"
         GamePlatform.N3DS   -> "3DS"
         GamePlatform.NGCWII -> "NWC"
+        GamePlatform.PSP    -> "PSP"
     }
     Box(
         modifier = modifier

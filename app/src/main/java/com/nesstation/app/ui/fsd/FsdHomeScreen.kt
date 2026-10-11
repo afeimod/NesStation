@@ -85,6 +85,7 @@ private fun platformIcon(p: GamePlatform) = when (p) {
     GamePlatform.DC     -> Icons.Rounded.SportsEsports   // Dreamcast/NAOMI (Flycast)
     GamePlatform.N3DS   -> Icons.Rounded.TabletAndroid   // 3DS 双屏掌机
     GamePlatform.NGCWII -> Icons.Rounded.Tv              // NGC/Wii 电视主机
+    GamePlatform.PSP    -> Icons.Rounded.SmartDisplay    // PSP 宽屏掌机
 }
 
 /** 解析磁贴自定义图标 JSON（{ tileKey → iconPath }），损坏时返回空 map。 */
@@ -175,7 +176,7 @@ fun FsdHomeScreen(
         GamePlatform.NES, GamePlatform.SFC, GamePlatform.GB, GamePlatform.GBA,
         GamePlatform.MD, GamePlatform.PCE, GamePlatform.PSX, GamePlatform.PS2,
         GamePlatform.NDS, GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.DC,
-        GamePlatform.ARCADE, GamePlatform.DOS, GamePlatform.JAVA
+        GamePlatform.ARCADE, GamePlatform.DOS, GamePlatform.JAVA, GamePlatform.PSP
     )
     val countByPlatform = remember(games) {
         games.groupingBy { it.platform }.eachCount()

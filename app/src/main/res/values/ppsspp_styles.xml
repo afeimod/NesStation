@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PPSSPP（PSP 核心）集成所需样式 —— 与上游 ppsspp v1.20.4 android/res/values/styles.xml 一致 -->
+<resources>
+    <color name="ppsspp_black">#FF000000</color>
+    <style name="ppsspp_style" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:navigationBarColor">@color/ppsspp_black</item>
+    </style>
+    <style name="ppsspp_Theme_ProxyTransparent" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>

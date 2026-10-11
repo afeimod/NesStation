@@ -266,6 +266,10 @@ interface EmulatorEngine {
             GamePlatform.DC     -> DcEngine.get()
             GamePlatform.N3DS   -> AzaharEngine.get()
             GamePlatform.NGCWII -> IshirukaEngine.get()
+            // PSP 由 PpssppActivity（独立 Activity）承载，EmulatorScreen 对
+            // PSP 提前 return，正常路径不会走到这里 —— 抛出可读错误兜底。
+            GamePlatform.PSP    -> throw IllegalStateException(
+                "PSP 由 PPSSPP 独立 Activity 运行（PspLaunchSection），无进程内引擎")
         }
     }
 }

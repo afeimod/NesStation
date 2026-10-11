@@ -270,6 +270,7 @@ private fun PlatformBadge(platform: GamePlatform, modifier: Modifier = Modifier)
         GamePlatform.DC     -> "DC"   to Color(0xFF1B6FE0)
         GamePlatform.N3DS   -> "3DS"  to Color(0xFFD32F6F)   // red-pink — 3DS
         GamePlatform.NGCWII -> "NWC" to Color(0xFF6A1B9A)   // purple — NGC/WII   // blue — Dreamcast/NAOMI (Flycast)
+        GamePlatform.PSP    -> "PSP"  to Color(0xFF0070C0)   // blue — PlayStation Portable
     }
     Box(
         modifier = modifier

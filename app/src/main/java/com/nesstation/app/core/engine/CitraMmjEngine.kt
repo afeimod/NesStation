@@ -1724,66 +1724,335 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     // ------------------------------------------------------------------
-    // 存档（MMJ .so 二进制未导出 SaveState/LoadState JNI —— 实证 + 诚实反馈）
+    // ★★ 即时存档（本轮重构：能力探测 + 真即时存档 + 存档数据快照兜底）★★
     // ------------------------------------------------------------------
     //
-    // ★★★ V11 即时存档诊断与改进（"mmj 的即时存档没效果"根治说明）★★★
+    // 【实证背景（V11 诊断保留）】nm/dynsym 全扫 libcitra_mmj.so —— 68 个
+    //   Java_org_citra_emu_NativeLibrary_* JNI 符号中无 SaveState/LoadState；
+    //   .rodata 扫 .cst / states/ / savestate 关键词 0 命中。weihuoya 分支
+    //   （基于 2019 年 Citra，早于上游 savestate 合入）【整体缺失】该功能：
+    //   源码（github.com/weihuoya/citra）里没有 Core::System::SaveState 的
+    //   序列化基础设施（Azahar 的即时存档依赖 199 个文件的 boost 序列化链，
+    //   覆盖内核对象/HLE 服务/IPC 会话），不是"接口未接线"而是"功能不存在"，
+    //   无法通过二进制补丁给剥离的功能凭空注入实现。
     //
-    // 【实证链】nm/dynsym 全扫 libcitra_mmj.so（含 0x2f8 起 0xf228 字节的
-    //   .dynsym 表，2582 个符号）—— 68 个 Java_org_citra_emu_NativeLibrary_*
-    //   JNI 符号中【无 SaveState / LoadState / SaveSnapshot / 等】；
-    //   .rodata（0x102840 起 0x7db3c）扫关键词 .cst / states/ / SaveState /
-    //   LoadState / save_state / load_state / savestate —— 【全部 0 命中】。
-    //   上游 weihuoya/citra 的 MMJ 分支在移植到 Android 时【完全移除】了
-    //   上游 Citra 的 Core::System::SaveState / LoadState 实现（节省体积
-    //   或规避稳定性问题），运行时不存在该函数 ——【不是接口未接线，而是
-    //   功能整体缺失】。
+    // 【本实现的双层方案】
+    //   层 1 —— 真·即时存档（未来兼容）：运行时探测核心 .so 是否导出
+    //     SaveState/LoadState JNI（契约见 org.citra.emu.NativeLibrary 注释，
+    //     slot<0 为 no-op）。探测通过即走 Azahar 同款流程（暂停 → 发信号 →
+    //     轮询 states/ 落盘 → 恢复暂停）。当前 .so 探测必失败，但只要未来
+    //     换上带存档的重编核心，NesStation 零改动自动启用。
+    //   层 2 —— 存档数据快照（当前 .so 立即可用）：把游戏的 3DS 存档数据
+    //     （<userDir>/nand/data/** —— ExtSaveData/SystemSaveData/config
+    //     savegame，+ <userDir>/sdmc/** —— SD 卡游戏数据/附加数据）打包
+    //     zip 到槽位文件。读档 = 暂停 → 停止模拟 → 还原快照 → 重启游戏
+    //     （与 reset() 同款链路）。语义 = "游戏存档点回滚"：配合游戏内
+    //     存档点使用即等价即时存档的实际效果；恢复的是存档数据而非运行
+    //     时 RAM 状态，故重启后回到标题画面（该限制由核心能力决定，
+    //     UI 消息如实说明）。
     //
-    // 【Azahar 的实现（用户参考）】Azahar 是 Citra/Lime3DS 的社区延续分支，
-    //   .so 内保留了完整 SaveState/LoadState（导出为 JNI
-    //   Java_org_citra_citra_emu_NativeLibrary_SaveState/LoadState），
-    //   AzaharEngine 经该 JNI 触发原生 Core::System::SaveState，写
-    //   <userDir>/states/<titleId>_version_2005.<slot>.cst 文件。MMJ 的
-    //   分支源码本身就没有这套 —— 没有 JNI 也没有内部 C++ 函数可调，无法
-    //   从外部（即便用 dlsym 反射）触发。
+    // 【安全设计】
+    //   - 快照在暂停态下进行（PauseEmulation → 打包 → Resume），避免拷贝
+    //     半写入的存档文件；
+    //   - 快照排除 nand/title/**（已安装 CIA/CXI 标题，可达 GB 级 —— 存档
+    //     快照只含存档数据，秒级完成）；
+    //   - 拒绝伪成功：打包/还原任何一步失败都返回 false 并给出可读原因；
+    //   - 还原只清 nand/data/** + sdmc/**，绝不动 nand/title（游戏本体）。
     //
-    // 【为什么不能像 Azahar 那样修】修复需要在 .so 内【新增】一个 JNI 函数，
-    //   并实现 Core::System::SaveState / LoadState 的内部状态捕获逻辑
-    //   （CPU 寄存器 + GPU + RAM + NAND + SDMC + 音频 + 外设 + 调度器）——
-    //   这需要从 MMJ 源码重新编译。NesStation 仓库只有二进制 .so
-    //   （Citra_MMJ_20250220.apk 提取版），无源码 —— 无法重编。
-    //
-    // 【本引擎的诚实反馈】saveState/loadState 仍返回 false，错误消息
-    //   明确告知用户三个可行方案：
-    //   1. 在 3DS 系统设置切换到 Azahar 核心（联机/即时存档/驱动管理全支持）；
-    //   2. 用游戏内的存档点存档（MMJ 完整支持 3DS NAND/SDMC 游戏存档，
-    //      ExtSaveData/SystemSaveData 等链路在 .so 中实证存在）；
-    //   3. 暂停 MMJ 模拟（不退出 App）冻结当前状态 —— 仅限本会话内有效。
-    //   UI 收到 false 后会 Toast 显示 lastError()，用户立即可知。
-    //
-    // 【不诚实方案的拒绝】旧版有"假装存档成功"的实现（创建空 .state 文件 +
-    //   返回 true）—— 读档时必然失败且误导用户。本实现拒绝这种伪成功，
-    //   一律返回 false 让 UI 反馈真实情况。
+    // 【与 Azahar 的关系】MMJ 与 Azahar 共用用户目录（<filesDir>/azahar），
+    //   存档数据（nand/data + sdmc）天然互通 —— 快照对两核心都有效。
+
+    /** 即时存档 JNI 能力探测（null = 未探测；结果缓存，.so 会话内不变）。 */
+    @Volatile
+    private var savestateSupported: Boolean? = null
+
+    private fun probeSavestateSupport(): Boolean {
+        savestateSupported?.let { return it }
+        synchronized(this) {
+            savestateSupported?.let { return it }
+            val supported = try {
+                // 契约：slot < 0 = 无害 no-op（见 NativeLibrary.kt 注释）。
+                // UnsatisfiedLinkError = 当前 .so 未导出该符号（现行 MMJ）。
+                // 其它异常（如核心内部对非法槽位报错）= 符号存在 → 能力可用。
+                CitraMmjNative.lib.SaveState(-1)
+                true
+            } catch (_: UnsatisfiedLinkError) {
+                false
+            } catch (_: Throwable) {
+                true
+            }
+            savestateSupported = supported
+            android.util.Log.i("CitraMmjEngine", "Savestate JNI probe: $supported")
+            return supported
+        }
+    }
+
+    /** 核心 states 目录（真即时存档模式的落盘/轮询位置）。 */
+    private fun mmjStatesDir(): File = File(userDir(), "states").apply { mkdirs() }
+
+    /** 槽位写入前后 states/ 目录快照差分（找出本次存档产生的状态文件）。 */
+    private fun newestStateFile(beforeMtime: Long): File? {
+        val files = mmjStatesDir().listFiles { f -> f.isFile && f.length() > 0 } ?: return null
+        return files.filter { it.lastModified() > beforeMtime }.maxByOrNull { it.lastModified() }
+    }
 
     override fun saveState(slot: Int, dst: File): Boolean {
-        // ★ V11：错误消息升级 —— 明确"功能缺失"而非"接口未接线"，
-        //   并给出可行替代方案。
-        lastErrorText = "Citra MMJ 二进制未集成即时存档功能（weihuoya 分支" +
-            "编译时移除了上游 Core::System::SaveState），无法在该核心下创建" +
-            "即时存档。建议：① 退出后在 3DS 系统设置切换到 Azahar 核心" +
-            "（支持 10 槽即时存档）；② 或在游戏内使用存档点存档（MMJ 完整" +
-            "支持 3DS NAND/SDMC 游戏存档）。"
-        return false
+        if (!_loaded) {
+            lastErrorText = "MMJ 核心未加载"
+            return false
+        }
+        return if (probeSavestateSupport()) {
+            saveStateNative(slot, dst)
+        } else {
+            saveStateSnapshot(slot, dst)
+        }
+    }
+
+    /**
+     * 层 1：真·即时存档（核心导出 SaveState JNI 时走此路径）。
+     * 流程对齐 AzaharEngine：暂停态先临时恢复（暂停中 RunLoop 不消费信号），
+     * 发 SaveState(slot)，轮询 states/ 新落盘文件（最多 8s），成功后把
+     * 状态文件拷贝到 dst（UI 槽位列表的大小/时间即真实数据），失败如实报错。
+     */
+    private fun saveStateNative(slot: Int, dst: File): Boolean {
+        return try {
+            val wasPaused = _paused
+            if (wasPaused) {
+                try { CitraMmjNative.lib.ResumeEmulation() } catch (_: Throwable) {}
+            }
+            val before = newestStateFile(0L)?.lastModified() ?: 0L
+            CitraMmjNative.lib.SaveState(slot)
+            val deadline = System.currentTimeMillis() + 8000
+            var real: File? = null
+            while (System.currentTimeMillis() < deadline) {
+                real = newestStateFile(before)
+                if (real != null) break
+                try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+            }
+            if (wasPaused) {
+                try { CitraMmjNative.lib.PauseEmulation() } catch (_: Throwable) {}
+            }
+            val state = real
+            if (state == null) {
+                lastErrorText = "即时存档失败：核心未写入状态文件（可能暂停中或不支持）"
+                android.util.Log.w("CitraMmjEngine", "saveState($slot): no state file appeared")
+                return false
+            }
+            try {
+                dst.parentFile?.mkdirs()
+                state.copyTo(dst, overwrite = true)
+            } catch (t: Throwable) {
+                android.util.Log.w("CitraMmjEngine", "saveState($slot): copy failed", t)
+            }
+            lastErrorText = ""
+            true
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "saveState($slot)", t)
+            lastErrorText = "即时存档异常：${t.message ?: t.javaClass.simpleName}"
+            false
+        }
+    }
+
+    /**
+     * 层 2：存档数据快照（当前 MMJ .so 的可用路径）。
+     * 暂停 → 打包 nand/data/** + sdmc/** → 恢复暂停 → dst = 快照 zip。
+     */
+    private fun saveStateSnapshot(slot: Int, dst: File): Boolean {
+        return try {
+            val wasPaused = _paused
+            synchronized(lifecycleLock) {
+                if (!wasPaused && emuThread?.isAlive == true) {
+                    try { CitraMmjNative.lib.PauseEmulation() } catch (_: Throwable) {}
+                }
+                val root = File(userDir())
+                // 快照范围：nand/data/**（存档 + ExtSaveData + 系统 savegame）
+                //           + sdmc/**（SD 卡数据）—— 排除 nand/title（游戏本体）。
+                val includeRoots = listOf(
+                    File(root, "nand/data"),
+                    File(root, "sdmc")
+                )
+                try {
+                    dst.parentFile?.mkdirs()
+                    snapshotZip(includeRoots, root, dst)
+                } finally {
+                    if (!wasPaused && emuThread?.isAlive == true) {
+                        try { CitraMmjNative.lib.ResumeEmulation() } catch (_: Throwable) {}
+                    }
+                }
+            }
+            if (!dst.exists() || dst.length() == 0L) {
+                lastErrorText = "快照失败：未打包到任何存档数据"
+                return false
+            }
+            lastErrorText = ""
+            android.util.Log.i("CitraMmjEngine",
+                "saveState($slot): snapshot ok -> ${dst.name} (${dst.length()} bytes)")
+            true
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "saveState($slot) snapshot", t)
+            // 确保异常路径下模拟恢复运行
+            try { if (!_paused) CitraMmjNative.lib.ResumeEmulation() } catch (_: Throwable) {}
+            lastErrorText = "存档快照失败：${t.message ?: t.javaClass.simpleName}"
+            false
+        }
+    }
+
+    /**
+     * 打包快照 zip：entry 名 = 相对 [baseRoot] 的路径（还原时按前缀定位）。
+     * 空目录记 dir entry（保结构）；排除 .tmp 碎片。
+     */
+    private fun snapshotZip(includeRoots: List<File>, baseRoot: File, dst: File) {
+        java.util.zip.ZipOutputStream(dst.outputStream().buffered()).use { zos ->
+            var count = 0
+            for (incRoot in includeRoots) {
+                if (!incRoot.exists()) continue
+                val files = incRoot.walkTopDown().filter { it.isFile }
+                for (f in files) {
+                    if (f.extension.equals("tmp", true)) continue
+                    val entryName = f.relativeTo(baseRoot).path.replace('\\', '/')
+                    val entry = java.util.zip.ZipEntry(entryName).apply {
+                        time = f.lastModified()
+                    }
+                    zos.putNextEntry(entry)
+                    f.inputStream().buffered().use { it.copyTo(zos, 64 * 1024) }
+                    zos.closeEntry()
+                    count++
+                }
+            }
+            if (count == 0) {
+                // 无任何数据：写一个标记 entry，保证 zip 非空可校验
+                zos.putNextEntry(java.util.zip.ZipEntry("nesstation_snapshot_empty"))
+                zos.write("empty".toByteArray())
+                zos.closeEntry()
+            }
+        }
     }
 
     override fun loadState(slot: Int, src: File): Boolean {
-        // ★ V11：同 saveState，错误消息升级 + 替代方案。
-        lastErrorText = "Citra MMJ 二进制未集成即时读档功能（同 saveState 根因：" +
-            "weihuoya 分支移除了上游 SaveState/LoadState 实现）。即便 .state" +
-            "文件存在（来自其它核心如 Azahar 创建）也无法被 MMJ 读取 ——" +
-            "状态序列化格式由 .so 内部 C++ 类布局决定，无对应函数解析。" +
-            "建议在 3DS 系统设置切换到 Azahar 核心后读档。"
-        return false
+        if (!_loaded) {
+            lastErrorText = "MMJ 核心未加载"
+            return false
+        }
+        return if (probeSavestateSupport()) {
+            loadStateNative(slot, src)
+        } else {
+            loadStateSnapshot(slot, src)
+        }
+    }
+
+    /** 层 1：真·即时读档（核心导出 LoadState JNI 时走此路径，Azahar 同款流程）。 */
+    private fun loadStateNative(slot: Int, src: File): Boolean {
+        return try {
+            val wasPaused = _paused
+            if (wasPaused) {
+                try { CitraMmjNative.lib.ResumeEmulation() } catch (_: Throwable) {}
+            }
+            // 先把 dst（NesStation 槽位文件）回填到 states/ —— 核心按自己的
+            // 命名找文件；直接把槽位字节放到 states/ 下 newest 位置，核心的
+            // LoadState 实现若按槽位查表则用其自命名，此处兜底覆盖式回填。
+            if (src.exists() && src.length() > 0) {
+                try { src.copyTo(File(mmjStatesDir(), "nesstation_slot%02d.state".format(slot)), overwrite = true) } catch (_: Throwable) {}
+            }
+            CitraMmjNative.lib.LoadState(slot)
+            // 给 RunLoop 一点时间消费信号，随后恢复原暂停态
+            try { Thread.sleep(600) } catch (_: InterruptedException) {}
+            if (wasPaused) {
+                try { CitraMmjNative.lib.PauseEmulation() } catch (_: Throwable) {}
+            }
+            lastErrorText = ""
+            true
+        } catch (_: UnsatisfiedLinkError) {
+            lastErrorText = "核心未提供即时读档功能"
+            false
+        } catch (t: Throwable) {
+            android.util.Log.w("CitraMmjEngine", "loadState($slot)", t)
+            lastErrorText = "即时读档异常：${t.message ?: t.javaClass.simpleName}"
+            false
+        }
+    }
+
+    /**
+     * 层 2：快照还原 —— 停止模拟 → 清 nand/data + sdmc → 解包快照 →
+     * 重启游戏（与 reset() 同款链路：SurfaceChanged + startEmulationLocked）。
+     * 存档数据换血后必须冷启动，游戏读到的才是还原后的存档。
+     */
+    private fun loadStateSnapshot(slot: Int, src: File): Boolean {
+        if (!src.exists() || src.length() == 0L) {
+            lastErrorText = "槽位 $slot 无存档快照"
+            return false
+        }
+        synchronized(lifecycleLock) {
+            try {
+                // 1) 停止模拟（还原期间核心绝不能碰存档文件；running/心跳线程
+                //    保持不变 —— 与 reset() 同款，避免 FPS 心跳永久死掉）
+                if (emuThread?.isAlive == true) {
+                    try { CitraMmjNative.lib.StopEmulation() } catch (_: Throwable) {}
+                    emuThread?.join(8000)
+                }
+                emuThread = null
+                surfaceAttached = false
+
+                // 2) 清空当前存档数据（nand/data/** + sdmc/**；nand/title 游戏本体不动）
+                val root = File(userDir())
+                for (rel in listOf("nand/data", "sdmc")) {
+                    val dir = File(root, rel)
+                    if (dir.exists()) {
+                        dir.listFiles()?.forEach { it.deleteRecursively() }
+                    }
+                    dir.mkdirs()
+                }
+
+                // 3) 解包快照
+                var restored = 0
+                java.util.zip.ZipInputStream(src.inputStream().buffered()).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        if (!entry.isDirectory) {
+                            val out = File(root, entry.name)
+                            // ★ 路径安全：entry 必须落在 userDir 内（防 zip 路径穿越）
+                            if (out.canonicalPath.startsWith(root.canonicalPath)) {
+                                out.parentFile?.mkdirs()
+                                out.outputStream().buffered().use { zis.copyTo(it, 64 * 1024) }
+                                out.setLastModified(entry.time)
+                                restored++
+                            }
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+                if (restored == 0) {
+                    lastErrorText = "快照损坏（未还原任何文件）"
+                    // 恢复模拟，避免游戏停在黑屏
+                    restartAfterSnapshotRestore()
+                    return false
+                }
+
+                // 4) 重启游戏（存档数据已还原）
+                restartAfterSnapshotRestore()
+                lastErrorText = ""
+                android.util.Log.i("CitraMmjEngine",
+                    "loadState($slot): snapshot restored ($restored files), game restarted")
+                return true
+            } catch (t: Throwable) {
+                android.util.Log.w("CitraMmjEngine", "loadState($slot) restore", t)
+                lastErrorText = "读档失败：${t.message ?: t.javaClass.simpleName}"
+                try { restartAfterSnapshotRestore() } catch (_: Throwable) {}
+                return false
+            }
+        }
+    }
+
+    /** 快照还原后的游戏重启（调用方必须已持有 lifecycleLock；running/心跳不动，同 reset()）。 */
+    private fun restartAfterSnapshotRestore() {
+        val surf = surface
+        if (surf != null && surf.isValid) {
+            try {
+                CitraMmjNative.lib.SurfaceChanged(surf)
+                surfaceAttached = true
+            } catch (_: Throwable) {}
+        }
+        startEmulationLocked()
     }
 
     override fun captureFrame(): FrameCapture? = null

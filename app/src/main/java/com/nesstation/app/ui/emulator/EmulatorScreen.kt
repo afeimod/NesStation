@@ -453,6 +453,9 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
         // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
         GamePlatform.DC -> emptyList()
+        // PSP（PPSSPP 独立 Activity）：输入由 PPSSPP 原生层处理，
+        // EmulatorScreen 对 PSP 提前 return —— 空表兜底（穷尽性要求）。
+        GamePlatform.PSP -> emptyList()
     }
     return base
 }
@@ -1458,6 +1461,17 @@ fun EmulatorScreen(
             onSelect = { n3dsCoreChoice = it },
             onCancel = onExit
         )
+        return
+    }
+
+    // ★★ PSP（PPSSPP 核心，独立 Activity 模式）★★
+    //   PpssppActivity = PPSSPP v1.20.4 官方完整 Android 前端（vendored
+    //   org.ppsspp.ppsspp Java 层 + libppsspp_jni.so）：自带渲染/音频/输入/
+    //   原生设置菜单/即时存档/金手指/adhoc —— 全部原生功能零损耗保留。
+    //   游戏库点入 PSP 游戏直接拉起 PpssppActivity（EXTRA 传 ROM 路径），
+    //   PPSSPP 退出后回到游戏库（onExit）。不走进程内引擎路径。
+    if (platform == GamePlatform.PSP) {
+        PspLaunchSection(game = game, onExit = onExit)
         return
     }
 
@@ -6808,6 +6822,8 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         // onGamePadEvent/onTouchEvent 契约，不支持位掩码组合键，返回空。
         GamePlatform.N3DS   -> ""
         GamePlatform.NGCWII -> ""
+        // PSP（PPSSPP 独立 Activity）—— 同上，无 NesStation 位掩码组合键。
+        GamePlatform.PSP    -> ""
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -13954,7 +13970,7 @@ private fun SettingsPanel(
                     Text("当前核心：Citra MMJ（高性能老核心）。全部设置如下，" +
                         "与主界面 设置 → 核心设置 → 3DS (Citra MMJ) 完全同步；" +
                         "布局/自定义布局改动即时生效，其余下次进游戏生效。" +
-                        "本核心不支持即时存档（用游戏内存档）与联机。",
+                        "即时存档 = 存档数据快照（配合游戏内存档点回滚），不支持联机。",
                         color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     Spacer(Modifier.size(6.dp))
 

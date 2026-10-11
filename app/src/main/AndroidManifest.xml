@@ -216,5 +216,64 @@
              无独立 Activity（历史注：旧版在此注册过
              com.flycast.emulator.NativeGLActivity，已随独立集成一并移除）。 -->
 
+        <!-- ================================================================
+             PPSSPP（PSP 核心）—— vendored org.ppsspp.ppsspp Java 层 (v1.20.4)
+             =================================================================
+             PpssppActivity 是 PPSSPP 完整官方 Android 前端（普通 AppCompatActivity，
+             GL/Vulkan 双渲染路径 + 原生 Oboe 音频 + 完整触控/手柄输入 +
+             PPSSPP 原生设置菜单 = PSP 独立设置入口）。NesStation 游戏库经
+             EmulatorScreen 的 PSP 分支以 EXTRA 传入 ROM 路径直接启动游戏。
+             配置/存档位于 <externalFilesDir>/PSP（经 <filesDir>/memstick_dir.txt
+             预置，避免首启弹存储位置选择器）。
+             launchMode singleInstance 与上游一致（渲染循环对 Activity 重建敏感）。
+             ================================================================= -->
+        <activity
+            android:name="org.ppsspp.ppsspp.PpssppActivity"
+            android:configChanges="locale|keyboard|keyboardHidden|navigation|uiMode"
+            android:theme="@style/ppsspp_style"
+            android:launchMode="singleInstance"
+            android:exported="true">
+            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
+                android:value="true" />
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" />
+                <data android:scheme="content" />
+                <data android:mimeType="*/*" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.iso" />
+                <data android:pathPattern=".*\\..*\\.iso" />
+                <data android:pathPattern=".*\\.cso" />
+                <data android:pathPattern=".*\\..*\\.cso" />
+                <data android:pathPattern=".*\\.chd" />
+                <data android:pathPattern=".*\\..*\\.chd" />
+                <data android:pathPattern=".*\\.elf" />
+                <data android:pathPattern=".*\\..*\\.elf" />
+                <data android:pathPattern=".*\\.pbp" />
+                <data android:pathPattern=".*\\..*\\.pbp" />
+            </intent-filter>
+        </activity>
+
+        <!-- PSP 游戏桌面快捷方式创建入口（上游同款，保持 PPSSPP 功能完整） -->
+        <activity
+            android:name="org.ppsspp.ppsspp.ShortcutActivity"
+            android:label="PSP 快捷方式"
+            android:exported="true">
+            <intent-filter>
+                <category android:name="android.intent.category.DEFAULT" />
+                <action android:name="android.intent.action.CREATE_SHORTCUT" />
+            </intent-filter>
+        </activity>
+
+        <!-- PPSSPP 相册/文档选择代理（游戏内截图上传 / 存档导入等场景用） -->
+        <activity android:name="org.ppsspp.ppsspp.ImageResultProxyActivity"
+            android:theme="@style/ppsspp_Theme_ProxyTransparent"
+            android:launchMode="standard" />
+        <activity android:name="org.ppsspp.ppsspp.DocumentResultProxyActivity"
+            android:theme="@style/ppsspp_Theme_ProxyTransparent"
+            android:launchMode="standard" />
+
     </application>
 </manifest>

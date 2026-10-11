@@ -47,6 +47,32 @@ object NativeLibrary {
     external fun IsRunning(): Boolean
 
     // ------------------------------------------------------------------
+    // ★★ 即时存档（未来兼容契约）★★
+    //
+    // 现行 libcitra_mmj.so（weihuoya 20250220 二进制）【没有】这两个 JNI
+    // 符号（.dynsym 全扫实证），任何调用都会抛 UnsatisfiedLinkError ——
+    // 引擎侧 CitraMmjEngine 用 try/catch 探测（probeSavestateSupport），
+    // 探测失败自动走"存档数据快照"兜底（见 CitraMmjEngine 注释）。
+    //
+    // 若未来用源码重编 MMJ 核心并加入即时存档，只需按下列契约导出符号，
+    // NesStation 【零改动】自动启用真即时存档：
+    //   Java_org_citra_emu_NativeLibrary_SaveState(JNIEnv*, jclass, jint slot)
+    //     —— slot < 0 必须为无害 no-op（探测机制依赖该语义）；
+    //     —— 异步信号模型：RunLoop 下一帧消费（与 Azahar saveState 同款），
+    //        状态文件建议写 <userPath>/states/ 目录；
+    //   Java_org_citra_emu_NativeLibrary_LoadState(JNIEnv*, jclass, jint slot)
+    //     —— 槽位无状态文件时静默失败/返回，不得崩溃。
+    // ------------------------------------------------------------------
+
+    /** 即时存档到槽位（当前 .so 未导出 —— 调用抛 UnsatisfiedLinkError，引擎已探测）。 */
+    @Keep
+    external fun SaveState(slot: Int)
+
+    /** 从槽位即时读档（当前 .so 未导出 —— 调用抛 UnsatisfiedLinkError，引擎已探测）。 */
+    @Keep
+    external fun LoadState(slot: Int)
+
+    // ------------------------------------------------------------------
     // Surface / 显示
     // ------------------------------------------------------------------
 

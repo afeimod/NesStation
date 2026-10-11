@@ -119,7 +119,10 @@ object PlatformDetector {
         "dol" to GamePlatform.NGCWII, "nkit" to GamePlatform.NGCWII,
         "wbfs" to GamePlatform.NGCWII, "ciso" to GamePlatform.NGCWII,
         // SEGA Dreamcast / NAOMI（.gdi/.cdi 为 DC 专属格式，日常文件不撞名）
-        "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC
+        "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC,
+        // Sony PSP（.cso 为 PSP 专属压缩 ISO 格式，日常文件不撞名；
+        // .iso/.pbp/.chd/.elf 撞名严重，仍走平台页 hint 消歧，不进白名单）
+        "cso" to GamePlatform.PSP
     )
 
     /**
@@ -216,7 +219,7 @@ object PlatformDetector {
             return when (hintPlatform) {
                 GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
                 GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC,
-                GamePlatform.N3DS, GamePlatform.NGCWII -> hintPlatform
+                GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.PSP -> hintPlatform
                 else -> GamePlatform.MD
             }
         }
@@ -228,7 +231,7 @@ object PlatformDetector {
     private val REFRESH_HINT_ALLOWED = setOf(
         GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
         GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC,
-        GamePlatform.N3DS, GamePlatform.NGCWII
+        GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.PSP
     )
 
     /**
@@ -321,8 +324,16 @@ object PlatformDetector {
                 GamePlatform.DC -> GamePlatform.DC
                 GamePlatform.N3DS -> GamePlatform.N3DS
                 GamePlatform.NGCWII -> GamePlatform.NGCWII
+                GamePlatform.PSP -> GamePlatform.PSP
                 else -> GamePlatform.MD
             }
+        }
+
+        // === PSP 专属扩展：.pbp 在 PSP 游戏镜像与 PSX eboot 之间撞名 ——
+        // PSP 平台页导入时按 PSP 解析（与 .app 在 NDS/3DS 间的消歧同模式）；
+        // 无 hint 保持旧默认 PSX。.elf 同理（PSP 的裸 EBOOT.BIN）。
+        if ((ext == "pbp" || ext == "elf") && hintPlatform == GamePlatform.PSP) {
+            return GamePlatform.PSP
         }
 
         // === MDF/MDS/NRG 镜像：靠 hint 消歧，PS2 页导入 → PS2，否则默认 PSX ===
@@ -393,6 +404,8 @@ object PlatformDetector {
                 if (n3dsHints.any { lowerPath.contains(it) }) return GamePlatform.N3DS
                 val ngcwiiHints = listOf("gamecube", "ngc", "wii", "dolphin", "ishiiruka")
                 if (ngcwiiHints.any { lowerPath.contains(it) }) return GamePlatform.NGCWII
+                val pspHints = listOf("psp", "ppsspp", "playstationportable", "/psp/")
+                if (pspHints.any { lowerPath.contains(it) }) return GamePlatform.PSP
                 // DC 专属关键字放最后（"dc" 过短，避免误伤其它路径）
                 val dcHints = listOf("dreamcast", "naomi", "atomiswave", "flycast", "/dc/")
                 if (dcHints.any { lowerPath.contains(it) }) return GamePlatform.DC
@@ -405,8 +418,14 @@ object PlatformDetector {
                 GamePlatform.DC -> GamePlatform.DC
                 GamePlatform.N3DS -> GamePlatform.N3DS
                 GamePlatform.NGCWII -> GamePlatform.NGCWII
+                GamePlatform.PSP -> GamePlatform.PSP
                 else -> GamePlatform.MD
             }
+        }
+
+        // === PSP .pbp/.elf：PSP 页 hint 优先（同 detectFromUri 规则） ===
+        if ((ext == "pbp" || ext == "elf") && hintPlatform == GamePlatform.PSP) {
+            return GamePlatform.PSP
         }
 
         // === MDF/MDS/NRG 镜像：先看路径关键字(ps2)，再看 hint，最后默认 PSX ===

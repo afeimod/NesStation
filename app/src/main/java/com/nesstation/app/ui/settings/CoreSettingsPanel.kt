@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -19,6 +20,7 @@ import com.nesstation.app.core.storage.JAVA_PHONE_KEY_OPTIONS
 import com.nesstation.app.core.storage.javaButtonKeyMapGet
 import com.nesstation.app.core.storage.javaButtonKeyMapSet
 import com.nesstation.app.ui.emulator.Psx2BiosImportSection
+import com.nesstation.app.ui.emulator.PspSettingsStore
 
 /**
  * 核心设置子页：进入后展示该核心专属的模拟器选项。
@@ -2159,6 +2161,167 @@ fun CoreSettingsPanel(
                         "提示：Wii 游戏 IR 指针 = 触摸游戏画面（绝对指向）；IR−/IR+ 调进深；" +
                         "摇晃 = L/R 键（wii 模式）。GameCube 游戏自动使用 GC 手柄布局。",
                         color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                }
+            }
+
+            // ================================================================
+            // ★★ PSP（PPSSPP）全局设置（本轮新增）★★
+            //
+            // PPSSPP 是独立 Activity 前端（PpssppActivity），其配置落在
+            // ppsspp.ini（<externalFilesDir>/PSP/SYSTEM/ppsspp.ini）。本面板
+            // 直写该文件（PspSettingsStore，键名与 PPSSPP v1.20.4
+            // Core/Config.cpp 逐一核对），改动"下次启动 PSP 游戏生效"；
+            // PPSSPP 游戏内暂停菜单的完整设置（独立设置）写回同一文件，
+            // 两处互通 —— 此处写入的值会在 PPSSPP 设置界面同步显示。
+            // ================================================================
+            GamePlatform.PSP -> item {
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                // 读取当前值（每次进入面板时刷新；写入即落盘，无需本地状态）
+                val curBackend = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.GRAPHICS_BACKEND, 3).toString()
+                }
+                val curRes = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.INTERNAL_RES, 0).toString()
+                }
+                val curFrameSkip = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.FRAME_SKIP, 0).toString()
+                }
+                val curAutoSkip = remember {
+                    if (PspSettingsStore.readBool(ctx, PspSettingsStore.AUTO_FRAME_SKIP, false)) "enabled" else "disabled"
+                }
+                val curVsync = remember {
+                    if (PspSettingsStore.readBool(ctx, PspSettingsStore.VSYNC, true)) "enabled" else "disabled"
+                }
+                val curTexScale = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.TEX_SCALE_LEVEL, 1).toString()
+                }
+                val curTexType = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.TEX_SCALE_TYPE, 0).toString()
+                }
+                val curHwTransform = remember {
+                    if (PspSettingsStore.readBool(ctx, PspSettingsStore.HW_TRANSFORM, true)) "enabled" else "disabled"
+                }
+                val curTess = remember {
+                    if (PspSettingsStore.readBool(ctx, PspSettingsStore.HW_TESSELLATION, false)) "enabled" else "disabled"
+                }
+                val curSpline = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.SPLINE_QUALITY, 2).toString()
+                }
+                val curShader = remember {
+                    PspSettingsStore.readString(ctx, PspSettingsStore.POST_SHADER_1, "Off")
+                }
+                val shaderChoices = remember { PspSettingsStore.postShaderChoices(ctx) }
+                val curCpuCore = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.CPU_CORE, 0).toString()
+                }
+                val curCpuClock = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.CPU_SPEED, 0).toString()
+                }
+                val curCheats = remember {
+                    if (PspSettingsStore.readBool(ctx, PspSettingsStore.ENABLE_CHEATS, false)) "enabled" else "disabled"
+                }
+                val curVolume = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.GAME_VOLUME, 100).toString()
+                }
+                val curTouch = remember {
+                    if (PspSettingsStore.readBool(ctx, PspSettingsStore.SHOW_TOUCH, true)) "enabled" else "disabled"
+                }
+                val curOpacity = remember {
+                    PspSettingsStore.readInt(ctx, PspSettingsStore.TOUCH_OPACITY, 65).toString()
+                }
+                val curWlan = remember {
+                    if (PspSettingsStore.readBool(ctx, PspSettingsStore.ENABLE_WLAN, false)) "enabled" else "disabled"
+                }
+
+                SettingsSection("PSP (PPSSPP) · 画面") {
+                    DropdownRow("图形后端",
+                        listOf("3" to "Vulkan (推荐·性能最佳)", "0" to "OpenGL (兼容模式)"),
+                        curBackend
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.GRAPHICS_BACKEND, it.toIntOrNull() ?: 3) }
+                    DropdownRow("渲染分辨率",
+                        listOf("0" to "自动 (原生 480x272)", "1" to "1x (480x272)", "2" to "2x (960x544)",
+                               "3" to "3x (1440x816)", "4" to "4x (1920x1088)", "5" to "5x (2400x1360)",
+                               "8" to "8x (3840x2176)"),
+                        curRes
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.INTERNAL_RES, it.toIntOrNull() ?: 0) }
+                    DropdownRow("跳帧",
+                        listOf("0" to "不跳帧 (默认)", "1" to "跳 1 帧", "2" to "跳 2 帧",
+                               "3" to "跳 3 帧", "4" to "跳 4 帧", "5" to "跳 5 帧"),
+                        curFrameSkip
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.FRAME_SKIP, it.toIntOrNull() ?: 0) }
+                    DropdownRow("自动跳帧",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (卡顿时自动跳)"),
+                        curAutoSkip
+                    ) { PspSettingsStore.writeBool(ctx, PspSettingsStore.AUTO_FRAME_SKIP, it == "enabled") }
+                    DropdownRow("垂直同步",
+                        listOf("enabled" to "开启 (默认·防撕裂)", "disabled" to "关闭 (低延迟)"),
+                        curVsync
+                    ) { PspSettingsStore.writeBool(ctx, PspSettingsStore.VSYNC, it == "enabled") }
+                    DropdownRow("后处理着色器", shaderChoices, curShader) {
+                        PspSettingsStore.writeString(ctx, PspSettingsStore.POST_SHADER_1, it)
+                    }
+                }
+                SettingsSection("PSP (PPSSPP) · 纹理") {
+                    DropdownRow("纹理放大",
+                        listOf("1" to "关闭 (默认)", "2" to "2x", "3" to "3x", "4" to "4x", "5" to "5x"),
+                        curTexScale
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.TEX_SCALE_LEVEL, it.toIntOrNull() ?: 1) }
+                    DropdownRow("纹理放大算法",
+                        listOf("0" to "xBRZ (推荐)", "1" to "Hybrid"),
+                        curTexType
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.TEX_SCALE_TYPE, it.toIntOrNull() ?: 0) }
+                    DropdownRow("硬件变换",
+                        listOf("enabled" to "开启 (默认·性能关键)", "disabled" to "关闭 (个别游戏修复)"),
+                        curHwTransform
+                    ) { PspSettingsStore.writeBool(ctx, PspSettingsStore.HW_TRANSFORM, it == "enabled") }
+                    DropdownRow("硬件曲面细分",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (性能更好·个别游戏异常)"),
+                        curTess
+                    ) { PspSettingsStore.writeBool(ctx, PspSettingsStore.HW_TESSELLATION, it == "enabled") }
+                    DropdownRow("曲线质量",
+                        listOf("0" to "低 (最快)", "1" to "中", "2" to "高 (默认·最平滑)"),
+                        curSpline
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.SPLINE_QUALITY, it.toIntOrNull() ?: 2) }
+                }
+                SettingsSection("PSP (PPSSPP) · 系统 / 性能") {
+                    DropdownRow("CPU 核心",
+                        listOf("0" to "JIT (默认·最快)", "1" to "IR JIT (兼容性更好)", "2" to "解释器 (最慢·排错用)"),
+                        curCpuCore
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.CPU_CORE, it.toIntOrNull() ?: 0) }
+                    DropdownRow("PSP CPU 时钟",
+                        listOf("0" to "自动 (游戏默认)", "111" to "111MHz (省电)", "222" to "222MHz (PSP 标准)",
+                               "266" to "266MHz", "333" to "333MHz (最高)"),
+                        curCpuClock
+                    ) { PspSettingsStore.writeInt(ctx, PspSettingsStore.CPU_SPEED, it.toIntOrNull() ?: 0) }
+                    DropdownRow("金手指",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (在 PPSSPP 内管理)"),
+                        curCheats
+                    ) { PspSettingsStore.writeBool(ctx, PspSettingsStore.ENABLE_CHEATS, it == "enabled") }
+                }
+                SettingsSection("PSP (PPSSPP) · 音频 / 控制 / 网络") {
+                    DropdownRow("游戏音量", (0..100 step 10).map { it.toString() to "$it%" }, curVolume) {
+                        PspSettingsStore.writeInt(ctx, PspSettingsStore.GAME_VOLUME, it.toIntOrNull() ?: 100)
+                    }
+                    DropdownRow("虚拟手柄",
+                        listOf("enabled" to "显示 (默认·PPSSPP 自带触控)", "disabled" to "隐藏 (用实体手柄)"),
+                        curTouch
+                    ) { PspSettingsStore.writeBool(ctx, PspSettingsStore.SHOW_TOUCH, it == "enabled") }
+                    DropdownRow("触控不透明度", (10..100 step 10).map { it.toString() to "$it%" }, curOpacity) {
+                        PspSettingsStore.writeInt(ctx, PspSettingsStore.TOUCH_OPACITY, it.toIntOrNull() ?: 65)
+                    }
+                    DropdownRow("网络联机 (WLAN)",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (Ad-hoc 联机)"),
+                        curWlan
+                    ) { PspSettingsStore.writeBool(ctx, PspSettingsStore.ENABLE_WLAN, it == "enabled") }
+                }
+                SettingsSection("PSP (PPSSPP) · 独立设置入口") {
+                    Text(
+                        "★ PPSSPP 拥有完整的原生设置菜单（游戏内暂停菜单 → Settings）：" +
+                        "图形/音频/控制/网络/系统/工具全部可调，含每游戏独立配置、" +
+                        "触控布局编辑、自定义驱动、存档管理、金手指管理 —— 全部即时生效。\n\n" +
+                        "本页为全局快捷设置（写 ppsspp.ini，下次启动生效）；游戏内改动会回写同一配置文件，两端互通。",
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
+                        fontSize = 10.sp, lineHeight = 15.sp)
                 }
             }
         }

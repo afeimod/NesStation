@@ -315,6 +315,7 @@ fun SettingsScreen(
                             SettingsRow("DC / Dreamcast", "Flycast 核心 · 分辨率/宽屏/排序/主机区域/GD-ROM", trailing = { Arrow() }) { selectedCore = GamePlatform.DC }
                             SettingsRow("3DS", "Azahar 核心 · 图形后端/分辨率/屏幕布局/3D/系统", trailing = { Arrow() }) { selectedCore = GamePlatform.N3DS }
                             SettingsRow("NGC / Wii", "Ishiiruka (Dolphin) 核心 · 后端/EFB 分辨率/CPU/控制模式", trailing = { Arrow() }) { selectedCore = GamePlatform.NGCWII }
+                            SettingsRow("PSP", "PPSSPP 核心 · 后端/分辨率/纹理/CPU/联机 + 独立设置入口", trailing = { Arrow() }) { selectedCore = GamePlatform.PSP }
                         }
                     }
 

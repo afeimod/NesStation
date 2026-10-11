@@ -32,6 +32,11 @@ import androidx.compose.ui.graphics.Color
  *          预编译 libishiiruka.so + 原包名 JNI 契约
  *          org.dolphinemu.ishiiruka.NativeLibrary，推模型引擎 IshirukaEngine，
  *          集成方式与 DraStic（激烈）一致）
+ * PSP    = Sony PlayStation Portable（PPSSPP v1.20.4 核心 —— vendored 完整官方
+ *          Android Java 层 org.ppsspp.ppsspp + libppsspp_jni.so，经
+ *          PpssppActivity 独立 Activity 启动，保留 PPSSPP 全部原生功能：
+ *          自带触控/手柄输入、原生设置菜单（独立设置入口）、即时存档、
+ *          金手指、联机 adhoc 等；配置位于 <externalFilesDir>/PSP）
  */
 enum class GamePlatform(val displayName: String) {
     NES("NES"),
@@ -48,7 +53,8 @@ enum class GamePlatform(val displayName: String) {
     JAVA("Java"),
     DC("DC"),
     N3DS("3DS"),
-    NGCWII("NGC/Wii");
+    NGCWII("NGC/Wii"),
+    PSP("PSP");
 
     companion object {
         /**
@@ -112,6 +118,8 @@ enum class GamePlatform(val displayName: String) {
                 // Nintendo GameCube / Wii (Ishiiruka / Dolphin)
                 "ngcwii", "ngc", "wii", "gamecube", "gc", "dolphin",
                 "ishiruka", "ishiiruka" -> NGCWII
+                // Sony PlayStation Portable (PPSSPP)
+                "psp", "ppsspp", "playstationportable", "psportable" -> PSP
                 // J2ME
                 "java", "j2me", "midlet" -> JAVA
                 // 兜底：未识别的字符串保持 NES 行为不变（旧 API 兼容）

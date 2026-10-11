@@ -101,7 +101,8 @@ fun N3dsCorePickerDialog(
                     description = if (mmjAvailable) {
                         "老设备性能与兼容性表现出色；MMJ 专属设置" +
                             "（分辨率/帧率/着色器/Hack 等）已全部接入；" +
-                            "不支持即时存档（使用游戏内存储）与联机。"
+                            "即时存档以存档数据快照实现（游戏内存档点回滚）；" +
+                            "不支持联机。"
                     } else {
                         "Citra MMJ 核心库不可用（仅提供 arm64 库；" +
                             "x86 / 32 位设备无法使用）。\n（选 Azahar 继续游戏）"

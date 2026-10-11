@@ -157,7 +157,7 @@ fun NeonLibraryScreen(
             GamePlatform.NES, GamePlatform.SFC, GamePlatform.GB, GamePlatform.GBA,
             GamePlatform.MD, GamePlatform.PCE, GamePlatform.PSX, GamePlatform.PS2,
             GamePlatform.NDS, GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.DC,
-            GamePlatform.ARCADE, GamePlatform.DOS, GamePlatform.JAVA
+            GamePlatform.ARCADE, GamePlatform.DOS, GamePlatform.JAVA, GamePlatform.PSP
         )
     }
     val coreEntries = remember(modeGames, countByCore, coreOrder, searching) {
