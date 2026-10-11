@@ -1855,7 +1855,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
 
     /**
      * 层 2：存档数据快照（当前 MMJ .so 的可用路径）。
-     * 暂停 → 打包 nand/data/** + sdmc/** → 恢复暂停 → dst = 快照 zip。
+     * 暂停 → 打包 nand/data 与 sdmc 两目录 → 恢复暂停 → dst = 快照 zip。
+     * （KDoc 文本严禁出现 "nand" 目录路径加双星号的通配写法——Kotlin
+     *   块注释支持嵌套，会开新注释层导致注释永不闭合、吞掉后续代码。）
      */
     private fun saveStateSnapshot(slot: Int, dst: File): Boolean {
         return try {
