@@ -162,15 +162,29 @@ android {
             // 与各核心运行时 dlopen 预编译 libretro 核心 .so 的加载路径在
             // 解压态下最可靠；代价仅为安装包占用略增。
             useLegacyPackaging = true
-            // libc++_shared.so 双源重复：jniLibs 里的预装副本（PPSSPP
-            // libppsspp_jni.so 运行依赖它，其余预编译核心 azahar/mmj/
-            // ishiiruka 均为 c++_static 不依赖）与 externalNativeBuild
-            // CMake 构建产物里各 ABI 的副本会同时进入 mergeReleaseNativeLibs，
-            // AGP 遇到同路径多来源直接报
-            // "2 files found with path 'lib/<abi>/libc++_shared.so'"。
-            // 用 pickFirst 保留第一份即可——两个副本同为 NDK libc++，
-            // ABI 稳定、运行时可互换。覆盖全部 ABI（arm64-v8a/v7a/x86_64）。
-            pickFirsts += "**/libc++_shared.so"
+            // 预装 so 与 externalNativeBuild(CMake) 产物同名重复问题。
+            // CMake 侧产物来自两条路径：
+            //   1) NDK c++_shared STL 副本（部分子工程以 c++_shared 链接）；
+            //   2) ARMSX2 子树 3rdparty/adrenotools 的 hook 库
+            //      （hook_impl + main_hook/file_redirect_hook/gsl_alloc_hook，
+            //      编译为 libhook_impl.so / libmain_hook.so /
+            //      libfile_redirect_hook.so / libgsl_alloc_hook.so）。
+            // 而 jniLibs 里预装的 PPSSPP 官方 arm64 目录同样带有这 4 个
+            // hook 库（PPSSPP 上游 vendor 了同一套 adrenotools）与
+            // libc++_shared.so。两两同名 → mergeReleaseNativeLibs 报
+            // "2 files found with path 'lib/<abi>/<name>.so'"。
+            // 注：AGP 每次只报第一个冲突（按路径排序），逐个修会"打地鼠"，
+            // 这里一次性对全部 5 个同名库 pickFirst —— 两侧互为同一上游
+            // 代码的等价副本（adrenotools 同源、libc++ ABI 稳定），保留
+            // 任一份功能完全一致；PPSSPP 主库不直接链接 hook 库，仅做
+            // 可选 dlopen，加载哪一份都不影响。覆盖全部 ABI。
+            pickFirsts += setOf(
+                "**/libc++_shared.so",
+                "**/libhook_impl.so",
+                "**/libmain_hook.so",
+                "**/libfile_redirect_hook.so",
+                "**/libgsl_alloc_hook.so"
+            )
         }
         resources {
             excludes += setOf(
