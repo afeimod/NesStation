@@ -59,7 +59,10 @@ object PspSettingsStore {
         if (!ini.isFile) return null
         var inSection = false
         try {
-            ini.forEachLine { line ->
+            // 注意：不要用 forEachLine { ... return ... } —— 非 `for` 循环
+            // 上下文里跨 lambda 的非局部 return 在部分 Kotlin 版本被拒编译
+            //（"'return' is not allowed here"），for 循环内的 return 永远合法。
+            for (line in ini.readLines()) {
                 val t = line.trim()
                 if (t.startsWith("[") && t.endsWith("]")) {
                     inSection = t.equals("[${key.section}]", ignoreCase = true)

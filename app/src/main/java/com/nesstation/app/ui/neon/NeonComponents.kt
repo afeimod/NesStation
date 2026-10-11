@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.MobileFriendly
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.TabletAndroid
@@ -89,6 +90,7 @@ fun neonPlatformIcon(p: GamePlatform): ImageVector = when (p) {
     GamePlatform.DC -> Icons.Rounded.SportsEsports
     GamePlatform.N3DS -> Icons.Rounded.TabletAndroid
     GamePlatform.NGCWII -> Icons.Rounded.Tv
+    GamePlatform.PSP -> Icons.Rounded.SmartDisplay
 }
 
 /** 手柄按键提示胶囊（底部提示栏单元）：圆形字母 + 说明文字。 */

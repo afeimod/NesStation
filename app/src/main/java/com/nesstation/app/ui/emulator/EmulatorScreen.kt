@@ -5598,6 +5598,13 @@ private fun applyCoreOptionsInner(
             //   IshirukaEngine.setCoreOption 的 wiiLanguage 分支）。
             engine.setCoreOption("IshirukaEngine/wiiLanguage", layout.irWiiLanguage)
         }
+        GamePlatform.PSP -> {
+            // PSP 由 PPSSPP 独立 Activity（PpssppActivity）承载，不走进程内
+            // EmulatorEngine（门面对 PSP 显式拒绝），因此本函数永远不会在
+            // PSP 会话中被调用 —— 分支仅用于 when 穷举。
+            // PSP 全部设置经 PspSettingsStore 直写 ppsspp.ini（主设置页
+            // 核心设置的 PSP 分区 + PspLaunchSection），核心启动时自行读取。
+        }
     }
 }
 
@@ -14409,6 +14416,20 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {irWiimoteSpeaker = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("Wiimote 持续扫描", "实体 Wiimote 连接", padLayout.irWiimoteScan == "enabled"
                 ) { onLayoutChange(padLayout.copy {irWiimoteScan = if (it) "enabled" else "disabled"}) }
+            }
+            GamePlatform.PSP -> {
+                // PSP 会话运行在 PpssppActivity 独立窗口，本悬浮面板对 PSP
+                // 不可达（引擎门面拒绝 PSP），分支仅用于 when 穷举并给出指引。
+                Text("PSP (PPSSPP) 设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Spacer(Modifier.size(6.dp))
+                Text("PSP 由 PPSSPP 独立 Activity 运行，不使用本面板。" +
+                    "全部设置在主界面 设置 → 核心设置 → PSP (PPSSPP) 分区" +
+                    "（直写 ppsspp.ini：渲染后端 / 内部分辨率 / 后处理着色器 / " +
+                    "CPU 核心 / 金手指 / 联机等），游戏内按返回键调出 PPSSPP " +
+                    "自带菜单亦可，两端共用同一份配置，下次启动生效。",
+                    color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
+                Spacer(Modifier.size(6.dp))
             }
         }
 

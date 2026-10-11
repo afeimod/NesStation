@@ -118,6 +118,7 @@ fun platformFullName(p: GamePlatform): String = when (p) {
     GamePlatform.ARCADE -> "Arcade / FBNeo"
     GamePlatform.DOS -> "MS-DOS"
     GamePlatform.JAVA -> "Java Micro Edition"
+    GamePlatform.PSP -> "Sony PlayStation Portable"
 }
 
 /** 平台 → 建档年代副标题。 */
@@ -137,6 +138,7 @@ fun platformEra(p: GamePlatform): String = when (p) {
     GamePlatform.ARCADE -> "1978 · COIN-OP"
     GamePlatform.DOS -> "1981 · X86"
     GamePlatform.JAVA -> "2000 · J2ME"
+    GamePlatform.PSP -> "2004 · UMD"
 }
 
 /** 格式化游戏时长（playTimeMs → "3.2小时" / "42分钟" / "—")。 */
