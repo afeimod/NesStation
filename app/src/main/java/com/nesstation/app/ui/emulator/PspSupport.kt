@@ -29,8 +29,10 @@ import java.io.File
  */
 
 /** 资产播种版本 —— 随包资产内容变化时递增，触发重新播种。
- *  v2：新增 lang/（<systemDir>/PPSSPP/lang/*.ini —— 核心选项
- *  ppsspp_language / 游戏内系统对话框文字的资源根），必须重播种。 */
+ *  v2：新增 lang/（<systemDir>/PPSSPP/lang 目录下的多语言 ini —— 核心选项
+ *  ppsspp_language 与游戏内系统对话框文字的资源根），必须重播种。
+ *  注意：KDoc 注释内不可出现 "斜杠-星号" 字符序列 —— Kotlin 块注释支持
+ *  嵌套，序列会被当作开启新的嵌套注释，导致 "Unclosed comment" 编译错误。 */
 private const val PPSSPP_ASSETS_VERSION = "2"
 
 /**
