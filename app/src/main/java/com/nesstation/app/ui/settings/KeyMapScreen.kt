@@ -230,7 +230,7 @@ private val PS2_ACTIONS = listOf(
 
 // PSP (PPSSPP) — PPSSPP 默认 Android 手柄映射（defaultPadMapAndroid）。
 // Ids match EmulatorScreen's PSP KeyActionInternal table; bits are routed
-// through PspEngine（位掩码→Android 键码→NativeApp.keyDown/keyUp）。
+// through PspEngine（ps2ToLibretroLayout 位转换→libretro JOYPAD）。
 // L2 = PPSSPP 暂停菜单（游戏内设置/即时存档/金手指入口）,
 // R2 = PPSSPP 快进。PSP 无 L3/R3。
 private val PSP_ACTIONS = listOf(

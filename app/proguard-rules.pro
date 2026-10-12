@@ -204,5 +204,5 @@
 # 这些引用对 R8 完全不可见，不 keep 会在 release 构建被整体裁剪/混淆，
 # 库加载或运行回调时抛 NoSuchMethodError/UnsatisfiedLinkError → SIGABRT
 # （与 Azahar/Dolphin 契约同型问题，见上方历史教训）。整个包 keep。
--keep class org.ppsspp.ppsspp.** { *; }
--dontwarn org.ppsspp.ppsspp.**
+# (org.ppsspp.ppsspp keep 规则已随 libretro 化重写移除 —— 该 Java 包与
+# libppsspp_jni.so 不再存在于工程中；libretro 核心无任何 Java 契约类。

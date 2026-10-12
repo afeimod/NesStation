@@ -222,13 +222,10 @@
              （core/jni/psp_bridge.cpp + psp_loader.cpp，dlopen 官方
              libppsspp_jni.so v1.20.4 并驱动其 JNI 契约），统一走
              EmulatorScreen 全链路（Surface / 输入 / 即时存档 / 设置面板）。
-             历史注：此前的独立 PpssppActivity 方案（singleInstance +
-             android:process=":ppsspp" 隔离进程 + ShortcutActivity/
-             ImageResultProxyActivity/DocumentResultProxyActivity 声明）
-             已整体废弃移除 —— org.ppsspp.ppsspp 包下的 Java 类仍保留
-             （NativeApp/PpssppActivity/ContentUri 等是核心的 JNI 契约
-             类，dlsym 的 JNI 符号名与 registerCallbacks 的 FindClass
-             都依赖它们；R8 keep 规则见 proguard-rules.pro）。
+             历史注：此前的 dlopen 官方 libppsspp_jni.so + org.ppsspp.ppsspp
+             Java 契约类 + PspHostStub 桩方案已整体废弃移除（JNI 契约连环
+             崩溃两轮修复后彻底重构）—— 现为 libretro 核心，无任何 Java
+             契约类依赖，与 DC/PSX 完全同构。
              ============================================================ -->
 
     </application>

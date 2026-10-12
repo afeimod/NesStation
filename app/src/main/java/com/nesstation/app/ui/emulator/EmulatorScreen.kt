@@ -1482,11 +1482,12 @@ fun EmulatorScreen(
         return
     }
 
-    // ★★ PSP（PPSSPP 核心，进程内引擎模式）★★
-    //   与 DC/PSX 完全同构：PspEngine（进程内 dlopen 官方 libppsspp_jni.so）
+    // ★★ PSP（libretro PPSSPP 核心，进程内引擎模式）★★
+    //   与 DC/PSX 完全同构：PspEngine（进程内 dlopen
+    //   libppsspp_libretro_android.so，libretro 前端见 core/jni/psp_loader.cpp）
     //   走标准 EmulatorScreen 全链路 —— 统一 Surface / 统一虚拟手柄映射 /
-    //   统一即时存档 UI / 统一核心设置面板。历史注：此前的
-    //   PspLaunchSection 提前 return（独立 Activity 模式）已废弃删除。
+    //   统一即时存档 UI / 统一核心设置面板。历史注：旧版 dlopen 官方
+    //   libppsspp_jni.so 的 JNI 契约集成（含 PspHostStub 桩）已整体废弃。
 
     // DC (Dreamcast / NAOMI) —— libretro Flycast 核心（与 PSX 等核心同一
     // dlopen 模式，进程内引擎 DcEngine，经标准 EmulatorScreen 全链路运行）。
@@ -1854,10 +1855,10 @@ fun EmulatorScreen(
 
     // On TV, auto-hide the on-screen pad regardless of the user's setting —
     // the touch overlay is useless without a touchscreen and only wastes GPU.
-    // PSP（PPSSPP）：核心自带虚拟按键/摇杆覆盖层（渲染在游戏画面内，可
-    // 在 PPSSPP 设置里调透明度/布局），NesStation 的通用虚拟手柄默认隐藏，
-    // 避免双层控件重叠 —— 用户仍可在手柄设置里手动开启。
-    val effectiveShowPad = padLayout.showPad && !isTv && platform != GamePlatform.PSP
+    // ★ PSP（libretro PPSSPP）与 DC/PSX 同构：核心无自带虚拟按键覆盖层，
+    // NesStation 统一虚拟手柄照常显示（旧版因 PPSSPP 原生覆盖层而屏蔽的
+    // 特判已随 libretro 化重写移除）。
+    val effectiveShowPad = padLayout.showPad && !isTv
 
     // === NDS 触摸屏：游戏视图在窗口中的几何 ===
     // 虚拟手柄覆盖层（fillMaxSize + pointerInput）是游戏视图的高 z 兄弟节点，
@@ -4699,6 +4700,10 @@ private fun routePadBits(
                   else if (platform == GamePlatform.PS2) ps2ToLibretroLayout(bits)
                   else if (platform == GamePlatform.ARCADE) arcadeToLibretroLayout(bits)
                   else if (platform == GamePlatform.DC) dcToLibretroLayout(bits)
+                  // PSP（libretro PPSSPP）面键语义与 PS2 相同（×=bit0/B、
+                  // □=bit1/Y、○=bit8/A、△=bit9/X，核心描述符：B=Cross、
+                  // A=Circle、Y=Square、X=Triangle）—— 复用 ps2ToLibretroLayout。
+                  else if (platform == GamePlatform.PSP) ps2ToLibretroLayout(bits)
                   else bits
     // ★★★ Wii 横持方向补偿（“横持 Wii 方向键没有横过来，还是原方向输出”修复）★★★
     //

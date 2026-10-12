@@ -4,80 +4,114 @@ import android.content.Context
 import java.io.File
 
 /**
- * ★★ PSP（PPSSPP 核心）运行环境准备 —— NesStation 集成 ★★
+ * ★★ PSP（libretro PPSSPP 核心）运行环境准备 —— NesStation 集成 ★★
  *
- * 历史注：本文件曾是"独立 PpssppActivity 启动桥"（Compose 启动器 +
- * Lifecycle 回退检测）。PSP 已改为与 DC/PSX 完全同构的进程内引擎集成
- * （PspEngine → libpspcore.so → dlopen 官方 libppsspp_jni.so，统一走
- * EmulatorScreen 全链路），启动器组件已删除，本文件只保留两个全局工具：
+ * v3（libretro 化重写）：旧版在此准备 memstick 目录树 + memstick_dir.txt +
+ * ppsspp.ini（供 dlopen 官方 libppsspp_jni.so 的 JNI 契约路径使用）——
+ * 那套集成已整体废弃。新版核心是 libretro 架构（与 flycast/pcsx-rearmed
+ * 同构），它自己管理目录（标准 libretro 机制，见 core/jni/psp_loader.cpp）：
  *
- *  1. [ensurePpssppEnvironment]（幂等，每次 loadRom 前调用）：
- *     - memstick 目录 = <externalFilesDir>/PSP（应用私有外部目录，无需
- *       存储权限，卸载随应用清除）；
- *     - 写 <filesDir>/memstick_dir.txt —— PPSSPP scoped storage 模式下以
- *       该文件定位 memstick（NativeInit 逻辑），缺失时 PPSSPP 首启会弹出
- *       "选择存储位置"浏览器，破坏体验；
- *     - 预建 PSP/SYSTEM、PSP/SAVEDATA、PSP/PPSSPP_STATE、PSP/GAME、
- *       PSP/CHEATS、PSP/TEXTURES、PSP/PLUGINS、PSP/CACHE（与上游
- *       Core/Util/PathUtil.cpp CreateSysDirectories 一致；即使缺目录，
- *       PPSSPP 启动时也会自行补建）；
- *  2. [ppssppIniFile] —— 全局配置文件绝对路径（PspSettingsStore 读写 +
- *       PspEngine 强制 Vulkan 后端用）。
+ *   · 资产根 = <系统目录>/PPSSPP/（核心在 retro_load_game 里以
+ *     GET_SYSTEM_DIRECTORY 结果追加 "PPSSPP/" —— VFS 根，内含
+ *     ppge_atlas.zim 游戏内对话框图集、compat.ini 每游戏兼容性标志、
+ *     flash0/font 目录的 .pgf 字体 PSP 系统字体、knownfuncs.ini / langregion.ini）；
+ *   · memstick 根 = <保存目录>（核心自建 PSP/{SAVEDATA,SYSTEM,GAME,...}
+ *     子树 —— 游戏存档落在 <保存目录>/PSP/SAVEDATA）。
+ *
+ * 本文件职责：
+ *  1. [ensurePpssppEnvironment]（幂等，loadRom 前调用）：把随包资产
+ *     app/src/main/assets/ppsspp/ 播种到 <系统目录>/PPSSPP/（版本标记
+ *     变化时重播种）。
+ *  2. [pspSettingsIniFile]：设置面板（PspSettingsStore）的持久化文件
+ *     —— 旧版直写核心 ppsspp.ini；libretro 核心不读 ini，本文件只是
+ *     NesStation 自己的设置存储（PspEngine.loadRom 时映射为 ppsspp_*
+ *     核心选项）。旧 memstick/ppsspp.ini 的历史设置自动迁移。
  */
+
+/** 资产播种版本 —— 随包资产内容变化时递增，触发重新播种。 */
+private const val PPSSPP_ASSETS_VERSION = "1"
 
 /**
  * PPSSPP 首次运行环境准备（幂等）：
- *  - memstick = <externalFilesDir>/PSP；
- *  - <filesDir>/memstick_dir.txt 写入 memstick 绝对路径（PPSSPP scoped
- *    storage 引导逻辑；PPSSPP 要求该目录已存在才采纳）；
- *  - 预建 memstick/PSP 子目录树（含 .nomedia，与上游 CreateSysDirectories
- *    的 sysDirs 层级一致 —— PPSSPP 约定 memstick 目录之下还有一层
- *    "PSP/"：ppsspp.ini 在 memstick/PSP/SYSTEM/、即时存档在
- *    memstick/PSP/PPSSPP_STATE/、游戏存档在 memstick/PSP/SAVEDATA/。
- *    ★ 旧版少了中间这层 PSP/，建出的目录核心从不用 —— 存档目录探测/
- *    ini 预置全部落空的根因之一，本轮已对齐）。
+ *  - 把 assets "ppsspp/" 递归播种到 <systemDir>/PPSSPP/（核心的资产 VFS 根
+ *    + flash0 字体目录）；版本标记不一致时整体重播种；
+ *  - 返回 [systemDir]（PspEngine 原样传给 PspNative.setPaths）。
  *
- * @return memstick 根目录绝对路径（<externalFilesDir>/PSP）
+ * @param context   App context（读 assets）
+ * @param systemDir 系统目录（EmulatorScreen.loadRom 传入的 core system dir）
+ * @return 系统目录绝对路径
  */
-fun ensurePpssppEnvironment(context: android.content.Context): String {
-    val extFiles = context.getExternalFilesDir(null)
-        ?: File(context.filesDir, "ext").apply { mkdirs() }
-    val memstick = File(extFiles, "PSP").apply { mkdirs() }
+fun ensurePpssppEnvironment(context: Context, systemDir: String): String {
+    val base = File(systemDir, "PPSSPP")
+    try {
+        base.mkdirs()
+        val marker = File(base, ".nesstation_seeded")
+        val current = if (marker.isFile) marker.readText().trim() else ""
 
-    // memstick/PSP 子目录树（与上游 CreateSysDirectories 的 sysDirs 一致：
-    // 上游在 memstick 根下建 "PSP/SYSTEM" 等双层路径）
-    for (sub in listOf(
-        "PSP/SYSTEM", "PSP/SAVEDATA", "PSP/PPSSPP_STATE", "PSP/GAME",
-        "PSP/CHEATS", "PSP/TEXTURES", "PSP/PLUGINS", "PSP/CACHE"
-    )) {
-        File(memstick, sub).apply { mkdirs() }
-        // .nomedia：与上游一致，避免相册扫描存档/缓存图片
-        val nomedia = File(memstick, "$sub/.nomedia")
-        if (!nomedia.exists()) {
-            try { nomedia.createNewFile() } catch (_: Throwable) {}
+        if (current != PPSSPP_ASSETS_VERSION || !File(base, "ppge_atlas.zim").isFile) {
+            // 递归解包 assets/ppsspp/ → <systemDir>/PPSSPP/
+            copyAssetTree(context, "ppsspp", base)
+            try {
+                marker.parentFile?.mkdirs()
+                marker.writeText(PPSSPP_ASSETS_VERSION)
+            } catch (_: Throwable) {}
+            android.util.Log.i("PspSupport", "PPSSPP assets seeded to ${base.absolutePath}")
         }
-    }
 
-    // memstick_dir.txt：PPSSPP NativeInit 读取它确定 memstick 目录。
-    // 仅在内容缺失/变化时重写（externalFilesDir 的挂载路径可能随用户切换
-    // 多用户/迁移存储变化，PPSSPP 侧用 File::Exists 校验，路径失效会回退
-    // 到询问用户 —— 所以这里每次启动都校正为当前有效路径）。
-    val marker = File(context.filesDir, "memstick_dir.txt")
-    val desired = memstick.absolutePath
-    val current = try {
-        if (marker.exists()) marker.readText().trim() else ""
-    } catch (_: Throwable) { "" }
-    if (current != desired) {
-        try {
-            marker.parentFile?.mkdirs()
-            marker.writeText(desired)
-        } catch (_: Throwable) {}
+        // 旧版设置迁移：memstick/PSP/SYSTEM/ppsspp.ini → pspSettingsIniFile
+        migrateLegacySettings(context)
+    } catch (t: Throwable) {
+        android.util.Log.w("PspSupport", "ensurePpssppEnvironment failed", t)
     }
-    return desired
+    return systemDir
 }
 
-/** PPSSPP 全局配置文件（ppsspp.ini）绝对路径；尚未生成时返回其将来的路径。 */
-fun ppssppIniFile(context: android.content.Context): File {
-    val memstick = ensurePpssppEnvironment(context)
-    return File(memstick, "PSP/SYSTEM/ppsspp.ini")
+/** 递归复制 assets 子树到目标目录（目录结构原样保留）。 */
+private fun copyAssetTree(context: Context, assetPath: String, targetDir: File) {
+    val entries = try {
+        context.assets.list(assetPath)?.toList() ?: emptyList()
+    } catch (_: Throwable) {
+        emptyList<String>()
+    }
+    if (entries.isEmpty()) {
+        // 叶子文件
+        try {
+            targetDir.parentFile?.mkdirs()
+            targetDir.outputStream().use { out ->
+                context.assets.open(assetPath).use { it.copyTo(out) }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("PspSupport", "copyAssetTree($assetPath) failed", t)
+        }
+        return
+    }
+    targetDir.mkdirs()
+    for (entry in entries) {
+        copyAssetTree(context, "$assetPath/$entry", File(targetDir, entry))
+    }
+}
+
+/**
+ * 设置面板持久化文件（PspSettingsStore 读写）。
+ * 位置：<filesDir>/PSP/nesstation_psp.ini —— 与核心运行时目录解耦
+ *（libretro 核心的 memstick 由核心自建，不再作为设置存储）。
+ */
+fun pspSettingsIniFile(context: Context): File {
+    val dir = File(context.filesDir, "PSP").apply { mkdirs() }
+    return File(dir, "nesstation_psp.ini")
+}
+
+/** 旧版 memstick/PSP/SYSTEM/ppsspp.ini 的历史设置 → 新设置文件（一次性）。 */
+private fun migrateLegacySettings(context: Context) {
+    try {
+        val dst = pspSettingsIniFile(context)
+        if (dst.isFile) return
+        val extFiles = context.getExternalFilesDir(null)
+            ?: File(context.filesDir, "ext")
+        val legacy = File(extFiles, "PSP/PSP/SYSTEM/ppsspp.ini")
+        if (legacy.isFile) {
+            dst.parentFile?.mkdirs()
+            legacy.copyTo(dst, overwrite = true)
+        }
+    } catch (_: Throwable) {}
 }

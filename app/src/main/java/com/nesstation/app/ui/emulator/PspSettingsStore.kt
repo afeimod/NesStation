@@ -127,15 +127,15 @@ object PspSettingsStore {
     // ---- 类型化便捷读写 ----
 
     fun readString(context: Context, key: Key, default: String): String {
-        val raw = readRaw(ppssppIniFile(context), key) ?: return default
+        val raw = readRaw(pspSettingsIniFile(context), key) ?: return default
         return raw.ifBlank { default }
     }
 
     fun readInt(context: Context, key: Key, default: Int): Int =
-        readRaw(ppssppIniFile(context), key)?.trim()?.toIntOrNull() ?: default
+        readRaw(pspSettingsIniFile(context), key)?.trim()?.toIntOrNull() ?: default
 
     fun readBool(context: Context, key: Key, default: Boolean): Boolean {
-        val raw = readRaw(ppssppIniFile(context), key)?.lowercase() ?: return default
+        val raw = readRaw(pspSettingsIniFile(context), key)?.lowercase() ?: return default
         return when (raw) {
             "true", "1", "yes", "on" -> true
             "false", "0", "no", "off" -> false
@@ -144,14 +144,14 @@ object PspSettingsStore {
     }
 
     fun writeString(context: Context, key: Key, value: String) =
-        writeRaw(ppssppIniFile(context), key, value)
+        writeRaw(pspSettingsIniFile(context), key, value)
 
     fun writeInt(context: Context, key: Key, value: Int) =
-        writeRaw(ppssppIniFile(context), key, value.toString())
+        writeRaw(pspSettingsIniFile(context), key, value.toString())
 
     /** PPSSPP 的 bool 落盘格式（大写 True/False，与其 Config 保存一致）。 */
     fun writeBool(context: Context, key: Key, value: Boolean) =
-        writeRaw(ppssppIniFile(context), key, if (value) "True" else "False")
+        writeRaw(pspSettingsIniFile(context), key, if (value) "True" else "False")
 
     /**
      * 可选后处理着色器列表："Off" + assets/shaders 下的 .fsh 基名。

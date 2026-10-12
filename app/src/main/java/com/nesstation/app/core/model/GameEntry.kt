@@ -33,8 +33,8 @@ import androidx.compose.ui.graphics.Color
  *          org.dolphinemu.ishiiruka.NativeLibrary，推模型引擎 IshirukaEngine，
  *          集成方式与 DraStic（激烈）一致）
  * PSP    = Sony PlayStation Portable（PPSSPP v1.20.4 核心 —— 与 DC/PSX 完全
- *          同构的进程内 dlopen 集成：PspEngine → libpspcore.so → dlopen 官方
- *          libppsspp_jni.so，驱动其 JNI 契约（与官方 PpssppActivity 相同入口），
+ *          同构的进程内 libretro 集成：PspEngine → libpspcore.so → dlopen
+ *          libppsspp_libretro_android.so（标准 retro_* API，与 DC/PSX 相同入口），
  *          统一走 EmulatorScreen 全链路；PPSSPP 自带触控层/原生菜单（L2 调出，
  *          即时存档/金手指/adhoc 全保留）；配置位于 <externalFilesDir>/PSP）
  */

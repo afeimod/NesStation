@@ -141,10 +141,10 @@ class NesApp : Application() {
             }
         }
         tryInit("PspEngine")           {
-            // PPSSPP PSP core —— 进程内 dlopen 模式（与 DC/PSX 同构）：
-            // libpspcore.so 运行时加载预编译官方 libppsspp_jni.so（v1.20.4，
-            // 三 ABI）并驱动其 JNI 契约。启动时探测可用性，库缺失时 UI
-            // 报告原因（不崩溃）。
+            // PPSSPP PSP core —— 进程内 libretro 模式（与 DC/PSX 同构）：
+            // libpspcore.so 运行时加载预编译 libppsspp_libretro_android.so
+            // （官方 libretro buildbot 构建）并驱动标准 retro_* API。
+            // 启动时探测可用性，库缺失时 UI 报告原因（不崩溃）。
             com.nesstation.app.core.jni.PspNative.appContext = this
             com.nesstation.app.core.engine.PspEngine.get().also { engine ->
                 engine.appContext = this

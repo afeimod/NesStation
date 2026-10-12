@@ -1,692 +1,1491 @@
 // SPDX-License-Identifier: MIT
-// PPSSPP (Sony PSP) host driver — NesStation in-process integration.
-// See psp_loader.h for the design. This file dlopen()s the prebuilt
-// official libppsspp_jni.so (PPSSPP v1.20.4) and drives it through the
-// exact JNI contract vendored in app/src/main/java/org/ppsspp/ppsspp/.
+// libretro frontend that drives the prebuilt Sony PSP core (libretro port of
+// PPSSPP — libppsspp_libretro_android.so).
 //
-// Symbol ground truth: libppsspp_jni.so dynamic symbol table
-// (nm -D --defined-only) + official v1.20.4 sources
-// (android/jni/app-android.cpp, Core/SaveState.h).
+// This loader follows the same dlopen() pattern as dc_loader.cpp /
+// psx_loader.cpp: instead of statically linking the PPSSPP source tree (which
+// is huge and needs its own GL/Vulkan renderer build), we dlopen() the
+// prebuilt libretro core at runtime and resolve the retro_* symbols via
+// dlsym(). The .so ships in app/src/main/jniLibs/<abi>/ (official libretro
+// buildbot build — same source as the RetroArch core, so PSP behaves exactly
+// like the other dlopen'd cores in this app).
+//
+// ═══════════════════════════════════════════════════════════════════════
+// HARDWARE RENDERING — same flow as the flycast path in dc_loader.cpp:
+//
+// The PPSSPP libretro core renders the final frame into the framebuffer
+// returned by our get_current_framebuffer() callback and signals completion
+// via video_cb(RETRO_HW_FRAME_BUFFER_VALID, ...). The frontend must:
+//   1. Accept RETRO_ENVIRONMENT_SET_HW_RENDER and create an EGL context
+//      matching the core's request. The core requests RETRO_HW_CONTEXT_OPENGL
+//      (LibretroGLContext); on Android we satisfy it with an ES3 context —
+//      exactly what RetroArch's GL video driver does on Android.
+//   2. Provide an FBO (color texture + depth24 — the core requests depth=true)
+//      for the core to render into.
+//   3. After each retro_run(): blit the FBO to the ANativeWindow backbuffer
+//      (scaled to the window) and call eglSwapBuffers().
+//
+// If the GL path is declined the core falls back to its Vulkan context and
+// then to software rendering; we accept the GL request so the Vulkan path is
+// never exercised (same choice as RetroArch with a GL video driver).
+//
+// ═══════════════════════════════════════════════════════════════════════
+// SYSTEM / SAVE DIRECTORIES — standard libretro mechanism (libretro.cpp
+// retro_load_game):
+//
+//   retro_base_dir  = GET_SYSTEM_DIRECTORY + "/PPSSPP/"   (asset VFS root +
+//                     flash0Directory = base + "flash0/" — in-game PSP fonts)
+//   retro_save_dir  = GET_SAVE_DIRECTORY                  (memstick root; the
+//                     core creates PSP/{SAVEDATA,SYSTEM,GAME,...} inside)
+//
+// NesStation passes <filesDir> for both; the asset tree under
+// <filesDir>/PPSSPP/ is seeded from app assets "ppsspp/" by
+// PspSupport.ensurePpssppEnvironment before loadRom (ppge_atlas.zim — the
+// in-game dialog font atlas, compat.ini — per-game compatibility flags,
+// flash0/font/*.pgf — PSP system fonts, lang/ — system dialog strings).
+// No BIOS is required for PSP content.
+//
+// ═══════════════════════════════════════════════════════════════════════
+// CORE OPTIONS — ppsspp_* retro variables (GET_VARIABLE), keys/values must
+// match the core's option list exactly (libretro.cpp RetroOption table):
+//
+//   ppsspp_internal_resolution  "480x272" | "960x544" | "1440x816" | ...
+//   ppsspp_rendering_mode       "buffered" | "nonbuffered"
+//   ppsspp_cpu_core             "jit" | "IR jit" | "interpreter"
+//   ppsspp_language             "automatic" | "english" | "chinese_simplified" | ...
+//   ppsspp_fast_memory          "enabled" | "disabled"
+//   ppsspp_frameskip            "0".."10" (decimal string)
+//   ppsspp_auto_frameskip       "enabled" | "disabled"
+//   ppsspp_io_timing_method     "Fast" | "Host" | "Simulate UMD delays"
+//   ppsspp_audio_latency        "low" | "medium" | "high"
+//   ppsspp_button_preference    "cross" | "circle"
+//   ppsspp_texture_scaling_level "0".."5" (0 = off)
+//   ppsspp_texture_scaling_type  "xbrz" | "hybrid" | "bicubic" | "hybrid_bicubic"
+//   ppsspp_texture_filtering     "auto" | "nearest" | "linear" | "linear(FMV)"
+//   ppsspp_cheats                "enabled" | "disabled"
+//   ...
+// Wrong keys/values are silently ignored by the core (it keeps its default).
+//
+// ═══════════════════════════════════════════════════════════════════════
+// INPUT — standard libretro JOYPAD with PlayStation label semantics
+// (libretro.cpp input descriptors): JOYPAD_B = ✕ Cross, JOYPAD_A = ○ Circle,
+// JOYPAD_X = △ Triangle, JOYPAD_Y = □ Square, L/R shoulder buttons,
+// Select/Start, D-Pad, RETRO_DEVICE_ANALOG left stick. The Kotlin side
+// converts NesStation's button bits with ps2ToLibretroLayout() (PSP face
+// buttons share the PS2 label semantics) and pushes them via
+// setControllerInput(); the virtual stick pushes setControllerAnalog().
+// The core has NO touch overlay in libretro mode — NesStation's own
+// on-screen controller is the single input surface.
+//
+// Save states use retro_serialize/retro_unserialize (the core implements
+// them; sizes are large — the full PSP RAM, tens of MB).
+// ═══════════════════════════════════════════════════════════════════════
 
 #include "psp_loader.h"
+#include <cstdarg>
+#include "shared/core_shared.h"
 
+#include <libretro.h>
 #include <android/log.h>
-#include <jni.h>
+#include <android/native_window.h>
+#include <EGL/egl.h>
+#include <GLES3/gl3.h>
+
 #include <dlfcn.h>
-#include <functional>
-#include <future>
+#include <unistd.h>
+#include <atomic>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <map>
 #include <mutex>
-#include <chrono>
+#include <string>
+#include <vector>
 
-// JNI_VERSION_1_6 (0x00010006) — JNI_OnLoad's expected return value.
-static constexpr jint kJniVersion16 = JNI_VERSION_1_6;
-
-#define TAG "pspcore"
+#define TAG "pspcore-rom"
+#undef LOGI
+#undef LOGW
+#undef LOGE
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-namespace pspload {
+namespace pspcore::rom {
 
 // ---------------------------------------------------------------------------
-// JNI function pointer types — signatures mirror the vendored Java layer
-// (org.ppsspp.ppsspp.NativeApp / PpssppActivity, official v1.20.4).
-// All are static members of NativeApp except the three PpssppActivity
-// instance methods (registerCallbacks / runVulkanRenderLoop /
-// requestExitVulkanRenderLoop), which take a jobject `this` — the native
-// side only uses it for registerCallbacks (GetObjectClass) and ignores it
-// for the render-loop pair (verified against v1.20.4 sources).
+// Software-fallback frame budget (guards the CPU-side filter buffers used if
+// the core ever emits software pixels; HW mode sizes the FBO dynamically).
+// PSP internal resolutions: 480x272 (1x) .. 4800x2720 (10x). The budget
+// covers up to 4x (1920x1088) for the defensive software path.
 // ---------------------------------------------------------------------------
-
-using InitFn        = void (*)(JNIEnv*, jclass, jstring, jint, jstring, jstring,
-                                jstring, jstring, jstring, jstring, jstring, jstring,
-                                jstring, jstring, jint, jstring);
-using AudioInitFn   = void (*)(JNIEnv*, jclass);
-using AudioShutFn   = void (*)(JNIEnv*, jclass);
-using AudioCfgFn    = void (*)(JNIEnv*, jclass, jint, jint);
-using VoidFn        = void (*)(JNIEnv*, jclass);
-using ComputeBBFn   = void (*)(JNIEnv*, jclass);
-using GetBBSizeFn   = jint (*)(JNIEnv*, jclass);
-using SetDispFn     = void (*)(JNIEnv*, jclass, jint, jint, jint, jfloat);
-using BBResizeFn    = void (*)(JNIEnv*, jclass, jint, jint, jint);
-using KeyFn         = jboolean (*)(JNIEnv*, jclass, jint, jint, jboolean);
-using KeyUpFn       = jboolean (*)(JNIEnv*, jclass, jint, jint);
-using AxisFn        = void (*)(JNIEnv*, jclass, jint, jintArray, jfloatArray, jint);
-using TouchFn       = void (*)(JNIEnv*, jclass, jfloat, jfloat, jint, jint);
-using QueryCfgFn    = jstring (*)(JNIEnv*, jclass, jstring);
-using SendMsgFn     = void (*)(JNIEnv*, jclass, jstring, jstring);
-
-using RegCbFn       = void (*)(JNIEnv*, jobject);
-using RunVKLoopFn   = jboolean (*)(JNIEnv*, jobject, jobject);
-using ExitVKLoopFn  = void (*)(JNIEnv*, jobject);
-
-// C++ symbols exported by libppsspp_jni.so (arm64 dynamic symbol table):
-//   _ZN9SaveState13GetGamePrefixERK12ParamSFOData
-//       std::string SaveState::GetGamePrefix(const ParamSFOData&)
-//   _ZN9SaveState8SaveSlotENSt6__ndk117basic_string_viewIcNS0_11char_traitsIcEEEEiNS0_8functionIFvNS_6StatusES4_EEE
-//       void SaveState::SaveSlot(std::string_view, int,
-//                                std::function<void(Status, std::string)>)
-//   _ZN9SaveState8LoadSlotE... (same shape)
-//   B g_paramSFO  (Core/ParamSFO.cpp global — filled once a game boots)
-using GetPrefixFn   = std::string (*)(const void* /*ParamSFOData*/);
-using SaveSlotFn    = void (*)(std::string_view /*gamePrefix*/, int /*slot*/,
-                                std::function<void(int /*Status*/, std::string)> /*cb*/);
-
-// SaveState::Status (official v1.20.4 Core/SaveState.h):
-//   FAILURE = 0, WARNING = 1, SUCCESS = 2
-static constexpr int kStatusSuccess = 2;
+static constexpr int kMaxW = 1920;
+static constexpr int kMaxH = 1088;
 
 // ---------------------------------------------------------------------------
-// State
+// libretro function pointer types
 // ---------------------------------------------------------------------------
+typedef void   (*retro_init_t)(void);
+typedef void   (*retro_deinit_t)(void);
+typedef unsigned (*retro_api_version_t)(void);
+typedef void   (*retro_get_system_info_t)(struct retro_system_info* info);
+typedef void   (*retro_get_system_av_info_t)(struct retro_system_av_info* info);
+typedef void   (*retro_set_controller_port_device_t)(unsigned port, unsigned device);
+typedef void   (*retro_reset_t)(void);
+typedef void   (*retro_run_t)(void);
+typedef size_t (*retro_serialize_size_t)(void);
+typedef bool   (*retro_serialize_t)(void* data, size_t size);
+typedef bool   (*retro_unserialize_t)(const void* data, size_t size);
+typedef void*  (*retro_get_memory_data_t)(unsigned id);
+typedef size_t (*retro_get_memory_size_t)(unsigned id);
+typedef bool   (*retro_load_game_t)(const struct retro_game_info* game);
+typedef void   (*retro_unload_game_t)(void);
+typedef void   (*retro_set_environment_t)(retro_environment_t);
+typedef void   (*retro_set_video_refresh_t)(retro_video_refresh_t);
+typedef void   (*retro_set_audio_sample_t)(retro_audio_sample_t);
+typedef void   (*retro_set_audio_sample_batch_t)(retro_audio_sample_batch_t);
+typedef void   (*retro_set_input_poll_t)(retro_input_poll_t);
+typedef void   (*retro_set_input_state_t)(retro_input_state_t);
 
-namespace {
+// ---------------------------------------------------------------------------
+// State — dlopen handle and resolved symbols
+// ---------------------------------------------------------------------------
+static void* s_coreLib = nullptr;
 
-std::mutex g_lock;
-void*      g_so = nullptr;              // dlopen handle of libppsspp_jni.so
-std::string g_soPath;
-std::string g_loadError;                 // dlopen/dlsym failure detail
-std::string g_lastError;                 // last runtime error (boot/save/…)
+static retro_init_t                      s_retro_init = nullptr;
+static retro_deinit_t                    s_retro_deinit = nullptr;
+static retro_api_version_t               s_retro_api_version = nullptr;
+static retro_get_system_info_t           s_retro_get_system_info = nullptr;
+static retro_get_system_av_info_t        s_retro_get_system_av_info = nullptr;
+static retro_set_controller_port_device_t s_retro_set_controller_port_device = nullptr;
+static retro_reset_t                     s_retro_reset = nullptr;
+static retro_run_t                       s_retro_run = nullptr;
+static retro_serialize_size_t            s_retro_serialize_size = nullptr;
+static retro_serialize_t                 s_retro_serialize = nullptr;
+static retro_unserialize_t               s_retro_unserialize = nullptr;
+static retro_load_game_t                 s_retro_load_game = nullptr;
+static retro_unload_game_t               s_retro_unload_game = nullptr;
+static retro_set_environment_t           s_retro_set_environment = nullptr;
+static retro_set_video_refresh_t         s_retro_set_video_refresh = nullptr;
+static retro_set_audio_sample_t          s_retro_set_audio_sample = nullptr;
+static retro_set_audio_sample_batch_t    s_retro_set_audio_sample_batch = nullptr;
+static retro_set_input_poll_t            s_retro_set_input_poll = nullptr;
+static retro_set_input_state_t           s_retro_set_input_state = nullptr;
 
-// Cached JNI entities (global refs, created in boot()).
-jclass g_clsNativeApp = nullptr;         // org.ppsspp.ppsspp.NativeApp
-jclass g_clsPpssppActivity = nullptr;    // org.ppsspp.ppsspp.PpssppActivity
-jobject g_hostStub = nullptr;            // Java host stub (postCommand sink)
+static bool s_loaded = false;
+static bool s_gameLoaded = false;
+static int  s_sampleRate = 0;
+static double s_refreshRate = 60.0;
+static int  s_region = 0;
+static std::string s_systemDir;
+static std::string s_saveDir;
+static std::string s_saveName;
+static std::string s_lastRomPath;
+static std::string s_coreMessage;
+static std::string s_coreError;
+static std::string s_coreLibPath;
 
-// Resolved entry points.
-InitFn      g_init = nullptr;
-AudioInitFn g_audioInit = nullptr;
-AudioShutFn g_audioShutdown = nullptr;
-AudioCfgFn  g_audioConfig = nullptr;
-ComputeBBFn g_computeBB = nullptr;
-GetBBSizeFn g_getBBW = nullptr;
-GetBBSizeFn g_getBBH = nullptr;
-SetDispFn   g_setDisplay = nullptr;
-BBResizeFn  g_bbResize = nullptr;
-KeyFn       g_keyDown = nullptr;
-KeyUpFn     g_keyUp = nullptr;
-AxisFn      g_axis = nullptr;
-TouchFn     g_touch = nullptr;
-QueryCfgFn  g_queryConfig = nullptr;
-SendMsgFn   g_sendMessage = nullptr;
-VoidFn      g_pause = nullptr;
-VoidFn      g_resume = nullptr;
-VoidFn      g_shutdown = nullptr;
+// Persistent copy of the currently-loaded ROM path. The core reads
+// retro_game_info.path for content identification (Disc ID for per-game
+// SAVEDATA / states) — the pointer must outlive the JNI
+// GetStringUTFChars / ReleaseStringUTFChars cycle.
+static std::string s_romPath;
 
-RegCbFn     g_registerCallbacks = nullptr;
-RegCbFn     g_unregisterCallbacks = nullptr;
-RunVKLoopFn g_runVkLoop = nullptr;
-ExitVKLoopFn g_exitVkLoop = nullptr;
+// Dynamic frame buffer (ARGB, 0xAARRGGBB) — used for the software-video
+// fallback path and for UI screenshots (captured from the FBO on demand).
+static std::mutex s_frameMtx;
+static std::vector<uint32_t> s_frame;
+static unsigned s_frameW = 0;
+static unsigned s_frameH = 0;
+static std::atomic<bool> s_newFrame{false};
 
-GetPrefixFn g_getPrefix = nullptr;
-SaveSlotFn  g_saveSlot = nullptr;
-SaveSlotFn  g_loadSlot = nullptr;
-void*       g_paramSFO = nullptr;
+static unsigned s_videoW = 480;
+static unsigned s_videoH = 272;
+static unsigned s_pixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
 
-bool g_booted = false;
-bool g_loopActive = false;               // Vulkan render loop thread running
-bool g_jniOnLoadDone = false;            // JNI_OnLoad manually invoked (dlopen doesn't run it)
+// FPS HUD：核心真实提交帧计数（cb_video 非空 data 时 +1，UI 每秒读走清零）。
+static std::atomic<int> s_presentedFrames{0};
 
-std::string ToStr(JNIEnv* env, jstring s) {
-    if (!s) return {};
-    const char* p = env->GetStringUTFChars(s, nullptr);
-    std::string out = p ? p : "";
-    if (p) env->ReleaseStringUTFChars(s, p);
-    env->DeleteLocalRef(s);
-    return out;
+// Gamepad bits (port 0..3, RETRO_DEVICE_JOYPAD, libretro standard ids).
+static std::atomic<uint16_t> s_pad1{0};
+static std::atomic<uint16_t> s_pad2{0};
+static std::atomic<uint16_t> s_pad3{0};
+static std::atomic<uint16_t> s_pad4{0};
+
+// Analog stick axes (port 0..3) — [LX, LY, RX, RY] as libretro int16 values.
+// PSP 只有左摇杆；右轴核心会轮询但无绑定（保持可写）。
+static std::atomic<int16_t> s_analog[4][4]{};
+
+static std::atomic<int>  s_videoFilter{0};
+static std::atomic<bool> s_highQualityScaling{false};
+static std::atomic<bool> s_fastForward{false};
+static std::atomic<int>  s_ffFrameSkip{0};
+static std::atomic<int>  s_ffMaxSkip{6};
+
+// 2x / 4x upscale buffers for XBR / HQ2X / HQ4X filters (software fallback
+// only; unused in HW mode).
+static uint32_t s_xbrBuffer2x[kMaxW * kMaxH * 2 * 2];
+static uint32_t s_xbrBuffer4x[kMaxW * kMaxH * 4 * 4];
+static uint32_t s_xbrMidBuffer[kMaxW * kMaxH * 2 * 2];
+
+static coreshared::AudioRingBuffer s_audio;
+static coreshared::AudioResampler s_resampler;
+
+// Core options (ppsspp_* — keys/values MUST match the core's RetroOption
+// table exactly; wrong keys are silently ignored).
+static std::mutex s_optMtx;
+static std::map<std::string, std::string> s_options;
+static std::atomic<bool> s_optionsChanged{false};
+
+// Controller-port device switching requested from the UI thread — applied on
+// the emulation thread before the next frame (same pattern as dc_loader).
+static std::atomic<uint32_t> s_pendingPortDevices{0xFFu << 24};
+
+// ---------------------------------------------------------------------------
+// EGL / OpenGL ES context — required by the core (hardware renderer).
+// Same layout as the flycast path in dc_loader.cpp:
+//   * EGLDisplay / EGLConfig / EGLContext — created once, shared lifetime.
+//   * EGLSurface — a window surface bound to the current ANativeWindow when
+//     one is attached, otherwise a 1x1 Pbuffer fallback (the core still
+//     renders into our FBO; only the final blit/swap is skipped).
+// The context is used on the emulation thread (stepFrame) and briefly on
+// the loading thread (retro_load_game → context_reset) — bound/unbound
+// exactly like the flycast flow (unbind after load, re-bind per frame).
+// ---------------------------------------------------------------------------
+static EGLDisplay s_eglDisplay = EGL_NO_DISPLAY;
+static EGLContext s_eglContext = EGL_NO_CONTEXT;
+static EGLConfig  s_eglConfig = nullptr;
+static EGLSurface s_eglSurface = EGL_NO_SURFACE;      // window or pbuffer
+static EGLSurface s_eglWindowSurface = EGL_NO_SURFACE;
+static EGLSurface s_eglPbufferSurface = EGL_NO_SURFACE;
+static bool s_eglInitialized = false;
+static std::mutex s_eglMtx;                            // guards surface (re)creation
+
+// libretro HW render callbacks — provided by the core via SET_HW_RENDER.
+static retro_hw_context_reset_t s_hwContextReset = nullptr;
+static retro_hw_context_reset_t s_hwContextDestroy = nullptr;
+static std::atomic<bool> s_hwRenderActive{false};
+
+// Our FBO the core renders into (color texture + depth RB).
+static GLuint s_fbo = 0;
+static GLuint s_fboTex = 0;
+static GLuint s_fboDepth = 0;
+static unsigned s_fboW = 0;
+static unsigned s_fboH = 0;
+static std::atomic<bool> s_fboNeedsResize{false};
+
+// Window size cache for the blit (queried on setSurface).
+static int s_winW = 0;
+static int s_winH = 0;
+
+// Screenshot request — performed inside stepFrame right after retro_run()
+// while the GL context and FBO are current (UI thread cannot touch GL).
+static std::atomic<bool> s_captureRequested{false};
+static std::atomic<bool> s_captureDone{false};
+
+// ANativeWindow handle for the defensive software-video fallback path
+// (applyFilterAndBlit). Ref-counted via coreshared::setSurface. The HW
+// presentation path uses the EGL window surface instead.
+static ANativeWindow* s_softwareWindow = nullptr;
+static std::mutex s_softwareWindowMtx;
+
+// ---------------------------------------------------------------------------
+// Initialize PPSSPP core options with sensible defaults.
+// Keys and VALUES verified against the core's libretro.cpp RetroOption table
+// (bool options take "enabled"/"disabled", int options decimal strings,
+// enum options the exact listed value strings). The Kotlin side
+// (PspEngine) pre-seeds user choices from PspSettingsStore via
+// setCoreOption() BEFORE loadRom — only absent keys get these defaults.
+// ---------------------------------------------------------------------------
+static void initDefaultOptions() {
+    auto setIfMissing = [](const std::string& key, const std::string& val) {
+        if (s_options.find(key) == s_options.end()) {
+            s_options[key] = val;
+        }
+    };
+
+    // --- Video / GPU ---
+    setIfMissing("ppsspp_internal_resolution",   "960x544");   // 2x — 手掌机均衡档
+    setIfMissing("ppsspp_rendering_mode",        "buffered");  // 帧缓冲渲染（兼容性最好）
+    setIfMissing("ppsspp_frameskip",             "0");
+    setIfMissing("ppsspp_auto_frameskip",        "disabled");
+    setIfMissing("ppsspp_gpu_hardware_transform","enabled");
+    setIfMissing("ppsspp_texture_scaling_level", "1");         // 1 = off（不放大纹理）
+    setIfMissing("ppsspp_texture_scaling_type",  "xbrz");
+    setIfMissing("ppsspp_texture_filtering",     "auto");
+    setIfMissing("ppsspp_texture_deposterize",   "disabled");
+    setIfMissing("ppsspp_block_transfer_gpu",    "enabled");
+
+    // --- System / CPU ---
+    setIfMissing("ppsspp_cpu_core",              "jit");
+    setIfMissing("ppsspp_fast_memory",           "enabled");
+    setIfMissing("ppsspp_locked_cpu_speed",      "off");
+    setIfMissing("ppsspp_unsafe_func_replacements","enabled");
+    setIfMissing("ppsspp_vertex_cache",          "disabled");
+    setIfMissing("ppsspp_language",              "automatic");
+
+    // --- Media / IO ---
+    setIfMissing("ppsspp_io_timing_method",      "Fast");
+    setIfMissing("ppsspp_audio_latency",         "low");
+    setIfMissing("ppsspp_button_preference",     "cross");
 }
 
-// ★ NesStation 集成补丁（PSP 闪退根治 #5 —— JNI 契约防御）★
+// ---------------------------------------------------------------------------
+// dlopen the core .so and resolve all retro_* symbols.
+// ---------------------------------------------------------------------------
+static bool loadCoreLib() {
+    if (s_coreLib) return true;
+
+    std::vector<std::string> candidates;
+    if (!s_coreLibPath.empty()) candidates.push_back(s_coreLibPath);
+    // Canonical name first (lib* convention — matches the file shipped in
+    // jniLibs and every other core), then the legacy un-prefixed spelling.
+    candidates.push_back("libppsspp_libretro_android.so");
+    candidates.push_back("ppsspp_libretro_android.so");
+
+    const char* lastDlError = nullptr;
+    for (const auto& name : candidates) {
+        s_coreLib = dlopen(name.c_str(), RTLD_NOW);
+        if (s_coreLib) {
+            LOGI("dlopen(%s) OK", name.c_str());
+            break;
+        } else {
+            lastDlError = dlerror();
+            LOGW("dlopen(%s) failed: %s", name.c_str(),
+                 lastDlError ? lastDlError : "(unknown)");
+        }
+    }
+
+    if (!s_coreLib) {
+        s_coreError = "dlopen(libppsspp_libretro_android.so) failed: ";
+        s_coreError += (lastDlError ? lastDlError : "(unknown)");
+        LOGE("%s", s_coreError.c_str());
+        return false;
+    }
+
+    #define RESOLVE(name) \
+        s_##name = reinterpret_cast<name##_t>(dlsym(s_coreLib, #name)); \
+        if (!s_##name) { \
+            const char* _dlerr = dlerror(); \
+            s_coreError = "dlsym(" #name ") failed: "; \
+            s_coreError += (_dlerr ? _dlerr : "(unknown)"); \
+            LOGE("%s", s_coreError.c_str()); \
+            dlclose(s_coreLib); s_coreLib = nullptr; \
+            return false; \
+        }
+
+    RESOLVE(retro_init);
+    RESOLVE(retro_deinit);
+    RESOLVE(retro_api_version);
+    RESOLVE(retro_get_system_info);
+    RESOLVE(retro_get_system_av_info);
+    RESOLVE(retro_set_controller_port_device);
+    RESOLVE(retro_reset);
+    RESOLVE(retro_run);
+    RESOLVE(retro_serialize_size);
+    RESOLVE(retro_serialize);
+    RESOLVE(retro_unserialize);
+    RESOLVE(retro_load_game);
+    RESOLVE(retro_unload_game);
+    RESOLVE(retro_set_environment);
+    RESOLVE(retro_set_video_refresh);
+    RESOLVE(retro_set_audio_sample);
+    RESOLVE(retro_set_audio_sample_batch);
+    RESOLVE(retro_set_input_poll);
+    RESOLVE(retro_set_input_state);
+
+    #undef RESOLVE
+
+    LOGI("All retro_* symbols resolved");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// libretro callbacks
+// ---------------------------------------------------------------------------
+static void libretroLog(retro_log_level level, const char* fmt, ...) {
+    int prio = ANDROID_LOG_INFO;
+    switch (level) {
+        case RETRO_LOG_ERROR: prio = ANDROID_LOG_ERROR; break;
+        case RETRO_LOG_WARN:  prio = ANDROID_LOG_WARN;  break;
+        case RETRO_LOG_DEBUG: prio = ANDROID_LOG_DEBUG; break;
+        default: break;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    __android_log_vprint(prio, "ppsspp", fmt, ap);
+    va_end(ap);
+}
+
+// ---------------------------------------------------------------------------
+// EGL context (created once) — ES 3.x with depth (the core requests
+// depth=true; no stencil requirement unlike flycast's PVR renderer).
+// ---------------------------------------------------------------------------
+static bool ensureEglDisplayAndContext() {
+    if (s_eglInitialized) return true;
+
+    s_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (s_eglDisplay == EGL_NO_DISPLAY) {
+        LOGE("eglGetDisplay failed: 0x%x", eglGetError());
+        return false;
+    }
+    EGLint major, minor;
+    if (!eglInitialize(s_eglDisplay, &major, &minor)) {
+        LOGE("eglInitialize failed: 0x%x", eglGetError());
+        s_eglDisplay = EGL_NO_DISPLAY;
+        return false;
+    }
+    LOGI("EGL initialized: %d.%d", major, minor);
+
+    // RGBA8888 + depth24 — the core's HW render request sets depth=true.
+    const EGLint attribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_SURFACE_TYPE,    EGL_WINDOW_BIT | EGL_PBUFFER_BIT,
+        EGL_RED_SIZE,        8,
+        EGL_GREEN_SIZE,      8,
+        EGL_BLUE_SIZE,       8,
+        EGL_ALPHA_SIZE,      8,
+        EGL_DEPTH_SIZE,      24,
+        EGL_NONE
+    };
+    EGLint numConfigs = 0;
+    if (!eglChooseConfig(s_eglDisplay, attribs, &s_eglConfig, 1, &numConfigs) ||
+        numConfigs == 0) {
+        LOGE("eglChooseConfig failed: 0x%x", eglGetError());
+        eglTerminate(s_eglDisplay);
+        s_eglDisplay = EGL_NO_DISPLAY;
+        return false;
+    }
+
+    // Create an ES 3 context (try 3.2 → 3.1 → 3.0).
+    static const int tryCtx[][2] = { {3,2}, {3,1}, {3,0} };
+    for (const auto& vc : tryCtx) {
+        const EGLint ctxAttribs[] = {
+            EGL_CONTEXT_CLIENT_VERSION, vc[0],
+            EGL_CONTEXT_MINOR_VERSION,  vc[1],
+            EGL_NONE
+        };
+        s_eglContext = eglCreateContext(s_eglDisplay, s_eglConfig,
+                                        EGL_NO_CONTEXT, ctxAttribs);
+        if (s_eglContext != EGL_NO_CONTEXT) {
+            LOGI("EGL context created: ES %d.%d", vc[0], vc[1]);
+            break;
+        }
+        LOGW("eglCreateContext ES %d.%d failed (0x%x), trying next",
+             vc[0], vc[1], eglGetError());
+    }
+    if (s_eglContext == EGL_NO_CONTEXT) {
+        // Last resort: plain ES 3.0 (no minor version attribute).
+        const EGLint ctxAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+        s_eglContext = eglCreateContext(s_eglDisplay, s_eglConfig,
+                                        EGL_NO_CONTEXT, ctxAttribs);
+        if (s_eglContext == EGL_NO_CONTEXT) {
+            LOGE("eglCreateContext failed for all ES versions");
+            eglTerminate(s_eglDisplay);
+            s_eglDisplay = EGL_NO_DISPLAY;
+            return false;
+        }
+        LOGI("EGL context created: ES 3.0");
+    }
+
+    // Pbuffer fallback surface (1x1) — used when no window surface exists
+    // so the context can still be made current for core init / rendering.
+    const EGLint pbAttribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+    s_eglPbufferSurface = eglCreatePbufferSurface(s_eglDisplay, s_eglConfig, pbAttribs);
+    if (s_eglPbufferSurface == EGL_NO_SURFACE) {
+        LOGE("eglCreatePbufferSurface failed: 0x%x", eglGetError());
+        eglDestroyContext(s_eglDisplay, s_eglContext);
+        s_eglContext = EGL_NO_CONTEXT;
+        eglTerminate(s_eglDisplay);
+        s_eglDisplay = EGL_NO_DISPLAY;
+        return false;
+    }
+    s_eglSurface = s_eglPbufferSurface;
+
+    s_eglInitialized = true;
+    return true;
+}
+
+// Make the shared context current on the calling thread.
+static bool ensureEglContextCurrent() {
+    if (!s_eglInitialized) return false;
+    if (eglGetCurrentContext() == s_eglContext &&
+        eglGetCurrentSurface(EGL_DRAW) == s_eglSurface) return true;
+    if (!eglMakeCurrent(s_eglDisplay, s_eglSurface, s_eglSurface, s_eglContext)) {
+        LOGE("eglMakeCurrent (bind) failed: 0x%x", eglGetError());
+        return false;
+    }
+    return true;
+}
+
+static void destroyEglContext() {
+    if (!s_eglInitialized) return;
+    eglMakeCurrent(s_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    if (s_fbo) {
+        glDeleteFramebuffers(1, &s_fbo); s_fbo = 0;
+        glDeleteTextures(1, &s_fboTex); s_fboTex = 0;
+        glDeleteRenderbuffers(1, &s_fboDepth); s_fboDepth = 0;
+        s_fboW = s_fboH = 0;
+    }
+    if (s_eglWindowSurface != EGL_NO_SURFACE) {
+        eglDestroySurface(s_eglDisplay, s_eglWindowSurface);
+        s_eglWindowSurface = EGL_NO_SURFACE;
+    }
+    if (s_eglPbufferSurface != EGL_NO_SURFACE) {
+        eglDestroySurface(s_eglDisplay, s_eglPbufferSurface);
+        s_eglPbufferSurface = EGL_NO_SURFACE;
+    }
+    s_eglSurface = EGL_NO_SURFACE;
+    if (s_eglContext != EGL_NO_CONTEXT) {
+        eglDestroyContext(s_eglDisplay, s_eglContext);
+        s_eglContext = EGL_NO_CONTEXT;
+    }
+    eglTerminate(s_eglDisplay);
+    s_eglDisplay = EGL_NO_DISPLAY;
+    s_eglInitialized = false;
+    LOGI("EGL context destroyed");
+}
+
+// ---------------------------------------------------------------------------
+// FBO the core renders into. Size = the core's reported geometry (base ==
+// max for this core: iInternalResolution*480 x *272 — it re-issues
+// SET_SYSTEM_AV_INFO when the internal resolution option changes).
+// Depth24 — the core requests depth=true for its GPU rasterizer.
+// ---------------------------------------------------------------------------
+static void destroyFbo() {
+    if (s_fbo)      { glDeleteFramebuffers(1, &s_fbo); s_fbo = 0; }
+    if (s_fboTex)   { glDeleteTextures(1, &s_fboTex); s_fboTex = 0; }
+    if (s_fboDepth) { glDeleteRenderbuffers(1, &s_fboDepth); s_fboDepth = 0; }
+    s_fboW = s_fboH = 0;
+}
+
+static void ensureFbo(unsigned w, unsigned h) {
+    if (w == 0 || h == 0) return;
+    if (s_fbo && s_fboW == w && s_fboH == h) return;
+
+    destroyFbo();
+
+    glGenTextures(1, &s_fboTex);
+    glBindTexture(GL_TEXTURE_2D, s_fboTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenRenderbuffers(1, &s_fboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, s_fboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+
+    glGenFramebuffers(1, &s_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_fboTex, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                              GL_RENDERBUFFER, s_fboDepth);
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LOGE("FBO incomplete: 0x%x (%ux%u)", status, w, h);
+        destroyFbo();
+    } else {
+        s_fboW = w;
+        s_fboH = h;
+        LOGI("FBO ready: %ux%u (depth24)", w, h);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// libretro HW render callbacks ------------------------------------------------
+static uintptr_t hw_get_current_framebuffer(void) {
+    // The core renders here. If the FBO is not ready yet (should not happen:
+    // context_reset precedes the first frame), return 0 so at least the
+    // default framebuffer keeps the core alive.
+    return s_fbo ? (uintptr_t)s_fbo : 0;
+}
+
+static retro_proc_address_t hw_get_proc_address(const char* sym) {
+    return (retro_proc_address_t)eglGetProcAddress(sym);
+}
+
+// ---------------------------------------------------------------------------
+// Blit the core's FBO to the window backbuffer and present it.
+// Called on the emulation thread right after retro_run() in HW mode.
+// A no-op when no window surface is attached (headless path — the caller
+// falls back to an FBO readback so CPU-side consumers keep getting frames).
 //
-//   背景（2026-10-12 tombstone）：PPSSPP v1.20.4 的 registerCallbacks
-//   对宿主桩对象连续做三个 GetMethodID（postCommand / getDebugString /
-//   getNativeCrashHistory）。官方源注释称 "It's OK if getNativeCrashHistory
-//   is missing"（app-android.cpp:608），但缺失时 GetMethodID 抛出的
-//   NoSuchMethodError 并不会被清除 —— 紧接着 Android_RegisterStorageCallbacks
-//   的 FindClass("org/ppsspp/ppsspp/ContentUri") 在 pending exception
-//   状态下执行，ART 直接 AssertNoPendingException → SIGABRT。
-//
-//   本工具在每个"调用核心 so 的 JNI 入口"之后检查并清理 pending
-//   exception，把未来任何 so 版本升级带来的契约错配从"进程 abort"
-//   降级为 logcat 错误（配合 PspHostStub 补齐全部契约方法双保险）。
-void ClearPendingException(JNIEnv* env, const char* where) {
-    if (!env->ExceptionCheck()) return;
-    jthrowable e = env->ExceptionOccurred();
-    env->ExceptionClear();
-    if (e) {
-        std::string what;
-        jclass cls = env->GetObjectClass(e);
-        if (cls) {
-            jmethodID ts = env->GetMethodID(cls, "toString", "()Ljava/lang/String;");
-            if (ts) {
-                jstring js = (jstring)env->CallObjectMethod(e, ts);
-                if (js) {
-                    const char* p = env->GetStringUTFChars(js, nullptr);
-                    if (p) { what = p; env->ReleaseStringUTFChars(js, p); }
-                    env->DeleteLocalRef(js);
+// ★ Blit ONLY the region the core actually rendered, not the whole FBO
+// (GL origin = bottom-left; RetroArch behaves the same way: present the
+// per-frame region reported by video_cb).
+// ---------------------------------------------------------------------------
+static void blitAndSwap() {
+    if (s_eglWindowSurface == EGL_NO_SURFACE || !s_fbo) return;
+
+    EGLint drawW = 0, drawH = 0;
+    eglQuerySurface(s_eglDisplay, s_eglWindowSurface, EGL_WIDTH, &drawW);
+    eglQuerySurface(s_eglDisplay, s_eglWindowSurface, EGL_HEIGHT, &drawH);
+    if (drawW <= 0 || drawH <= 0) return;
+
+    // Source rect = the rendered frame region (clamped to the FBO). Falls
+    // back to the full FBO until the core has reported a frame once.
+    unsigned srcW = s_videoW ? s_videoW : s_fboW;
+    unsigned srcH = s_videoH ? s_videoH : s_fboH;
+    if (srcW > s_fboW) srcW = s_fboW;
+    if (srcH > s_fboH) srcH = s_fboH;
+    if (srcW == 0 || srcH == 0) return;
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, s_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    // 1:1 GL→GL blit preserves orientation (both are bottom-left GL spaces).
+    glBlitFramebuffer(0, 0, srcW, srcH,
+                      0, 0, drawW, drawH,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    eglSwapBuffers(s_eglDisplay, s_eglWindowSurface);
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot / CPU-side frame: glReadPixels from the core's FBO (bottom-up)
+// → ARGB buffer. Runs on the emulation thread while the context/FBO are
+// current. Reads ONLY the region the core actually rendered (s_videoW x
+// s_videoH — the dims reported by video_cb), NOT the whole FBO. Row flip:
+// glReadPixels is bottom-up → flip to top-down; RGBA bytes → 0xAARRGGBB.
+// ---------------------------------------------------------------------------
+static void captureFrameFromFbo() {
+    if (!s_fbo || s_fboW == 0 || s_fboH == 0) return;
+    unsigned w = s_videoW ? s_videoW : s_fboW;
+    unsigned h = s_videoH ? s_videoH : s_fboH;
+    if (w > s_fboW) w = s_fboW;
+    if (h > s_fboH) h = s_fboH;
+    if (w == 0 || h == 0) return;
+
+    std::vector<uint8_t> rgba((size_t)w * h * 4);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, s_fbo);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+
+    std::lock_guard<std::mutex> lk(s_frameMtx);
+    s_frame.resize((size_t)w * h);
+    s_frameW = w;
+    s_frameH = h;
+    for (unsigned y = 0; y < h; ++y) {
+        const uint8_t* src = rgba.data() + (size_t)(h - 1 - y) * w * 4;
+        uint32_t* dst = s_frame.data() + (size_t)y * w;
+        for (unsigned x = 0; x < w; ++x) {
+            dst[x] = 0xFF000000u |
+                     ((uint32_t)src[x * 4 + 0] << 16) |   // R
+                     ((uint32_t)src[x * 4 + 1] << 8)  |   // G
+                     ((uint32_t)src[x * 4 + 2]);          // B
+        }
+    }
+    s_newFrame.store(true, std::memory_order_release);
+}
+
+static bool cb_environment(unsigned cmd, void* data) {
+    // NOTE: no per-call logging — GET_VARIABLE_UPDATE fires every frame.
+    switch (cmd) {
+        case RETRO_ENVIRONMENT_GET_CAN_DUPE:
+            if (data) *static_cast<bool*>(data) = true;
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
+            // Only used in the software-video fallback path (XRGB8888).
+            if (data) {
+                s_pixelFormat = *static_cast<const unsigned*>(data);
+                LOGI("Pixel format set: %u (0=0RGB1555, 1=XRGB8888, 2=RGB565)",
+                     s_pixelFormat);
+            }
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
+            if (data) {
+                auto* log = static_cast<retro_log_callback*>(data);
+                log->log = libretroLog;
+            }
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
+            // The core derives its asset base as <systemDir>/PPSSPP/
+            // (VFS root + flash0Directory = base/flash0 — PSP system fonts).
+            // NesStation seeds <filesDir>/PPSSPP/ from app assets.
+            if (data) *static_cast<const char**>(data) = s_systemDir.c_str();
+            return !s_systemDir.empty();
+
+        case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
+            // memstick root — the core creates PSP/{SAVEDATA,SYSTEM,GAME,...}
+            // inside it (standard PPSSPP tree).
+            if (data) *static_cast<const char**>(data) = s_saveDir.c_str();
+            return !s_saveDir.empty();
+
+        case RETRO_ENVIRONMENT_GET_CONTENT_DIRECTORY:
+            if (data) *static_cast<const char**>(data) = s_systemDir.c_str();
+            return !s_systemDir.empty();
+
+        case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
+        case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
+#ifdef RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE
+        case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
+#endif
+        case RETRO_ENVIRONMENT_SET_VARIABLES:
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION:
+            if (data) *static_cast<unsigned*>(data) = 1;
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS:
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL:
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_GEOMETRY:
+            // Internal resolution changed (core-driven resize).
+            s_fboNeedsResize.store(true, std::memory_order_release);
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
+            if (data) {
+                auto* av2 = static_cast<retro_system_av_info*>(data);
+                if (av2->timing.sample_rate > 8000) {
+                    s_sampleRate = (int)av2->timing.sample_rate;
+                    s_resampler.init(s_sampleRate, s_sampleRate);
+                }
+                if (av2->timing.fps > 10.0) {
+                    s_refreshRate = av2->timing.fps;
+                }
+                s_fboNeedsResize.store(true, std::memory_order_release);
+                LOGI("SET_SYSTEM_AV_INFO: %d Hz, %.4f fps", s_sampleRate, s_refreshRate);
+            }
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE:
+            if (data) *static_cast<int*>(data) = 3;
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_MESSAGE: {
+            if (data) {
+                auto* msg = static_cast<const retro_message*>(data);
+                if (msg && msg->msg) {
+                    s_coreMessage = msg->msg;
+                    LOGI("Core message: %s", msg->msg);
                 }
             }
-            env->DeleteLocalRef(cls);
+            return true;
         }
-        env->DeleteLocalRef(e);
-        LOGE("pending JNI exception cleared @%s: %s", where, what.c_str());
-    } else {
-        LOGW("pending JNI exception cleared @%s (no detail)", where);
+
+        case RETRO_ENVIRONMENT_GET_VARIABLE: {
+            if (!data) return false;
+            auto* var = static_cast<retro_variable*>(data);
+            if (!var->key) return false;
+            // Copy into a stable buffer while holding the lock — returning
+            // it->second.c_str() directly races with setCoreOption() on the
+            // UI thread (see dc_loader.cpp for the full rationale).
+            std::lock_guard<std::mutex> lk(s_optMtx);
+            auto it = s_options.find(var->key);
+            if (it != s_options.end()) {
+                static thread_local std::string s_optValueBuf;
+                s_optValueBuf = it->second;
+                var->value = s_optValueBuf.c_str();
+                return true;
+            }
+            return false;
+        }
+
+        case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
+            if (data) {
+                *static_cast<bool*>(data) = s_optionsChanged.exchange(false,
+                    std::memory_order_acq_rel);
+            }
+            return true;
+
+        // ── Hardware rendering ────────────────────────────────────────────
+        case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
+            // Steer the core to its GL backend (not Vulkan): we implement
+            // the GL frontend path (EGL + FBO blit).
+            if (data) *static_cast<unsigned*>(data) = RETRO_HW_CONTEXT_OPENGL;
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_HW_RENDER: {
+            if (!data) return false;
+            auto* hw = static_cast<retro_hw_render_callback*>(data);
+
+            // Only the GL paths are supported by this frontend. If the core
+            // insists on Vulkan we decline — with GET_PREFERRED_HW_RENDER
+            // steering it should never do that (it would then fall back to
+            // software rendering, which we also handle defensively).
+            switch (hw->context_type) {
+                case RETRO_HW_CONTEXT_OPENGLES3:
+                case RETRO_HW_CONTEXT_OPENGLES2:
+                case RETRO_HW_CONTEXT_OPENGLES_VERSION:
+                case RETRO_HW_CONTEXT_OPENGL:
+                    break;
+                default:
+                    LOGW("Declining HW render type %d (GL-only frontend)",
+                         hw->context_type);
+                    return false;
+            }
+
+            s_hwContextReset   = hw->context_reset;
+            s_hwContextDestroy = hw->context_destroy;
+
+            // Provide the frontend's get_current_framebuffer / get_proc_address.
+            hw->get_current_framebuffer = hw_get_current_framebuffer;
+            hw->get_proc_address = hw_get_proc_address;
+
+            LOGI("HW render requested: type=%d, depth=%d, stencil=%d, "
+                 "version=%d.%d, bottom_left=%d",
+                 hw->context_type, hw->depth, hw->stencil,
+                 hw->version_major, hw->version_minor,
+                 hw->bottom_left_origin);
+
+            if (!ensureEglDisplayAndContext()) {
+                LOGE("Failed to create EGL context for HW render");
+                return false;
+            }
+            // Bind the context here so the core's context_reset (shader /
+            // resource creation) runs with a current GL context.
+            if (!ensureEglContextCurrent()) {
+                LOGE("eglMakeCurrent failed during SET_HW_RENDER");
+                return false;
+            }
+
+            if (s_hwContextReset) {
+                LOGI("Calling HW context_reset");
+                s_hwContextReset();
+            }
+            s_hwRenderActive.store(true, std::memory_order_release);
+            LOGI("HW render setup complete");
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE:
+            // Vulkan interface — not implemented (GL-only frontend).
+            return false;
+
+        case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER:
+            // We let the core render into its FBO; no software fallback buffer.
+            return false;
+
+        case RETRO_ENVIRONMENT_GET_VFS_INTERFACE:
+            return false;
+
+        case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:
+            return false;
+
+        case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
+            return false;
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY:
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_LANGUAGE:
+            if (data) *static_cast<unsigned*>(data) = RETRO_LANGUAGE_ENGLISH;
+            return true;
+
+        default:
+            return false;
     }
 }
 
-std::string QueryConfigStr(JNIEnv* env, const char* name) {
-    if (!g_queryConfig || !g_clsNativeApp) return {};
-    jstring jname = env->NewStringUTF(name);
-    jstring jres = g_queryConfig(env, g_clsNativeApp, jname);
-    env->DeleteLocalRef(jname);
-    ClearPendingException(env, "queryConfig");
-    return ToStr(env, jres);
-}
+static void cb_video(const void* data, unsigned width, unsigned height, size_t pitch) {
+    if (!data) return;  // dupe frame
 
-// ★ NesStation 集成补丁：boot 前预检宿主桩的 JNI 契约方法集。
-//
-//   与 v1.20.4 app-android.cpp:602-604 一一对应 —— 宿主对象上三个实例
-//   方法一个都不能少，否则 registerCallbacks 内部会留下 pending
-//   exception（见 ClearPendingException 注释）或后续调用点拿到空
-//   methodID。逐个探测、逐个清理异常，把缺失项以可读形式打进 logcat。
-//   另外核心还会 FindClass("org/ppsspp/ppsspp/ContentUri")（
-//   AndroidStorage.cpp:37）与 FindClass("org/ppsspp/ppsspp/PpssppActivity")
-//   （JNI_OnLoad, app-android.cpp:252）—— 这两个类已由 app 内 vendor 的
-//   官方 Java 源码提供（app/src/main/java/org/ppsspp/ppsspp/）。
-void ValidateHostStubContract(JNIEnv* env) {
-    if (!g_hostStub) return;
-    jclass cls = env->GetObjectClass(g_hostStub);
-    if (!cls) { env->ExceptionClear(); return; }
-    static const struct { const char* name; const char* sig; } kContract[] = {
-        { "postCommand",           "(Ljava/lang/String;Ljava/lang/String;)V" },
-        { "getDebugString",        "(Ljava/lang/String;)Ljava/lang/String;" },
-        { "getNativeCrashHistory", "(I)Ljava/util/ArrayList;" },
-    };
-    for (const auto& m : kContract) {
-        jmethodID mid = env->GetMethodID(cls, m.name, m.sig);
-        if (mid) {
-            LOGI("host stub contract ok: %s", m.name);
+    // FPS HUD：真实提交帧计数（仅核心渲染出新帧时才计）
+    s_presentedFrames.fetch_add(1, std::memory_order_relaxed);
+    s_videoW = width;
+    s_videoH = height;
+
+    if (data == RETRO_HW_FRAME_BUFFER_VALID) {
+        // HW path: the frame lives in our FBO; presentation happens in
+        // blitAndSwap() right after retro_run(). Copy-on-demand screenshots
+        // go through captureFrameFromFbo().
+        s_newFrame.store(true, std::memory_order_release);
+        return;
+    }
+
+    // ── Software fallback (defensive; normally HW-rendered) ─────────────
+    {
+        std::lock_guard<std::mutex> lk(s_frameMtx);
+        const size_t need = (size_t)width * height;
+        if (s_frameW != width || s_frameH != height || s_frame.size() < need) {
+            s_frame.resize(need);
+            s_frameW = width;
+            s_frameH = height;
+        }
+
+        if (s_pixelFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
+            coreshared::convertXrgbRowsToArgb(
+                s_frame.data(),
+                static_cast<const uint32_t*>(data),
+                pitch / sizeof(uint32_t), width,
+                width, height);
+        } else if (s_pixelFormat == RETRO_PIXEL_FORMAT_RGB565) {
+            const uint16_t* src = static_cast<const uint16_t*>(data);
+            const size_t stride = pitch / sizeof(uint16_t);
+            for (unsigned y = 0; y < height; ++y) {
+                const uint16_t* srow = src + y * stride;
+                uint32_t* drow = s_frame.data() + (size_t)y * width;
+                for (unsigned x = 0; x < width; ++x) {
+                    uint16_t px = srow[x];
+                    uint32_t r5 = (px >> 11) & 0x1F;
+                    uint32_t g6 = (px >> 5)  & 0x3F;
+                    uint32_t b5 = px & 0x1F;
+                    uint32_t r = (r5 << 3) | (r5 >> 2);
+                    uint32_t g = (g6 << 2) | (g6 >> 4);
+                    uint32_t b = (b5 << 3) | (b5 >> 2);
+                    drow[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                }
+            }
         } else {
-            LOGE("host stub contract MISSING: %s%s "
-                 "(PspHostStub 需补齐，否则 registerCallbacks 后 ART abort)",
-                 m.name, m.sig);
+            const uint16_t* src = static_cast<const uint16_t*>(data);
+            const size_t stride = pitch / sizeof(uint16_t);
+            for (unsigned y = 0; y < height; ++y) {
+                const uint16_t* srow = src + y * stride;
+                uint32_t* drow = s_frame.data() + (size_t)y * width;
+                for (unsigned x = 0; x < width; ++x) {
+                    uint16_t px = srow[x];
+                    uint32_t r5 = (px >> 10) & 0x1F;
+                    uint32_t g5 = (px >> 5)  & 0x1F;
+                    uint32_t b5 = px & 0x1F;
+                    uint32_t r = (r5 << 3) | (r5 >> 2);
+                    uint32_t g = (g5 << 3) | (g5 >> 2);
+                    uint32_t b = (b5 << 3) | (b5 >> 2);
+                    drow[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                }
+            }
         }
-        env->ExceptionClear();  // GetMethodID 失败抛 NoSuchMethodError —— 必须清
+        s_newFrame.store(true, std::memory_order_release);
     }
-    env->DeleteLocalRef(cls);
+
+    // Fast-forward frame skip + CPU blit (software path only).
+    if (s_fastForward.load(std::memory_order_relaxed)) {
+        int skip = s_ffMaxSkip.load(std::memory_order_relaxed);
+        if (skip > 0 && s_ffFrameSkip.fetch_add(1, std::memory_order_relaxed) % skip != 0)
+            return;
+    } else {
+        s_ffFrameSkip.store(0, std::memory_order_relaxed);
+    }
+
+    const int filter = s_videoFilter.load(std::memory_order_relaxed);
+    coreshared::applyFilterAndBlit(
+        s_softwareWindow, s_softwareWindowMtx,
+        s_frame.data(), width, height, width,
+        filter,
+        s_xbrBuffer2x, s_xbrBuffer4x, s_xbrMidBuffer,
+        (unsigned)kMaxW, (unsigned)kMaxH,
+        s_highQualityScaling.load(std::memory_order_relaxed));
 }
 
-void SetError(const std::string& e) {
-    std::lock_guard<std::mutex> lk(g_lock);
-    g_lastError = e;
-    LOGE("%s", e.c_str());
+static void cb_audio_sample(int16_t left, int16_t right) {
+    int16_t pair[2] = {left, right};
+    s_audio.push(pair, 2);
 }
 
-template <typename T>
-T Sym(const char* name, bool required) {
-    void* p = dlsym(g_so, name);
-    if (!p && required) {
-        g_loadError = std::string("dlsym missing: ") + name;
-        LOGE("%s", g_loadError.c_str());
-    }
-    return reinterpret_cast<T>(p);
+static size_t cb_audio_batch(const int16_t* data, size_t frames) {
+    s_audio.push(data, frames * 2);
+    return frames;
 }
 
-bool ResolveSymbols() {
-    if (!g_so) return false;
-    g_loadError.clear();
-    g_init             = Sym<InitFn>("Java_org_ppsspp_ppsspp_NativeApp_init", true);
-    g_audioInit        = Sym<AudioInitFn>("Java_org_ppsspp_ppsspp_NativeApp_audioInit", true);
-    g_audioShutdown    = Sym<AudioShutFn>("Java_org_ppsspp_ppsspp_NativeApp_audioShutdown", true);
-    g_audioConfig      = Sym<AudioCfgFn>("Java_org_ppsspp_ppsspp_NativeApp_audioConfig", true);
-    g_computeBB        = Sym<ComputeBBFn>("Java_org_ppsspp_ppsspp_NativeApp_computeDesiredBackbufferDimensions", true);
-    g_getBBW           = Sym<GetBBSizeFn>("Java_org_ppsspp_ppsspp_NativeApp_getDesiredBackbufferWidth", true);
-    g_getBBH           = Sym<GetBBSizeFn>("Java_org_ppsspp_ppsspp_NativeApp_getDesiredBackbufferHeight", true);
-    g_setDisplay       = Sym<SetDispFn>("Java_org_ppsspp_ppsspp_NativeApp_setDisplayParameters", true);
-    g_bbResize         = Sym<BBResizeFn>("Java_org_ppsspp_ppsspp_NativeApp_backbufferResize", true);
-    g_keyDown          = Sym<KeyFn>("Java_org_ppsspp_ppsspp_NativeApp_keyDown", true);
-    g_keyUp            = Sym<KeyUpFn>("Java_org_ppsspp_ppsspp_NativeApp_keyUp", true);
-    g_axis             = Sym<AxisFn>("Java_org_ppsspp_ppsspp_NativeApp_joystickAxis", true);
-    g_touch            = Sym<TouchFn>("Java_org_ppsspp_ppsspp_NativeApp_touch", true);
-    g_queryConfig      = Sym<QueryCfgFn>("Java_org_ppsspp_ppsspp_NativeApp_queryConfig", true);
-    g_sendMessage      = Sym<SendMsgFn>("Java_org_ppsspp_ppsspp_NativeApp_sendMessageFromJava", false);
-    g_pause            = Sym<VoidFn>("Java_org_ppsspp_ppsspp_NativeApp_pause", true);
-    g_resume           = Sym<VoidFn>("Java_org_ppsspp_ppsspp_NativeApp_resume", true);
-    g_shutdown         = Sym<VoidFn>("Java_org_ppsspp_ppsspp_NativeApp_shutdown", true);
+static void cb_input_poll() { /* state is read on demand */ }
 
-    g_registerCallbacks   = Sym<RegCbFn>("Java_org_ppsspp_ppsspp_PpssppActivity_registerCallbacks", true);
-    g_unregisterCallbacks = Sym<RegCbFn>("Java_org_ppsspp_ppsspp_PpssppActivity_unregisterCallbacks", false);
-    g_runVkLoop           = Sym<RunVKLoopFn>("Java_org_ppsspp_ppsspp_PpssppActivity_runVulkanRenderLoop", true);
-    g_exitVkLoop          = Sym<ExitVKLoopFn>("Java_org_ppsspp_ppsspp_PpssppActivity_requestExitVulkanRenderLoop", true);
-
-    // C++ symbols for instant save states (all exported by the official so).
-    g_getPrefix = Sym<GetPrefixFn>("_ZN9SaveState13GetGamePrefixERK12ParamSFOData", false);
-    g_saveSlot  = Sym<SaveSlotFn>(
-        "_ZN9SaveState8SaveSlotENSt6__ndk117basic_string_viewIcNS0_11char_traitsIcEEEEiNS0_8functionIFvNS_6StatusES4_EEE",
-        false);
-    g_loadSlot  = Sym<SaveSlotFn>(
-        "_ZN9SaveState8LoadSlotENSt6__ndk117basic_string_viewIcNS0_11char_traitsIcEEEEiNS0_8functionIFvNS_6StatusES4_EEE",
-        false);
-    g_paramSFO  = dlsym(g_so, "g_paramSFO");
-
-    if (g_loadError.empty()) return true;
-    return false;
+static int16_t cb_input_state(unsigned port, unsigned device,
+                              unsigned index, unsigned id) {
+    // Analog axes: the on-screen virtual stick (and physical gamepads via
+    // the engine) push real int16 values through setControllerAnalog().
+    // The core polls (INDEX_ANALOG_LEFT, ID_ANALOG_X/Y) for the PSP stick;
+    // the right stick is polled but unbound (kept writable).
+    if (device == RETRO_DEVICE_ANALOG) {
+        if (port > 3) return 0;
+        if (index == 0 && id == 0) return s_analog[port][0].load(std::memory_order_relaxed);  // LX
+        if (index == 0 && id == 1) return s_analog[port][1].load(std::memory_order_relaxed);  // LY
+        if (index == 1 && id == 0) return s_analog[port][2].load(std::memory_order_relaxed);  // RX
+        if (index == 1 && id == 1) return s_analog[port][3].load(std::memory_order_relaxed);  // RY
+        return 0;
+    }
+    if (device != RETRO_DEVICE_JOYPAD) return 0;
+    // PSP 掌机单人 —— 4 个端口保持与 DC 相同的通用处理（多点联机扩展位）。
+    const uint16_t bits = (port == 0) ? s_pad1.load(std::memory_order_relaxed)
+                         : (port == 1) ? s_pad2.load(std::memory_order_relaxed)
+                         : (port == 2) ? s_pad3.load(std::memory_order_relaxed)
+                         : (port == 3) ? s_pad4.load(std::memory_order_relaxed)
+                                       : 0;
+    if (id >= 16) return 0;
+    return (bits >> id) & 1;
 }
 
-// PPSSPP touch "code" bit for finger tool type (NativeApp.processTouchEvent
-// packs toolType<<10; InputDevice.TOOL_TYPE_FINGER == 1).
-constexpr jint kFingerToolBits = 1 << 10;
-
-// ★ NesStation 集成补丁：会话卸载的公共实现（无锁版本）。
-//   顺序与官方 PpssppActivity.onDestroy 一致：
-//     1. 退出 Vulkan 渲染循环（requestExitVulkanRenderLoop —— join emu 线程）
-//     2. audioShutdown（关 OpenSL）
-//     3. NativeApp.shutdown（NativeShutdown —— 反初始化核心子系统）
-//     4. unregisterCallbacks（释放核心侧持有的宿主引用链）
-//   boot()（持有 g_lock）在"上局会话仍活着"时复用；unload()（同样持有
-//   g_lock）直接走本函数 —— 两处都不能再对 g_lock 加锁。
-void TeardownNoLock(JNIEnv* env) {
-    if (!g_booted) return;
-    if (g_loopActive && g_exitVkLoop) {
-        LOGI("requestExitVulkanRenderLoop (teardown)");
-        g_exitVkLoop(env, g_hostStub);
-        ClearPendingException(env, "exitVkLoop(teardown)");
-        g_loopActive = false;
+// ---------------------------------------------------------------------------
+// Apply any controller-port device switch queued by setPortDevice() before
+// running the next frame. Executed on the emulation thread only.
+// ---------------------------------------------------------------------------
+static void applyPendingPortDevicesLockedStep() {
+    uint32_t pending = s_pendingPortDevices.load(std::memory_order_acq_rel);
+    if ((pending >> 24) == 0xFF || !s_retro_set_controller_port_device) return;
+    for (int port = 0; port < 4; ++port) {
+        unsigned dev = (pending >> (port * 8)) & 0xFFu;
+        if (dev == 0xFF) dev = RETRO_DEVICE_JOYPAD;
+        s_retro_set_controller_port_device((unsigned)port, dev);
+        LOGI("Controller port %d -> device %u", port, dev);
     }
-    if (g_audioShutdown) {
-        g_audioShutdown(env, g_clsNativeApp);
-        ClearPendingException(env, "audioShutdown");
-    }
-    if (g_shutdown) {
-        g_shutdown(env, g_clsNativeApp);
-        ClearPendingException(env, "NativeApp.shutdown");
-    }
-    if (g_unregisterCallbacks) {
-        g_unregisterCallbacks(env, g_hostStub);
-        ClearPendingException(env, "unregisterCallbacks");
-    }
-    g_booted = false;
-    LOGI("PPSSPP session torn down (so kept resident for next launch)");
+    s_pendingPortDevices.store(0xFFu << 24, std::memory_order_release);
 }
 
-} // namespace
+// ---------------------------------------------------------------------------
+// File-extension helpers for loadFromFile.
+// ---------------------------------------------------------------------------
+static std::string getExtensionLower(const std::string& path) {
+    size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c){ return (char)std::tolower(c); });
+    return ext;
+}
+
+// PSP content is passed BY PATH: .iso / .cso / .pbp / .elf / .prx / .chd are
+// streamed by the core (PBP/CSO random access; Disc ID is derived from the
+// image for per-game SAVEDATA / states).
+static bool isDiscImage(const std::string& ext) {
+    return ext == "iso" || ext == "cso" || ext == "pbp" || ext == "elf" ||
+           ext == "prx" || ext == "chd";
+}
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+std::string loadFromFile(const std::string& path, int& regionOut) {
+    regionOut = 0;
+
+    if (!loadCoreLib()) {
+        return s_coreError.empty()
+            ? "Failed to load libppsspp_libretro_android.so"
+            : s_coreError;
+    }
+
+    if (!s_loaded) {
+        initDefaultOptions();
+
+        s_retro_set_environment(cb_environment);
+        s_retro_set_video_refresh(cb_video);
+        s_retro_set_audio_sample(cb_audio_sample);
+        s_retro_set_audio_sample_batch(cb_audio_batch);
+        s_retro_set_input_poll(cb_input_poll);
+        s_retro_set_input_state(cb_input_state);
+
+        s_retro_init();
+        s_loaded = true;
+        LOGI("PPSSPP libretro core initialized (API version %u)",
+             s_retro_api_version());
+    }
+
+    if (s_gameLoaded) {
+        s_retro_unload_game();
+        s_gameLoaded = false;
+    }
+
+    s_audio.reset();
+    s_resampler.reset();
+
+    s_romPath = path;
+
+    retro_game_info gameInfo{};
+    gameInfo.path = s_romPath.c_str();
+    gameInfo.data = nullptr;   // the core streams the image from the path
+    gameInfo.size = 0;
+    gameInfo.meta = nullptr;
+
+    bool ok = s_retro_load_game(&gameInfo);
+
+    if (!ok) {
+        s_coreError = "retro_load_game() failed for: " + path;
+        if (!s_coreMessage.empty()) {
+            s_coreError += " (";
+            s_coreError += s_coreMessage;
+            s_coreError += ")";
+            s_coreMessage.clear();
+        }
+        // Detailed Chinese explanation of common PSP load failures.
+        s_coreError += "\n\n常见原因:\n";
+        s_coreError += "  1. 镜像损坏: .iso/.cso/.pbp 文件不完整或加密镜像未解密"
+                        "（PSP 游戏需已解密的镜像）.\n";
+        s_coreError += "  2. 资产缺失: 核心需要 <系统目录>/PPSSPP/ 下的资产"
+                        "（ppge_atlas.zim / flash0 字体 / compat.ini）——"
+                        "应用首次启动时自动解包, 若被清理请重装或清数据.\n";
+        s_coreError += "  3. .chd 镜像损坏或版本过旧, 请用 chdman 校验.\n";
+        LOGE("%s", s_coreError.c_str());
+        return s_coreError;
+    }
+
+    s_gameLoaded = true;
+    s_lastRomPath = path;
+
+    // Single controller port, standard JOYPAD device (PSP pad).
+    if (s_retro_set_controller_port_device) {
+        s_retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+        s_retro_set_controller_port_device(1, RETRO_DEVICE_JOYPAD);
+        s_retro_set_controller_port_device(2, RETRO_DEVICE_JOYPAD);
+        s_retro_set_controller_port_device(3, RETRO_DEVICE_JOYPAD);
+    }
+
+    retro_system_av_info av{};
+    s_retro_get_system_av_info(&av);
+    s_sampleRate = (int)av.timing.sample_rate;
+    s_refreshRate = (av.timing.fps > 10.0) ? av.timing.fps : 60.0;
+    s_region = (av.timing.fps < 55.0) ? 1 : 0;
+    regionOut = s_region;
+    s_videoW = av.geometry.base_width ? av.geometry.base_width : 480;
+    s_videoH = av.geometry.base_height ? av.geometry.base_height : 272;
+
+    {
+        std::lock_guard<std::mutex> lk(s_frameMtx);
+        s_frameW = s_videoW;
+        s_frameH = s_videoH;
+        s_frame.assign((size_t)s_frameW * s_frameH, 0xFF000000u);
+    }
+
+    s_audio.reset();
+    s_newFrame.store(false);
+
+    if (s_sampleRate > 0) {
+        // Audio passthrough — AudioTrack opens at the core's own rate (44.1k).
+        s_resampler.init(s_sampleRate, s_sampleRate);
+        LOGI("Audio passthrough: %d Hz", s_sampleRate);
+    }
+
+    // Size the presentation FBO from the core's geometry (base == max for
+    // this core: iInternalResolution*480 x *272); recreated on
+    // SET_SYSTEM_AV_INFO / SET_GEOMETRY changes (resolution switch).
+    {
+        std::lock_guard<std::mutex> lk(s_eglMtx);
+        if (s_hwRenderActive.load(std::memory_order_acquire) &&
+            s_eglInitialized && ensureEglContextCurrent()) {
+            ensureFbo(av.geometry.max_width ? av.geometry.max_width : s_videoW,
+                      av.geometry.max_height ? av.geometry.max_height : s_videoH);
+            // Unbind so the emulation thread can take the context over.
+            eglMakeCurrent(s_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        }
+    }
+
+    LOGI("PSP ROM loaded: %s  rate=%d  fps=%.2f  region=%d  geom=%ux%u",
+         path.c_str(), s_sampleRate, av.timing.fps, s_region,
+         av.geometry.base_width, av.geometry.base_height);
+    return "";
+}
+
+void unload() {
+    if (s_loaded) {
+        if (s_gameLoaded) {
+            s_retro_unload_game();
+            s_gameLoaded = false;
+        }
+        // GL teardown (FBO + context destroy callbacks) — the core's GL
+        // resources must be destroyed while a context is current, and the
+        // emu thread must be gone (Kotlin joins it before unload).
+        {
+            std::lock_guard<std::mutex> lk(s_eglMtx);
+            if (s_hwContextDestroy && s_eglInitialized && ensureEglContextCurrent()) {
+                s_hwContextDestroy();
+            }
+            destroyEglContext();
+        }
+        s_hwRenderActive.store(false, std::memory_order_release);
+        s_retro_deinit();
+        s_loaded = false;
+    }
+    s_sampleRate = 0;
+    s_refreshRate = 60.0;
+    s_region = 0;
+    s_audio.reset();
+    s_resampler.reset();
+    s_newFrame.store(false);
+    s_presentedFrames.store(0, std::memory_order_relaxed);
+    s_pixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
+    {
+        std::lock_guard<std::mutex> lk(s_frameMtx);
+        s_frame.clear();
+        s_frameW = 0;
+        s_frameH = 0;
+    }
+    s_videoW = 480;
+    s_videoH = 272;
+    s_lastRomPath.clear();
+    s_saveName.clear();
+    s_pad1.store(0, std::memory_order_relaxed);
+    s_pad2.store(0, std::memory_order_relaxed);
+    s_pad3.store(0, std::memory_order_relaxed);
+    s_pad4.store(0, std::memory_order_relaxed);
+    // 虚拟摇杆/物理手柄轴一并归零（防止上局游戏的倾斜残留到新游戏）。
+    for (int p = 0; p < 4; ++p)
+        for (int a = 0; a < 4; ++a)
+            s_analog[p][a].store(0, std::memory_order_relaxed);
+    s_hwContextReset = nullptr;
+    s_hwContextDestroy = nullptr;
+
+    // ★ 与 dc_loader 同款"关闭后再打开闪退"预防性修复：dlclose 核心
+    // 库，下次 loadFromFile 重新 dlopen —— 核心静态状态完全归零。
+    if (s_coreLib) {
+        LOGI("dlclose(libppsspp_libretro_android.so) — full core state reset");
+        dlclose(s_coreLib);
+        s_coreLib = nullptr;
+    }
+}
+
+void resetEmulation(bool /*hard*/) {
+    if (s_loaded && s_gameLoaded) s_retro_reset();
+}
+
+void stepFrame() {
+    if (!s_loaded || !s_gameLoaded) return;
+    applyPendingPortDevicesLockedStep();
+
+    if (s_hwRenderActive.load(std::memory_order_acquire)) {
+        // HW path: bind the shared context on this thread, run one frame,
+        // capture on demand, then present (blit + swap).
+        // s_eglMtx serializes against setSurface() (window surface
+        // create/destroy on the UI thread) — hold cost is negligible
+        // (surface changes are rare; the emu thread is the usual owner).
+        std::lock_guard<std::mutex> lk(s_eglMtx);
+
+        // Handle a geometry change (internal resolution switch) before the run.
+        if (s_fboNeedsResize.exchange(false, std::memory_order_acq_rel) &&
+            s_eglInitialized && ensureEglContextCurrent()) {
+            retro_system_av_info av{};
+            s_retro_get_system_av_info(&av);
+            ensureFbo(av.geometry.max_width ? av.geometry.max_width : s_videoW,
+                      av.geometry.max_height ? av.geometry.max_height : s_videoH);
+        }
+
+        if (!ensureEglContextCurrent()) {
+            LOGW("stepFrame: EGL context unavailable — frame skipped");
+            return;
+        }
+        s_retro_run();
+        bool captured = false;
+        if (s_captureRequested.exchange(false, std::memory_order_acq_rel)) {
+            captureFrameFromFbo();
+            s_captureDone.store(true, std::memory_order_release);
+            captured = true;
+        }
+        if (s_eglWindowSurface != EGL_NO_SURFACE) {
+            blitAndSwap();
+        } else if (!captured) {
+            // ★ No window surface — headless consumers (仿电视机滤镜 etc.).
+            // The core is HW-render: its output only exists in OUR FBO, and
+            // without this readback the CPU-side buffer (s_frame →
+            // copyFramebufferARGB) stays black while software cores keep
+            // filling theirs when hasSurface=false. Read the rendered region
+            // back every frame so copyFramebufferARGB serves live frames.
+            captureFrameFromFbo();
+        }
+    } else {
+        // Software fallback (defensive).
+        s_retro_run();
+    }
+}
+
+// 读取并清零自上次轮询以来核心真实提交的帧数（FPS HUD 用）。
+int pollPresentedFrames() {
+    return s_presentedFrames.exchange(0, std::memory_order_acq_rel);
+}
+
+void setPortDevice(int port, int device) {
+    if (port < 0 || port > 3) return;
+    uint32_t next = s_pendingPortDevices.load(std::memory_order_relaxed);
+    next = (next & ~(0xFFu << (port * 8))) |
+           ((uint32_t)(device & 0xFF) << (port * 8));
+    next &= 0x00FFFFFFu;                    // clear "no pending" flag byte
+    s_pendingPortDevices.store(next, std::memory_order_acq_rel);
+}
+
+double videoRefreshRate() { return s_refreshRate; }
+
+bool copyFramebufferARGB(uint32_t* out, int w, int h) {
+    if (!out) return false;
+    if (!s_loaded || !s_gameLoaded || s_frame.empty()) {
+        std::memset(out, 0, (size_t)w * h * sizeof(uint32_t));
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(s_frameMtx);
+    const int cw = (w < (int)s_frameW) ? w : (int)s_frameW;
+    const int ch = (h < (int)s_frameH) ? h : (int)s_frameH;
+    for (int y = 0; y < ch; ++y) {
+        std::memcpy(out + (size_t)y * w,
+                    s_frame.data() + (size_t)y * s_frameW,
+                    (size_t)cw * sizeof(uint32_t));
+    }
+    // In HW mode s_frame only refreshes on explicit captures; report
+    // "has new data" from the atomic anyway — the UI uses it as a hint.
+    return s_newFrame.exchange(false, std::memory_order_acq_rel);
+}
+
+int readAudio(int16_t* out, int maxFrames) {
+    if (!s_loaded || !s_gameLoaded) return 0;
+    return s_resampler.readResampled(s_audio, out, maxFrames);
+}
+
+int audioSampleRate() { return s_sampleRate; }
+int audioTargetSampleRate() { return s_sampleRate; }  // default audio == core rate
+
+void setControllerInput(int port, uint16_t bits) {
+    if (port == 0)      s_pad1.store(bits, std::memory_order_relaxed);
+    else if (port == 1) s_pad2.store(bits, std::memory_order_relaxed);
+    else if (port == 2) s_pad3.store(bits, std::memory_order_relaxed);
+    else if (port == 3) s_pad4.store(bits, std::memory_order_relaxed);
+}
+
+void setControllerAnalog(int port, int16_t lx, int16_t ly, int16_t rx, int16_t ry) {
+    if (port < 0 || port > 3) return;
+    const unsigned p = (unsigned)port;
+    s_analog[p][0].store(lx, std::memory_order_relaxed);
+    s_analog[p][1].store(ly, std::memory_order_relaxed);
+    s_analog[p][2].store(rx, std::memory_order_relaxed);
+    s_analog[p][3].store(ry, std::memory_order_relaxed);
+}
+
+void setPaths(const std::string& systemDir, const std::string& saveDir) {
+    s_systemDir = systemDir;
+    s_saveDir = saveDir;
+}
+
+void setSaveName(const std::string& name) {
+    s_saveName = name;
+    LOGI("Save basename hint: '%s'", name.c_str());
+}
 
 void setCoreLibPath(const std::string& path) {
-    std::lock_guard<std::mutex> lk(g_lock);
-    g_soPath = path;
+    s_coreLibPath = path;
+    LOGI("Core lib path set: %s", s_coreLibPath.c_str());
 }
 
-bool isCoreLoaded() {
-    std::lock_guard<std::mutex> lk(g_lock);
-    return g_so != nullptr;
+void applyRegion(int /*region*/) { /* region auto-detected at load */ }
+void applySampleRate(int /*hz*/) { /* fixed by the core */ }
+void applySpeed(float multiplier) {
+    s_fastForward.store(multiplier > 1.0f, std::memory_order_relaxed);
+    s_ffMaxSkip.store((int)multiplier, std::memory_order_relaxed);
+    s_ffFrameSkip.store(0, std::memory_order_relaxed);
 }
 
-std::string coreLoadError() {
-    std::lock_guard<std::mutex> lk(g_lock);
-    return g_loadError;
+void saveStateToPath(int /*slot*/, const std::string& path) {
+    if (!s_loaded || !s_gameLoaded || !s_retro_serialize) return;
+    size_t sz = s_retro_serialize_size();
+    if (sz == 0) return;
+    std::vector<uint8_t> buf(sz);
+    if (!s_retro_serialize(buf.data(), sz)) { LOGE("retro_serialize failed"); return; }
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) { LOGE("Cannot open save state for write: %s", path.c_str()); return; }
+    std::fwrite(buf.data(), 1, sz, f);
+    std::fclose(f);
 }
 
-bool boot(JNIEnv* env, const HostParams& p) {
-    std::lock_guard<std::mutex> lk(g_lock);
-
-    // ★ NesStation 集成补丁（PSP 闪退根治）★
-    // 上一局会话仍处于 booted 状态时（极快的"退出→再进"竞态窗口，或上层
-    // 任何遗漏的 unload 路径），boot() 的旧实现直接 return true —— 新 ROM
-    // 根本不会被引导（PPSSPP 内部仍挂着上一局的 CoreParameter/EMU 线程），
-    // 表现为"换游戏后黑屏/闪退/还是上一局"。这里对齐官方 PpssppActivity
-    // 的生命周期：先按 onDestroy 顺序完整卸载旧会话，再继续本次引导。
-    if (g_booted) {
-        LOGI("boot(): previous session still active — tearing down first");
-        TeardownNoLock(env);
-    }
-
-    if (g_so == nullptr) {
-        if (g_soPath.empty()) {
-            g_loadError = "core lib path not set";
-            return false;
-        }
-        LOGI("dlopen %s", g_soPath.c_str());
-        g_so = dlopen(g_soPath.c_str(), RTLD_NOW);
-        if (!g_so) {
-            const char* e = dlerror();
-            g_loadError = std::string("dlopen(libppsspp_jni.so) failed: ") + (e ? e : "?");
-            LOGE("%s", g_loadError.c_str());
-            return false;
-        }
-
-        // ★★★ NesStation 集成补丁（PSP 闪退根治 #1 —— 手动 JNI_OnLoad）★★★
-        //
-        // 官方 PpssppActivity 经 System.loadLibrary("ppsspp_jni") 加载核心，
-        // ART 会在加载后自动回调 JNI_OnLoad（app-android.cpp:247）：
-        //   gJvm = pjvm;                 // 缓存 JavaVM —— getEnv() 的生命线
-        //   gClassLoader = ...;          // 缓存 app ClassLoader（native 线程 FindClass 用）
-        //   RegisterAttachDetach(...);   // PPSSPP 线程管理器的 attach/detach 钩子
-        //   TimeInit();                  // 时间基准
-        //
-        // 本宿主走 dlopen() 路径 —— ART 不知道这次加载，JNI_OnLoad 不会被
-        // 调用 → gJvm 恒为 nullptr。后果（tombstone 实证信号）：
-        //   runVulkanRenderLoop → VulkanEmuThread → AndroidJNIThreadContext
-        //   → getEnv() → gJvm->GetEnv(...) → SIGSEGV（空指针解引用）
-        // 游戏一进渲染必崩 —— "PSP 游戏直接闪退"的根因。
-        //
-        // 修复：dlopen 成功后立即 dlsym("JNI_OnLoad") 并手动调用。JavaVM
-        // 指针从当前调用线程（Java 线程，PspNative.boot 的调用栈）取；
-        // FindClass 也在该线程上执行 —— 栈顶是 Java 帧，能找到 app 类。
-        // 幂等：g_jniOnLoadDone 防止重复 boot 时二次执行（重复执行虽无害
-        // 但会泄漏一个 GlobalRef）。
-        if (!g_jniOnLoadDone) {
-            JavaVM* jvm = nullptr;
-            if (env->GetJavaVM(&jvm) != JNI_OK || jvm == nullptr) {
-                g_loadError = "GetJavaVM failed — cannot initialize PPSSPP JNI runtime";
-                LOGE("%s", g_loadError.c_str());
-                return false;
-            }
-            using JniOnLoadFn = jint (*)(JavaVM*, void*);
-            JniOnLoadFn jniOnLoad = Sym<JniOnLoadFn>("JNI_OnLoad", false);
-            if (jniOnLoad) {
-                LOGI("invoking JNI_OnLoad manually (dlopen path)");
-                const jint ver = jniOnLoad(jvm, nullptr);
-                if (ver < 0) {
-                    g_loadError = "PPSSPP JNI_OnLoad returned error";
-                    LOGE("%s", g_loadError.c_str());
-                    return false;
-                }
-                LOGI("JNI_OnLoad done, JNI version 0x%x", (unsigned)ver);
-            } else {
-                // 官方 so 一定导出 JNI_OnLoad；缺失说明 so 版本异常，继续
-                // 也会在 getEnv() 处崩 —— 提前给出可读错误。
-                g_loadError = "JNI_OnLoad not exported by libppsspp_jni.so (unexpected build)";
-                LOGE("%s", g_loadError.c_str());
-                return false;
-            }
-            g_jniOnLoadDone = true;
-        }
-
-        if (!ResolveSymbols()) return false;
-    }
-
-    // The Java host stub must be provided by the bridge (PspNative.boot).
-    if (g_hostStub == nullptr) {
-        g_loadError = "host stub not registered";
-        return false;
-    }
-
-    if (!g_clsNativeApp) {
-        jclass local = env->FindClass("org/ppsspp/ppsspp/NativeApp");
-        if (!local) { g_loadError = "FindClass(NativeApp) failed"; return false; }
-        g_clsNativeApp = (jclass)env->NewGlobalRef(local);
-        env->DeleteLocalRef(local);
-    }
-    if (!g_clsPpssppActivity) {
-        jclass local = env->FindClass("org/ppsspp/ppsspp/PpssppActivity");
-        if (!local) { g_loadError = "FindClass(PpssppActivity) failed"; return false; }
-        g_clsPpssppActivity = (jclass)env->NewGlobalRef(local);
-        env->DeleteLocalRef(local);
-    }
-
-    // 1) Register native→Java callbacks BEFORE init: ProcessFrameCommands
-    //    (toast/keyboard/…) fires during init and calls postCommand
-    //    unconditionally (v1.20.4 app-android.cpp — no null guard).
-    //
-    //    ★ NesStation 集成补丁（PSP 闪退根治 #4）★：预检契约 + 清理
-    //    pending exception —— v1.20.4 registerCallbacks 对宿主对象做
-    //    三个 GetMethodID，缺失时不清异常，下一个 FindClass(ContentUri)
-    //    在 pending exception 下执行 → ART AssertNoPendingException →
-    //    SIGABRT（tombstone：NoSuchMethodError getNativeCrashHistory）。
-    ValidateHostStubContract(env);
-    if (g_registerCallbacks) {
-        g_registerCallbacks(env, g_hostStub);
-        ClearPendingException(env, "registerCallbacks");
-    }
-
-    // 2) Display parameters must precede init (config defaults / 1x-2x pick).
-    if (g_setDisplay) {
-        g_setDisplay(env, g_clsNativeApp,
-                     p.displayXres > 0 ? p.displayXres : 1280,
-                     p.displayYres > 0 ? p.displayYres : 720,
-                     p.displayDpi, p.displayRefresh);
-        ClearPendingException(env, "setDisplayParameters");
-    }
-
-    // 3) Audio tuning (0 → native defaults 44100 Hz / 512 frames).
-    if (g_audioConfig) {
-        g_audioConfig(env, g_clsNativeApp,
-                      p.optimalFramesPerBuffer, p.optimalSampleRate);
-        ClearPendingException(env, "audioConfig");
-    }
-
-    // 4) init — shortcutParam becomes boot_filename (parse_args → NativeInit),
-    //    graphicsContext (AndroidVulkanContext) is created inside.
-    jstring jmodel  = env->NewStringUTF(p.model.c_str());
-    jstring jlang   = env->NewStringUTF(p.langRegion.c_str());
-    jstring japk    = env->NewStringUTF(p.apkPath.c_str());
-    jstring jdata   = env->NewStringUTF(p.dataDir.c_str());
-    jstring jextSt  = env->NewStringUTF(p.externalStorageDir.c_str());
-    jstring jextFi  = env->NewStringUTF(p.externalFilesDir.c_str());
-    jstring jlibDir = env->NewStringUTF(p.nativeLibDir.c_str());
-    jstring jaddSt  = env->NewStringUTF(p.additionalStorageDirs.c_str());
-    jstring jcache  = env->NewStringUTF(p.cacheDir.c_str());
-    jstring jshort  = env->NewStringUTF(p.shortcutParam.c_str());
-    jstring jinst   = env->NewStringUTF(p.installerName.c_str());
-    jstring jboard  = env->NewStringUTF(p.board.c_str());
-    g_init(env, g_clsNativeApp,
-           jmodel, (jint)p.deviceType, jlang, japk, jdata, jextSt, jextFi,
-           jlibDir, jaddSt, jcache, jshort, jinst, (jint)p.androidVersion, jboard);
-    ClearPendingException(env, "NativeApp.init");
-    env->DeleteLocalRef(jmodel);  env->DeleteLocalRef(jlang);
-    env->DeleteLocalRef(japk);    env->DeleteLocalRef(jdata);
-    env->DeleteLocalRef(jextSt);  env->DeleteLocalRef(jextFi);
-    env->DeleteLocalRef(jlibDir); env->DeleteLocalRef(jaddSt);
-    env->DeleteLocalRef(jcache);  env->DeleteLocalRef(jshort);
-    env->DeleteLocalRef(jinst);   env->DeleteLocalRef(jboard);
-
-    // 5) Backend sanity: our host only drives the Vulkan render loop. If the
-    //    ini asked for OpenGL (or Vulkan was unavailable and release builds
-    //    force-revert to GL), refuse with a readable error instead of a
-    //    black screen.
-    const std::string javaGL = QueryConfigStr(env, "androidJavaGL");
-    if (javaGL == "true") {
-        g_loadError = "PPSSPP OpenGL (JavaGL) 后端不受进程内宿主支持："
-                      "需要在 ppsspp.ini 设 Graphics/GraphicsBackend=3 (Vulkan)，"
-                      "或设备不支持 Vulkan";
-        LOGE("%s", g_loadError.c_str());
-        return false;
-    }
-
-    // 6) Desired backbuffer + OpenSL audio (self-contained native thread).
-    if (g_computeBB) {
-        g_computeBB(env, g_clsNativeApp);
-        ClearPendingException(env, "computeDesiredBackbufferDimensions");
-    }
-    if (g_audioInit) {
-        g_audioInit(env, g_clsNativeApp);
-        ClearPendingException(env, "audioInit");
-    }
-
-    g_booted = true;
-    g_lastError.clear();
-    LOGI("PPSSPP booted: %dx%d @%.1fHz dpi=%d rom=%s",
-         p.displayXres, p.displayYres, p.displayRefresh, p.displayDpi,
-         p.shortcutParam.c_str());
+bool loadStateFromPath(int /*slot*/, const std::string& path) {
+    if (!s_loaded || !s_gameLoaded || !s_retro_unserialize) return false;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { std::fclose(f); return false; }
+    std::vector<uint8_t> buf((size_t)sz);
+    size_t rd = std::fread(buf.data(), 1, (size_t)sz, f);
+    std::fclose(f);
+    if (rd != (size_t)sz) return false;
+    if (!s_retro_unserialize(buf.data(), sz)) { LOGE("retro_unserialize failed"); return false; }
     return true;
 }
 
-bool vulkanActive() {
-    return g_booted && g_runVkLoop != nullptr;
-}
+void setSurface(void* nativeWindow) {
+    std::lock_guard<std::mutex> lk(s_eglMtx);
 
-void setSurface(JNIEnv* env, jobject surface, int width, int height) {
-    if (!g_booted) return;
+    ANativeWindow* win = static_cast<ANativeWindow*>(nativeWindow);
 
-    if (surface == nullptr) {
-        if (g_loopActive && g_exitVkLoop) {
-            LOGI("requestExitVulkanRenderLoop (surface gone)");
-            g_exitVkLoop(env, g_hostStub);
-            ClearPendingException(env, "exitVkLoop(surface gone)");
-            g_loopActive = false;
+    // Keep a ref-counted window for the defensive software-fallback blit.
+    coreshared::setSurface(s_softwareWindow, s_softwareWindowMtx, nativeWindow);
+
+    // Tear down the old window surface.
+    if (s_eglWindowSurface != EGL_NO_SURFACE) {
+        if (s_eglInitialized && eglGetCurrentContext() != EGL_NO_CONTEXT) {
+            eglMakeCurrent(s_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         }
+        eglDestroySurface(s_eglDisplay, s_eglWindowSurface);
+        s_eglWindowSurface = EGL_NO_SURFACE;
+        s_eglSurface = s_eglPbufferSurface;
+        s_winW = 0;
+        s_winH = 0;
+    }
+
+    if (win == nullptr) {
+        LOGI("Surface detached");
         return;
     }
 
-    // Restart policy mirrors PpssppActivity.notifySurface: exit any running
-    // loop, then start a fresh one on the new surface.
-    if (g_loopActive && g_exitVkLoop) {
-        g_exitVkLoop(env, g_hostStub);
-        ClearPendingException(env, "exitVkLoop(surface swap)");
-        g_loopActive = false;
+    if (!ensureEglDisplayAndContext()) {
+        LOGE("setSurface: EGL init failed");
+        return;
     }
 
-    if (width > 0 && height > 0 && g_bbResize) {
-        // PixelFormat.RGBA_8888 == 1 (what the official SizeManager forwards).
-        g_bbResize(env, g_clsNativeApp, width, height, 1);
-        ClearPendingException(env, "backbufferResize");
+    EGLSurface surf = eglCreateWindowSurface(s_eglDisplay, s_eglConfig,
+                                             (EGLNativeWindowType)win, nullptr);
+    if (surf == EGL_NO_SURFACE) {
+        LOGE("eglCreateWindowSurface failed: 0x%x", eglGetError());
+        return;
     }
-    if (g_computeBB) {
-        g_computeBB(env, g_clsNativeApp);
-        ClearPendingException(env, "computeDesiredBackbufferDimensions");
-    }
-
-    if (g_runVkLoop) {
-        jboolean ok = g_runVkLoop(env, g_hostStub, surface);
-        ClearPendingException(env, "runVulkanRenderLoop");
-        g_loopActive = (ok == JNI_TRUE);
-        if (g_loopActive) {
-            LOGI("Vulkan render loop started (%dx%d)", width, height);
-        } else {
-            SetError("runVulkanRenderLoop 启动失败（graphicsContext 未就绪或循环已在跑）");
-        }
-    }
+    s_eglWindowSurface = surf;
+    s_eglSurface = surf;
+    s_winW = ANativeWindow_getWidth(win);
+    s_winH = ANativeWindow_getHeight(win);
+    LOGI("Surface attached: %dx%d (window surface created)", s_winW, s_winH);
 }
 
-void pause(JNIEnv* env) {
-    if (g_booted && g_pause) {
-        g_pause(env, g_clsNativeApp);
-        ClearPendingException(env, "NativeApp.pause");
+void setCoreOption(const std::string& key, const std::string& value) {
+    {
+        std::lock_guard<std::mutex> lk(s_optMtx);
+        s_options[key] = value;
     }
+    s_optionsChanged.store(true, std::memory_order_release);
+    LOGI("Core option set: %s = %s", key.c_str(), value.c_str());
 }
 
-void resume(JNIEnv* env) {
-    if (g_booted && g_resume) {
-        g_resume(env, g_clsNativeApp);
-        ClearPendingException(env, "NativeApp.resume");
+int videoWidth()  { return (int)s_videoW; }
+int videoHeight() { return (int)s_videoH; }
+
+void videoAspectRatio(int& num, int& den) {
+    // The core reports 16:9 (retro_get_system_av_info geometry.aspect_ratio).
+    // PSP's true ratio is 480:272 ≈ 1.765 — the core itself approximates it
+    // with 16:9, so presentation follows the core.
+    num = 16;
+    den = 9;
+}
+
+void setVideoFilter(int filter) {
+    s_videoFilter.store(filter, std::memory_order_relaxed);
+    LOGI("Video filter set: %d", filter);
+}
+
+void setHighQualityScaling(bool enabled) {
+    s_highQualityScaling.store(enabled, std::memory_order_relaxed);
+    LOGI("High-quality scaling: %s", enabled ? "ON" : "OFF");
+}
+
+// Screenshot request — served inside stepFrame() from the core's FBO.
+void requestFrameCapture() {
+    s_captureDone.store(false, std::memory_order_release);
+    s_captureRequested.store(true, std::memory_order_release);
+}
+
+bool waitForCapture(int timeoutMs) {
+    if (s_captureDone.exchange(false, std::memory_order_acq_rel)) return true;
+    const int steps = timeoutMs / 10;
+    for (int i = 0; i < steps; ++i) {
+        usleep(10000);
+        if (s_captureDone.exchange(false, std::memory_order_acq_rel)) return true;
     }
+    return false;
 }
 
-bool keyDown(JNIEnv* env, int keycode) {
-    if (!g_booted || !g_keyDown) return false;
-    // DEVICE_ID_PAD_0 = 10 (Common/Input/InputState.h) — PPSSPP's default
-    // Android gamepad table (defaultPadMapAndroid) is registered for it.
-    jboolean r = g_keyDown(env, g_clsNativeApp, 10, keycode, JNI_FALSE);
-    ClearPendingException(env, "keyDown");
-    return r == JNI_TRUE;
+bool isCoreLoaded() {
+    return s_coreLib != nullptr;
 }
 
-bool keyUp(JNIEnv* env, int keycode) {
-    if (!g_booted || !g_keyUp) return false;
-    jboolean r = g_keyUp(env, g_clsNativeApp, 10, keycode);
-    ClearPendingException(env, "keyUp");
-    return r == JNI_TRUE;
-}
-
-void joystickAxis(JNIEnv* env, float lx, float ly) {
-    if (!g_booted || !g_axis) return;
-    // Android MotionEvent axis ids: AXIS_X = 0, AXIS_Y = 1 — exactly what
-    // defaultPadMapAndroid binds to VIRTKEY_AXIS_X/Y (PSP analog stick).
-    jint ids[2] = {0, 1};
-    jfloat vals[2] = {lx, ly};
-    jintArray jids = env->NewIntArray(2);
-    jfloatArray jvals = env->NewFloatArray(2);
-    env->SetIntArrayRegion(jids, 0, 2, ids);
-    env->SetFloatArrayRegion(jvals, 0, 2, vals);
-    g_axis(env, g_clsNativeApp, 10, jids, jvals, 2);
-    env->DeleteLocalRef(jids);
-    env->DeleteLocalRef(jvals);
-    ClearPendingException(env, "joystickAxis");
-}
-
-void touch(JNIEnv* env, float x, float y, int code, int pointerId) {
-    if (!g_booted || !g_touch || code == 0) return;
-    g_touch(env, g_clsNativeApp, x, y, (jint)(code | kFingerToolBits),
-            (jint)pointerId);
-    ClearPendingException(env, "touch");
-}
-
-namespace {
-
-// Shared implementation for saveState/loadState: waits for the core's async
-// completion callback (fires on the emu thread) with a generous timeout.
-bool RunSlotOp(JNIEnv* env, int slot, bool save) {
-    if (!g_booted) { SetError("PSP 核心未启动"); return false; }
-    if (!g_getPrefix || !g_paramSFO || (!g_saveSlot && !g_loadSlot)) {
-        SetError("核心缺少 SaveState 符号（so 版本不匹配）");
-        return false;
-    }
-
-    std::string prefix = g_getPrefix((const void*)g_paramSFO);
-    if (prefix.empty()) {
-        SetError("无法确定游戏 Disc ID（游戏尚未完成引导）");
-        return false;
-    }
-
-    // shared_ptr keeps the promise alive even if we time out and return —
-    // the core's async completion callback may fire later on the emu thread.
-    auto done = std::make_shared<std::promise<int>>();
-    auto fut = done->get_future();
-    std::function<void(int, std::string)> cb =
-        [done](int status, std::string /*message*/) {
-            try { done->set_value(status); } catch (...) {}
-        };
-
-    LOGI("%s slot %d (prefix=%s)", save ? "saveState" : "loadState", slot,
-         prefix.c_str());
-    if (save) g_saveSlot(prefix, slot, cb);
-    else      g_loadSlot(prefix, slot, cb);
-
-    constexpr auto kTimeout = std::chrono::seconds(15);
-    if (fut.wait_for(kTimeout) != std::future_status::ready) {
-        SetError(save ? "存档超时（核心未响应）" : "读档超时（核心未响应）");
-        return false;
-    }
-    const int status = fut.get();
-    if (status != kStatusSuccess) {
-        SetError(std::string(save ? "存档" : "读档") + "失败：核心返回 status=" +
-                 std::to_string(status));
-        return false;
-    }
-    return true;
-}
-
-} // namespace
-
-bool saveState(JNIEnv* env, int slot) { return RunSlotOp(env, slot, true); }
-bool loadState(JNIEnv* env, int slot) { return RunSlotOp(env, slot, false); }
-
-void unload(JNIEnv* env) {
-    std::lock_guard<std::mutex> lk(g_lock);
-    // ★ NesStation 集成补丁：逻辑抽入 TeardownNoLock（boot 的重引导路径
-    //   复用同一份卸载实现，两处顺序保证一致），此处仅加锁转发。
-    TeardownNoLock(env);
-}
-
-std::string lastError() {
-    std::lock_guard<std::mutex> lk(g_lock);
-    return g_lastError;
-}
-
-void setHostStub(JNIEnv* env, jobject stub) {
-    std::lock_guard<std::mutex> lk(g_lock);
-    if (g_hostStub != nullptr) {
-        env->DeleteGlobalRef(g_hostStub);
-        g_hostStub = nullptr;
-    }
-    if (stub != nullptr) {
-        g_hostStub = env->NewGlobalRef(stub);
-    }
-}
-
-} // namespace pspload
+} // namespace pspcore::rom

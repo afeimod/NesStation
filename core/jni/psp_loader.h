@@ -1,121 +1,146 @@
 // SPDX-License-Identifier: MIT
-// PPSSPP (Sony PSP) host driver — NesStation in-process integration.
+// libretro frontend surface for the Sony PSP core (libretro PPSSPP port).
 //
-// Drives the prebuilt official libppsspp_jni.so (PPSSPP v1.20.4, all three
-// ABIs) through its exported JNI symbols — the exact same contract the
-// official PpssppActivity uses (NativeApp.init / runVulkanRenderLoop /
-// SaveState::*). No PPSSPP headers are needed: everything is resolved via
-// dlopen()/dlsym() at runtime, so the vendored org.ppsspp.ppsspp Java layer
-// stays the single source of truth for signatures.
+// psp_loader wraps the standard libretro API (retro_init / retro_load_game /
+// retro_run ...) behind a small, stable C++ interface that the JNI bridge in
+// psp_bridge.cpp calls — the SAME integration pattern as dc_loader.cpp /
+// psx_loader.cpp (dlopen the prebuilt core .so at runtime, resolve the
+// retro_* symbols via dlsym).
 //
-// Integration model (identical to psx_loader.cpp / dc_loader.cpp):
-//   PspNative.kt  →  libpspcore.so (this file + psp_bridge.cpp)
-//                 →  dlopen(nativeLibraryDir/libppsspp_jni.so)
+// ★★ 集成架构说明（v3 — libretro 化重写）★★
 //
-// ★ dlopen-vs-System.loadLibrary 差异（PSP 闪退根因，本轮修复）★
-//   官方宿主经 System.loadLibrary 加载核心，ART 自动回调 JNI_OnLoad
-//   （gJvm 缓存 / gClassLoader / 线程 attach 钩子 / TimeInit）。dlopen
-//   路径下这些初始化不会发生，PPSSPP 内部任何 getEnv()（渲染线程、IO
-//   线程池……）都会解引用空 JavaVM → SIGSEGV。因此 boot() 在 dlopen 后
-//   手动 dlsym("JNI_OnLoad") 并以 GetJavaVM 的指针调用 —— 见 psp_loader.cpp。
+// 旧版集成 dlopen 官方 libppsspp_jni.so 并驱动其 JNI 契约（模拟
+// PpssppActivity）—— 与 DC/PSX 等核心的 libretro 模式完全异构，导致：
+//   · PPSSPP 自带虚拟按键覆盖层（宿主触摸直通）与 NesStation 统一手柄冲突；
+//   · 画面方向/呈现由 PPSSPP 内部 Vulkan 循环决定，宿主无法管理；
+//   · 设置走 ppsspp.ini 直写，与主设置面板割裂；
+//   · JNI 契约脆弱（JNI_OnLoad / registerCallbacks / ContentUri …连环雷）。
+// 本版彻底重写为 libretro 前端 —— 与 flycast / pcsx-rearmed 完全同构：
+//   · 输入走 retro_set_input_state（标准 libretro JOYPAD 布局，宿主统一
+//     虚拟按键/摇杆直供，无 PPSSPP 覆盖层）；
+//   · 画面走 EGL/GLES3 HW render（FBO + blit，宿主全权管理 Surface）；
+//   · 设置走 retro 变量（ppsspp_* 核心选项，与主设置面板打通）；
+//   · 无任何 Java 契约依赖（org.ppsspp.ppsspp 包与 libppsspp_jni.so 已移除）。
 //
-// Lifecycle:
-//   boot()        — dlopen, manual JNI_OnLoad, NativeApp.audioConfig + init
-//                   (boot_filename = quoted ROM path), display params,
-//                   registerCallbacks with the Java host stub, audioInit.
-//                   Forces the Vulkan backend via ppsspp.ini before init
-//                   (the OpenGL "JavaGL" host path is not driven by this
-//                   loader). A still-active previous session is fully torn
-//                   down first (same order as PpssppActivity.onDestroy).
-//   setSurface()  — start/stop the Vulkan render loop (PPSSPP spawns its
-//                   own EmuThread internally; requestExitVulkanRenderLoop
-//                   joins it).
-//   unload()      — exit render loop, audioShutdown, NativeApp.shutdown,
-//                   unregisterCallbacks. The .so stays resident (dlclose
-//                   would strand core-owned threads); the next boot()
-//                   re-runs JNI_OnLoad-free re-init on the resident image.
+// The core .so is the official libretro buildbot build
+// (libppsspp_libretro_android.so, shipped in app/src/main/jniLibs/<abi>/;
+// content extensions: elf|iso|cso|prx|pbp|chd).
+//
+// PPSSPP is a HARDWARE-RENDERING core (OpenGL ES via LibretroGLContext): it
+// renders the final frame into the framebuffer provided by
+// get_current_framebuffer() and signals completion via
+// video_cb(RETRO_HW_FRAME_BUFFER_VALID, ...). The frontend therefore must:
+//   * accept RETRO_ENVIRONMENT_SET_HW_RENDER (the core requests
+//     RETRO_HW_CONTEXT_OPENGL; on Android we satisfy it with an ES3 context
+//     — identical to RetroArch's GL video driver on Android),
+//   * create an EGL context + window surface bound to the ANativeWindow,
+//   * provide an FBO for the core to render into,
+//   * after each retro_run() blit the FBO to the window backbuffer (scaled)
+//     and call eglSwapBuffers().
+//
+// System / save directories (standard libretro mechanism):
+//   * GET_SYSTEM_DIRECTORY → <systemDir>: the core derives its asset base as
+//     <systemDir>/PPSSPP/ (VFS root: ppge_atlas.zim / lang/ / compat.ini …)
+//     and flash0 as <systemDir>/PPSSPP/flash0/ (in-game PSP fonts *.pgf).
+//     NesStation seeds both from app assets "ppsspp/" on first run
+//     (PspSupport.ensurePpssppEnvironment).
+//   * GET_SAVE_DIRECTORY → <saveDir>: used as the memstick root — the core
+//     creates memstick/PSP/{SAVEDATA,SYSTEM,GAME,…} inside it (standard
+//     PPSSPP tree), i.e. saves land in <saveDir>/PSP/SAVEDATA.
+//
+// No BIOS is required for PSP content.
+
 #pragma once
-
-#include <jni.h>
 #include <string>
+#include <cstdint>
 
-namespace pspload {
+namespace pspcore::rom {
 
-// Display metrics gathered on the Kotlin side before boot.
-struct HostParams {
-    std::string model;                 // Build.MANUFACTURER + ":" + Build.MODEL
-    int deviceType = 0;                // NativeApp.DEVICE_TYPE_MOBILE
-    std::string langRegion;            // Locale language_country
-    std::string apkPath;               // applicationInfo.sourceDir
-    std::string dataDir;               // context.getFilesDir() (PPSSPP internal dir)
-    std::string externalStorageDir;    // Environment.getExternalStorageDirectory()
-    std::string externalFilesDir;      // context.getExternalFilesDir(null)
-    std::string nativeLibDir;          // applicationInfo.nativeLibraryDir
-    std::string additionalStorageDirs; // ':'-joined SD card paths ("" ok)
-    std::string cacheDir;              // context.getCacheDir()
-    std::string shortcutParam;         // quoted ROM path (boot_filename)
-    std::string installerName;         // package installer ("nesstation")
-    int androidVersion = 0;            // Build.VERSION.SDK_INT
-    std::string board;                 // Build.BOARD
-    int displayXres = 0;               // display pixel width
-    int displayYres = 0;               // display pixel height
-    int displayDpi = 160;              // densityDpi
-    float displayRefresh = 60.0f;      // refresh rate Hz
-    int optimalFramesPerBuffer = 0;    // 0 → native default (44100/512)
-    int optimalSampleRate = 0;
-};
+// Load a PSP game (.iso / .cso / .pbp / .elf / .chd / .prx). The game is
+// passed BY PATH (the core opens it itself — PBP/CSO are streamed).
+// Returns an empty string on success, an error message otherwise.
+// `regionOut` receives 0 = NTSC, 1 = PAL (from the core's reported timing).
+std::string loadFromFile(const std::string& path, int& regionOut);
 
+void unload();
+void resetEmulation(bool hard);
+void stepFrame();
+
+// 读取并清零自上次轮询以来核心真实提交（cb_video 非空）的帧数。
+// FPS HUD 每秒轮询一次，得到的是游戏真实输出帧率。
+int pollPresentedFrames();
+
+// Queue a libretro controller-port device switch. Applied on the emulation
+// thread at the next stepFrame() — never directly from the caller thread.
+void setPortDevice(int port, int device);
+double videoRefreshRate();
+
+// Pull the latest frame into `out` (w*h uint32, 0xAARRGGBB).
+// In HW-render mode this returns the last captured (glReadPixels) frame;
+// capture is scheduled inside stepFrame() right after retro_run().
+bool copyFramebufferARGB(uint32_t* out, int w, int h);
+
+// Screenshot request — schedules a glReadPixels from the core's FBO on the
+// emulation thread (requestFrameCapture), then waitForCapture blocks briefly
+// for the result to land in the shared frame buffer.
+void requestFrameCapture();
+bool waitForCapture(int timeoutMs);
+
+int readAudio(int16_t* out, int maxFrames);
+
+int audioSampleRate();
+int audioTargetSampleRate();
+
+// Push controller state. `bits` layout (standard libretro JOYPAD ids after
+// the Kotlin-side ps2ToLibretroLayout() conversion — PSP face buttons share
+// the PlayStation label semantics with PS2):
+//   bit0=✕(Cross, libretro B), bit1=□(Square, Y), bit2=Select, bit3=Start,
+//   bit4=Up, bit5=Down, bit6=Left, bit7=Right,
+//   bit8=○(Circle, A), bit9=△(Triangle, X), bit10=L, bit11=R
+// Single-player handheld — ports 1..3 accepted but unused by games.
+void setControllerInput(int port, uint16_t bits);
+
+// Push analog stick state for one controller port (libretro int16 axes,
+// −32768..32767, 0 = center). Slot order: [LX, LY, RX, RY]. PSP only has a
+// left stick; right-stick values are accepted and polled but unbound.
+void setControllerAnalog(int port, int16_t lx, int16_t ly, int16_t rx, int16_t ry);
+
+// Set system (PPSSPP asset base: <systemDir>/PPSSPP/) and save (memstick
+// root — the core creates PSP/SAVEDATA etc. inside) directories.
+void setPaths(const std::string& systemDir, const std::string& saveDir);
+
+// Set an explicit save basename for the next ROM load (UI hint only).
+void setSaveName(const std::string& name);
+
+// Set the absolute path to libppsspp_libretro_android.so for dlopen.
+// Pass an empty string to revert to bare-name dlopen.
 void setCoreLibPath(const std::string& path);
+
+void applyRegion(int region);
+void applySampleRate(int hz);
+void applySpeed(float multiplier);
+
+void saveStateToPath(int slot, const std::string& path);
+bool loadStateFromPath(int slot, const std::string& path);
+
+// --- Hardware-accelerated rendering (EGL / GLES3) ---
+void setSurface(void* nativeWindow);
+
+// --- Core options (ppsspp_* — keys MUST match the core's option ids
+//     exactly; wrong keys are silently ignored by the core) ---
+void setCoreOption(const std::string& key, const std::string& value);
+
+// --- Video geometry ---
+int  videoWidth();
+int  videoHeight();
+void videoAspectRatio(int& num, int& den);
+
+// --- Video filter (frontend post-processing; only used when the core runs
+//     in software-video fallback — in HW mode the GL blit handles scaling) ---
+void setVideoFilter(int filter);
+void setHighQualityScaling(bool enabled);
+
+// Check whether libppsspp_libretro_android.so was successfully dlopen()'d.
 bool isCoreLoaded();
-std::string coreLoadError();
 
-// Register the Java host stub (org.ppsspp.ppsspp.PspHostStub instance) that
-// receives the core's frame commands (toast / keyboard / ...). Must be called
-// before boot(). Takes a global reference internally.
-void setHostStub(JNIEnv* env, jobject stub);
-
-// Boot the core. Must be called from a thread with a JNIEnv (Kotlin IO
-// thread is fine). Returns false with lastError() set on failure.
-bool boot(JNIEnv* env, const HostParams& params);
-
-// queryConfig("androidJavaGL") == "false" ⇒ Vulkan render loop may run.
-bool vulkanActive();
-
-// Surface lifecycle. Call from any thread with a JNIEnv.
-//   surface != null → (re)start the Vulkan render loop on the new surface.
-//   surface == null → requestExitVulkanRenderLoop() + join.
-// width/height: current surface size in pixels (backbufferResize); pass the
-// last known values when they are unknown (0 → skip resize).
-void setSurface(JNIEnv* env, jobject surface, int width, int height);
-
-void pause(JNIEnv* env);
-void resume(JNIEnv* env);
-
-// Input. keycodes are Android KeyEvent codes (PPSSPP default Android pad
-// mapping: BUTTON_A→CROSS, B→CIRCLE, X→SQUARE, Y→TRIANGLE, L1/R1→L/R,
-// L2→PPSSPP pause menu, R2→fast-forward, DPAD_*→D-pad).
-bool keyDown(JNIEnv* env, int keycode);
-bool keyUp(JNIEnv* env, int keycode);
-// Virtual left stick (Android AXIS_X=0 / AXIS_Y=1), values -1..1.
-void joystickAxis(JNIEnv* env, float lx, float ly);
-// Raw touch forwarding for PPSSPP's native touch controls.
-// code: PPSSPP touch semantics — 1=MOVE, 2=DOWN, 4=UP (| toolType<<10).
-void touch(JNIEnv* env, float x, float y, int code, int pointerId);
-
-// Instant save states via the core's own SaveState::SaveSlot/LoadSlot
-// (memstick/PSP/PPSSPP_STATE/<prefix>_<slot>.ppst — fully compatible with
-// PPSSPP's own pause-menu slots).
-bool saveState(JNIEnv* env, int slot);
-bool loadState(JNIEnv* env, int slot);
-
-// Fast-forward toggle. PSP_CoreParameter is not exported by the official
-// so — left as a no-op; PPSSPP's own default hotkey (R2 / right trigger)
-// toggles fast-forward in-game.
-inline void setFastForward(bool /*on*/) {}
-
-// Teardown. Safe to call multiple times.
-void unload(JNIEnv* env);
-
-std::string lastError();
-
-} // namespace pspload
+} // namespace pspcore::rom
