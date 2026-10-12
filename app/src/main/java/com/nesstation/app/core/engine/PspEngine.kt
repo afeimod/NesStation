@@ -101,8 +101,22 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
     /** App context — set by NesApp.onCreate so the engine can locate dirs. */
     @Volatile var appContext: Context? = null
 
-    /** PPSSPP 帧命令宿主桩（Toast 转发等），boot 前注入 app context。 */
-    private val hostStub = PspHostStub()
+    /**
+     * PPSSPP 帧命令宿主桩（Toast 转发等）。
+     * ★ 惰性创建：PspHostStub 是 ContextWrapper，需要宿主 Context 包装 ——
+     *   boot 时（appContext 已就绪）首次构建。旧版“构造即建”会在 appContext
+     *   赋值前执行，拿不到 Context（PSP 闪退修复 #2 的配套）。
+     */
+    @Volatile private var hostStub: PspHostStub? = null
+
+    /** boot 前获取（或首次创建）宿主桩 —— 必须持有 appContext。 */
+    private fun obtainHostStub(ctx: Context): PspHostStub {
+        hostStub?.let { return it }
+        synchronized(this) {
+            hostStub?.let { return it }
+            return PspHostStub(ctx).also { hostStub = it }
+        }
+    }
 
     // ------------------------------------------------------------------
     // 可用性
@@ -193,7 +207,9 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
             } catch (_: Throwable) { "en_US" }
 
             val dm = displayMetrics(ctx)
-            PspHostStub.setAppContext(ctx)
+            // 宿主桩：ContextWrapper(appContext) —— 核心的 registerCallbacks/
+            // TextRenderer.allocFont/ContentUri 等回调都拿它当 Activity 用。
+            val stub = obtainHostStub(ctx)
             // boot_filename 经官方 parse_args 传递 —— 含空格路径用引号包裹
             //（parse_args 的引号/反斜杠感知切分，v1.20.4 app-android.cpp:672）。
             val romPath = rom.absolutePath
@@ -204,11 +220,13 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
             lastRomPath = romPath
             lastSaveName = null
 
-            // 4) boot：dlopen libppsspp_jni.so → registerCallbacks(hostStub)
+            // 4) boot：dlopen libppsspp_jni.so → 手动 JNI_OnLoad（gJvm/
+            //    gClassLoader/线程 attach 钩子 —— dlopen 不会自动触发，缺失
+            //    即渲染线程 SIGSEGV 闪退）→ registerCallbacks(stub)
             //    → setDisplayParameters → audioConfig → NativeApp.init（内部
             //    创建 AndroidVulkanContext）→ audioInit（OpenSL 线程）。
             val ok = PspNative.boot(
-                hostStub,
+                stub,
                 model, 0 /* DEVICE_TYPE_MOBILE */, langRegion, appInfo.sourceDir ?: "",
                 dataDir, extStorageDir, extFilesDir,
                 appInfo.nativeLibraryDir ?: "", "", cacheDir,
@@ -481,13 +499,18 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
     // 即时存档（核心自有 SaveState 槽位 —— 与 PPSSPP 原生菜单完全互通）
     // ------------------------------------------------------------------
 
-    /** memstick/PSP/PPSSPP_STATE 目录（核心槽位 .ppst 文件所在）。 */
+    /**
+     * memstick/PSP/PPSSPP_STATE 目录（核心槽位 .ppst 文件所在）。
+     * ★ 层级修正：memstick = <ext>/PSP，核心状态在 memstick 的 PSP/ 子层
+     *   下（PPSSPP 约定 memstick/PSP/PPSSPP_STATE）—— 旧版少了一层 PSP，
+     *   永远扫不到核心真实写入的 .ppst（存档槽位大小/时间显示错误的根因）。
+     */
     private fun ppssppStateDir(): File? {
         val ctx = appContext ?: PspNative.appContext ?: return null
         return try {
             val extFiles = ctx.getExternalFilesDir(null)
                 ?: File(ctx.filesDir, "ext")
-            File(File(extFiles, "PSP"), "PPSSPP_STATE").takeIf { it.isDirectory }
+            File(File(File(extFiles, "PSP"), "PSP"), "PPSSPP_STATE").takeIf { it.isDirectory }
         } catch (_: Throwable) {
             null
         }

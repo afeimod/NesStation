@@ -18,6 +18,9 @@
 #include <mutex>
 #include <chrono>
 
+// JNI_VERSION_1_6 (0x00010006) — JNI_OnLoad's expected return value.
+static constexpr jint kJniVersion16 = JNI_VERSION_1_6;
+
 #define TAG "pspcore"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
@@ -122,6 +125,7 @@ void*       g_paramSFO = nullptr;
 
 bool g_booted = false;
 bool g_loopActive = false;               // Vulkan render loop thread running
+bool g_jniOnLoadDone = false;            // JNI_OnLoad manually invoked (dlopen doesn't run it)
 
 std::string ToStr(JNIEnv* env, jstring s) {
     if (!s) return {};
@@ -159,7 +163,6 @@ T Sym(const char* name, bool required) {
 bool ResolveSymbols() {
     if (!g_so) return false;
     g_loadError.clear();
-
     g_init             = Sym<InitFn>("Java_org_ppsspp_ppsspp_NativeApp_init", true);
     g_audioInit        = Sym<AudioInitFn>("Java_org_ppsspp_ppsspp_NativeApp_audioInit", true);
     g_audioShutdown    = Sym<AudioShutFn>("Java_org_ppsspp_ppsspp_NativeApp_audioShutdown", true);
@@ -202,6 +205,28 @@ bool ResolveSymbols() {
 // packs toolType<<10; InputDevice.TOOL_TYPE_FINGER == 1).
 constexpr jint kFingerToolBits = 1 << 10;
 
+// ★ NesStation 集成补丁：会话卸载的公共实现（无锁版本）。
+//   顺序与官方 PpssppActivity.onDestroy 一致：
+//     1. 退出 Vulkan 渲染循环（requestExitVulkanRenderLoop —— join emu 线程）
+//     2. audioShutdown（关 OpenSL）
+//     3. NativeApp.shutdown（NativeShutdown —— 反初始化核心子系统）
+//     4. unregisterCallbacks（释放核心侧持有的宿主引用链）
+//   boot()（持有 g_lock）在"上局会话仍活着"时复用；unload()（同样持有
+//   g_lock）直接走本函数 —— 两处都不能再对 g_lock 加锁。
+void TeardownNoLock(JNIEnv* env) {
+    if (!g_booted) return;
+    if (g_loopActive && g_exitVkLoop) {
+        LOGI("requestExitVulkanRenderLoop (teardown)");
+        g_exitVkLoop(env, g_hostStub);
+        g_loopActive = false;
+    }
+    if (g_audioShutdown) g_audioShutdown(env, g_clsNativeApp);
+    if (g_shutdown)      g_shutdown(env, g_clsNativeApp);
+    if (g_unregisterCallbacks) g_unregisterCallbacks(env, g_hostStub);
+    g_booted = false;
+    LOGI("PPSSPP session torn down (so kept resident for next launch)");
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -226,7 +251,16 @@ std::string coreLoadError() {
 bool boot(JNIEnv* env, const HostParams& p) {
     std::lock_guard<std::mutex> lk(g_lock);
 
-    if (g_booted) return true;
+    // ★ NesStation 集成补丁（PSP 闪退根治）★
+    // 上一局会话仍处于 booted 状态时（极快的"退出→再进"竞态窗口，或上层
+    // 任何遗漏的 unload 路径），boot() 的旧实现直接 return true —— 新 ROM
+    // 根本不会被引导（PPSSPP 内部仍挂着上一局的 CoreParameter/EMU 线程），
+    // 表现为"换游戏后黑屏/闪退/还是上一局"。这里对齐官方 PpssppActivity
+    // 的生命周期：先按 onDestroy 顺序完整卸载旧会话，再继续本次引导。
+    if (g_booted) {
+        LOGI("boot(): previous session still active — tearing down first");
+        TeardownNoLock(env);
+    }
 
     if (g_so == nullptr) {
         if (g_soPath.empty()) {
@@ -241,6 +275,55 @@ bool boot(JNIEnv* env, const HostParams& p) {
             LOGE("%s", g_loadError.c_str());
             return false;
         }
+
+        // ★★★ NesStation 集成补丁（PSP 闪退根治 #1 —— 手动 JNI_OnLoad）★★★
+        //
+        // 官方 PpssppActivity 经 System.loadLibrary("ppsspp_jni") 加载核心，
+        // ART 会在加载后自动回调 JNI_OnLoad（app-android.cpp:247）：
+        //   gJvm = pjvm;                 // 缓存 JavaVM —— getEnv() 的生命线
+        //   gClassLoader = ...;          // 缓存 app ClassLoader（native 线程 FindClass 用）
+        //   RegisterAttachDetach(...);   // PPSSPP 线程管理器的 attach/detach 钩子
+        //   TimeInit();                  // 时间基准
+        //
+        // 本宿主走 dlopen() 路径 —— ART 不知道这次加载，JNI_OnLoad 不会被
+        // 调用 → gJvm 恒为 nullptr。后果（tombstone 实证信号）：
+        //   runVulkanRenderLoop → VulkanEmuThread → AndroidJNIThreadContext
+        //   → getEnv() → gJvm->GetEnv(...) → SIGSEGV（空指针解引用）
+        // 游戏一进渲染必崩 —— "PSP 游戏直接闪退"的根因。
+        //
+        // 修复：dlopen 成功后立即 dlsym("JNI_OnLoad") 并手动调用。JavaVM
+        // 指针从当前调用线程（Java 线程，PspNative.boot 的调用栈）取；
+        // FindClass 也在该线程上执行 —— 栈顶是 Java 帧，能找到 app 类。
+        // 幂等：g_jniOnLoadDone 防止重复 boot 时二次执行（重复执行虽无害
+        // 但会泄漏一个 GlobalRef）。
+        if (!g_jniOnLoadDone) {
+            JavaVM* jvm = nullptr;
+            if (env->GetJavaVM(&jvm) != JNI_OK || jvm == nullptr) {
+                g_loadError = "GetJavaVM failed — cannot initialize PPSSPP JNI runtime";
+                LOGE("%s", g_loadError.c_str());
+                return false;
+            }
+            using JniOnLoadFn = jint (*)(JavaVM*, void*);
+            JniOnLoadFn jniOnLoad = Sym<JniOnLoadFn>("JNI_OnLoad", false);
+            if (jniOnLoad) {
+                LOGI("invoking JNI_OnLoad manually (dlopen path)");
+                const jint ver = jniOnLoad(jvm, nullptr);
+                if (ver < 0) {
+                    g_loadError = "PPSSPP JNI_OnLoad returned error";
+                    LOGE("%s", g_loadError.c_str());
+                    return false;
+                }
+                LOGI("JNI_OnLoad done, JNI version 0x%x", (unsigned)ver);
+            } else {
+                // 官方 so 一定导出 JNI_OnLoad；缺失说明 so 版本异常，继续
+                // 也会在 getEnv() 处崩 —— 提前给出可读错误。
+                g_loadError = "JNI_OnLoad not exported by libppsspp_jni.so (unexpected build)";
+                LOGE("%s", g_loadError.c_str());
+                return false;
+            }
+            g_jniOnLoadDone = true;
+        }
+
         if (!ResolveSymbols()) return false;
     }
 
@@ -464,20 +547,9 @@ bool loadState(JNIEnv* env, int slot) { return RunSlotOp(env, slot, false); }
 
 void unload(JNIEnv* env) {
     std::lock_guard<std::mutex> lk(g_lock);
-    if (!g_booted) return;
-
-    // Order mirrors PpssppActivity.onDestroy: exit render loop first (joins
-    // the emu thread), then audioShutdown, then NativeApp.shutdown.
-    if (g_loopActive && g_exitVkLoop) {
-        g_exitVkLoop(env, g_hostStub);
-        g_loopActive = false;
-    }
-    if (g_audioShutdown) g_audioShutdown(env, g_clsNativeApp);
-    if (g_shutdown)      g_shutdown(env, g_clsNativeApp);
-    if (g_unregisterCallbacks) g_unregisterCallbacks(env, g_hostStub);
-
-    g_booted = false;
-    LOGI("PPSSPP unloaded (so kept resident for next launch)");
+    // ★ NesStation 集成补丁：逻辑抽入 TeardownNoLock（boot 的重引导路径
+    //   复用同一份卸载实现，两处顺序保证一致），此处仅加锁转发。
+    TeardownNoLock(env);
 }
 
 std::string lastError() {

@@ -12,17 +12,28 @@
 //   PspNative.kt  →  libpspcore.so (this file + psp_bridge.cpp)
 //                 →  dlopen(nativeLibraryDir/libppsspp_jni.so)
 //
+// ★ dlopen-vs-System.loadLibrary 差异（PSP 闪退根因，本轮修复）★
+//   官方宿主经 System.loadLibrary 加载核心，ART 自动回调 JNI_OnLoad
+//   （gJvm 缓存 / gClassLoader / 线程 attach 钩子 / TimeInit）。dlopen
+//   路径下这些初始化不会发生，PPSSPP 内部任何 getEnv()（渲染线程、IO
+//   线程池……）都会解引用空 JavaVM → SIGSEGV。因此 boot() 在 dlopen 后
+//   手动 dlsym("JNI_OnLoad") 并以 GetJavaVM 的指针调用 —— 见 psp_loader.cpp。
+//
 // Lifecycle:
-//   boot()        — dlopen, NativeApp.audioConfig + init (boot_filename =
-//                   quoted ROM path), display params, registerCallbacks with
-//                   the Java host stub, audioInit. Forces the Vulkan backend
-//                   via ppsspp.ini before init (the OpenGL "JavaGL" host
-//                   path is not driven by this loader).
+//   boot()        — dlopen, manual JNI_OnLoad, NativeApp.audioConfig + init
+//                   (boot_filename = quoted ROM path), display params,
+//                   registerCallbacks with the Java host stub, audioInit.
+//                   Forces the Vulkan backend via ppsspp.ini before init
+//                   (the OpenGL "JavaGL" host path is not driven by this
+//                   loader). A still-active previous session is fully torn
+//                   down first (same order as PpssppActivity.onDestroy).
 //   setSurface()  — start/stop the Vulkan render loop (PPSSPP spawns its
 //                   own EmuThread internally; requestExitVulkanRenderLoop
 //                   joins it).
 //   unload()      — exit render loop, audioShutdown, NativeApp.shutdown,
-//                   release JNI refs, dlclose.
+//                   unregisterCallbacks. The .so stays resident (dlclose
+//                   would strand core-owned threads); the next boot()
+//                   re-runs JNI_OnLoad-free re-init on the resident image.
 #pragma once
 
 #include <jni.h>

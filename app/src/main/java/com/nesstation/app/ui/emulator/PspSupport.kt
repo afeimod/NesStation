@@ -30,7 +30,12 @@ import java.io.File
  *  - memstick = <externalFilesDir>/PSP；
  *  - <filesDir>/memstick_dir.txt 写入 memstick 绝对路径（PPSSPP scoped
  *    storage 引导逻辑；PPSSPP 要求该目录已存在才采纳）；
- *  - 预建 PSP 子目录树（含 .nomedia，与上游 CreateSysDirectories 一致）。
+ *  - 预建 memstick/PSP 子目录树（含 .nomedia，与上游 CreateSysDirectories
+ *    的 sysDirs 层级一致 —— PPSSPP 约定 memstick 目录之下还有一层
+ *    "PSP/"：ppsspp.ini 在 memstick/PSP/SYSTEM/、即时存档在
+ *    memstick/PSP/PPSSPP_STATE/、游戏存档在 memstick/PSP/SAVEDATA/。
+ *    ★ 旧版少了中间这层 PSP/，建出的目录核心从不用 —— 存档目录探测/
+ *    ini 预置全部落空的根因之一，本轮已对齐）。
  *
  * @return memstick 根目录绝对路径（<externalFilesDir>/PSP）
  */
@@ -39,10 +44,11 @@ fun ensurePpssppEnvironment(context: android.content.Context): String {
         ?: File(context.filesDir, "ext").apply { mkdirs() }
     val memstick = File(extFiles, "PSP").apply { mkdirs() }
 
-    // PSP 子目录树（与上游 CreateSysDirectories 的 sysDirs 一致）
+    // memstick/PSP 子目录树（与上游 CreateSysDirectories 的 sysDirs 一致：
+    // 上游在 memstick 根下建 "PSP/SYSTEM" 等双层路径）
     for (sub in listOf(
-        "SYSTEM", "SAVEDATA", "PPSSPP_STATE", "GAME",
-        "CHEATS", "TEXTURES", "PLUGINS", "CACHE"
+        "PSP/SYSTEM", "PSP/SAVEDATA", "PSP/PPSSPP_STATE", "PSP/GAME",
+        "PSP/CHEATS", "PSP/TEXTURES", "PSP/PLUGINS", "PSP/CACHE"
     )) {
         File(memstick, sub).apply { mkdirs() }
         // .nomedia：与上游一致，避免相册扫描存档/缓存图片
