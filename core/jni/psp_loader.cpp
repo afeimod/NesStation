@@ -136,12 +136,85 @@ std::string ToStr(JNIEnv* env, jstring s) {
     return out;
 }
 
+// ★ NesStation 集成补丁（PSP 闪退根治 #5 —— JNI 契约防御）★
+//
+//   背景（2026-10-12 tombstone）：PPSSPP v1.20.4 的 registerCallbacks
+//   对宿主桩对象连续做三个 GetMethodID（postCommand / getDebugString /
+//   getNativeCrashHistory）。官方源注释称 "It's OK if getNativeCrashHistory
+//   is missing"（app-android.cpp:608），但缺失时 GetMethodID 抛出的
+//   NoSuchMethodError 并不会被清除 —— 紧接着 Android_RegisterStorageCallbacks
+//   的 FindClass("org/ppsspp/ppsspp/ContentUri") 在 pending exception
+//   状态下执行，ART 直接 AssertNoPendingException → SIGABRT。
+//
+//   本工具在每个"调用核心 so 的 JNI 入口"之后检查并清理 pending
+//   exception，把未来任何 so 版本升级带来的契约错配从"进程 abort"
+//   降级为 logcat 错误（配合 PspHostStub 补齐全部契约方法双保险）。
+void ClearPendingException(JNIEnv* env, const char* where) {
+    if (!env->ExceptionCheck()) return;
+    jthrowable e = env->ExceptionOccurred();
+    env->ExceptionClear();
+    if (e) {
+        std::string what;
+        jclass cls = env->GetObjectClass(e);
+        if (cls) {
+            jmethodID ts = env->GetMethodID(cls, "toString", "()Ljava/lang/String;");
+            if (ts) {
+                jstring js = (jstring)env->CallObjectMethod(e, ts);
+                if (js) {
+                    const char* p = env->GetStringUTFChars(js, nullptr);
+                    if (p) { what = p; env->ReleaseStringUTFChars(js, p); }
+                    env->DeleteLocalRef(js);
+                }
+            }
+            env->DeleteLocalRef(cls);
+        }
+        env->DeleteLocalRef(e);
+        LOGE("pending JNI exception cleared @%s: %s", where, what.c_str());
+    } else {
+        LOGW("pending JNI exception cleared @%s (no detail)", where);
+    }
+}
+
 std::string QueryConfigStr(JNIEnv* env, const char* name) {
     if (!g_queryConfig || !g_clsNativeApp) return {};
     jstring jname = env->NewStringUTF(name);
     jstring jres = g_queryConfig(env, g_clsNativeApp, jname);
     env->DeleteLocalRef(jname);
+    ClearPendingException(env, "queryConfig");
     return ToStr(env, jres);
+}
+
+// ★ NesStation 集成补丁：boot 前预检宿主桩的 JNI 契约方法集。
+//
+//   与 v1.20.4 app-android.cpp:602-604 一一对应 —— 宿主对象上三个实例
+//   方法一个都不能少，否则 registerCallbacks 内部会留下 pending
+//   exception（见 ClearPendingException 注释）或后续调用点拿到空
+//   methodID。逐个探测、逐个清理异常，把缺失项以可读形式打进 logcat。
+//   另外核心还会 FindClass("org/ppsspp/ppsspp/ContentUri")（
+//   AndroidStorage.cpp:37）与 FindClass("org/ppsspp/ppsspp/PpssppActivity")
+//   （JNI_OnLoad, app-android.cpp:252）—— 这两个类已由 app 内 vendor 的
+//   官方 Java 源码提供（app/src/main/java/org/ppsspp/ppsspp/）。
+void ValidateHostStubContract(JNIEnv* env) {
+    if (!g_hostStub) return;
+    jclass cls = env->GetObjectClass(g_hostStub);
+    if (!cls) { env->ExceptionClear(); return; }
+    static const struct { const char* name; const char* sig; } kContract[] = {
+        { "postCommand",           "(Ljava/lang/String;Ljava/lang/String;)V" },
+        { "getDebugString",        "(Ljava/lang/String;)Ljava/lang/String;" },
+        { "getNativeCrashHistory", "(I)Ljava/util/ArrayList;" },
+    };
+    for (const auto& m : kContract) {
+        jmethodID mid = env->GetMethodID(cls, m.name, m.sig);
+        if (mid) {
+            LOGI("host stub contract ok: %s", m.name);
+        } else {
+            LOGE("host stub contract MISSING: %s%s "
+                 "(PspHostStub 需补齐，否则 registerCallbacks 后 ART abort)",
+                 m.name, m.sig);
+        }
+        env->ExceptionClear();  // GetMethodID 失败抛 NoSuchMethodError —— 必须清
+    }
+    env->DeleteLocalRef(cls);
 }
 
 void SetError(const std::string& e) {
@@ -218,11 +291,21 @@ void TeardownNoLock(JNIEnv* env) {
     if (g_loopActive && g_exitVkLoop) {
         LOGI("requestExitVulkanRenderLoop (teardown)");
         g_exitVkLoop(env, g_hostStub);
+        ClearPendingException(env, "exitVkLoop(teardown)");
         g_loopActive = false;
     }
-    if (g_audioShutdown) g_audioShutdown(env, g_clsNativeApp);
-    if (g_shutdown)      g_shutdown(env, g_clsNativeApp);
-    if (g_unregisterCallbacks) g_unregisterCallbacks(env, g_hostStub);
+    if (g_audioShutdown) {
+        g_audioShutdown(env, g_clsNativeApp);
+        ClearPendingException(env, "audioShutdown");
+    }
+    if (g_shutdown) {
+        g_shutdown(env, g_clsNativeApp);
+        ClearPendingException(env, "NativeApp.shutdown");
+    }
+    if (g_unregisterCallbacks) {
+        g_unregisterCallbacks(env, g_hostStub);
+        ClearPendingException(env, "unregisterCallbacks");
+    }
     g_booted = false;
     LOGI("PPSSPP session torn down (so kept resident for next launch)");
 }
@@ -349,8 +432,16 @@ bool boot(JNIEnv* env, const HostParams& p) {
     // 1) Register native→Java callbacks BEFORE init: ProcessFrameCommands
     //    (toast/keyboard/…) fires during init and calls postCommand
     //    unconditionally (v1.20.4 app-android.cpp — no null guard).
+    //
+    //    ★ NesStation 集成补丁（PSP 闪退根治 #4）★：预检契约 + 清理
+    //    pending exception —— v1.20.4 registerCallbacks 对宿主对象做
+    //    三个 GetMethodID，缺失时不清异常，下一个 FindClass(ContentUri)
+    //    在 pending exception 下执行 → ART AssertNoPendingException →
+    //    SIGABRT（tombstone：NoSuchMethodError getNativeCrashHistory）。
+    ValidateHostStubContract(env);
     if (g_registerCallbacks) {
         g_registerCallbacks(env, g_hostStub);
+        ClearPendingException(env, "registerCallbacks");
     }
 
     // 2) Display parameters must precede init (config defaults / 1x-2x pick).
@@ -359,11 +450,15 @@ bool boot(JNIEnv* env, const HostParams& p) {
                      p.displayXres > 0 ? p.displayXres : 1280,
                      p.displayYres > 0 ? p.displayYres : 720,
                      p.displayDpi, p.displayRefresh);
+        ClearPendingException(env, "setDisplayParameters");
     }
 
     // 3) Audio tuning (0 → native defaults 44100 Hz / 512 frames).
-    if (g_audioConfig) g_audioConfig(env, g_clsNativeApp,
-                                     p.optimalFramesPerBuffer, p.optimalSampleRate);
+    if (g_audioConfig) {
+        g_audioConfig(env, g_clsNativeApp,
+                      p.optimalFramesPerBuffer, p.optimalSampleRate);
+        ClearPendingException(env, "audioConfig");
+    }
 
     // 4) init — shortcutParam becomes boot_filename (parse_args → NativeInit),
     //    graphicsContext (AndroidVulkanContext) is created inside.
@@ -382,6 +477,7 @@ bool boot(JNIEnv* env, const HostParams& p) {
     g_init(env, g_clsNativeApp,
            jmodel, (jint)p.deviceType, jlang, japk, jdata, jextSt, jextFi,
            jlibDir, jaddSt, jcache, jshort, jinst, (jint)p.androidVersion, jboard);
+    ClearPendingException(env, "NativeApp.init");
     env->DeleteLocalRef(jmodel);  env->DeleteLocalRef(jlang);
     env->DeleteLocalRef(japk);    env->DeleteLocalRef(jdata);
     env->DeleteLocalRef(jextSt);  env->DeleteLocalRef(jextFi);
@@ -403,8 +499,14 @@ bool boot(JNIEnv* env, const HostParams& p) {
     }
 
     // 6) Desired backbuffer + OpenSL audio (self-contained native thread).
-    if (g_computeBB) g_computeBB(env, g_clsNativeApp);
-    if (g_audioInit) g_audioInit(env, g_clsNativeApp);
+    if (g_computeBB) {
+        g_computeBB(env, g_clsNativeApp);
+        ClearPendingException(env, "computeDesiredBackbufferDimensions");
+    }
+    if (g_audioInit) {
+        g_audioInit(env, g_clsNativeApp);
+        ClearPendingException(env, "audioInit");
+    }
 
     g_booted = true;
     g_lastError.clear();
@@ -425,6 +527,7 @@ void setSurface(JNIEnv* env, jobject surface, int width, int height) {
         if (g_loopActive && g_exitVkLoop) {
             LOGI("requestExitVulkanRenderLoop (surface gone)");
             g_exitVkLoop(env, g_hostStub);
+            ClearPendingException(env, "exitVkLoop(surface gone)");
             g_loopActive = false;
         }
         return;
@@ -434,17 +537,23 @@ void setSurface(JNIEnv* env, jobject surface, int width, int height) {
     // loop, then start a fresh one on the new surface.
     if (g_loopActive && g_exitVkLoop) {
         g_exitVkLoop(env, g_hostStub);
+        ClearPendingException(env, "exitVkLoop(surface swap)");
         g_loopActive = false;
     }
 
     if (width > 0 && height > 0 && g_bbResize) {
         // PixelFormat.RGBA_8888 == 1 (what the official SizeManager forwards).
         g_bbResize(env, g_clsNativeApp, width, height, 1);
+        ClearPendingException(env, "backbufferResize");
     }
-    if (g_computeBB) g_computeBB(env, g_clsNativeApp);
+    if (g_computeBB) {
+        g_computeBB(env, g_clsNativeApp);
+        ClearPendingException(env, "computeDesiredBackbufferDimensions");
+    }
 
     if (g_runVkLoop) {
         jboolean ok = g_runVkLoop(env, g_hostStub, surface);
+        ClearPendingException(env, "runVulkanRenderLoop");
         g_loopActive = (ok == JNI_TRUE);
         if (g_loopActive) {
             LOGI("Vulkan render loop started (%dx%d)", width, height);
@@ -455,23 +564,33 @@ void setSurface(JNIEnv* env, jobject surface, int width, int height) {
 }
 
 void pause(JNIEnv* env) {
-    if (g_booted && g_pause) g_pause(env, g_clsNativeApp);
+    if (g_booted && g_pause) {
+        g_pause(env, g_clsNativeApp);
+        ClearPendingException(env, "NativeApp.pause");
+    }
 }
 
 void resume(JNIEnv* env) {
-    if (g_booted && g_resume) g_resume(env, g_clsNativeApp);
+    if (g_booted && g_resume) {
+        g_resume(env, g_clsNativeApp);
+        ClearPendingException(env, "NativeApp.resume");
+    }
 }
 
 bool keyDown(JNIEnv* env, int keycode) {
     if (!g_booted || !g_keyDown) return false;
     // DEVICE_ID_PAD_0 = 10 (Common/Input/InputState.h) — PPSSPP's default
     // Android gamepad table (defaultPadMapAndroid) is registered for it.
-    return g_keyDown(env, g_clsNativeApp, 10, keycode, JNI_FALSE) == JNI_TRUE;
+    jboolean r = g_keyDown(env, g_clsNativeApp, 10, keycode, JNI_FALSE);
+    ClearPendingException(env, "keyDown");
+    return r == JNI_TRUE;
 }
 
 bool keyUp(JNIEnv* env, int keycode) {
     if (!g_booted || !g_keyUp) return false;
-    return g_keyUp(env, g_clsNativeApp, 10, keycode) == JNI_TRUE;
+    jboolean r = g_keyUp(env, g_clsNativeApp, 10, keycode);
+    ClearPendingException(env, "keyUp");
+    return r == JNI_TRUE;
 }
 
 void joystickAxis(JNIEnv* env, float lx, float ly) {
@@ -487,12 +606,14 @@ void joystickAxis(JNIEnv* env, float lx, float ly) {
     g_axis(env, g_clsNativeApp, 10, jids, jvals, 2);
     env->DeleteLocalRef(jids);
     env->DeleteLocalRef(jvals);
+    ClearPendingException(env, "joystickAxis");
 }
 
 void touch(JNIEnv* env, float x, float y, int code, int pointerId) {
     if (!g_booted || !g_touch || code == 0) return;
     g_touch(env, g_clsNativeApp, x, y, (jint)(code | kFingerToolBits),
             (jint)pointerId);
+    ClearPendingException(env, "touch");
 }
 
 namespace {
