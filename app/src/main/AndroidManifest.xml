@@ -219,8 +219,9 @@
         <!-- DC 历史注之后 —— PPSSPP（PSP 核心）集成说明 ==================
              PSP 已改为与 DC/PSX 完全同构的进程内引擎集成：PspEngine
              （core/engine/PspEngine.kt）→ libpspcore.so
-             （core/jni/psp_bridge.cpp + psp_loader.cpp，dlopen 官方
-             libppsspp_jni.so v1.20.4 并驱动其 JNI 契约），统一走
+             （core/jni/psp_bridge.cpp + psp_loader.cpp，dlopen libretro
+             核心库 libppsspp_libretro_android.so 并驱动标准 retro_* API，
+             三个 ABI：arm64-v8a / armeabi-v7a / x86_64），统一走
              EmulatorScreen 全链路（Surface / 输入 / 即时存档 / 设置面板）。
              历史注：此前的 dlopen 官方 libppsspp_jni.so + org.ppsspp.ppsspp
              Java 契约类 + PspHostStub 桩方案已整体废弃移除（JNI 契约连环

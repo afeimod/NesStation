@@ -28,7 +28,8 @@ jniLibs/
 │   ├── libdrastic_arm64.so / libdrastic_cpu.so  # DraStic（激烈 NDS 备选核心）
 │   ├── libcitra_mmj.so                       # Citra MMJ（3DS 备选核心，= MMJ APK libmain.so）
 │   ├── libazahar.so                          # Azahar（3DS 默认核心，= AzaharPlus libcitra-android.so）
-│   └── libishiiruka.so                       # Ishiiruka（NGC/Wii 核心，= Ishiiruka APK libmain.so）
+│   ├── libishiiruka.so                       # Ishiiruka（NGC/Wii 核心，= Ishiiruka APK libmain.so）
+│   └── libppsspp_libretro_android.so         # PPSSPP (PSP core, libretro)
 │
 │   ⚠️ adrenotools 钩子链（libhook_impl.so / libmain_hook.so /
 │   libfile_redirect_hook.so / libgsl_alloc_hook.so）**禁止放入本目录** ——
@@ -41,12 +42,14 @@ jniLibs/
 │   ├── libdosbox_pure_libretro_android.so
 │   ├── libfbneo_libretro_android.so
 │   ├── libgenesis_plus_gx_libretro_android.so
-│   └── libflycast_libretro_android.so
+│   ├── libflycast_libretro_android.so
+│   └── libppsspp_libretro_android.so         # PPSSPP (PSP core, libretro)
 └── x86_64/
     ├── libdosbox_pure_libretro_android.so
     ├── libfbneo_libretro_android.so
     ├── libgenesis_plus_gx_libretro_android.so
-    └── libflycast_libretro_android.so
+    ├── libflycast_libretro_android.so
+    └── libppsspp_libretro_android.so         # PPSSPP (PSP core, libretro)
 ```
 
 The CMake build also produces the following `.so` files from source
@@ -135,6 +138,20 @@ for abi in arm64-v8a armeabi-v7a x86_64; do
      app/src/main/jniLibs/${abi}/libflycast_libretro_android.so
 done
 ```
+
+# PPSSPP (Sony PSP — libretro core)
+# NOTE: the buildbot zip extracts as ppsspp_libretro_android.so (no "lib"
+# prefix). It MUST be renamed to libppsspp_libretro_android.so to match the
+# dlopen name in psp_loader.cpp (PspNative.findCoreLibPath canonical name).
+# v3 libretro 化集成（commit "重新集成ppsspp"）起，三个 ABI 全部需要此核心：
+# 旧版 libppsspp_jni.so（JNI 契约库）已废弃，任何 ABI 都不再需要/加载它。
+for abi in arm64-v8a armeabi-v7a x86_64; do
+  curl -L -o /tmp/ppsspp.zip \
+    "https://buildbot.libretro.com/nightly/android/latest/${abi}/ppsspp_libretro_android.so.zip"
+  unzip -o /tmp/ppsspp.zip -d /tmp/ppsspp_extract
+  cp /tmp/ppsspp_extract/ppsspp_libretro_android.so \
+     app/src/main/jniLibs/${abi}/libppsspp_libretro_android.so
+done
 
 Or build from source — see the README in each upstream repository:
   - FBNeo: https://github.com/finalburnneo/FBNeo

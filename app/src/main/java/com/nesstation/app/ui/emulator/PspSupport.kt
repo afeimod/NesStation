@@ -28,8 +28,10 @@ import java.io.File
  *     核心选项）。旧 memstick/ppsspp.ini 的历史设置自动迁移。
  */
 
-/** 资产播种版本 —— 随包资产内容变化时递增，触发重新播种。 */
-private const val PPSSPP_ASSETS_VERSION = "1"
+/** 资产播种版本 —— 随包资产内容变化时递增，触发重新播种。
+ *  v2：新增 lang/（<systemDir>/PPSSPP/lang/*.ini —— 核心选项
+ *  ppsspp_language / 游戏内系统对话框文字的资源根），必须重播种。 */
+private const val PPSSPP_ASSETS_VERSION = "2"
 
 /**
  * PPSSPP 首次运行环境准备（幂等）：
