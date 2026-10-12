@@ -268,6 +268,17 @@ static retro_hw_context_reset_t s_hwContextReset = nullptr;
 static retro_hw_context_reset_t s_hwContextDestroy = nullptr;
 static std::atomic<bool> s_hwRenderActive{false};
 
+// ★ SET_HW_RENDER accepted but context_reset deferred to post-load — see the
+// SET_HW_RENDER case in cb_environment() and loadFromFile() for why calling
+// it inside the environment callback crashes the PPSSPP core (SIGSEGV).
+static std::atomic<bool> s_hwContextResetPending{false};
+
+// ★ Set once the deferred context_reset has actually been delivered. Guards
+// the paired context_destroy in unload(): the core DELETES its global
+// context object (Libretro::ctx) inside retro_unload_game(), so calling
+// context_destroy after that would dereference a dangling pointer.
+static std::atomic<bool> s_hwContextResetDone{false};
+
 // Our FBO the core renders into (color texture + depth RB).
 static GLuint s_fbo = 0;
 static GLuint s_fboTex = 0;
@@ -852,12 +863,25 @@ static bool cb_environment(unsigned cmd, void* data) {
                 return false;
             }
 
-            if (s_hwContextReset) {
-                LOGI("Calling HW context_reset");
-                s_hwContextReset();
-            }
+            // ★ DEFER context_reset until retro_load_game() has fully
+            // returned (this is also RetroArch's ordering). The PPSSPP
+            // core's context_reset callback is implemented as
+            //     ((LibretroHWRenderContext*)Libretro::ctx)->ContextReset()
+            // and the global Libretro::ctx is assigned in retro_load_game
+            // only AFTER CreateGraphicsContext() returns — while this
+            // SET_HW_RENDER callback fires from INSIDE
+            // CreateGraphicsContext(). Calling context_reset here therefore
+            // runs it with the global still null → ContextReset() reads
+            // this->draw_ on a null this → SIGSEGV (null pointer
+            // dereference, observed on arm64 with the buildbot core right
+            // after "Calling HW context_reset").
+            //
+            // The EGL context created below stays current on this (loading)
+            // thread, so the deferred reset in loadFromFile() finds it
+            // already bound and can create the core's GL resources safely.
+            s_hwContextResetPending.store(true, std::memory_order_release);
             s_hwRenderActive.store(true, std::memory_order_release);
-            LOGI("HW render setup complete");
+            LOGI("HW render accepted — context_reset deferred to post-load");
             return true;
         }
 
@@ -1121,6 +1145,23 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
     s_gameLoaded = true;
     s_lastRomPath = path;
 
+    // ★ Deferred HW context_reset — now safe: retro_load_game() has fully
+    // returned, so the core's global context object is assigned and the
+    // core can create its GL resources (draw context, presets) against the
+    // EGL context that is still current on this (loading) thread from
+    // SET_HW_RENDER. Must happen before the first retro_run().
+    if (s_hwContextResetPending.load(std::memory_order_acquire)) {
+        s_hwContextResetPending.store(false, std::memory_order_release);
+        if (s_hwContextReset && s_eglInitialized && ensureEglContextCurrent()) {
+            LOGI("Deferred HW context_reset (after retro_load_game)");
+            s_hwContextReset();
+            s_hwContextResetDone.store(true, std::memory_order_release);
+        } else {
+            LOGE("Deferred HW context_reset NOT delivered (EGL unavailable)");
+            s_hwRenderActive.store(false, std::memory_order_release);
+        }
+    }
+
     // Single controller port, standard JOYPAD device (PSP pad).
     if (s_retro_set_controller_port_device) {
         s_retro_set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
@@ -1176,19 +1217,28 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
 
 void unload() {
     if (s_loaded) {
+        // GL teardown (context destroy callback) — must run BEFORE
+        // retro_unload_game(): the core's context_destroy callback
+        // dereferences its global context object, which retro_unload_game()
+        // deletes and nulls (delete ctx). Calling it afterwards would crash
+        // with a null pointer dereference (same class as the deferred
+        // context_reset fix). The context is rebound to this thread so the
+        // core can free its GL resources while the object is still valid.
+        {
+            std::lock_guard<std::mutex> lk(s_eglMtx);
+            if (s_gameLoaded &&
+                s_hwContextDestroy &&
+                s_hwContextResetDone.load(std::memory_order_acquire) &&
+                s_eglInitialized && ensureEglContextCurrent()) {
+                LOGI("Calling HW context_destroy");
+                s_hwContextDestroy();
+            }
+            s_hwContextResetDone.store(false, std::memory_order_release);
+            destroyEglContext();
+        }
         if (s_gameLoaded) {
             s_retro_unload_game();
             s_gameLoaded = false;
-        }
-        // GL teardown (FBO + context destroy callbacks) — the core's GL
-        // resources must be destroyed while a context is current, and the
-        // emu thread must be gone (Kotlin joins it before unload).
-        {
-            std::lock_guard<std::mutex> lk(s_eglMtx);
-            if (s_hwContextDestroy && s_eglInitialized && ensureEglContextCurrent()) {
-                s_hwContextDestroy();
-            }
-            destroyEglContext();
         }
         s_hwRenderActive.store(false, std::memory_order_release);
         s_retro_deinit();
@@ -1222,6 +1272,7 @@ void unload() {
             s_analog[p][a].store(0, std::memory_order_relaxed);
     s_hwContextReset = nullptr;
     s_hwContextDestroy = nullptr;
+    s_hwContextResetPending.store(false, std::memory_order_release);
 
     // ★ 与 dc_loader 同款"关闭后再打开闪退"预防性修复：dlclose 核心
     // 库，下次 loadFromFile 重新 dlopen —— 核心静态状态完全归零。
