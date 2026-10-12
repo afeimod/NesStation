@@ -228,6 +228,28 @@ private val PS2_ACTIONS = listOf(
     KeyAction("ps2_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
 )
 
+// PSP (PPSSPP) — PPSSPP 默认 Android 手柄映射（defaultPadMapAndroid）。
+// Ids match EmulatorScreen's PSP KeyActionInternal table; bits are routed
+// through PspEngine（位掩码→Android 键码→NativeApp.keyDown/keyUp）。
+// L2 = PPSSPP 暂停菜单（游戏内设置/即时存档/金手指入口）,
+// R2 = PPSSPP 快进。PSP 无 L3/R3。
+private val PSP_ACTIONS = listOf(
+    KeyAction("psp_up",     "上",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("psp_down",   "下",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("psp_left",   "左",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("psp_right",  "右",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("psp_a",      "×",      Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_A,   "× Cross"),
+    KeyAction("psp_b",      "○",      Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_B,   "○ Circle"),
+    KeyAction("psp_x",      "□",      Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_X,   "□ Square"),
+    KeyAction("psp_y",      "△",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_Y,   "△ Triangle"),
+    KeyAction("psp_l",      "L",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_L1,  "L (L1)"),
+    KeyAction("psp_r",      "R",      Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_R1,  "R (R1)"),
+    KeyAction("psp_menu",   "菜单",    Color(0xFF95A5A6), KeyEvent.KEYCODE_BUTTON_L2,  "PPSSPP 菜单 (L2)"),
+    KeyAction("psp_ff",     "快进",    Color(0xFF95A5A6), KeyEvent.KEYCODE_BUTTON_R2,  "PPSSPP 快进 (R2)"),
+    KeyAction("psp_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select"),
+    KeyAction("psp_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start")
+)
+
 // DC (Dreamcast) — standard 12-button pad. Ids match EmulatorScreen's DC
 // KeyActionInternal table. flycast's libretro mapping (JOYPAD_B→DC A,
 // JOYPAD_A→DC B, JOYPAD_Y→DC X, JOYPAD_X→DC Y) is applied at output time by
@@ -316,9 +338,9 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         // KeyActionInternal n3ds_* / ngc_* 表，引擎按项目位布局直收。
         GamePlatform.N3DS   -> N3DS_ACTIONS.map { it.copy(id = it.id + suffix) }
         GamePlatform.NGCWII -> NGCWII_ACTIONS.map { it.copy(id = it.id + suffix) }
-        // PSP（PPSSPP）：输入由 PPSSPP 原生触控/手柄层处理（PpssppActivity），
-        // NesStation 不提供按键映射 —— 返回空表（键位映射页显示为空）。
-        GamePlatform.PSP    -> emptyList()
+        // PSP（PPSSPP 进程内引擎）：id 对应 EmulatorScreen 的 KeyActionInternal
+        // psp_* 表，引擎按项目位布局直收（位→Android 键码→NativeApp.keyDown）。
+        GamePlatform.PSP    -> PSP_ACTIONS.map { it.copy(id = it.id + suffix) }
     }
 }
 

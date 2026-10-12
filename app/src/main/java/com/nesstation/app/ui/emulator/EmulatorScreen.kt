@@ -115,6 +115,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.nesstation.app.core.engine.EmulatorEngine
 import com.nesstation.app.core.engine.J2meEngine
+import com.nesstation.app.core.engine.PspCoreEngine
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.ButtonLayout
@@ -453,9 +454,26 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
         // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
         GamePlatform.DC -> emptyList()
-        // PSP（PPSSPP 独立 Activity）：输入由 PPSSPP 原生层处理，
-        // EmulatorScreen 对 PSP 提前 return —— 空表兜底（穷尽性要求）。
-        GamePlatform.PSP -> emptyList()
+        // PSP（PPSSPP 核心，进程内引擎）—— PPSSPP 默认 Android 手柄映射
+        // （defaultPadMapAndroid）：A→⨯ / B→○ / X→□ / Y→△ / L1→L / R1→R /
+        // START/SELECT 同名 / DPAD 同名；L2=PPSSPP 暂停菜单（游戏内设置/
+        // 即时存档/金手指入口），R2=PPSSPP 快进。L3/R3 PSP 无对应，不列出。
+        GamePlatform.PSP -> listOf(
+            KeyActionInternal("psp_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("psp_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("psp_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("psp_right", KeyEvent.KEYCODE_DPAD_RIGHT),
+            KeyActionInternal("psp_a", KeyEvent.KEYCODE_BUTTON_A),      // ⨯ Cross
+            KeyActionInternal("psp_b", KeyEvent.KEYCODE_BUTTON_B),      // ○ Circle
+            KeyActionInternal("psp_x", KeyEvent.KEYCODE_BUTTON_X),      // □ Square
+            KeyActionInternal("psp_y", KeyEvent.KEYCODE_BUTTON_Y),      // △ Triangle
+            KeyActionInternal("psp_l", KeyEvent.KEYCODE_BUTTON_L1),
+            KeyActionInternal("psp_r", KeyEvent.KEYCODE_BUTTON_R1),
+            KeyActionInternal("psp_menu", KeyEvent.KEYCODE_BUTTON_L2),  // PPSSPP 菜单
+            KeyActionInternal("psp_ff", KeyEvent.KEYCODE_BUTTON_R2),    // PPSSPP 快进
+            KeyActionInternal("psp_select", KeyEvent.KEYCODE_BUTTON_SELECT),
+            KeyActionInternal("psp_start", KeyEvent.KEYCODE_BUTTON_START)
+        )
     }
     return base
 }
@@ -1464,16 +1482,11 @@ fun EmulatorScreen(
         return
     }
 
-    // ★★ PSP（PPSSPP 核心，独立 Activity 模式）★★
-    //   PpssppActivity = PPSSPP v1.20.4 官方完整 Android 前端（vendored
-    //   org.ppsspp.ppsspp Java 层 + libppsspp_jni.so）：自带渲染/音频/输入/
-    //   原生设置菜单/即时存档/金手指/adhoc —— 全部原生功能零损耗保留。
-    //   游戏库点入 PSP 游戏直接拉起 PpssppActivity（EXTRA 传 ROM 路径），
-    //   PPSSPP 退出后回到游戏库（onExit）。不走进程内引擎路径。
-    if (platform == GamePlatform.PSP) {
-        PspLaunchSection(game = game, onExit = onExit)
-        return
-    }
+    // ★★ PSP（PPSSPP 核心，进程内引擎模式）★★
+    //   与 DC/PSX 完全同构：PspEngine（进程内 dlopen 官方 libppsspp_jni.so）
+    //   走标准 EmulatorScreen 全链路 —— 统一 Surface / 统一虚拟手柄映射 /
+    //   统一即时存档 UI / 统一核心设置面板。历史注：此前的
+    //   PspLaunchSection 提前 return（独立 Activity 模式）已废弃删除。
 
     // DC (Dreamcast / NAOMI) —— libretro Flycast 核心（与 PSX 等核心同一
     // dlopen 模式，进程内引擎 DcEngine，经标准 EmulatorScreen 全链路运行）。
@@ -1841,7 +1854,10 @@ fun EmulatorScreen(
 
     // On TV, auto-hide the on-screen pad regardless of the user's setting —
     // the touch overlay is useless without a touchscreen and only wastes GPU.
-    val effectiveShowPad = padLayout.showPad && !isTv
+    // PSP（PPSSPP）：核心自带虚拟按键/摇杆覆盖层（渲染在游戏画面内，可
+    // 在 PPSSPP 设置里调透明度/布局），NesStation 的通用虚拟手柄默认隐藏，
+    // 避免双层控件重叠 —— 用户仍可在手柄设置里手动开启。
+    val effectiveShowPad = padLayout.showPad && !isTv && platform != GamePlatform.PSP
 
     // === NDS 触摸屏：游戏视图在窗口中的几何 ===
     // 虚拟手柄覆盖层（fillMaxSize + pointerInput）是游戏视图的高 z 兄弟节点，
@@ -3535,6 +3551,19 @@ fun EmulatorScreen(
                                 }
                             }
                         }
+                        // PSP（PPSSPP）：手柄覆盖层未命中的触摸直通核心
+                        // （PPSSPP 自带虚拟按键层消费；视图局部坐标原样传递，
+                        // 单指近似 —— 多点触摸走 SurfaceView 的 onTouchListener）。
+                        platform == GamePlatform.PSP -> {
+                            { rootPos, action ->
+                                val pspEngine = engine as? PspCoreEngine
+                                if (pspEngine != null) {
+                                    val lx = rootPos.x - gameViewPosInRoot.x
+                                    val ly = rootPos.y - gameViewPosInRoot.y
+                                    pspEngine.onTouch(lx, ly, action, 0)
+                                }
+                            }
+                        }
                         platform == GamePlatform.NDS -> {
                         { rootPos, action ->
                             val ndsEngine = engine as? com.nesstation.app.core.engine.NdsCoreEngine
@@ -3658,6 +3687,13 @@ fun EmulatorScreen(
                             { lx: Float, ly: Float, rx: Float, ry: Float ->
                                 (engine as? com.nesstation.app.core.engine.DcCoreEngine)
                                     ?.setAnalogAxes(lx, ly, rx, ry)
+                            }
+                        }
+                        // PSP（PPSSPP）：左摇杆 → AXIS_X/Y（PPSSPP 默认映射
+                        // 绑定 VIRTKEY_AXIS_X/Y → PSP 模拟摇杆）；PSP 无右摇杆
+                        platform == GamePlatform.PSP -> {
+                            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                                (engine as? PspCoreEngine)?.setAnalogAxes(lx, ly, rx, ry)
                             }
                         }
                         else -> null
@@ -5599,11 +5635,10 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("IshirukaEngine/wiiLanguage", layout.irWiiLanguage)
         }
         GamePlatform.PSP -> {
-            // PSP 由 PPSSPP 独立 Activity（PpssppActivity）承载，不走进程内
-            // EmulatorEngine（门面对 PSP 显式拒绝），因此本函数永远不会在
-            // PSP 会话中被调用 —— 分支仅用于 when 穷举。
-            // PSP 全部设置经 PspSettingsStore 直写 ppsspp.ini（主设置页
-            // 核心设置的 PSP 分区 + PspLaunchSection），核心启动时自行读取。
+            // PSP（PPSSPP 进程内引擎）—— applyCoreOptions 的通用 PadLayout
+            // 选项对 PSP 不适用；PSP 专属设置（ppsspp.ini 直写）在
+            // SettingsPanel 的 PSP 分区 + 主设置页"核心设置 → PSP"分区完成
+            // （PspSettingsStore，核心启动会话时读取）。分支仅用于 when 穷举。
         }
     }
 }
@@ -6319,6 +6354,22 @@ private fun GameSurfaceView(
                             true
                         }
                     }
+                    // PSP（PPSSPP）触摸直通：触点原样喂给核心（NativeApp.touch）
+                    // —— PPSSPP 自带的虚拟按键/摇杆覆盖层渲染在游戏画面内，
+                    // 直接消费这些触摸（含多点触控，pointerId 原样透传）。
+                    if (platform == GamePlatform.PSP) {
+                        setOnTouchListener { _, event ->
+                            val pspEngine = (engine as? PspCoreEngine)
+                                ?: return@setOnTouchListener false
+                            for (i in 0 until event.pointerCount) {
+                                pspEngine.onTouch(
+                                    event.getX(i), event.getY(i),
+                                    event.actionMasked, event.getPointerId(i)
+                                )
+                            }
+                            true
+                        }
+                    }
                     // Make the SurfaceView focusable so it receives physical
                     // gamepad / D-pad key events on TV and when a Bluetooth
                     // controller is connected.
@@ -6829,7 +6880,7 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         // onGamePadEvent/onTouchEvent 契约，不支持位掩码组合键，返回空。
         GamePlatform.N3DS   -> ""
         GamePlatform.NGCWII -> ""
-        // PSP（PPSSPP 独立 Activity）—— 同上，无 NesStation 位掩码组合键。
+        // PSP（PPSSPP 进程内引擎）—— 同上，无 NesStation 位掩码组合键。
         GamePlatform.PSP    -> ""
     }
     if (json.isBlank()) return emptyList()
@@ -14418,16 +14469,114 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {irWiimoteScan = if (it) "enabled" else "disabled"}) }
             }
             GamePlatform.PSP -> {
-                // PSP 会话运行在 PpssppActivity 独立窗口，本悬浮面板对 PSP
-                // 不可达（引擎门面拒绝 PSP），分支仅用于 when 穷举并给出指引。
+                // PSP（PPSSPP 进程内引擎）—— 设置直写 ppsspp.ini（经
+                // PspSettingsStore，与主设置页"核心设置 → PSP"分区共用同一
+                // 文件）。PPSSPP 在启动会话时读取 ini，改动对当前会话的生效
+                // 范围由核心决定：多数图形键在下次进入游戏会话后生效。
                 Text("PSP (PPSSPP) 设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 Spacer(Modifier.size(6.dp))
-                Text("PSP 由 PPSSPP 独立 Activity 运行，不使用本面板。" +
-                    "全部设置在主界面 设置 → 核心设置 → PSP (PPSSPP) 分区" +
-                    "（直写 ppsspp.ini：渲染后端 / 内部分辨率 / 后处理着色器 / " +
-                    "CPU 核心 / 金手指 / 联机等），游戏内按返回键调出 PPSSPP " +
-                    "自带菜单亦可，两端共用同一份配置，下次启动生效。",
+
+                var pspInternalRes by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readInt(
+                        context, PspSettingsStore.INTERNAL_RES, 0).toString())
+                }
+                var pspFrameSkip by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readInt(
+                        context, PspSettingsStore.FRAME_SKIP, 0).toString())
+                }
+                var pspAutoFrameSkip by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readBool(
+                        context, PspSettingsStore.AUTO_FRAME_SKIP, false))
+                }
+                var pspTexScale by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readInt(
+                        context, PspSettingsStore.TEX_SCALE_LEVEL, 1).toString())
+                }
+                var pspCpuCore by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readInt(
+                        context, PspSettingsStore.CPU_CORE, 0).toString())
+                }
+                var pspCheats by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readBool(
+                        context, PspSettingsStore.ENABLE_CHEATS, false))
+                }
+                var pspVolume by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readInt(
+                        context, PspSettingsStore.GAME_VOLUME, 100).toString())
+                }
+                var pspShowTouch by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readBool(
+                        context, PspSettingsStore.SHOW_TOUCH, true))
+                }
+                var pspTouchOpacity by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readInt(
+                        context, PspSettingsStore.TOUCH_OPACITY, 100).toString())
+                }
+                var pspWlan by remember(platform) {
+                    mutableStateOf(PspSettingsStore.readBool(
+                        context, PspSettingsStore.ENABLE_WLAN, false))
+                }
+
+                Text("图形", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // 渲染后端固定 Vulkan（进程内宿主只驱动 runVulkanRenderLoop）。
+                Text("渲染后端：Vulkan（进程内引擎固定，不可切换）",
+                    color = Color(0xFF667788), fontSize = 10.sp)
+                DropdownSetting("内部分辨率",
+                    listOf("0" to "自动", "1" to "1x (480×272)", "2" to "2x",
+                           "3" to "3x", "4" to "4x", "5" to "5x"),
+                    pspInternalRes
+                ) { pspInternalRes = it
+                    PspSettingsStore.writeInt(context, PspSettingsStore.INTERNAL_RES, it.toIntOrNull() ?: 0) }
+                DropdownSetting("跳帧",
+                    listOf("0" to "关闭 (默认)", "1" to "跳 1 帧", "2" to "跳 2 帧",
+                           "3" to "跳 3 帧", "4" to "跳 4 帧", "5" to "跳 5 帧"),
+                    pspFrameSkip
+                ) { pspFrameSkip = it
+                    PspSettingsStore.writeInt(context, PspSettingsStore.FRAME_SKIP, it.toIntOrNull() ?: 0) }
+                SwitchSetting("自动跳帧", "掉帧时自动跳帧保持速度", pspAutoFrameSkip
+                ) { pspAutoFrameSkip = it
+                    PspSettingsStore.writeBool(context, PspSettingsStore.AUTO_FRAME_SKIP, it) }
+                DropdownSetting("纹理缩放",
+                    listOf("1" to "关闭 (默认)", "2" to "2x", "3" to "3x",
+                           "4" to "4x", "5" to "5x"),
+                    pspTexScale
+                ) { pspTexScale = it
+                    PspSettingsStore.writeInt(context, PspSettingsStore.TEX_SCALE_LEVEL, it.toIntOrNull() ?: 1) }
+
+                Text("系统 / 音频", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("CPU 核心",
+                    listOf("0" to "JIT (推荐)", "1" to "IR JIT", "2" to "解释器"),
+                    pspCpuCore
+                ) { pspCpuCore = it
+                    PspSettingsStore.writeInt(context, PspSettingsStore.CPU_CORE, it.toIntOrNull() ?: 0) }
+                SwitchSetting("金手指", "启用 CHEATS 目录下的补丁", pspCheats
+                ) { pspCheats = it
+                    PspSettingsStore.writeBool(context, PspSettingsStore.ENABLE_CHEATS, it) }
+                DropdownSetting("游戏音量",
+                    listOf("100" to "100%", "80" to "80%", "60" to "60%",
+                           "40" to "40%", "20" to "20%", "0" to "静音"),
+                    pspVolume
+                ) { pspVolume = it
+                    PspSettingsStore.writeInt(context, PspSettingsStore.GAME_VOLUME, it.toIntOrNull() ?: 100) }
+
+                Text("触控 / 联机", color = Color(0xFF8899AA), fontSize = 11.sp)
+                SwitchSetting("显示虚拟按键", "PPSSPP 自带触控层（渲染在画面内）", pspShowTouch
+                ) { pspShowTouch = it
+                    PspSettingsStore.writeBool(context, PspSettingsStore.SHOW_TOUCH, it) }
+                DropdownSetting("虚拟按键不透明度",
+                    listOf("100" to "100%", "80" to "80%", "60" to "60%",
+                           "40" to "40%", "20" to "20%", "10" to "10%"),
+                    pspTouchOpacity
+                ) { pspTouchOpacity = it
+                    PspSettingsStore.writeInt(context, PspSettingsStore.TOUCH_OPACITY, it.toIntOrNull() ?: 100) }
+                SwitchSetting("WLAN 联机", "启用 ad hoc 多人联机", pspWlan
+                ) { pspWlan = it
+                    PspSettingsStore.writeBool(context, PspSettingsStore.ENABLE_WLAN, it) }
+
+                Spacer(Modifier.size(4.dp))
+                Text("写入 ppsspp.ini（与主设置页共用），重进游戏会话后生效。" +
+                    "游戏内按 L2 可调出 PPSSPP 原生菜单（即时存档/设置/金手指）。",
                     color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                 Spacer(Modifier.size(6.dp))
             }

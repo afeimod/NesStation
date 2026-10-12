@@ -593,6 +593,46 @@ target_compile_options(psxcore PRIVATE
 target_link_libraries(psxcore log android dl)
 
 # ---------------------------------------------------------------------------
+# PPSSPP (Sony PSP) — built as libpspcore.so, which dlopen()s the prebuilt
+# official libppsspp_jni.so (PPSSPP v1.20.4) from app/src/main/jniLibs/<abi>/
+# and drives it through its exported JNI contract (NativeApp.init /
+# runVulkanRenderLoop / SaveState::*) — the exact same symbols the official
+# PpssppActivity uses. Integrates PSP into the standard in-process engine
+# pipeline (PspNative.kt → PspEngine.kt → EmulatorScreen), matching how
+# DC/PSX drive their dlopen'd prebuilt cores.
+#
+# libc++_shared.so is provided by the app (official PPSSPP copy, all ABIs);
+# libppsspp_jni.so resolves it via DT_NEEDED. No PPSSPP headers/sources are
+# compiled here — pure dlopen + dlsym.
+# ---------------------------------------------------------------------------
+add_library(pspcore SHARED
+    "${APP_JNI_DIR}/psp_bridge.cpp"
+    "${APP_JNI_DIR}/psp_loader.cpp"
+)
+
+target_include_directories(pspcore PRIVATE
+    "${APP_JNI_DIR}"
+)
+
+target_compile_definitions(pspcore PRIVATE
+    ANDROID
+    NDEBUG
+)
+
+# Keep exceptions/RTTI ON: psp_loader.cpp builds std::function/std::promise
+# objects that must interoperate with libppsspp_jni.so's libc++ runtime.
+target_compile_options(pspcore PRIVATE
+    -O2
+    -fvisibility=hidden
+    -ffunction-sections -fdata-sections
+    -Wno-unused-parameter
+    -Wno-unused-variable
+    -Wno-sign-compare
+)
+
+target_link_libraries(pspcore log android dl)
+
+# ---------------------------------------------------------------------------
 # Flycast (SEGA Dreamcast / NAOMI / AtomisWave) — built as libdccore.so,
 # which dlopen()s the prebuilt libflycast_libretro_android.so from
 # app/src/main/jniLibs/<abi>/. Same dlopen pattern as FBNeo / Genesis-Plus-GX

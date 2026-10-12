@@ -140,6 +140,17 @@ class NesApp : Application() {
                 engine.probeAvailability()
             }
         }
+        tryInit("PspEngine")           {
+            // PPSSPP PSP core —— 进程内 dlopen 模式（与 DC/PSX 同构）：
+            // libpspcore.so 运行时加载预编译官方 libppsspp_jni.so（v1.20.4，
+            // 三 ABI）并驱动其 JNI 契约。启动时探测可用性，库缺失时 UI
+            // 报告原因（不崩溃）。
+            com.nesstation.app.core.jni.PspNative.appContext = this
+            com.nesstation.app.core.engine.PspEngine.get().also { engine ->
+                engine.appContext = this
+                engine.probeAvailability()
+            }
+        }
         tryInit("FdsBios")            { ensureFdsBios() }
         tryInit("FbNeoBios")          { ensureFbNeoBios() }
         tryInit("GenesisBios")        { ensureGenesisBios() }

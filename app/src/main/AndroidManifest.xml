@@ -216,77 +216,20 @@
              无独立 Activity（历史注：旧版在此注册过
              com.flycast.emulator.NativeGLActivity，已随独立集成一并移除）。 -->
 
-        <!-- ================================================================
-             PPSSPP（PSP 核心）—— vendored org.ppsspp.ppsspp Java 层 (v1.20.4)
-             =================================================================
-             PpssppActivity 是 PPSSPP 完整官方 Android 前端（普通 AppCompatActivity，
-             GL/Vulkan 双渲染路径 + 原生 Oboe 音频 + 完整触控/手柄输入 +
-             PPSSPP 原生设置菜单 = PSP 独立设置入口）。NesStation 游戏库经
-             EmulatorScreen 的 PSP 分支以 EXTRA 传入 ROM 路径直接启动游戏。
-             配置/存档位于 <externalFilesDir>/PSP（经 <filesDir>/memstick_dir.txt
-             预置，避免首启弹存储位置选择器）。
-             launchMode singleInstance 与上游一致（渲染循环对 Activity 重建敏感）。
-
-             ★ android:process=":ppsspp" —— 独立进程隔离（崩溃根治）：
-               libppsspp_jni.so 是官方预编译、依赖 libc++_shared.so；主进程里
-               还驻留多套"自带静态 libc++ 且导出其符号"的核心（emucore_4k/
-               citra_mmj/azahar/ishiiruka，tombstone 实证 __cxa_throw 跨库
-               串扰 → dlopen 静态构造期 std::bad_cast → abort，PSP 游戏秒崩）。
-               独立进程内只会加载 libppsspp_jni.so + libc++_shared.so + 系统
-               库，运行时环境与官方独立 PPSSPP APK 完全一致（同机实测可正常
-               运行），从构造上排除双运行时冲突；主进程也不再受 PPSSPP 侧
-               任何原生异常波及。NesApp.onCreate 全懒加载 + tryInit 包裹，
-               在 :ppsspp 进程内重入安全；PPSSPP 配置/存档全部走文件路径，
-               跨进程无共享状态依赖。
-             ================================================================= -->
-        <activity
-            android:name="org.ppsspp.ppsspp.PpssppActivity"
-            android:process=":ppsspp"
-            android:configChanges="locale|keyboard|keyboardHidden|navigation|uiMode"
-            android:theme="@style/ppsspp_style"
-            android:launchMode="singleInstance"
-            android:exported="true">
-            <property android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
-                android:value="true" />
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="file" />
-                <data android:scheme="content" />
-                <data android:mimeType="*/*" />
-                <data android:host="*" />
-                <data android:pathPattern=".*\\.iso" />
-                <data android:pathPattern=".*\\..*\\.iso" />
-                <data android:pathPattern=".*\\.cso" />
-                <data android:pathPattern=".*\\..*\\.cso" />
-                <data android:pathPattern=".*\\.chd" />
-                <data android:pathPattern=".*\\..*\\.chd" />
-                <data android:pathPattern=".*\\.elf" />
-                <data android:pathPattern=".*\\..*\\.elf" />
-                <data android:pathPattern=".*\\.pbp" />
-                <data android:pathPattern=".*\\..*\\.pbp" />
-            </intent-filter>
-        </activity>
-
-        <!-- PSP 游戏桌面快捷方式创建入口（上游同款，保持 PPSSPP 功能完整） -->
-        <activity
-            android:name="org.ppsspp.ppsspp.ShortcutActivity"
-            android:label="PSP 快捷方式"
-            android:exported="true">
-            <intent-filter>
-                <category android:name="android.intent.category.DEFAULT" />
-                <action android:name="android.intent.action.CREATE_SHORTCUT" />
-            </intent-filter>
-        </activity>
-
-        <!-- PPSSPP 相册/文档选择代理（游戏内截图上传 / 存档导入等场景用） -->
-        <activity android:name="org.ppsspp.ppsspp.ImageResultProxyActivity"
-            android:theme="@style/ppsspp_Theme_ProxyTransparent"
-            android:launchMode="standard" />
-        <activity android:name="org.ppsspp.ppsspp.DocumentResultProxyActivity"
-            android:theme="@style/ppsspp_Theme_ProxyTransparent"
-            android:launchMode="standard" />
+        <!-- DC 历史注之后 —— PPSSPP（PSP 核心）集成说明 ==================
+             PSP 已改为与 DC/PSX 完全同构的进程内引擎集成：PspEngine
+             （core/engine/PspEngine.kt）→ libpspcore.so
+             （core/jni/psp_bridge.cpp + psp_loader.cpp，dlopen 官方
+             libppsspp_jni.so v1.20.4 并驱动其 JNI 契约），统一走
+             EmulatorScreen 全链路（Surface / 输入 / 即时存档 / 设置面板）。
+             历史注：此前的独立 PpssppActivity 方案（singleInstance +
+             android:process=":ppsspp" 隔离进程 + ShortcutActivity/
+             ImageResultProxyActivity/DocumentResultProxyActivity 声明）
+             已整体废弃移除 —— org.ppsspp.ppsspp 包下的 Java 类仍保留
+             （NativeApp/PpssppActivity/ContentUri 等是核心的 JNI 契约
+             类，dlsym 的 JNI 符号名与 registerCallbacks 的 FindClass
+             都依赖它们；R8 keep 规则见 proguard-rules.pro）。
+             ============================================================ -->
 
     </application>
 </manifest>

@@ -32,11 +32,11 @@ import androidx.compose.ui.graphics.Color
  *          预编译 libishiiruka.so + 原包名 JNI 契约
  *          org.dolphinemu.ishiiruka.NativeLibrary，推模型引擎 IshirukaEngine，
  *          集成方式与 DraStic（激烈）一致）
- * PSP    = Sony PlayStation Portable（PPSSPP v1.20.4 核心 —— vendored 完整官方
- *          Android Java 层 org.ppsspp.ppsspp + libppsspp_jni.so，经
- *          PpssppActivity 独立 Activity 启动，保留 PPSSPP 全部原生功能：
- *          自带触控/手柄输入、原生设置菜单（独立设置入口）、即时存档、
- *          金手指、联机 adhoc 等；配置位于 <externalFilesDir>/PSP）
+ * PSP    = Sony PlayStation Portable（PPSSPP v1.20.4 核心 —— 与 DC/PSX 完全
+ *          同构的进程内 dlopen 集成：PspEngine → libpspcore.so → dlopen 官方
+ *          libppsspp_jni.so，驱动其 JNI 契约（与官方 PpssppActivity 相同入口），
+ *          统一走 EmulatorScreen 全链路；PPSSPP 自带触控层/原生菜单（L2 调出，
+ *          即时存档/金手指/adhoc 全保留）；配置位于 <externalFilesDir>/PSP）
  */
 enum class GamePlatform(val displayName: String) {
     NES("NES"),

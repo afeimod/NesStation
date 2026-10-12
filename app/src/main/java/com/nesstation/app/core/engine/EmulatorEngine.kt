@@ -266,10 +266,12 @@ interface EmulatorEngine {
             GamePlatform.DC     -> DcEngine.get()
             GamePlatform.N3DS   -> AzaharEngine.get()
             GamePlatform.NGCWII -> IshirukaEngine.get()
-            // PSP 由 PpssppActivity（独立 Activity）承载，EmulatorScreen 对
-            // PSP 提前 return，正常路径不会走到这里 —— 抛出可读错误兜底。
-            GamePlatform.PSP    -> throw IllegalStateException(
-                "PSP 由 PPSSPP 独立 Activity 运行（PspLaunchSection），无进程内引擎")
+            // PSP -> PspEngine (PPSSPP v1.20.4 — Sony PSP)。与 DC/PSX 完全
+            // 同构的 dlopen 模式：libpspcore.so 运行时加载预编译官方
+            // libppsspp_jni.so 并驱动其 JNI 契约（与官方 PpssppActivity
+            // 相同入口），在 EmulatorScreen 统一路径内运行 —— 历史注：
+            // 此前的独立 PpssppActivity 方案（独立进程）已废弃。
+            GamePlatform.PSP    -> PspEngine.get()
         }
     }
 }
