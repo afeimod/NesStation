@@ -69,8 +69,8 @@ object PspCoreOptions {
         Def("ppsspp_frameskip", "跳帧", G_GFX, "0",
             (0..10).map { it.toString() to if (it == 0) "0 (不跳帧·默认)" else "$it" }),
         Def("ppsspp_auto_frameskip", "自动跳帧", G_GFX, "disabled", DE),
-        Def("ppsspp_frame_duplication", "帧重复", G_GFX, "disabled",
-            DE, "30fps 游戏补足 60 帧；开启增加 GPU 负担"),
+        Def("ppsspp_frame_duplication", "帧重复", G_GFX, "enabled",
+            DE, "30fps 游戏补足 60 帧；官方默认开启（减轻撕裂，GPU 负担小幅增加）"),
         Def("ppsspp_lower_resolution_for_effects", "特效降分辨率", G_GFX, "disabled",
             listOf(
                 "disabled" to "关闭 (默认)", "Safe" to "Safe (保守)",
@@ -156,12 +156,11 @@ object PspCoreOptions {
                 "Simulate UMD delays" to "模拟 UMD 延迟",
                 "Simulate UMD slow reading speed" to "模拟 UMD 慢速读盘"
             )),
-        Def("ppsspp_inflight_frames", "GPU 帧缓冲深度", G_PERF, "",
+        Def("ppsspp_inflight_frames", "GPU 帧缓冲深度", G_PERF, "No buffer",
             listOf(
-                "" to "核心默认 (推荐)", "No buffer" to "无缓冲 (最低延迟)",
-                "Up to 1" to "最多 1 帧 (折中)"
+                "No buffer" to "无缓冲 (官方默认·最低延迟)", "Up to 1" to "最多 1 帧 (折中)"
             ),
-            "降低输入延迟可试\"无缓冲\"，闪退/花屏请回默认"),
+            "降低输入延迟可试\"最多 1 帧\"；闪退/花屏请回官方默认"),
         Def("ppsspp_cache_iso", "整盘镜像缓存进内存", G_PERF, "disabled",
             DE, "大幅加快读盘，但需 1GB+ 空闲内存"),
         Def("ppsspp_force_lag_sync", "强制联机滞后同步", G_PERF, "disabled", DE),

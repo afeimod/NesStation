@@ -605,12 +605,19 @@ static void ensureFbo(unsigned w, unsigned h) {
 
     glGenRenderbuffers(1, &s_fboDepth);
     glBindRenderbuffer(GL_RENDERBUFFER, s_fboDepth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    // ★ Depth24+Stencil8 packed (v7 fix): the core requests stencil=true in
+    //   SET_HW_RENDER, and the PSP GE emulation uses stencil for real in-game
+    //   effects (shadows, transitions, PSMF video masks). RetroArch's HW
+    //   render FBO provides depth24+stencil8 — a depth-only FBO silently
+    //   breaks every stencil-based effect (missing graphics, broken video
+    //   transitions). GLES3 supports GL_DEPTH24_STENCIL8 + the packed
+    //   GL_DEPTH_STENCIL_ATTACHMENT point.
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
 
     glGenFramebuffers(1, &s_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, s_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s_fboTex, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
                               GL_RENDERBUFFER, s_fboDepth);
     const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
@@ -619,7 +626,7 @@ static void ensureFbo(unsigned w, unsigned h) {
     } else {
         s_fboW = w;
         s_fboH = h;
-        LOGI("FBO ready: %ux%u (depth24)", w, h);
+        LOGI("FBO ready: %ux%u (depth24+stencil8)", w, h);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
@@ -831,9 +838,13 @@ static bool cb_environment(unsigned cmd, void* data) {
 
         // ── Hardware rendering ────────────────────────────────────────────
         case RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER:
-            // Steer the core to its GL backend (not Vulkan): we implement
-            // the GL frontend path (EGL + FBO blit).
-            if (data) *static_cast<unsigned*>(data) = RETRO_HW_CONTEXT_OPENGL;
+            // Steer the core to its GLES backend (not Vulkan / not desktop
+            // GL): we implement the GLES3 EGL frontend path. On the core's
+            // GLES build both OPENGL and OPENGLES3 land in the same
+            // LibretroGLContext, but OPENGLES3 is the truthful answer for an
+            // Android ES context and keeps the core's backend detection
+            // consistent with what we actually provide (v7).
+            if (data) *static_cast<unsigned*>(data) = RETRO_HW_CONTEXT_OPENGLES3;
             return true;
 
         case RETRO_ENVIRONMENT_SET_HW_RENDER: {

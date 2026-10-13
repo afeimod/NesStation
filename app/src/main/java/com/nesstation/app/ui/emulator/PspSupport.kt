@@ -31,9 +31,13 @@ import java.io.File
 /** 资产播种版本 —— 随包资产内容变化时递增，触发重新播种。
  *  v2：新增 lang/（<systemDir>/PPSSPP/lang 目录下的多语言 ini —— 核心选项
  *  ppsspp_language 与游戏内系统对话框文字的资源根），必须重播种。
+ *  v3：flash0/font 字体（jpn0.pgf 等约 4.6MB）是后补进随包资产的；早先已
+ *  播种过 v1/v2 的设备因版本标记一致而永远不会补上 —— 造成 PSP 游戏内
+ *  文字缺失（sceFont 走 VFS 兜底路径 flash0/font/，见官方 sceFont.cpp）。
+ *  递增到 v3 强制全量重播种。
  *  注意：KDoc 注释内不可出现 "斜杠-星号" 字符序列 —— Kotlin 块注释支持
  *  嵌套，序列会被当作开启新的嵌套注释，导致 "Unclosed comment" 编译错误。 */
-private const val PPSSPP_ASSETS_VERSION = "2"
+private const val PPSSPP_ASSETS_VERSION = "3"
 
 /**
  * PPSSPP 首次运行环境准备（幂等）：
