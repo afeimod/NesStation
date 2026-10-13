@@ -31,13 +31,23 @@ import java.io.File
 /** 资产播种版本 —— 随包资产内容变化时递增，触发重新播种。
  *  v2：新增 lang/（<systemDir>/PPSSPP/lang 目录下的多语言 ini —— 核心选项
  *  ppsspp_language 与游戏内系统对话框文字的资源根），必须重播种。
- *  v3：flash0/font 字体（jpn0.pgf 等约 4.6MB）是后补进随包资产的；早先已
- *  播种过 v1/v2 的设备因版本标记一致而永远不会补上 —— 造成 PSP 游戏内
- *  文字缺失（sceFont 走 VFS 兜底路径 flash0/font/，见官方 sceFont.cpp）。
- *  递增到 v3 强制全量重播种。
+ *  v3：flash0/font 字体（jpn0.pgf 等）是后补进随包资产的；早先已播种过
+ *  v1/v2 的设备因版本标记一致而永远不会补上 —— 造成 PSP 游戏内文字缺失
+ *  （sceFont 走 VFS 兜底路径 flash0/font/，见官方 sceFont.cpp）。
+ *  v4（v8 交付）：
+ *   1) jpn0.pgf 换为自研生成的中文大字库（WenQuanYi Zen Hei 渲染，覆盖
+ *      ASCII + Unicode CJK 全表 + GBK 双字节线性码位 + 全角/标点/假名）。
+ *      汉化游戏经 sceFont 用 GBK 码位查字，旧字体（Unicode 索引）查不到，
+ *      PPSSPP 回退 altCharCode=0x5F —— 表现为中文整行变下划线；
+ *   2) 新增 zh_gb.pgf（fontRegistry 里 FONT_LANGUAGE_CHINESE 注册项，
+ *      ignoreIfMissing=true，官方不附带 —— 中文游戏显式请求时命中）；
+ *   3) 补 ppge_atlas.meta（PPGe 图集元数据 + 内置字体）：此前只有 .zim，
+ *      系统对话框（OSK 软键盘/存档/消息框）只有灰底没有键盘 —— 即
+ *      "文本输入时灰屏无键盘" 的根因。
+ *  递增到 v4 强制全量重播种。
  *  注意：KDoc 注释内不可出现 "斜杠-星号" 字符序列 —— Kotlin 块注释支持
  *  嵌套，序列会被当作开启新的嵌套注释，导致 "Unclosed comment" 编译错误。 */
-private const val PPSSPP_ASSETS_VERSION = "3"
+private const val PPSSPP_ASSETS_VERSION = "4"
 
 /**
  * PPSSPP 首次运行环境准备（幂等）：
