@@ -49,15 +49,15 @@ object PspCoreOptions {
     val CATALOG: List<Def> = listOf(
 
         // ─────────────── 画面 ───────────────
-        Def("ppsspp_internal_resolution", "渲染分辨率", G_GFX, "480x272",
+        Def("ppsspp_internal_resolution", "渲染分辨率", G_GFX, "960x544",
             listOf(
-                "480x272" to "1x (480x272·最流畅·默认)", "960x544" to "2x (960x544)",
+                "480x272" to "1x (480x272·最流畅)", "960x544" to "2x (960x544·默认·推荐)",
                 "1440x816" to "3x (1440x816)", "1920x1088" to "4x (1920x1088)",
                 "2400x1360" to "5x (2400x1360)", "2880x1632" to "6x (2880x1632)",
                 "3360x1904" to "7x (3360x1904)", "3840x2176" to "8x (3840x2176)",
                 "4320x2448" to "9x (4320x2448)", "4800x2720" to "10x (4800x2720)"
             ),
-            "PSP 原生 1x；高分辨率=更清晰但更吃 GPU（官方 PPSSPP 默认 1x）"),
+            "v9 起默认 2x（手机全屏下 1x 原生档观感极差）；更高=更清晰但更吃 GPU"),
         Def("ppsspp_skip_buffer_effects", "渲染模式", G_GFX, "disabled",
             listOf(
                 "disabled" to "缓冲渲染 (默认·兼容性最好)",

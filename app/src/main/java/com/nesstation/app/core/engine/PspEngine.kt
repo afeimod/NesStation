@@ -142,6 +142,8 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
     private fun applyStoredCoreOptions() {
         val ctx = appContext ?: PspNative.appContext ?: return
         try {
+            // v9 一次性迁移：旧默认分辨率存储值 480x272 → 回落新默认 960x544
+            PspSettingsStore.migrateInternalResolutionDefault(ctx)
             val stored = PspSettingsStore.readCoreOptions(ctx)
             // 1) 目录全量（存储值优先，缺省用目录默认；空值不下发）
             for ((key, value) in PspCoreOptions.effectiveValues(stored)) {
@@ -183,8 +185,11 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
             // 1) 播种 PPSSPP 资产（<systemDir>/PPSSPP/{ppge_atlas.zim,
             //    compat.ini, flash0/font/*.pgf, lang/...} —— 核心的 VFS 根；
             //    缺失时游戏能跑但游戏内对话框/系统文字会异常）。
+            //    v9 起同时把字体播种到 <saveDir>/PSP/flash0/font/（ms0 经典
+            //    覆盖，优先级高于 NAND 固件字体与 VFS —— sceFont.cpp
+            //    __LoadInternalFonts 查找链），保证汉化游戏 GBK 查字命中。
             if (ctx != null) {
-                ensurePpssppEnvironment(ctx, systemDir)
+                ensurePpssppEnvironment(ctx, systemDir, saveDir)
             }
 
             // 2) 目录：system（资产根，核心自动追加 /PPSSPP）+ save（memstick 根）。

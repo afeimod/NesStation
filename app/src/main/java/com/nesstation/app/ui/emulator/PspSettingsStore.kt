@@ -235,4 +235,49 @@ object PspSettingsStore {
             android.util.Log.w("PspSettingsStore", "writeCoreOption($key) failed", t)
         }
     }
+
+    /** 删除单个核心选项（键不存在时无操作；原子落盘）。 */
+    fun removeCoreOption(context: Context, key: String) {
+        try {
+            val f = coreOptionsFile(context)
+            if (!f.isFile) return
+            val lines = f.readLines().toMutableList()
+            val kept = lines.filter { it.substringBefore('=').trim() != key }
+            if (kept.size == lines.size) return
+            val tmp = java.io.File(f.parentFile, f.name + ".tmp")
+            tmp.writeText(kept.joinToString("\n") + "\n")
+            if (!tmp.renameTo(f)) {
+                f.writeText(kept.joinToString("\n") + "\n")
+                tmp.delete()
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("PspSettingsStore", "removeCoreOption($key) failed", t)
+        }
+    }
+
+    /** 一次性迁移标记键（存于核心选项文件内，值恒为 "1"）。 */
+    private const val MIGRATION_MARKER_KEY = "nesstation_migration_internal_res_2x"
+
+    /**
+     * ★ v9 一次性迁移：渲染分辨率默认值 480x272(1x) → 960x544(2x)。
+     *
+     * v4–v8 的目录默认值是 "480x272"（1x 原生档）。若用户从没在面板里
+     * 改过分辨率，其 psp_core_options.ini 中会存有旧默认值（或压根没有
+     * 该键）——两种情况都应享受新默认值；只有用户【明确改过且不是
+     * 480x272】的才保留。因此：存储值 == "480x272" 且迁移标记不存在时
+     * 删除该存储键（回落到新默认 960x544）并写标记；标记存在则不再动。
+     * 用户若在迁移后再次手动选 1x，标记已存在，选择会被尊重。
+     */
+    fun migrateInternalResolutionDefault(context: Context) {
+        try {
+            val stored = readCoreOptions(context)
+            if (stored[MIGRATION_MARKER_KEY] == "1") return
+            if (stored["ppsspp_internal_resolution"] == "480x272") {
+                removeCoreOption(context, "ppsspp_internal_resolution")
+            }
+            writeCoreOption(context, MIGRATION_MARKER_KEY, "1")
+        } catch (t: Throwable) {
+            android.util.Log.w("PspSettingsStore", "migrateInternalResolutionDefault failed", t)
+        }
+    }
 }
