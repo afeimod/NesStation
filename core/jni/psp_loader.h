@@ -120,8 +120,35 @@ void applyRegion(int region);
 void applySampleRate(int hz);
 void applySpeed(float multiplier);
 
-void saveStateToPath(int slot, const std::string& path);
+// ★★ 即时存档线程模型（v5 修复"即时存档卡死"）★★
+// PPSSPP libretro 核心（GLES 后端）内部有自己的模拟线程（useEmuThread），
+// retro_serialize / retro_serialize_size / retro_unserialize 会经
+// EmuThreadPause()/EmuThreadStart() 与该线程做握手 —— 绝对不能与 retro_run
+// 并发调用（UI 线程直调 → 握手死锁 → 画面永远卡死，只能杀后台）。
+// 与 RetroArch 相同的约定：serialize/unserialize 必须在【调用 retro_run 的
+// 同一线程】、两次 retro_run 之间执行。因此前端把存/读档变成"投递到模拟
+// 线程"的操作：
+//   1. requestStateOp(save, path) — UI 线程投递；
+//   2. 模拟线程在 stepFrame() 开头（retro_run 之前）取件执行；
+//      暂停时（Kotlin 循环不再调 stepFrame）由 drainStateOp() 兜底取件；
+//   3. waitStateOp() 阻塞等结果（典型 0.1~1s：PSP 状态 ≈ 百 MB 级）。
+// 注意：retro_serialize_size() 会把核心内部模拟线程留在 PAUSED（官方注释
+// "We don't unpause intentionally"）—— 它只在 processPendingStateOp() 里与
+// retro_serialize 紧挨着调用，中间绝不插入其他核心调用。
+bool saveStateToPath(int slot, const std::string& path);
 bool loadStateFromPath(int slot, const std::string& path);
+
+// Save/load state op queue (executed ON the emulation thread — see the
+// threading note above). type: 1 = save, 2 = load.
+void requestStateOp(int type, const std::string& path);
+// Block until the emulation thread finishes the pending op (or timeout).
+// Returns the op result; false on timeout (op cancelled to avoid firing late).
+bool waitStateOp(int timeoutMs);
+// Drain a pending op WITHOUT running a frame — called from the emulation
+// thread while emulation is paused (Kotlin loop tick).
+void drainStateOp();
+// Drop a still-pending op (used on unload so it can't fire into a new game).
+void cancelPendingStateOp();
 
 // --- Hardware-accelerated rendering (EGL / GLES3) ---
 void setSurface(void* nativeWindow);

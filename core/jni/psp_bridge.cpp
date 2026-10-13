@@ -72,13 +72,20 @@ void Engine::setPortDevice(int port, int device) { rom::setPortDevice(port, devi
 double Engine::videoRefreshRate() { return rom::videoRefreshRate(); }
 int Engine::pollPresentedFrames() { return rom::pollPresentedFrames(); }
 
-void Engine::saveState(int slot, const std::string& path) {
-    rom::saveStateToPath(slot, path);
+// ★ v5：不再在调用线程（UI）直接 serialize —— 投递到模拟线程并等结果。
+// retro_serialize* 与核心内部模拟线程握手，与 retro_run 并发调用会永久
+// 死锁（“即时存档卡死”根因）。超时 8s（典型耗时 0.1~1s）。
+bool Engine::saveState(int slot, const std::string& path) {
+    rom::requestStateOp(1, path);
+    return rom::waitStateOp(8000);
 }
 
 bool Engine::loadState(int slot, const std::string& path) {
-    return rom::loadStateFromPath(slot, path);
+    rom::requestStateOp(2, path);
+    return rom::waitStateOp(8000);
 }
+
+void Engine::drainStateOp() { rom::drainStateOp(); }
 
 bool Engine::getFrameBuffer(uint32_t* out, int w, int h) {
     return rom::copyFramebufferARGB(out, w, h);
@@ -170,6 +177,13 @@ Java_com_nesstation_app_core_jni_PspNative_runFrame(JNIEnv*, jobject) {
     pspcore::Engine::instance().runFrame();
 }
 
+// 暂停时由模拟线程（Kotlin pspcore-loop）tick 调用：取出挂起的存/读档
+// 操作（不跑帧 —— retro_serialize 与 retro_run 的线程约定见 psp_loader.h）。
+extern "C" JNIEXPORT void JNICALL
+Java_com_nesstation_app_core_jni_PspNative_drainStateOp(JNIEnv*, jobject) {
+    pspcore::Engine::instance().drainStateOp();
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_nesstation_app_core_jni_PspNative_setPad1(JNIEnv*, jobject, jint bits) {
     pspcore::Engine::instance().setPad1(bits);
@@ -230,9 +244,11 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_nesstation_app_core_jni_PspNative_saveState(JNIEnv* env, jobject, jint slot, jstring path) {
     const char* p = env->GetStringUTFChars(path, nullptr);
     if (!p) return JNI_FALSE;
-    pspcore::Engine::instance().saveState(slot, p);
+    // v5：Engine::saveState 投递到模拟线程并阻塞等结果 —— 返回真实成败
+    // （旧实现恒返回 TRUE，Kotlin 侧声明的 Boolean 读到的是垃圾寄存器值）。
+    bool ok = pspcore::Engine::instance().saveState(slot, p);
     env->ReleaseStringUTFChars(path, p);
-    return JNI_TRUE;
+    return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

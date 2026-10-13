@@ -65,8 +65,14 @@ public:
     // the last poll (FPS HUD — real game output rate, not the paced loop rate).
     int pollPresentedFrames();
 
-    void saveState(int slot, const std::string& dstPath);
+    // ★★ 即时存档（v5 线程修复）★★ 存/读档被投递到模拟线程、在两次
+    // retro_run 之间执行（retro_serialize 与核心内部模拟线程握手，与
+    // retro_run 并发调用会永久死锁 —— 见 psp_loader.h 的大段注释）。
+    // 阻塞等待结果（典型 0.1~1s，超时 8s 返回 false）。
+    bool saveState(int slot, const std::string& dstPath);
     bool loadState(int slot, const std::string& srcPath);
+    // 暂停时由模拟线程 tick 调用：取出挂起的存/读档操作（不跑帧）。
+    void drainStateOp();
 
     // Pull the latest frame into `out` (w*h uint32, 0xAARRGGBB). In HW mode
     // this serves the last glReadPixels capture (see psp_loader.cpp).

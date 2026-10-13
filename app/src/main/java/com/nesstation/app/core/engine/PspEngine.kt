@@ -219,6 +219,12 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
                     )
                     while (running.get()) {
                         if (_paused) {
+                            // ★ 存/读档兑底取件：暂停时不跑帧，但模拟线程仍在
+                            // 循环 —— 每次把挂起的即时存档/读档操作取件执行
+                            // （retro_serialize 必须在模拟线程上、retro_run 之外，
+                            // 否则与核心内部模拟线程握手死锁。运行中时在
+                            // stepFrame() 开头取件，暂停时在这里。）
+                            try { PspNative.drainStateOp() } catch (_: Throwable) {}
                             try { Thread.sleep(16) } catch (_: InterruptedException) { break }
                             continue
                         }
@@ -501,8 +507,32 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
 
     override fun setRegion(region: Int) = PspNative.setRegion(region)
     override fun setSampleRate(rate: Int) = PspNative.setSampleRate(rate)
-    override fun saveState(slot: Int, dst: File): Boolean = PspNative.saveState(slot, dst.absolutePath)
-    override fun loadState(slot: Int, src: File): Boolean = PspNative.loadState(slot, src.absolutePath)
+
+    /**
+     * 即时存档（v5 线程修复后）：请求投递到模拟线程、在两帧之间执行
+     * retro_serialize。模拟线程已死（崩溃/未启动）时直接失败 —— 此时无
+     * 人能在合法线程上完成 serialize，等待只会白屏 8s。
+     */
+    override fun saveState(slot: Int, dst: File): Boolean {
+        if (!isLoaded) return false
+        val t = thread
+        if (t == null || !t.isAlive) {
+            android.util.Log.w("PspEngine", "saveState: emu thread not alive")
+            return false
+        }
+        return PspNative.saveState(slot, dst.absolutePath)
+    }
+
+    /** 即时读档：同 [saveState] 的模拟线程投递模型。 */
+    override fun loadState(slot: Int, src: File): Boolean {
+        if (!isLoaded) return false
+        val t = thread
+        if (t == null || !t.isAlive) {
+            android.util.Log.w("PspEngine", "loadState: emu thread not alive")
+            return false
+        }
+        return PspNative.loadState(slot, src.absolutePath)
+    }
 
     override fun captureFrame(): FrameCapture? {
         if (!isLoaded) return null

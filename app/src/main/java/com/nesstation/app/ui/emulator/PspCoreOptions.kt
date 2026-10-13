@@ -82,6 +82,20 @@ object PspCoreOptions {
         Def("ppsspp_cropto16x9", "画面裁剪至 16:9", G_GFX, "disabled", DE),
         Def("ppsspp_gpu_hardware_transform", "硬件顶点变换", G_GFX, "enabled",
             DE, "性能关键项，无特殊兼容问题请保持开启"),
+        Def("ppsspp_mulitsample_level", "多重采样 (MSAA)", G_GFX, "Disabled",
+            listOf(
+                "Disabled" to "Disabled (默认·最快)", "x2" to "x2",
+                "x4" to "x4", "x8" to "x8"
+            ),
+            "★ 官方键名拼写就是 mulitsample（官方 typo）；抗锯齿，吃 GPU"),
+        Def("ppsspp_detect_vsync_swap_interval", "检测帧率变化", G_GFX, "disabled",
+            DE, "自动跟踪刷新率变化；跳帧/帧重复开启时核心自动隐藏此项"),
+        Def("ppsspp_backend", "图形后端 (高级)", G_GFX, "auto",
+            listOf(
+                "auto" to "auto (跟随前端·推荐)",
+                "opengl" to "opengl (本前端唯一支持)"
+            ),
+            "本前端只实现了 OpenGL ES 硬件渲染路径；留 auto 即可"),
         Def("ppsspp_software_rendering", "软件渲染", G_GFX, "disabled",
             DE, "排错用：完全绕过 GPU（极慢，强制 1x）"),
 
@@ -172,6 +186,8 @@ object PspCoreOptions {
                 "psp_2000_3000" to "PSP-2000/3000 (Slim·64MB 内存)"
             ),
             "个别游戏需要 Slim 的 64MB 内存"),
+        Def("ppsspp_memstick_inserted", "记忆棒插入状态", G_SYS, "enabled",
+            EN, "极少数游戏需要拔出记忆棒的状态（保持默认即可）"),
         Def("ppsspp_button_preference", "确认键偏好", G_SYS, "Cross",
             listOf("Cross" to "✕ 确认 (日式·默认)", "Circle" to "○ 确认 (美式)"),
             "影响游戏内\"确认/取消\"方位"),

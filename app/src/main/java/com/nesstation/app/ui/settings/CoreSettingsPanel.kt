@@ -2200,7 +2200,6 @@ fun CoreSettingsPanel(
                         "★ 满速要点：CPU 核心 = JIT（大小写敏感，此前发小写 \"jit\" 被核心忽略，" +
                         "一直跑解释器导致严重卡顿）；快速内存开启；渲染分辨率 1x 起步；纹理放大关闭。" +
                         "所有设置即时保存并热应用（下次启动自动重放）\n\n" +
-                        "虚拟按键：PSP 现有完整 ✕○□△ + L/R + Start/Select + 左摇杆（可在" +
                         "虚拟按键：PSP 现有完整 ✕○□△ + L/R + Start/Select + 左摇杆（可在 触控 → 布局编辑器 里调位置/大小/显隐；摇杆输出真模拟轴）。" +
                         "\n\n游戏内系统语言默认简体中文（需 PPSSPP lang 资产，PspSupport 自动播种）。",
                         color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),

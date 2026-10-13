@@ -47,23 +47,24 @@
 //
 // ═══════════════════════════════════════════════════════════════════════
 // CORE OPTIONS — ppsspp_* retro variables (GET_VARIABLE), keys/values must
-// match the core's option list exactly (libretro.cpp RetroOption table):
+// match the core's check_variables() strcmp table byte-for-byte (verified
+// against the official libretro.cpp; CASE-SENSITIVE):
 //
-//   ppsspp_internal_resolution  "480x272" | "960x544" | "1440x816" | ...
-//   ppsspp_rendering_mode       "buffered" | "nonbuffered"
-//   ppsspp_cpu_core             "jit" | "IR jit" | "interpreter"
-//   ppsspp_language             "automatic" | "english" | "chinese_simplified" | ...
-//   ppsspp_fast_memory          "enabled" | "disabled"
-//   ppsspp_frameskip            "0".."10" (decimal string)
-//   ppsspp_auto_frameskip       "enabled" | "disabled"
-//   ppsspp_io_timing_method     "Fast" | "Host" | "Simulate UMD delays"
-//   ppsspp_audio_latency        "low" | "medium" | "high"
-//   ppsspp_button_preference    "cross" | "circle"
-//   ppsspp_texture_scaling_level "0".."5" (0 = off)
-//   ppsspp_texture_scaling_type  "xbrz" | "hybrid" | "bicubic" | "hybrid_bicubic"
-//   ppsspp_texture_filtering     "auto" | "nearest" | "linear" | "linear(FMV)"
-//   ppsspp_cheats                "enabled" | "disabled"
-//   ...
+//   ppsspp_cpu_core              "JIT" | "IR JIT" | "Interpreter"  (小写被忽略!)
+//   ppsspp_internal_resolution   "480x272" | "960x544" | ... | "4800x2720"
+//   ppsspp_skip_buffer_effects   "disabled"(缓冲渲染) | "enabled"
+//   ppsspp_fast_memory           "enabled" | "disabled"
+//   ppsspp_frameskip             "0".."10"   ppsspp_auto_frameskip  en/dis
+//   ppsspp_texture_scaling_level "disabled" | "2x".."5x"  (数字无效!)
+//   ppsspp_texture_filtering     "Auto" | "Nearest" | "Linear" | "Auto max quality"
+//   ppsspp_language              "Automatic" | "English" | "Chinese Simplified" | ...
+//   ppsspp_button_preference     "Cross" | "Circle"
+//   ppsspp_io_timing_method      "Fast" | "Host" | "Simulate UMD delays" | ...
+//   ppsspp_mulitsample_level     "Disabled" | "x2" | "x4" | "x8"  (官方拼写)
+//   ...（完整 44 项目录见 Kotlin 侧 PspCoreOptions；旧注释里的
+//   "ppsspp_rendering_mode"/"ppsspp_audio_latency"/"ppsspp_vertex_cache" 等
+//   是【死键】—— 核心 check_variables 根本不读，已全部移除）
+//
 // Wrong keys/values are silently ignored by the core (it keeps its default).
 //
 // ═══════════════════════════════════════════════════════════════════════
@@ -343,6 +344,8 @@ static void initDefaultOptions() {
     setIfMissing("ppsspp_texture_scaling_type",  "xbrz");
     setIfMissing("ppsspp_texture_filtering",     "Auto");
     setIfMissing("ppsspp_texture_deposterize",   "disabled");
+    setIfMissing("ppsspp_mulitsample_level",     "Disabled");  // 官方拼写（MSAA 关）
+    setIfMissing("ppsspp_skip_gpu_readbacks",    "disabled");
 
     // --- System / CPU ---
     setIfMissing("ppsspp_cpu_core",              "JIT");       // ★ 大写！小写被核心忽略
@@ -351,6 +354,7 @@ static void initDefaultOptions() {
     setIfMissing("ppsspp_locked_cpu_speed",      "0");         // 0 = 不锁定
     setIfMissing("ppsspp_language",              "Chinese Simplified");
     setIfMissing("ppsspp_button_preference",     "Cross");
+    setIfMissing("ppsspp_memstick_inserted",     "enabled");   // 记忆棒在位（官方默认）
 
     // --- Media / IO ---
     setIfMissing("ppsspp_io_timing_method",      "Fast");
@@ -1229,6 +1233,9 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
 }
 
 void unload() {
+    // Drop any pending save/load state op first — a waiter (UI thread) gets
+    // failed instead of the op firing into the NEXT game after reload.
+    cancelPendingStateOp();
     if (s_loaded) {
         // GL teardown (context destroy callback) — must run BEFORE
         // retro_unload_game(): the core's context_destroy callback
@@ -1325,6 +1332,9 @@ void stepFrame() {
             LOGW("stepFrame: EGL context unavailable — frame skipped");
             return;
         }
+        // ★ 存/读档取件：在 retro_run 之前、模拟线程 + EGL current 状态下
+        //   执行（与 RetroArch 的 serialize 线程约定一致，见文件尾部注释）。
+        processPendingStateOp();
         s_retro_run();
         bool captured = false;
         if (s_captureRequested.exchange(false, std::memory_order_acq_rel)) {
@@ -1345,6 +1355,7 @@ void stepFrame() {
         }
     } else {
         // Software fallback (defensive).
+        processPendingStateOp();
         s_retro_run();
     }
 }
@@ -1431,16 +1442,125 @@ void applySpeed(float multiplier) {
     s_ffFrameSkip.store(0, std::memory_order_relaxed);
 }
 
-void saveStateToPath(int /*slot*/, const std::string& path) {
-    if (!s_loaded || !s_gameLoaded || !s_retro_serialize) return;
+// ---------------------------------------------------------------------------
+// ★★ 即时存档/读档 —— 模拟线程操作队列（v5 修复"即时存档卡死"）★★
+//
+// 旧实现：UI 线程（JNI saveState/loadState）直接调 retro_serialize_size /
+// retro_serialize / retro_unserialize。GLES 后端核心 useEmuThread=true：
+// 这三个入口都会经 EmuThreadPause() 与核心内部模拟线程握手（置
+// PAUSE_REQUESTED → ctx->ThreadFrame() 吃一帧 → 自旋等 PAUSED）。此时
+// pspcore-loop 线程很可能正处 retro_run → ctx->ThreadFrame() 等内部线程出
+// 帧 —— 两边互相等待 → 永久死锁（画面卡死，只能杀后台；存档文件其实已
+// 落盘，于是"杀后台重进才能读到档"）。
+//
+// 修复与 RetroArch 的线程约定一致：serialize/unserialize 只在【调用
+// retro_run 的同一线程】、两帧之间执行。UI 线程只投递（requestStateOp），
+// 模拟线程在 stepFrame() 开头 / 暂停时的 drainStateOp() 取件执行。
+// ---------------------------------------------------------------------------
+
+// pending op type: 0 = none, 1 = save, 2 = load
+static std::atomic<int>  s_stateOpType{0};
+static std::atomic<bool> s_stateOpRequested{false};
+static std::atomic<bool> s_stateOpDone{false};
+static std::atomic<bool> s_stateOpResult{false};
+static std::mutex        s_stateOpPathMtx;
+static std::string       s_stateOpPath;
+
+// 取件执行（必须在模拟线程上、retro_run 之前；HW 模式下调用方需已持有
+// s_eglMtx 并确保 EGL context current —— 核心的 DoState 与 RetroArch 一样
+// 运行在持有 GL 上下文的线程上）。
+static void processPendingStateOp() {
+    if (!s_stateOpRequested.exchange(false, std::memory_order_acq_rel)) return;
+    const int type = s_stateOpType.load(std::memory_order_relaxed);
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lk(s_stateOpPathMtx);
+        path = s_stateOpPath;
+    }
+    bool ok = false;
+    if (!s_gameLoaded) {
+        LOGE("State op ignored — no game loaded");
+    } else if (type == 1) {
+        ok = saveStateToPath(0, path);
+    } else if (type == 2) {
+        ok = loadStateFromPath(0, path);
+    } else {
+        LOGE("Unknown state op type %d", type);
+    }
+    s_stateOpResult.store(ok, std::memory_order_release);
+    s_stateOpDone.store(true, std::memory_order_release);
+}
+
+void requestStateOp(int type, const std::string& path) {
+    {
+        std::lock_guard<std::mutex> lk(s_stateOpPathMtx);
+        s_stateOpPath = path;
+    }
+    s_stateOpType.store(type, std::memory_order_relaxed);
+    s_stateOpDone.store(false, std::memory_order_release);
+    s_stateOpRequested.store(true, std::memory_order_release);
+}
+
+bool waitStateOp(int timeoutMs) {
+    const int steps = timeoutMs / 10;
+    for (int i = 0; i <= steps; ++i) {
+        if (s_stateOpDone.exchange(false, std::memory_order_acq_rel)) {
+            return s_stateOpResult.load(std::memory_order_relaxed);
+        }
+        usleep(10000);
+    }
+    LOGE("State op timed out after %d ms — cancelling (emu thread not draining)", timeoutMs);
+    cancelPendingStateOp();
+    return false;
+}
+
+void drainStateOp() {
+    if (!s_stateOpRequested.load(std::memory_order_acquire)) return;
+    if (!s_loaded || !s_gameLoaded) {
+        // No game (anymore) — fail the pending op instead of hanging the waiter.
+        s_stateOpRequested.store(false, std::memory_order_release);
+        s_stateOpResult.store(false, std::memory_order_release);
+        s_stateOpDone.store(true, std::memory_order_release);
+        return;
+    }
+    if (s_hwRenderActive.load(std::memory_order_acquire)) {
+        // Paused drain: the EGL context stays current on this (emu) thread,
+        // but re-assert it defensively; serialize s_eglMtx against setSurface.
+        std::lock_guard<std::mutex> lk(s_eglMtx);
+        if (!ensureEglContextCurrent()) return;   // retry on the next tick
+        processPendingStateOp();
+    } else {
+        processPendingStateOp();
+    }
+}
+
+void cancelPendingStateOp() {
+    s_stateOpRequested.store(false, std::memory_order_release);
+    s_stateOpDone.store(true, std::memory_order_release);
+    s_stateOpResult.store(false, std::memory_order_release);
+}
+
+bool saveStateToPath(int /*slot*/, const std::string& path) {
+    if (!s_loaded || !s_gameLoaded || !s_retro_serialize) return false;
+    // ★ 时序：retro_serialize_size() 会把核心内部模拟线程留在 PAUSED
+    //   （官方 libretro.cpp: "We don't unpause intentionally"），必须紧跟着
+    //   retro_serialize()（内部 EmuThreadStart 恢复）。两调用之间不得插入
+    //   任何其他 retro_* 调用。
     size_t sz = s_retro_serialize_size();
-    if (sz == 0) return;
+    if (sz == 0) return false;
     std::vector<uint8_t> buf(sz);
-    if (!s_retro_serialize(buf.data(), sz)) { LOGE("retro_serialize failed"); return; }
+    if (!s_retro_serialize(buf.data(), sz)) { LOGE("retro_serialize failed"); return false; }
     FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) { LOGE("Cannot open save state for write: %s", path.c_str()); return; }
-    std::fwrite(buf.data(), 1, sz, f);
+    if (!f) { LOGE("Cannot open save state for write: %s", path.c_str()); return false; }
+    size_t wr = std::fwrite(buf.data(), 1, sz, f);
     std::fclose(f);
+    if (wr != sz) {
+        LOGE("Save state short write: %zu/%zu", wr, sz);
+        std::remove(path.c_str());
+        return false;
+    }
+    LOGI("Save state written: %s (%zu bytes)", path.c_str(), sz);
+    return true;
 }
 
 bool loadStateFromPath(int /*slot*/, const std::string& path) {
@@ -1456,6 +1576,7 @@ bool loadStateFromPath(int /*slot*/, const std::string& path) {
     std::fclose(f);
     if (rd != (size_t)sz) return false;
     if (!s_retro_unserialize(buf.data(), sz)) { LOGE("retro_unserialize failed"); return false; }
+    LOGI("Save state loaded: %s (%ld bytes)", path.c_str(), sz);
     return true;
 }
 

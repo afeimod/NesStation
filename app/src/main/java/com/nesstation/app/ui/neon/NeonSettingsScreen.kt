@@ -484,12 +484,16 @@ fun NeonSettingsScreen(
                                 NeonSettingsRow("DC / Dreamcast", "Flycast 核心 · 分辨率/宽屏/排序/主机区域/GD-ROM", showArrow = true) { selectedCore = GamePlatform.DC }
                                 NeonSettingsRow("3DS", "Azahar 核心 · 图形后端/分辨率/屏幕布局/3D/系统", showArrow = true) { selectedCore = GamePlatform.N3DS }
                                 NeonSettingsRow("NGC / Wii", "Ishiiruka (Dolphin) 核心 · 后端/EFB 分辨率/CPU/控制模式", showArrow = true) { selectedCore = GamePlatform.NGCWII }
+                                // ★★ PSP（v5 补全）：Neon UI 的核心设置入口此前漏了 PSP
+                                //   （子页 CoreSettingsPanel 本身有 PSP 分区，但列表没有
+                                //   入口 → “neon的ui核心设置缺少psp的”）。
+                                NeonSettingsRow("PSP", "PPSSPP 核心 · 分辨率/JIT/纹理放大/摇杆/联机", showArrow = true) { selectedCore = GamePlatform.PSP }
                             }
                             selectedCategory == "about" -> NeonSettingsSection("关于") {
                                 NeonSettingsRow("版本", "3.9") { }
                                 NeonSettingsRow(
                                     "核心",
-                                    "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC/NAOMI) · Azahar (3DS) · Ishiiruka (NGC/WII)"
+                                    "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC/NAOMI) · PPSSPP (PSP) · Azahar (3DS) · Ishiiruka (NGC/WII)"
                                 ) { }
                                 NeonSettingsRow("开源许可", "MIT License", showArrow = true) {
                                     dialogText = "NesStation 基于 FCEUmm (NES)、Snes9x (SFC)、mGBA (GB/GBC/GBA)、Genesis-Plus-GX (MD)、Geargrafx (PCE)、DOSBox-Pure (DOS)、FBNeo (Arcade)、melonDS (NDS)、PCSX-ReARMed (PSX)、PCEE2 / PCSX2 (PS2)、Flycast (DC/NAOMI)、Azahar / AzaharPlus (3DS)、Ishiiruka / Dolphin (NGC/WII) 核心构建，遵循各自开源许可证"
@@ -507,7 +511,7 @@ fun NeonSettingsScreen(
                                         selectedCategory = "appearance"
                                     }
                                     NeonSettingsRow("按键映射", "按核心自定义按键", showArrow = true) { onOpenKeyMap() }
-                                    NeonSettingsRow("核心设置", "14 个模拟核心的专属选项", showArrow = true) {
+                                    NeonSettingsRow("核心设置", "15 个模拟核心的专属选项", showArrow = true) {
                                         selectedCategory = "cores"
                                     }
                                 }

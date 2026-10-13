@@ -1124,6 +1124,9 @@ class PadLayout {
     var hiddenButtonsN3ds: String = ""    // 3DS hidden button keys (双摇杆常驻不隐藏)
     var hiddenButtonsNgcWii: String = ""  // NGC/WII hidden button keys (双摇杆常驻不隐藏)
     var hiddenButtonsDc: String = ""      // DC hidden button keys（摇杆常驻不隐藏）
+    var hiddenButtonsPsp: String = ""     // PSP hidden button keys（★ v5 补全：此前 PSP 无显隐存储，
+                                           //   显隐对话框对 PSP 只有即时存/读档两项，运行时
+                                           //   isButtonHidden 恒 false —— 摇杆常驻不隐藏，与 DC 同型）
 
     // === Input mode (joystick vs D-pad) ===
     // "dpad" = cross-shaped digital D-pad (default); "analog" = circular
@@ -1801,6 +1804,9 @@ class PadLayout {
         //   空串 → 防抖保存每次都把 hidden_buttons_dc 写成空 → 下次启动
         //   DC 虚拟按键全部重新显示（"显隐没有保存"的根因）。
         hiddenButtonsDc = another.hiddenButtonsDc
+        // ★ PSP 显隐持久化（v5 补全）：copyFrom 必须带上 hiddenButtonsPsp，
+        //   否则所有 PadLayout.copy{} 都会把它重置为空（同 DC 当年的 bug）。
+        hiddenButtonsPsp = another.hiddenButtonsPsp
         inputMode = another.inputMode
         homeBackgroundUri = another.homeBackgroundUri
         homeBackgroundIsVideo = another.homeBackgroundIsVideo
@@ -2952,6 +2958,7 @@ object PadLayoutStore {
             wiiBtnIrFarP = loadBtn(p, "wii_p_btn_ir_far", ButtonLayout(x = 0.93f, y = 0.38f, sizeDp = 38))
             hiddenButtonsNgcWii = p.getString("hidden_buttons_ngcwii", "") ?: ""
             hiddenButtonsDc = p.getString("hidden_buttons_dc", "") ?: ""
+            hiddenButtonsPsp = p.getString("hidden_buttons_psp", "") ?: ""
             // === Arcade extras ===
             btnL2 = loadBtn(p, "btn_l2", ButtonLayout(x = 0.08f, y = 0.32f, sizeDp = 48))
             btnR2 = loadBtn(p, "btn_r2", ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48))
@@ -3698,6 +3705,7 @@ object PadLayoutStore {
             saveBtn("wii_p_btn_ir_far", layout.wiiBtnIrFarP)
             putString("hidden_buttons_ngcwii", layout.hiddenButtonsNgcWii)
             putString("hidden_buttons_dc", layout.hiddenButtonsDc)
+            putString("hidden_buttons_psp", layout.hiddenButtonsPsp)
             // === Arcade extras ===
             saveBtn("btn_l2", layout.btnL2)
             saveBtn("btn_r2", layout.btnR2)
@@ -3785,6 +3793,8 @@ object PadLayoutStore {
             GamePlatform.N3DS -> isHiddenInList(layout.hiddenButtonsN3ds, key)
             GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcWii, key)
             GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
+            // ★ PSP（v5 补全）：此前落到 else -> false，显隐开关对 PSP 完全无效
+            GamePlatform.PSP -> isHiddenInList(layout.hiddenButtonsPsp, key)
             else -> false
         }
     }
@@ -3824,6 +3834,8 @@ object PadLayoutStore {
             GamePlatform.N3DS -> layout.copy {hiddenButtonsN3ds = updateHiddenList(layout.hiddenButtonsN3ds, key, hidden)}
             GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcWii = updateHiddenList(layout.hiddenButtonsNgcWii, key, hidden)}
             GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
+            // ★ PSP（v5 补全）：显隐写回专属列表（旧实现落到 else -> layout，写入被静默丢弃）
+            GamePlatform.PSP -> layout.copy {hiddenButtonsPsp = updateHiddenList(layout.hiddenButtonsPsp, key, hidden)}
             else -> layout
         }
     }
@@ -3942,6 +3954,17 @@ object PadLayoutStore {
                 "dpad" to "十字键", "a" to "A键", "b" to "B键",
                 "x" to "X键", "y" to "Y键",
                 "ta" to "连射A", "tb" to "连射B",
+                "l" to "L键", "r" to "R键",
+                "start" to "START", "select" to "SELECT"
+            )
+            GamePlatform.PSP -> listOf(
+                // ★ PSP（v5 补全）：此前落到 else -> emptyList()，显隐对话框对
+                // PSP 只有即时存/读档两项（“显隐按键也没加psp的虚拟按键”）。
+                // 面键与运行时一致用 ✕○□△ 标签（ps2ToLibretroLayout 语义：
+                // a=✕、b=○、x=□、y=△）。左摇杆为常驻模拟控件，不参与显隐
+                // （与 PS2/3DS/NGC-WII/DC 的摇杆同型）。
+                "dpad" to "十字键", "a" to "✕键", "b" to "○键",
+                "x" to "□键", "y" to "△键",
                 "l" to "L键", "r" to "R键",
                 "start" to "START", "select" to "SELECT"
             )

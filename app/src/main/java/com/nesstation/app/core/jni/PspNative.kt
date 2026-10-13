@@ -106,6 +106,18 @@ object PspNative {
     @JvmStatic external fun reset(hard: Boolean)
     @JvmStatic external fun runFrame()
 
+    /**
+     * 暂停时由模拟线程 tick 调用：取出挂起的存/读档操作（不跑帧）。
+     *
+     * ★ 即时存档线程约定（v5 修复“即时存档卡死”）：retro_serialize /
+     * retro_unserialize 会与 PPSSPP 核心内部模拟线程握手（EmuThreadPause），
+     * 绝不能在 UI 线程与 retro_run 并发调用 —— 会永久死锁。存/读档请求由
+     * [saveState]/[loadState] 投递到原生队列，运行时在 stepFrame() 开头
+     * （retro_run 之前）取件执行；暂停时本方法兑底取件。必须在拥有 EGL
+     * 上下文的模拟线程（pspcore-loop）上调用。
+     */
+    @JvmStatic external fun drainStateOp()
+
     /** Standard libretro gamepad (port 0). See class doc for bit layout. */
     @JvmStatic external fun setPad1(bits: Int)
     /** Second controller (port 1). Same bit layout as [setPad1]. */
@@ -144,7 +156,13 @@ object PspNative {
      */
     @JvmStatic external fun pollPresentedFrames(): Int
 
+    /**
+     * 即时存档（同步）：投递到模拟线程、在两帧之间执行 retro_serialize，
+     * 阻塞等结果（典型 0.1~1s，超时 8s 返回 false）。与 RetroArch 的
+     * PPSSPP 槽位兼容。
+     */
     @JvmStatic external fun saveState(slot: Int, path: String): Boolean
+    /** 即时读档（同步）：投递到模拟线程执行 retro_unserialize。 */
     @JvmStatic external fun loadState(slot: Int, path: String): Boolean
 
     @JvmStatic external fun getFrameBuffer(out: IntArray): Boolean
