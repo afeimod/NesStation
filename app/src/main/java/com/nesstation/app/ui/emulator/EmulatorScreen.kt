@@ -5641,9 +5641,10 @@ private fun applyCoreOptionsInner(
         }
         GamePlatform.PSP -> {
             // PSP（PPSSPP 进程内引擎）—— applyCoreOptions 的通用 PadLayout
-            // 选项对 PSP 不适用；PSP 专属设置（ppsspp.ini 直写）在
-            // SettingsPanel 的 PSP 分区 + 主设置页"核心设置 → PSP"分区完成
-            // （PspSettingsStore，核心启动会话时读取）。分支仅用于 when 穷举。
+            // 选项对 PSP 不适用；PSP 专属设置为 libretro 核心选项通道
+            // （ppsspp_*，PspCoreOptions 目录 + psp_core_options.ini 持久化，
+            // PspEngine.loadRom 前整表灌入）：主设置页"核心设置 → PSP"分区 +
+            // 游戏内暂停设置面板 PSP 分支。分支仅用于 when 穷举。
         }
     }
 }
@@ -7120,19 +7121,22 @@ fun OnScreenController(
     // ★ DC（Dreamcast 实体手柄）同样拥有 X/Y 四键 + L/R 肩键（与 SNES
     // 同一 12 键布局，经 dcToLibretroLayout 语义直转）。此前 showLR/showXY
     // 都漏掉了 DC，导致 DC 只显示 A/B 两个虚拟键（"DC 虚拟按键缺少太多"）。
+    // ★★ PSP 同理（本轮修复）：showLR/showXY 白名单漏了 PSP，导致 PSP
+    // 只显示方向键 + A/B —— PSP 手柄需要 ✕○□△ 四键 + L/R 肩键
+    // （经 ps2ToLibretroLayout 语义直转，面键与 PS2 同标签）。
     // N3DS/NGCWII 的按键渲染走专属分支（下方 is3ds/isNgcWii 段），这里把
     // showLR/showXY 保持 false，避免通用 12 键布局与专属布局同时渲染。
     val showLR = platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
-                 platform == GamePlatform.DC ||
+                 platform == GamePlatform.DC || platform == GamePlatform.PSP ||
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     val showXY = platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
-                 platform == GamePlatform.DC ||
+                 platform == GamePlatform.DC || platform == GamePlatform.PSP ||
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE ||
@@ -7287,6 +7291,9 @@ fun OnScreenController(
     // DC（Flycast）左摇杆 —— 常驻模拟控件（不参与显隐）；输出经
     // onAnalogAxes → DcCoreEngine.setAnalogAxes → RETRO_DEVICE_ANALOG。
     val dcLStick = if (isPortrait) padLayout.dcLStickP else padLayout.dcLStick
+    // PSP（PPSSPP）左摇杆 —— 常驻模拟控件（不参与显隐）；输出经
+    // onAnalogAxes → PspCoreEngine.setAnalogAxes → RETRO_DEVICE_ANALOG。
+    val pspLStick = if (isPortrait) padLayout.pspLStickP else padLayout.pspLStick
     // 3DS ZL/ZR；NGC/WII Z；Wii 专属按键（A/B/1/2/+/−/HOME/C/Z/IR−/IR+）
     val n3dsBtnZL = if (isPortrait) padLayout.n3dsBtnZLP else padLayout.n3dsBtnZL
     val n3dsBtnZR = if (isPortrait) padLayout.n3dsBtnZRP else padLayout.n3dsBtnZR
@@ -7495,6 +7502,7 @@ fun OnScreenController(
                 val lStickRect = if (isPs2) btnRect(ps2LStick, 1.3f, 1.3f)
                                  else if (is3ds) btnRect(n3dsLStick, 1.3f, 1.3f)
                                  else if (platform == GamePlatform.DC) btnRect(dcLStick, 1.3f, 1.3f)
+                                 else if (platform == GamePlatform.PSP) btnRect(pspLStick, 1.3f, 1.3f)
                                  else if (isNgcWii && ngcWiiGcSet) btnRect(ngcLStick, 1.3f, 1.3f)
                                  else if (isNgcWii && (ngcWiiNunchuk || ngcWiiClassic)) btnRect(wiiLStick, 1.3f, 1.3f)
                                  else null
@@ -7932,11 +7940,14 @@ fun OnScreenController(
         val labelA = when (platform) {
             GamePlatform.PCE -> "I"
             GamePlatform.PSX, GamePlatform.PS2 -> "✕"  // Cross
+            // PSP 面键与 PS2 同语义（ps2ToLibretroLayout）：✕○□△ 菱形排布
+            GamePlatform.PSP -> "✕"  // Cross
             else -> "A"
         }
         val labelB = when (platform) {
             GamePlatform.PCE -> "II"
             GamePlatform.PSX, GamePlatform.PS2 -> "○"  // Circle
+            GamePlatform.PSP -> "○"  // Circle
             else -> "B"
         }
         val labelX = when (platform) {
@@ -7944,6 +7955,8 @@ fun OnScreenController(
             // PSX 屏幕排布：X 在右上 = △；PS2 专属菱形：X 在左 = □
             GamePlatform.PSX -> "△"  // Triangle
             GamePlatform.PS2 -> "□"  // Square
+            // PSP 与 PS2 同标签：overlay X 位 = □ Square（bit1）
+            GamePlatform.PSP -> "□"  // Square
             // MD 6 键手柄：libretro X 对应 SEGA C（A/B/C/X/Y/Z 六键布局）
             GamePlatform.MD -> "C"
             // 街机（FBNeo）：libretro Y(bit1) = 街机键 3，屏幕标签 C
@@ -7954,6 +7967,8 @@ fun OnScreenController(
             GamePlatform.PCE -> "III"
             GamePlatform.PSX -> "□"  // Square
             GamePlatform.PS2 -> "△"  // Triangle
+            // PSP 与 PS2 同标签：overlay Y 位 = △ Triangle（bit9）
+            GamePlatform.PSP -> "△"  // Triangle
             // MD 6 键手柄：libretro Y 对应 SEGA X
             GamePlatform.MD -> "X"
             // 街机（FBNeo）：libretro X(bit9) = 街机键 4，屏幕标签 D
@@ -8277,6 +8292,19 @@ fun OnScreenController(
                 thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
                 thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
                 image = dcStickImg, pressedImage = dcStickImgPressed
+            )
+        }
+        // PSP（PPSSPP libretro）专属：左模拟摇杆（常驻）—— PSP 手柄唯一的
+        // 模拟轴，绝大多数 PSP 游戏靠它移动/视角；输出经 onAnalogAxes →
+        // PspCoreEngine.setAnalogAxes 推 RETRO_DEVICE_ANALOG 左轴（与 DC 同模式）。
+        if (platform == GamePlatform.PSP) {
+            val (pspStickImg, pspStickImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+            AnalogStickCanvas(
+                layout = pspLStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = lStickDirs, thumbX = lStickTX, thumbY = lStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
+                image = pspStickImg, pressedImage = pspStickImgPressed
             )
         }
         // NGC/WII 专属：按控制器组合渲染 —— GC Z + 主/C 摇杆（仅 GC 模式）；
@@ -10667,6 +10695,8 @@ private fun PadLayoutEditor(
     val wiiLStick = if (isPortrait) padLayout.wiiLStickP else padLayout.wiiLStick
     // DC（Flycast）左摇杆（与 OnScreenController 一致）
     val dcLStick = if (isPortrait) padLayout.dcLStickP else padLayout.dcLStick
+    // PSP（PPSSPP）左摇杆（与 OnScreenController 一致）
+    val pspLStick = if (isPortrait) padLayout.pspLStickP else padLayout.pspLStick
     val wiiBtnA = if (isPortrait) padLayout.wiiBtnAP else padLayout.wiiBtnA
     val wiiBtnB = if (isPortrait) padLayout.wiiBtnBP else padLayout.wiiBtnB
     val wiiBtn1 = if (isPortrait) padLayout.wiiBtn1P else padLayout.wiiBtn1
@@ -10755,6 +10785,7 @@ private fun PadLayoutEditor(
                 isPs2 -> if (isPortrait) padLayout.copy {this.ps2LStickP = newLayout} else padLayout.copy {this.ps2LStick = newLayout}
                 is3ds -> if (isPortrait) padLayout.copy {this.n3dsLStickP = newLayout} else padLayout.copy {this.n3dsLStick = newLayout}
                 platform == GamePlatform.DC -> if (isPortrait) padLayout.copy {this.dcLStickP = newLayout} else padLayout.copy {this.dcLStick = newLayout}
+                platform == GamePlatform.PSP -> if (isPortrait) padLayout.copy {this.pspLStickP = newLayout} else padLayout.copy {this.pspLStick = newLayout}
                 isNgcWii -> if (isPortrait) padLayout.copy {this.ngcLStickP = newLayout} else padLayout.copy {this.ngcLStick = newLayout}
                 else -> padLayout
             }
@@ -11058,6 +11089,17 @@ private fun PadLayoutEditor(
                         val nx = targetX.coerceIn(0f, 1f)
                         val ny = targetY.coerceIn(0f, 1f)
                         updateBtn(BtnType.LSTICK, dcLStick.copy(x = nx, y = ny))
+                    },
+                    onSelect = { selectedBtn = BtnType.LSTICK }
+                )
+            }
+            // PSP（PPSSPP）专属可编辑控件：左模拟摇杆（常驻，与 DC 同模式）
+            if (platform == GamePlatform.PSP) {
+                EditableRoundBtn("摇杆", Color(0xFFFFD66B), pspLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
+                    onMove = { targetX, targetY ->
+                        val nx = targetX.coerceIn(0f, 1f)
+                        val ny = targetY.coerceIn(0f, 1f)
+                        updateBtn(BtnType.LSTICK, pspLStick.copy(x = nx, y = ny))
                     },
                     onSelect = { selectedBtn = BtnType.LSTICK }
                 )
@@ -11456,6 +11498,7 @@ private fun PadLayoutEditor(
                             isPs2 -> ps2LStick
                             is3ds -> n3dsLStick
                             platform == GamePlatform.DC -> dcLStick
+                            platform == GamePlatform.PSP -> pspLStick
                             isNgcWii -> ngcLStick
                             else -> ps2LStick
                         }
@@ -11543,6 +11586,7 @@ private fun PadLayoutEditor(
                                 isPs2 -> ps2LStick
                                 is3ds -> n3dsLStick
                                 platform == GamePlatform.DC -> dcLStick
+                                platform == GamePlatform.PSP -> pspLStick
                                 isNgcWii -> ngcLStick
                                 else -> ps2LStick
                             }
@@ -14474,114 +14518,73 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {irWiimoteScan = if (it) "enabled" else "disabled"}) }
             }
             GamePlatform.PSP -> {
-                // PSP（PPSSPP 进程内引擎）—— 设置直写 ppsspp.ini（经
-                // PspSettingsStore，与主设置页"核心设置 → PSP"分区共用同一
-                // 文件）。PPSSPP 在启动会话时读取 ini，改动对当前会话的生效
-                // 范围由核心决定：多数图形键在下次进入游戏会话后生效。
-                Text("PSP (PPSSPP) 设置", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                // PSP（libretro PPSSPP 进程内引擎）—— 核心选项通道：与主设置
+                // 页"核心设置 → PSP"完全同构（PspCoreOptions 目录），经
+                // PspEngine.setCoreOption = 持久化 + 即时热应用（核心每帧经
+                // GET_VARIABLE_UPDATE 感知）。旧 ppsspp.ini 直写键核心不读取，
+                // 已全部移除。完整 40+ 项设置在 主设置页 → 核心设置 → PSP。
+                Text("PSP (PPSSPP) 核心选项（游戏内即时生效）", color = Color(0xFFFFD66B), fontSize = 13.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
                 Spacer(Modifier.size(6.dp))
 
-                var pspInternalRes by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readInt(
-                        context, PspSettingsStore.INTERNAL_RES, 0).toString())
+                fun pspOpt(key: String, default: String): String =
+                    PspSettingsStore.readCoreOption(context, key) ?: default
+
+                var pspRes by remember(platform) {
+                    mutableStateOf(pspOpt("ppsspp_internal_resolution", "480x272"))
                 }
                 var pspFrameSkip by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readInt(
-                        context, PspSettingsStore.FRAME_SKIP, 0).toString())
+                    mutableStateOf(pspOpt("ppsspp_frameskip", "0"))
                 }
-                var pspAutoFrameSkip by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readBool(
-                        context, PspSettingsStore.AUTO_FRAME_SKIP, false))
+                var pspAutoSkip by remember(platform) {
+                    mutableStateOf(pspOpt("ppsspp_auto_frameskip", "disabled"))
+                }
+                var pspRenderMode by remember(platform) {
+                    mutableStateOf(pspOpt("ppsspp_skip_buffer_effects", "disabled"))
                 }
                 var pspTexScale by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readInt(
-                        context, PspSettingsStore.TEX_SCALE_LEVEL, 1).toString())
+                    mutableStateOf(pspOpt("ppsspp_texture_scaling_level", "disabled"))
                 }
                 var pspCpuCore by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readInt(
-                        context, PspSettingsStore.CPU_CORE, 0).toString())
+                    mutableStateOf(pspOpt("ppsspp_cpu_core", "JIT"))
                 }
-                var pspCheats by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readBool(
-                        context, PspSettingsStore.ENABLE_CHEATS, false))
+                var pspFastMem by remember(platform) {
+                    mutableStateOf(pspOpt("ppsspp_fast_memory", "enabled"))
                 }
-                var pspVolume by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readInt(
-                        context, PspSettingsStore.GAME_VOLUME, 100).toString())
-                }
-                var pspShowTouch by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readBool(
-                        context, PspSettingsStore.SHOW_TOUCH, true))
-                }
-                var pspTouchOpacity by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readInt(
-                        context, PspSettingsStore.TOUCH_OPACITY, 100).toString())
-                }
-                var pspWlan by remember(platform) {
-                    mutableStateOf(PspSettingsStore.readBool(
-                        context, PspSettingsStore.ENABLE_WLAN, false))
+
+                fun pspPush(key: String, value: String) {
+                    com.nesstation.app.core.engine.PspEngine.get().setCoreOption(key, value)
                 }
 
                 Text("图形", color = Color(0xFF8899AA), fontSize = 11.sp)
-                // 渲染后端固定 Vulkan（进程内宿主只驱动 runVulkanRenderLoop）。
-                Text("渲染后端：Vulkan（进程内引擎固定，不可切换）",
-                    color = Color(0xFF667788), fontSize = 10.sp)
-                DropdownSetting("内部分辨率",
-                    listOf("0" to "自动", "1" to "1x (480×272)", "2" to "2x",
-                           "3" to "3x", "4" to "4x", "5" to "5x"),
-                    pspInternalRes
-                ) { pspInternalRes = it
-                    PspSettingsStore.writeInt(context, PspSettingsStore.INTERNAL_RES, it.toIntOrNull() ?: 0) }
+                DropdownSetting("渲染分辨率",
+                    PspCoreOptions.def("ppsspp_internal_resolution")!!.choices, pspRes
+                ) { pspRes = it; pspPush("ppsspp_internal_resolution", it) }
+                DropdownSetting("渲染模式",
+                    PspCoreOptions.def("ppsspp_skip_buffer_effects")!!.choices, pspRenderMode
+                ) { pspRenderMode = it; pspPush("ppsspp_skip_buffer_effects", it) }
                 DropdownSetting("跳帧",
-                    listOf("0" to "关闭 (默认)", "1" to "跳 1 帧", "2" to "跳 2 帧",
-                           "3" to "跳 3 帧", "4" to "跳 4 帧", "5" to "跳 5 帧"),
-                    pspFrameSkip
-                ) { pspFrameSkip = it
-                    PspSettingsStore.writeInt(context, PspSettingsStore.FRAME_SKIP, it.toIntOrNull() ?: 0) }
-                SwitchSetting("自动跳帧", "掉帧时自动跳帧保持速度", pspAutoFrameSkip
-                ) { pspAutoFrameSkip = it
-                    PspSettingsStore.writeBool(context, PspSettingsStore.AUTO_FRAME_SKIP, it) }
-                DropdownSetting("纹理缩放",
-                    listOf("1" to "关闭 (默认)", "2" to "2x", "3" to "3x",
-                           "4" to "4x", "5" to "5x"),
-                    pspTexScale
-                ) { pspTexScale = it
-                    PspSettingsStore.writeInt(context, PspSettingsStore.TEX_SCALE_LEVEL, it.toIntOrNull() ?: 1) }
+                    PspCoreOptions.def("ppsspp_frameskip")!!.choices, pspFrameSkip
+                ) { pspFrameSkip = it; pspPush("ppsspp_frameskip", it) }
+                DropdownSetting("自动跳帧",
+                    PspCoreOptions.def("ppsspp_auto_frameskip")!!.choices, pspAutoSkip
+                ) { pspAutoSkip = it; pspPush("ppsspp_auto_frameskip", it) }
+                DropdownSetting("纹理放大",
+                    PspCoreOptions.def("ppsspp_texture_scaling_level")!!.choices, pspTexScale
+                ) { pspTexScale = it; pspPush("ppsspp_texture_scaling_level", it) }
 
-                Text("系统 / 音频", color = Color(0xFF8899AA), fontSize = 11.sp)
+                Text("系统 / 性能", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("CPU 核心",
-                    listOf("0" to "JIT (推荐)", "1" to "IR JIT", "2" to "解释器"),
-                    pspCpuCore
-                ) { pspCpuCore = it
-                    PspSettingsStore.writeInt(context, PspSettingsStore.CPU_CORE, it.toIntOrNull() ?: 0) }
-                SwitchSetting("金手指", "启用 CHEATS 目录下的补丁", pspCheats
-                ) { pspCheats = it
-                    PspSettingsStore.writeBool(context, PspSettingsStore.ENABLE_CHEATS, it) }
-                DropdownSetting("游戏音量",
-                    listOf("100" to "100%", "80" to "80%", "60" to "60%",
-                           "40" to "40%", "20" to "20%", "0" to "静音"),
-                    pspVolume
-                ) { pspVolume = it
-                    PspSettingsStore.writeInt(context, PspSettingsStore.GAME_VOLUME, it.toIntOrNull() ?: 100) }
-
-                Text("触控 / 联机", color = Color(0xFF8899AA), fontSize = 11.sp)
-                SwitchSetting("显示虚拟按键", "PPSSPP 自带触控层（渲染在画面内）", pspShowTouch
-                ) { pspShowTouch = it
-                    PspSettingsStore.writeBool(context, PspSettingsStore.SHOW_TOUCH, it) }
-                DropdownSetting("虚拟按键不透明度",
-                    listOf("100" to "100%", "80" to "80%", "60" to "60%",
-                           "40" to "40%", "20" to "20%", "10" to "10%"),
-                    pspTouchOpacity
-                ) { pspTouchOpacity = it
-                    PspSettingsStore.writeInt(context, PspSettingsStore.TOUCH_OPACITY, it.toIntOrNull() ?: 100) }
-                SwitchSetting("WLAN 联机", "启用 ad hoc 多人联机", pspWlan
-                ) { pspWlan = it
-                    PspSettingsStore.writeBool(context, PspSettingsStore.ENABLE_WLAN, it) }
+                    PspCoreOptions.def("ppsspp_cpu_core")!!.choices, pspCpuCore
+                ) { pspCpuCore = it; pspPush("ppsspp_cpu_core", it) }
+                DropdownSetting("快速内存",
+                    PspCoreOptions.def("ppsspp_fast_memory")!!.choices, pspFastMem
+                ) { pspFastMem = it; pspPush("ppsspp_fast_memory", it) }
 
                 Spacer(Modifier.size(4.dp))
-                Text("写入 ppsspp.ini（与主设置页共用），重进游戏会话后生效。" +
-                    "游戏内按 L2 可调出 PPSSPP 原生菜单（即时存档/设置/金手指）。",
+                Text("改动即时保存并热应用（CPU 核心等个别键下次进入游戏生效）。" +
+                    "完整设置（纹理过滤/联机/摇杆/语言等 40+ 项）见 主设置页 → 核心设置 → PSP。" +
+                    "虚拟按键显隐/布局在 触控设置 里调整。",
                     color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                 Spacer(Modifier.size(6.dp))
             }

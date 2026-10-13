@@ -1034,6 +1034,14 @@ class PadLayout {
     var dcLStick: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.50f, sizeDp = 104)
     var dcLStickP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.52f, sizeDp = 92)
 
+    // === PSP (PPSSPP libretro) on-screen pad extras ===
+    // PSP 手柄：十字键（左上）+ 左侧模拟摇杆（真模拟轴，多数 PSP 游戏靠它
+    // 移动/视角）+ ✕○□△ 四键 + L/R + Start/Select。摇杆为常驻模拟控件
+    // （不参与显隐），输出经 onAnalogAxes → PspCoreEngine.setAnalogAxes →
+    // psp_loader 的 RETRO_DEVICE_ANALOG 左轴（与 DC 同模式）。
+    var pspLStick: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.50f, sizeDp = 104)
+    var pspLStickP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.52f, sizeDp = 92)
+
     // === Arcade (FBNeo) on-screen pad extras ===
     // L2/R2 button positions (bit12/bit13 in the libretro joypad word).
     // Used for 6-button fight-stick layouts and as Coin/Start shortcuts.
@@ -1679,6 +1687,8 @@ class PadLayout {
         n3dsRStickP = another.n3dsRStickP
         dcLStick = another.dcLStick
         dcLStickP = another.dcLStickP
+        pspLStick = another.pspLStick
+        pspLStickP = another.pspLStickP
         n3dsBtnA = another.n3dsBtnA
         n3dsBtnB = another.n3dsBtnB
         n3dsBtnX = another.n3dsBtnX

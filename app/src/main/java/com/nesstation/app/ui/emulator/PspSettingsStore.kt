@@ -167,4 +167,72 @@ object PspSettingsStore {
         } catch (_: Throwable) {}
         return names.map { it to it }
     }
+
+    // ==================================================================
+    // ★★ libretro 核心选项（ppsspp_*）持久化 —— 现行设置通道 ★★
+    //
+    // 与上面 ppsspp.ini 直写（旧"独立 PPSSPP Activity"集成遗留）不同，
+    // libretro 版 PPSSPP 核心【不读取 ppsspp.ini】—— 它唯一认可的设置
+    // 通道是 libretro 核心选项（retro_GET_VARIABLE 的 ppsspp_* 键，与
+    // RetroArch 的核心选项完全同构）。本节把核心选项持久化到独立文件
+    // <filesDir>/psp_core_options.ini（每行 "ppsspp_xxx=value"），由
+    // PspEngine 在 retro_load_game 之前整表灌入核心，并支持会话中热更新
+    // （核心每帧经 GET_VARIABLE_UPDATE 感知变更）。
+    //
+    // 完整选项目录（键/合法值/中文标签/默认值）见 PspCoreOptions.kt，
+    // 与 PPSSPP 官方 libretro.cpp check_variables() 逐一核对。
+    // ==================================================================
+
+    /** 核心选项存储文件（<filesDir>/psp_core_options.ini）。 */
+    fun coreOptionsFile(context: Context): File =
+        File(context.filesDir, "psp_core_options.ini")
+
+    /** 读取全部已存储的核心选项（键 → 值；文件不存在返回空表）。 */
+    fun readCoreOptions(context: Context): Map<String, String> {
+        val out = linkedMapOf<String, String>()
+        try {
+            val f = coreOptionsFile(context)
+            if (!f.isFile) return out
+            for (line in f.readLines()) {
+                val t = line.trim()
+                if (t.isEmpty() || t.startsWith("#") || !t.contains('=')) continue
+                val k = t.substringBefore('=').trim()
+                val v = t.substringAfter('=').trim()
+                if (k.isNotEmpty()) out[k] = v
+            }
+        } catch (_: Throwable) {}
+        return out
+    }
+
+    /** 读取单个核心选项；未存储返回 null。 */
+    fun readCoreOption(context: Context, key: String): String? =
+        readCoreOptions(context)[key]
+
+    /** 写入单个核心选项（不存在则追加；原子落盘）。 */
+    fun writeCoreOption(context: Context, key: String, value: String) {
+        try {
+            val f = coreOptionsFile(context)
+            f.parentFile?.mkdirs()
+            val lines = if (f.isFile) f.readLines().toMutableList() else mutableListOf()
+            val newLine = "$key=$value"
+            var replaced = false
+            for (i in lines.indices) {
+                if (lines[i].substringBefore('=').trim() == key) {
+                    lines[i] = newLine
+                    replaced = true
+                    break
+                }
+            }
+            if (!replaced) lines.add(newLine)
+            val tmp = java.io.File(f.parentFile, f.name + ".tmp")
+            tmp.writeText(lines.joinToString("\n") + "\n")
+            if (!tmp.renameTo(f)) {
+                // rename 失败（跨设备/占用）退化为直写
+                f.writeText(lines.joinToString("\n") + "\n")
+                tmp.delete()
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("PspSettingsStore", "writeCoreOption($key) failed", t)
+        }
+    }
 }

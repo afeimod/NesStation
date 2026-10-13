@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.view.Surface
 import com.nesstation.app.core.jni.PspNative
+import com.nesstation.app.ui.emulator.PspCoreOptions
 import com.nesstation.app.ui.emulator.PspSettingsStore
 import com.nesstation.app.ui.emulator.ensurePpssppEnvironment
 import java.io.File
@@ -131,77 +132,29 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
     // ------------------------------------------------------------------
 
     /**
-     * 把设置面板的 PspSettingsStore 键（ppsspp.ini 风格 "Section/key"）
-     * 映射为 libretro 核心的 ppsspp_* 选项值，在 retro_load_game 之前应用
-     *（核心在加载游戏与每帧 GET_VARIABLE_UPDATE 时读取）。
+     * 把设置面板持久化的 libretro 核心选项（PspCoreOptions 目录 +
+     * psp_core_options.ini 中用户改动/手工直通键）在 retro_load_game 之前
+     * 整表灌入核心（核心在加载游戏与每帧 GET_VARIABLE_UPDATE 时读取）。
      *
-     * 无对应 libretro 选项的 ini 键（PostShader/Volume/ShowTouchControls 等
-     * —— libretro 模式下由宿主渲染/宿主手柄接管）直接跳过，键值仍保留在
-     * 设置存储里，UI 不变。
+     * 键/值与 PPSSPP 官方 libretro.cpp check_variables() 逐字节对齐
+     * （大小写敏感，见 PspCoreOptions 头注释的历史教训）。
      */
     private fun applyStoredCoreOptions() {
         val ctx = appContext ?: PspNative.appContext ?: return
         try {
-            // Graphics/InternalResolution：ini 0=auto（映射 2x 档），1..8 → 档位字符串
-            val res = PspSettingsStore.readInt(ctx, PspSettingsStore.INTERNAL_RES, 0)
-            val resValue = if (res <= 0) "960x544"
-                           else "${480 * res}x${272 * res}"
-            PspNative.setCoreOption("ppsspp_internal_resolution", resValue)
-
-            // Graphics/FrameSkip：0..5 十进制字符串（libretro 直接喂 g_Config）
-            PspNative.setCoreOption(
-                "ppsspp_frameskip",
-                PspSettingsStore.readInt(ctx, PspSettingsStore.FRAME_SKIP, 0).coerceIn(0, 10).toString()
-            )
-            // Graphics/AutoFrameSkip
-            PspNative.setCoreOption(
-                "ppsspp_auto_frameskip",
-                if (PspSettingsStore.readBool(ctx, PspSettingsStore.AUTO_FRAME_SKIP, false)) "enabled" else "disabled"
-            )
-            // Graphics/TexScalingLevel：ini 0=auto,1=off,2..5 → libretro 同标度直写
-            PspNative.setCoreOption(
-                "ppsspp_texture_scaling_level",
-                PspSettingsStore.readInt(ctx, PspSettingsStore.TEX_SCALE_LEVEL, 1).coerceIn(0, 5).toString()
-            )
-            // Graphics/TexScalingType：0=xBRZ,1=Hybrid,2=Bicubic,3=Hybrid+Bicubic
-            PspNative.setCoreOption(
-                "ppsspp_texture_scaling_type",
-                when (PspSettingsStore.readInt(ctx, PspSettingsStore.TEX_SCALE_TYPE, 0)) {
-                    1 -> "hybrid"; 2 -> "bicubic"; 3 -> "hybrid_bicubic"; else -> "xbrz"
+            val stored = PspSettingsStore.readCoreOptions(ctx)
+            // 1) 目录全量（存储值优先，缺省用目录默认；空值不下发）
+            for ((key, value) in PspCoreOptions.effectiveValues(stored)) {
+                PspNative.setCoreOption(key, value)
+            }
+            // 2) 目录之外的手工直通键（高级用户直接写进
+            //    psp_core_options.ini 的 ppsspp_* 键）也一并下发
+            val inCatalog = PspCoreOptions.CATALOG.map { it.key }.toHashSet()
+            for ((key, value) in stored) {
+                if (key.startsWith("ppsspp_") && key !in inCatalog && value.isNotEmpty()) {
+                    PspNative.setCoreOption(key, value)
                 }
-            )
-            // Graphics/HardwareTransform
-            PspNative.setCoreOption(
-                "ppsspp_gpu_hardware_transform",
-                if (PspSettingsStore.readBool(ctx, PspSettingsStore.HW_TRANSFORM, true)) "enabled" else "disabled"
-            )
-            // System/CPUCore：0=JIT,1=IR-JIT,2=解释器
-            PspNative.setCoreOption(
-                "ppsspp_cpu_core",
-                when (PspSettingsStore.readInt(ctx, PspSettingsStore.CPU_CORE, 0)) {
-                    1 -> "IR jit"; 2 -> "interpreter"; else -> "jit"
-                }
-            )
-            // System/CPUSpeed：0=auto,222/266/333
-            val cpuSpeed = PspSettingsStore.readInt(ctx, PspSettingsStore.CPU_SPEED, 0)
-            PspNative.setCoreOption(
-                "ppsspp_locked_cpu_speed",
-                when (cpuSpeed) { 222 -> "222MHz"; 266 -> "266MHz"; 333 -> "333MHz"; else -> "off" }
-            )
-            // System/FastMemoryAccess
-            PspNative.setCoreOption(
-                "ppsspp_fast_memory",
-                if (PspSettingsStore.readBool(ctx, PspSettingsStore.FAST_MEMORY, true)) "enabled" else "disabled"
-            )
-            // System/EnableCheats
-            PspNative.setCoreOption(
-                "ppsspp_cheats",
-                if (PspSettingsStore.readBool(ctx, PspSettingsStore.ENABLE_CHEATS, false)) "enabled" else "disabled"
-            )
-            // IO/音频（无面板键 —— 用稳妥默认，键仍可经 setCoreOption 覆盖）
-            PspNative.setCoreOption("ppsspp_io_timing_method", "Fast")
-            PspNative.setCoreOption("ppsspp_audio_latency", "low")
-            PspNative.setCoreOption("ppsspp_rendering_mode", "buffered")
+            }
         } catch (t: Throwable) {
             android.util.Log.w("PspEngine", "applyStoredCoreOptions failed", t)
         }
@@ -339,14 +292,23 @@ class PspEngine private constructor() : EmulatorEngine, PspCoreEngine {
     }
 
     override fun setCoreOption(key: String, value: String) {
-        // 设置面板的键（"Section/key" ini 风格）经 PspSettingsStore 落盘；
-        // libretro 选项在下次 loadRom 时由 applyStoredCoreOptions 统一映射
-        // 应用（retro 变量在会话中途对多数图形键同样可热更新 —— 经
-        // setCoreOption 直通核心的 ppsspp_* 键原样转发）。
+        // libretro 核心选项（ppsspp_*）：持久化到 psp_core_options.ini +
+        // PspNative.setCoreOption 直推（会话中改即时热更新 —— 核心经
+        // GET_VARIABLE_UPDATE 每帧感知；下次启动由 applyStoredCoreOptions
+        // 整表重放）。
         if (key.startsWith("ppsspp_")) {
+            val ctx = appContext ?: PspNative.appContext
+            if (ctx != null) {
+                try {
+                    PspSettingsStore.writeCoreOption(ctx, key, value)
+                } catch (t: Throwable) {
+                    android.util.Log.w("PspEngine", "persistCoreOption($key) failed", t)
+                }
+            }
             PspNative.setCoreOption(key, value)
             return
         }
+        // 旧 ini 风格键（"Section/key"）—— 兼容保留：写入 ppsspp.ini。
         val ctx = appContext ?: PspNative.appContext ?: return
         val dot = key.indexOf('/')
         if (dot <= 0 || dot >= key.length - 1) return

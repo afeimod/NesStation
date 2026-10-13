@@ -304,11 +304,27 @@ static std::mutex s_softwareWindowMtx;
 
 // ---------------------------------------------------------------------------
 // Initialize PPSSPP core options with sensible defaults.
-// Keys and VALUES verified against the core's libretro.cpp RetroOption table
-// (bool options take "enabled"/"disabled", int options decimal strings,
-// enum options the exact listed value strings). The Kotlin side
-// (PspEngine) pre-seeds user choices from PspSettingsStore via
-// setCoreOption() BEFORE loadRom — only absent keys get these defaults.
+//
+// ★★ 键名/取值必须与核心 check_variables() 的 strcmp 逐字节一致（大小写
+// 敏感），否则核心静默忽略 —— 对照官方 libretro.cpp 核实过的要点：
+//   · ppsspp_cpu_core 只认 "JIT" / "IR JIT" / "Interpreter"（小写 "jit"
+//     会被忽略 → 核心退回解释器 → 严重卡顿）；
+//   · ppsspp_texture_scaling_level 只认 "disabled"/"2x".."5x"（数字无效）；
+//   · ppsspp_texture_filtering 只认 "Auto"/"Nearest"/"Linear"/
+//     "Auto max quality"；
+//   · ppsspp_language 只认 "Automatic"/"English"/"Chinese Simplified" 等
+//     首字母大写枚举；
+//   · ppsspp_button_preference 只认 "Cross"/"Circle"；
+//   · "ppsspp_rendering_mode" / "ppsspp_audio_latency" /
+//     "ppsspp_vertex_cache" / "ppsspp_block_transfer_gpu" /
+//     "ppsspp_unsafe_func_replacements" 键【不存在】（死键，已移除；
+//     渲染模式对应 ppsspp_skip_buffer_effects，音频延迟由前端 AudioTrack
+//     控制）。
+//
+// Keys and VALUES verified against the core's check_variables() strcmp
+// table. The Kotlin side (PspEngine) pre-seeds user choices from
+// psp_core_options.ini (PspCoreOptions catalog) BEFORE loadRom — only
+// absent keys get these defaults.
 // ---------------------------------------------------------------------------
 static void initDefaultOptions() {
     auto setIfMissing = [](const std::string& key, const std::string& val) {
@@ -318,29 +334,26 @@ static void initDefaultOptions() {
     };
 
     // --- Video / GPU ---
-    setIfMissing("ppsspp_internal_resolution",   "960x544");   // 2x — 手掌机均衡档
-    setIfMissing("ppsspp_rendering_mode",        "buffered");  // 帧缓冲渲染（兼容性最好）
+    setIfMissing("ppsspp_internal_resolution",   "480x272");   // 1x — 官方默认档（最快）
+    setIfMissing("ppsspp_skip_buffer_effects",   "disabled");  // buffered rendering（兼容性最好）
     setIfMissing("ppsspp_frameskip",             "0");
     setIfMissing("ppsspp_auto_frameskip",        "disabled");
     setIfMissing("ppsspp_gpu_hardware_transform","enabled");
-    setIfMissing("ppsspp_texture_scaling_level", "1");         // 1 = off（不放大纹理）
+    setIfMissing("ppsspp_texture_scaling_level", "disabled");  // 纹理放大关（性能关键）
     setIfMissing("ppsspp_texture_scaling_type",  "xbrz");
-    setIfMissing("ppsspp_texture_filtering",     "auto");
+    setIfMissing("ppsspp_texture_filtering",     "Auto");
     setIfMissing("ppsspp_texture_deposterize",   "disabled");
-    setIfMissing("ppsspp_block_transfer_gpu",    "enabled");
 
     // --- System / CPU ---
-    setIfMissing("ppsspp_cpu_core",              "jit");
+    setIfMissing("ppsspp_cpu_core",              "JIT");       // ★ 大写！小写被核心忽略
     setIfMissing("ppsspp_fast_memory",           "enabled");
-    setIfMissing("ppsspp_locked_cpu_speed",      "off");
-    setIfMissing("ppsspp_unsafe_func_replacements","enabled");
-    setIfMissing("ppsspp_vertex_cache",          "disabled");
-    setIfMissing("ppsspp_language",              "automatic");
+    setIfMissing("ppsspp_ignore_bad_memory_access", "enabled");
+    setIfMissing("ppsspp_locked_cpu_speed",      "0");         // 0 = 不锁定
+    setIfMissing("ppsspp_language",              "Chinese Simplified");
+    setIfMissing("ppsspp_button_preference",     "Cross");
 
     // --- Media / IO ---
     setIfMissing("ppsspp_io_timing_method",      "Fast");
-    setIfMissing("ppsspp_audio_latency",         "low");
-    setIfMissing("ppsspp_button_preference",     "cross");
 }
 
 // ---------------------------------------------------------------------------
