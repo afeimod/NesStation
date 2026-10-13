@@ -335,11 +335,10 @@ static void initDefaultOptions() {
     };
 
     // --- Video / GPU ---
-    // v9：默认 2x。核心 retro_get_system_av_info() 直接以
-    // iInternalResolution * 480/272 生成几何尺寸，1x（480x272）在手机
-    // 全屏下是原生低分辨率放大 —— 观感即"分辨率坏掉"。2x（960x544）
-    // 是移动端 PPSSPP 的常规档（官方独立版 Android 默认也为 auto≈2x+）。
-    setIfMissing("ppsspp_internal_resolution",   "960x544");   // 2x — 移动端默认档
+    // 键名/取值严格对齐官方 libretro.cpp check_variables()。分辨率默认
+    // 480x272（官方 RetroArch 默认档，iInternalResolution=1）；设置面板
+    // （PspCoreOptions）可改，本表只作为面板未覆盖时的兑底。
+    setIfMissing("ppsspp_internal_resolution",   "480x272");   // 官方默认 1x
     setIfMissing("ppsspp_skip_buffer_effects",   "disabled");  // buffered rendering（兼容性最好）
     setIfMissing("ppsspp_frameskip",             "0");
     setIfMissing("ppsspp_auto_frameskip",        "disabled");
