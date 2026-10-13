@@ -1232,6 +1232,11 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
     return "";
 }
 
+// Forward declaration — defined in the state-op queue section below.
+// Used by stepFrame() and drainStateOp() to run save/load state ops on the
+// emulation thread between frames (v5 save-state deadlock fix).
+static void processPendingStateOp();
+
 void unload() {
     // Drop any pending save/load state op first — a waiter (UI thread) gets
     // failed instead of the op firing into the NEXT game after reload.
