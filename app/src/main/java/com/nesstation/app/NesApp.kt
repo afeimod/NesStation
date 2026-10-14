@@ -890,11 +890,11 @@ class NesApp : Application() {
      *   GraphicPacksViewModel.installBundledPacks() 的 NesStation 移植版。
      *
      * 产物（<filesDir>/cemu = Cemu 用户目录 userDataPath）：
-     *  - data/gameProfiles/**  + data/resources/** —— 来自构建期 staging 的
+     *  - data/gameProfiles 与 data/resources 两棵全目录树 —— 来自构建期 staging 的
      *    assets/cemu/（core/cemu/bin），按 assets/cemu/hash.txt（构建期对 bin/
      *    全量 SHA-256）与已落盘 data/hash.txt 比对，变更时整体重解（上游同
      *    机制：wipe → extract → 写 hash 标记）；
-     *  - graphicPacks/** —— 内置图形包 bundled_graphic_packs.zip 解包（仅当
+     *  - graphicPacks 全目录树 —— 内置图形包 bundled_graphic_packs.zip 解包（仅当
      *    graphicPacks 目录不存在或为空时，避免覆盖用户下载/自装的新包）。
      *
      * IO 密集（~30MB）—— 后台线程执行，不阻塞启动。
