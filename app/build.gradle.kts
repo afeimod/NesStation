@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -63,7 +65,7 @@ abstract class ComputeCemuDataFilesHashTask : DefaultTask() {
             outFile.writeText("invalid")
             return
         }
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val digest = MessageDigest.getInstance("SHA-256")
         binDir.walkTopDown()
             .filter { it.isFile }
             .sortedBy { it.path }
@@ -80,7 +82,7 @@ abstract class ComputeCemuDataFilesHashTask : DefaultTask() {
             }
         // JDK 17 无 javax.xml.bind.DatatypeConverter（上游 CI 用 JAXB 依赖），
         // 直接手写十六进制展开，算法与上游完全一致。
-        outFile.writeText(digest.digest().joinToString("") { "%02X".format(it) })
+        outFile.writeText(digest.digest().joinToString("") { b -> "%02X".format(b) })
     }
 }
 val computeCemuDataFilesHash = tasks.register<ComputeCemuDataFilesHashTask>("computeCemuDataFilesHash") {
