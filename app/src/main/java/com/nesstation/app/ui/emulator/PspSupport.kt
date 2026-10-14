@@ -26,6 +26,11 @@ import java.io.File
  *     —— 旧版直写核心 ppsspp.ini；libretro 核心不读 ini，本文件只是
  *     NesStation 自己的设置存储（PspEngine.loadRom 时映射为 ppsspp_*
  *     核心选项）。旧 memstick/ppsspp.ini 的历史设置自动迁移。
+ *  3. [clearPspNand]（v10 新增、v11 扩展）：每次 loadRom 前清空
+ *     <saveDir>/PSP/NAND/ —— 官方核心会把光盘固件更新器里的字体/固件
+ *     （或游戏自己写入的文件）持久化到该目录，跨游戏污染后引发字体
+ *     缺陷与部分游戏绿屏；启动前按官方 EraseInstalledFirmware 的整体
+ *     擦除语义全量清空，官方链路会按需重装。
  */
 
 /** 资产播种版本 —— 随包资产内容变化时递增，触发重新播种。
@@ -35,44 +40,56 @@ import java.io.File
  *  v1/v2 的设备因版本标记一致而永远不会补上 —— 造成 PSP 游戏内文字缺失
  *  （sceFont 走 VFS 兜底路径 flash0/font/，见官方 sceFont.cpp）。
  *  v4：中文大字库 jpn0.pgf + zh_gb.pgf（GBK 码位全覆盖）+ ppge_atlas.meta。
- *  v5：字体播种到 ms0 经典覆盖路径（<saveDir>/PSP/flash0/font/）。
- *  v6（本轮）★ 全面回归官方源码方案：
- *   · 随包资产全部替换为 PPSSPP 官方仓库 assets/ 原件（逐字节一致：
- *     jpn0/kr0/ltn0-15.pgf + compat.ini + knownfuncs.ini + langregion.ini
- *     + lang/），并删除自造的 zh_gb.pgf（官方任何版本均无此文件）；
- *   · 废除 v5 的 ms0 字体覆盖层。官方 sceFont.cpp __LoadInternalFonts()
- *     的查找链是 disc0 → ms0 → NAND → VFS，而 ms0 存在时核心会跳过
- *     NAND（"Classic font overrides active, ignoring NAND"）——自造字体
- *     占住 ms0 等于永久屏蔽官方字体自动安装路径
- *     （System.cpp:565 AutoInstallFirmwareFromDisc + sceFont.cpp
- *     InstallFontsFromDiscUpdater，从游戏盘自带固件升级包解包真机字体
- *     与 mpeg.prx 等模块）。废除后核心按官方行为自动安装真固件；
- *     对自带字体的汉化游戏（disc0:/PSP_GAME/USRDIR/zh_gb.pgf +
- *     oldfont.prx，sceFont.cpp:998）官方代码本就优先使用游戏盘字体。
- *   · 启动时一次性删除旧版本播种在 <saveDir>/PSP/flash0/ 的残留字体，
- *     否则旧设备上的自造字体会继续遮蔽官方链。
- *  递增到 v6 强制全量重播种。
+ *  v5（v9 交付）★ 字体加载优先级修复：
+ *   官方 sceFont.cpp __LoadInternalFonts() 的字体查找链是：
+ *     游戏盘 disc0 → ms0:/PSP/flash0/font/（经典覆盖）→
+ *     NAND flash0:/font/（固件）→ VFS（<systemDir>/PPSSPP/，优先级最低）。
+ *   v4 的中文字体只播种在 VFS（优先级最低）——而核心的固件自动安装
+ *   （System.cpp:565 AutoInstallFirmwareFromDisc，无条件）会把真机字体
+ *   （JIS 索引，无 GBK 码位）装进 NAND，直接遮蔽 VFS 字体 → 汉化游戏
+ *   用 GBK 码位查字再次全部落空（altCharCode=0x5F）→ 满屏下划线。
+ *   v5 起把整套字体同时播种到 ms0 经典覆盖路径（<saveDir>/PSP/flash0/
+ *   font/）——它在官方查找链里优先于 NAND 与 VFS，固件装不装都命中。
+ *   首次生效时 logcat 会出现 "Classic font overrides active, ignoring
+ *   NAND"（sceFont.cpp WARN，预期行为，勿当故障）。
+ *  递增到 v5 强制全量重播种（含 ms0 字体覆盖层）。
  *  注意：KDoc 注释内不可出现 "斜杠-星号" 字符序列 —— Kotlin 块注释支持
  *  嵌套，序列会被当作开启新的嵌套注释，导致 "Unclosed comment" 编译错误。 */
-private const val PPSSPP_ASSETS_VERSION = "6"
+private const val PPSSPP_ASSETS_VERSION = "5"
+
+/** ms0 字体覆盖层自己的播种标记（与 VFS 资产标记分离，各自独立幂等）。 */
+private const val FONT_OVERRIDE_MARKER = ".nesstation_font_seed"
 
 /**
  * PPSSPP 首次运行环境准备（幂等）：
  *  - 把 assets "ppsspp/" 递归播种到 <systemDir>/PPSSPP/（核心的资产 VFS 根
  *    + flash0 字体目录）；版本标记不一致时整体重播种；
- *  - 清理历史版本遗留的 ms0 字体覆盖层（v5 曾把自造字体播种到
- *    <saveDir>/PSP/flash0/font/，会遮蔽官方字体链，详见下文 v6 注释）；
+ *  - 把 flash0/font 全套 .pgf 额外播种到 <saveDir>/PSP/flash0/font/
+ *    （ms0 经典字体覆盖，官方查找链优先级高于 NAND/VFS —— 见版本注释 v5）；
+ *  - （v10/v11）启动前清空 <saveDir>/PSP/NAND/（官方固件/字体自动
+ *    安装与游戏写入的持久化目录，跨游戏污染源 —— 见 clearPspNand）；
  *  - 返回 [systemDir]（PspEngine 原样传给 PspNative.setPaths）。
  *
  * @param context   App context（读 assets）
  * @param systemDir 系统目录（EmulatorScreen.loadRom 传入的 core system dir）
  * @param saveDir   存档目录（与 PspNative.setPaths 的第二参一致 = 核心
- *                  memstick 根）
+ *                  memstick 根；ms0: 即此目录）
  * @return 系统目录绝对路径
  */
 fun ensurePpssppEnvironment(context: Context, systemDir: String, saveDir: String): String {
     val base = File(systemDir, "PPSSPP")
     try {
+        // v11：启动清理 —— 官方固件/字体自动安装链（System.cpp:565
+        // AutoInstallFirmwareFromDisc / sceFont.cpp:951
+        // InstallFontsFromDiscUpdater）与部分游戏自身都会往
+        // <saveDir>/PSP/NAND 写文件并跨游戏持久化；残缺或被替换后
+        // 引发字体缺陷与部分游戏绿屏（用户实测根因）。官方对陈旧
+        // NAND 的解法就是整体擦除重装（PSARUnpack.cpp:1169
+        // EraseInstalledFirmware / :1395 SwapStagingIntoPlace），这里
+        // 每次进游戏前照此整目录清空，交还官方链路按需重建
+        // （见 clearPspNand 的 KDoc）。
+        clearPspNand(saveDir)
+
         base.mkdirs()
         val marker = File(base, ".nesstation_seeded")
         val current = if (marker.isFile) marker.readText().trim() else ""
@@ -87,13 +104,12 @@ fun ensurePpssppEnvironment(context: Context, systemDir: String, saveDir: String
             android.util.Log.i("PspSupport", "PPSSPP assets seeded to ${base.absolutePath}")
         }
 
-        // 清理 v5 遗留的 ms0 字体覆盖层：它以自造字体遮蔽官方字体链
-        // （disc0 → ms0 → NAND → VFS 中的第二级），必须删除才能让核心按
-        // 官方行为从游戏盘自动安装真固件字体/模块。幂等：目录不存在即跳过。
+        // ms0 经典字体覆盖（优先级高于 NAND 固件字体与 VFS）。
+        // 独立标记：目录级幂等，版本变化或目录首次使用时播种一次。
         try {
-            removeLegacyFontOverrides(saveDir)
+            seedClassicFontOverrides(context, saveDir)
         } catch (t: Throwable) {
-            android.util.Log.w("PspSupport", "removeLegacyFontOverrides failed", t)
+            android.util.Log.w("PspSupport", "seedClassicFontOverrides failed", t)
         }
 
         // 旧版设置迁移：memstick/PSP/SYSTEM/ppsspp.ini → pspSettingsIniFile
@@ -105,22 +121,78 @@ fun ensurePpssppEnvironment(context: Context, systemDir: String, saveDir: String
 }
 
 /**
- * 删除 v5 及更早版本播种的 ms0 字体覆盖层（<saveDir>/PSP/flash0/）。
+ * v10 新增、v11 扩展 —— 模拟 NAND 启动清理（用户实测根因修复）。
  *
- * 官方 sceFont.cpp __LoadInternalFonts()：ms0:/PSP/flash0/font/ 存在时
- * （checkClassicOverrides）核心对其余查找路径全部让位（NAND 真固件字体
- * 不再参与），因此该目录一旦残留自造字体，游戏内文字就会持续异常。
- * 该路径不是核心自建的运行时目录（核心只建 PSP/{SAVEDATA,SYSTEM,GAME}），
- * 整目录删除不会影响存档/记忆棒数据。
+ * 为什么不能只删 font：NAND 里除 flash0/font 外还有 kd/（内核模块）、
+ * vsh/、flash1/、ipl/ 等，固件安装中断或被游戏写入后同样残留损坏
+ * 文件，部分游戏因此异常（绿屏）。官方对 NAND 陈旧内容的解法就是
+ * 整体擦除后重装（见下），从不按子目录挑选。
+ *
+ * 官方做法对照（hrydgard/ppsspp 当前 master，Core/Util/PSARUnpack.cpp）：
+ *  - EraseInstalledFirmware()（PSARUnpack.cpp:1169）递归删除 NAND 下
+ *    的 flash0、flash1、ipl 三个目录 —— 官方唯一的 NAND 擦除函数；
+ *  - 每次固件安装 SwapStagingIntoPlace()（PSARUnpack.cpp:1395）都先
+ *    调它把旧 NAND 全部擦掉，再从 install-staging 换入新固件 ——
+ *    官方的安装语义就是全量擦除加重写（System.cpp:562-564 注释原文
+ *    亦如此）；
+ *  - InstallFirmware()（PSARUnpack.cpp:1437）每次还先清掉上一次安装
+ *    中断遗留的 install-staging 目录。
+ *
+ * 位置推导：PathUtil.cpp:144 DIRECTORY_NAND = <memstick>/PSP/NAND，
+ * System.cpp:345 把 flash0:/flash1: 官方挂载在 NAND/flash0、NAND/flash1
+ * （可写目录文件系统，等同真机 NAND）；NesStation 的 memstick 根即
+ * saveDir（PspEngine.loadRom 传给核心的 GET_SAVE_DIRECTORY）。
+ *
+ * 本函数每次 loadRom 前把 <saveDir>/PSP/NAND 整目录删除并重建空目录：
+ *  - 等价于官方 EraseInstalledFirmware 的全量擦除，并顺带清掉
+ *    install-staging 残留与 .nomedia（官方会在安装时重建）；
+ *  - 擦除后官方链路按需重装：带更新器的游戏由 AutoInstallFirmwareFromDisc
+ *    （System.cpp:565）/ InstallFontsFromDiscUpdater（sceFont.cpp:951）
+ *    重新写入，属官方既定行为；
+ *  - 游戏存档（PSP/SAVEDATA）、即时存档（PSP/PPSSPP_STATE）、游戏本体
+ *    均在 NAND 之外，不受影响。
+ * （v10 仅删 font 子目录，实测字体可修复但 kd/ 等残留仍致绿屏，
+ *   v11 扩为全量清理。）
  */
-private fun removeLegacyFontOverrides(saveDir: String) {
-    val legacyFlash0 = File(File(File(saveDir), "PSP"), "flash0")
-    if (legacyFlash0.exists()) {
-        val removed = legacyFlash0.deleteRecursively()
-        android.util.Log.i("PspSupport",
-            "legacy ms0 font overrides at ${legacyFlash0.absolutePath} " +
-            (if (removed) "removed" else "(delete failed)"))
+private fun clearPspNand(saveDir: String) {
+    if (saveDir.isBlank()) return
+    try {
+        val nand = File(File(File(saveDir), "PSP"), "NAND")
+        if (nand.exists()) {
+            val ok = nand.deleteRecursively()
+            nand.mkdirs()
+            val status = if (ok) "done" else "FAILED"
+            android.util.Log.i("PspSupport", "PSP/NAND cleanup $status: ${nand.absolutePath}")
+        }
+    } catch (t: Throwable) {
+        android.util.Log.w("PspSupport", "clearPspNand failed", t)
     }
+}
+
+/**
+ * ms0 经典字体覆盖层播种：assets ppsspp/flash0/font 全套 .pgf →
+ * <saveDir>/PSP/flash0/font/。
+ *
+ * 官方 sceFont.cpp __LoadInternalFonts()（每局游戏启动时执行）按
+ * 游戏盘 → ms0 → NAND → VFS 的顺序为 fontRegistry 的每个注册项找字体。
+ * 只要把字体放进 ms0:/PSP/flash0/font/，就能压过 NAND 里固件自动安装
+ * 的真机字体（JIS 索引、无 GBK 码位）——汉化游戏按 GBK 码位查字即可
+ * 命中随包中文字库。标记文件保证同一目录只播种一次。
+ */
+private fun seedClassicFontOverrides(context: Context, saveDir: String) {
+    val fontDir = File(File(File(saveDir), "PSP"), "flash0").resolve("font")
+    val marker = File(fontDir, FONT_OVERRIDE_MARKER)
+    val current = if (marker.isFile) marker.readText().trim() else ""
+    if (current == PPSSPP_ASSETS_VERSION &&
+        File(fontDir, "jpn0.pgf").isFile && File(fontDir, "zh_gb.pgf").isFile) {
+        return
+    }
+    copyAssetTree(context, "ppsspp/flash0/font", fontDir)
+    try {
+        marker.parentFile?.mkdirs()
+        marker.writeText(PPSSPP_ASSETS_VERSION)
+    } catch (_: Throwable) {}
+    android.util.Log.i("PspSupport", "ms0 font overrides seeded to ${fontDir.absolutePath}")
 }
 
 /** 递归复制 assets 子树到目标目录（目录结构原样保留）。 */
