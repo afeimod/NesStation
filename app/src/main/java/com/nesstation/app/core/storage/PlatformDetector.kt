@@ -118,6 +118,11 @@ object PlatformDetector {
         "gcz" to GamePlatform.NGCWII, "wad" to GamePlatform.NGCWII,
         "dol" to GamePlatform.NGCWII, "nkit" to GamePlatform.NGCWII,
         "wbfs" to GamePlatform.NGCWII, "ciso" to GamePlatform.NGCWII,
+        // Nintendo Wii U（wud/wux/wua/wuhb/rpx 均为 Wii U 专属格式，日常
+        // 文件不撞名；.iso/.elf 与其它平台共用，走 hint 消歧不进白名单）
+        "wud" to GamePlatform.WIIU, "wux" to GamePlatform.WIIU,
+        "wua" to GamePlatform.WIIU, "wuhb" to GamePlatform.WIIU,
+        "rpx" to GamePlatform.WIIU,
         // SEGA Dreamcast / NAOMI（.gdi/.cdi 为 DC 专属格式，日常文件不撞名）
         "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC,
         // Sony PSP（.cso 为 PSP 专属压缩 ISO 格式，日常文件不撞名；
@@ -219,7 +224,8 @@ object PlatformDetector {
             return when (hintPlatform) {
                 GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
                 GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC,
-                GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.PSP -> hintPlatform
+                GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.PSP,
+                GamePlatform.WIIU -> hintPlatform
                 else -> GamePlatform.MD
             }
         }
@@ -231,7 +237,8 @@ object PlatformDetector {
     private val REFRESH_HINT_ALLOWED = setOf(
         GamePlatform.MD, GamePlatform.PCE, GamePlatform.DOS,
         GamePlatform.PSX, GamePlatform.PS2, GamePlatform.DC,
-        GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.PSP
+        GamePlatform.N3DS, GamePlatform.NGCWII, GamePlatform.PSP,
+        GamePlatform.WIIU
     )
 
     /**
@@ -325,8 +332,16 @@ object PlatformDetector {
                 GamePlatform.N3DS -> GamePlatform.N3DS
                 GamePlatform.NGCWII -> GamePlatform.NGCWII
                 GamePlatform.PSP -> GamePlatform.PSP
+                // Wii U .iso：WIIU 页导入时优先归 Cemu（与 PSP .elf 同模式）
+                GamePlatform.WIIU -> GamePlatform.WIIU
                 else -> GamePlatform.MD
             }
+        }
+
+        // === Wii U 专属：.elf（RPX 同族裸可执行）在 Wii U 页导入时优先归 Cemu
+        //（与 PSP .elf 消歧同模式）===
+        if (ext == "elf" && hintPlatform == GamePlatform.WIIU) {
+            return GamePlatform.WIIU
         }
 
         // === PSP 专属扩展：.pbp 在 PSP 游戏镜像与 PSX eboot 之间撞名 ——
@@ -402,6 +417,10 @@ object PlatformDetector {
                 if (ps2Hints.any { lowerPath.contains(it) }) return GamePlatform.PS2
                 val n3dsHints = listOf("3ds", "citra", "azahar", "/n3ds/")
                 if (n3dsHints.any { lowerPath.contains(it) }) return GamePlatform.N3DS
+                // Wii U 关键字须在 NGCWII 之前匹配 —— ngcwiiHints 里的 "wii"
+                // 会误命中 "wiiu" 路径（/storage/wiiu/ → 先判 Wii U 再判 NGC/Wii）
+                val wiiuHints = listOf("wiiu", "wii u", "cemu")
+                if (wiiuHints.any { lowerPath.contains(it) }) return GamePlatform.WIIU
                 val ngcwiiHints = listOf("gamecube", "ngc", "wii", "dolphin", "ishiiruka")
                 if (ngcwiiHints.any { lowerPath.contains(it) }) return GamePlatform.NGCWII
                 val pspHints = listOf("psp", "ppsspp", "playstationportable", "/psp/")
@@ -419,8 +438,14 @@ object PlatformDetector {
                 GamePlatform.N3DS -> GamePlatform.N3DS
                 GamePlatform.NGCWII -> GamePlatform.NGCWII
                 GamePlatform.PSP -> GamePlatform.PSP
+                GamePlatform.WIIU -> GamePlatform.WIIU
                 else -> GamePlatform.MD
             }
+        }
+
+        // === Wii U .elf（裸可执行）：WIIU 页 hint 优先（同 detectFromUri） ===
+        if (ext == "elf" && hintPlatform == GamePlatform.WIIU) {
+            return GamePlatform.WIIU
         }
 
         // === PSP .pbp/.elf：PSP 页 hint 优先（同 detectFromUri 规则） ===

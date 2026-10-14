@@ -1373,6 +1373,7 @@ fun LibraryScreen(
                     GamePlatform.NDS,
                     GamePlatform.N3DS,
                     GamePlatform.NGCWII,
+                    GamePlatform.WIIU,
                     GamePlatform.PSX,
                     GamePlatform.PS2,
                     GamePlatform.JAVA,
@@ -2409,6 +2410,7 @@ private fun FsdPlatformBadge(platform: GamePlatform, modifier: Modifier = Modifi
         GamePlatform.N3DS   -> "3DS"
         GamePlatform.NGCWII -> "NWC"
         GamePlatform.PSP    -> "PSP"
+        GamePlatform.WIIU   -> "WiiU"
     }
     Box(
         modifier = modifier

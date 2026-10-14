@@ -32,6 +32,10 @@ import androidx.compose.ui.graphics.Color
  *          预编译 libishiiruka.so + 原包名 JNI 契约
  *          org.dolphinemu.ishiiruka.NativeLibrary，推模型引擎 IshirukaEngine，
  *          集成方式与 DraStic（激烈）一致）
+ * WIIU   = Nintendo Wii U（Cemu-AZ 核心 —— 完整源码树移植在 core/cemu/，
+ *          经 :cemu-core 模块 vcpkg+CMake 源码编译产出 libCemuAndroid.so，
+ *          JNI 契约 vendored 于 info.cemu.cemu.nativeinterface，推模型引擎
+ *          CemuEngine，Vulkan 直绘主画布 + GamePad 触摸屏 + 原生快存槽位）
  * PSP    = Sony PlayStation Portable（PPSSPP v1.20.4 核心 —— 与 DC/PSX 完全
  *          同构的进程内 libretro 集成：PspEngine → libpspcore.so → dlopen
  *          libppsspp_libretro_android.so（标准 retro_* API，与 DC/PSX 相同入口），
@@ -54,6 +58,7 @@ enum class GamePlatform(val displayName: String) {
     DC("DC"),
     N3DS("3DS"),
     NGCWII("NGC/Wii"),
+    WIIU("Wii U"),
     PSP("PSP");
 
     companion object {
@@ -118,6 +123,8 @@ enum class GamePlatform(val displayName: String) {
                 // Nintendo GameCube / Wii (Ishiiruka / Dolphin)
                 "ngcwii", "ngc", "wii", "gamecube", "gc", "dolphin",
                 "ishiruka", "ishiiruka" -> NGCWII
+                // Nintendo Wii U (Cemu-AZ)
+                "wiiu", "wiiued", "cemu", "cemuu" -> WIIU
                 // Sony PlayStation Portable (PPSSPP)
                 "psp", "ppsspp", "playstationportable", "psportable" -> PSP
                 // J2ME
@@ -211,6 +218,13 @@ enum class GamePlatform(val displayName: String) {
                 // .rvz/.gcz/.ciso/.nkit 压缩镜像，.wbfs Wii 光盘格式，.wad 虚拟
                 // 主机/频道，.dol/.elf 可执行文件（.elf 与 PS2 共用，hint 消歧）。
                 "gcm", "rvz", "gcz", "ciso", "nkit", "wbfs", "wad", "dol" -> NGCWII
+                // Nintendo Wii U（Cemu-AZ）—— .wud/.wux 原生与压缩光盘镜像，
+                // .wua 官方打包格式（多合一），.wuhb homebrew 包，.rpx RPX
+                // 可执行文件。(.iso 与 NGCWII/PS2/DOS 共用、.elf 与 PS2 共用，
+                // 由 detectPlatformFromUri 的平台页 hint 消歧；.wad 保持 NGCWII
+                // 归属不变 —— Wii 频道 wad 更常见，Wii U wad 罕见且用户可用
+                // 平台页导入消歧。)
+                "wud", "wux", "wua", "wuhb", "rpx" -> WIIU
                 "jar", "jad" -> JAVA
                 // .zip is intentionally NOT mapped — see detectPlatformFromUri
                 // for the disambiguation logic.

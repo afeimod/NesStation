@@ -140,6 +140,17 @@ class NesApp : Application() {
                 engine.probeAvailability()
             }
         }
+        tryInit("CemuEngine")          {
+            // ★★ Wii U（Cemu-AZ 源码核心）：:cemu-core 模块源码编译产出
+            //   libCemuAndroid.so（vcpkg + CMake，非预编译 so）。启动时探测
+            //   可用性（arm64-v8a + API30+），库缺失/环境不满足时 UI 报告
+            //   “核心不可用”，不崩溃。-PskipCemuCore=true 构建的包在此处
+            //   自然探测失败，其余平台不受影响。
+            com.nesstation.app.core.engine.CemuEngine.get().also { engine ->
+                engine.appContext = this
+                engine.probeAvailability()
+            }
+        }
         tryInit("PspEngine")           {
             // PPSSPP PSP core —— 进程内 libretro 模式（与 DC/PSX 同构）：
             // libpspcore.so 运行时加载预编译 libppsspp_libretro_android.so
@@ -164,6 +175,10 @@ class NesApp : Application() {
         //   核心加载失败 → 表现为黑屏；配合 AzaharEngine 的错误上报，
         //   缺密钥时用户能看到明确提示）。
         tryInit("AzaharKeys")         { ensureAzaharKeys() }
+        // ★ Wii U（Cemu）资源种子：bin/ 资源（gameProfiles + resources，按
+        //   构建期 hash 变更增量重解）+ 内置图形包（bundled_graphic_packs.zip）
+        //   → <filesDir>/cemu/{data,graphicPacks}。IO 密集，内部自起后台线程。
+        tryInit("CemuData")            { ensureCemuData() }
         tryInit("ArcadeTitleMigrate") { migrateArcadeTitles() }
         tryInit("LibraryJunkSanitize") { sanitizeLibraryOnce() }
     }
@@ -868,6 +883,109 @@ class NesApp : Application() {
         } catch (_: Throwable) {
             // assets.list 失败说明无 sysdata 目录 —— 正常
         }
+    }
+
+    /**
+     * ★★ Wii U（Cemu-AZ）资源种子 —— 上游 CemuApplication.saveDataFiles() +
+     *   GraphicPacksViewModel.installBundledPacks() 的 NesStation 移植版。
+     *
+     * 产物（<filesDir>/cemu = Cemu 用户目录 userDataPath）：
+     *  - data/gameProfiles/**  + data/resources/** —— 来自构建期 staging 的
+     *    assets/cemu/（core/cemu/bin），按 assets/cemu/hash.txt（构建期对 bin/
+     *    全量 SHA-256）与已落盘 data/hash.txt 比对，变更时整体重解（上游同
+     *    机制：wipe → extract → 写 hash 标记）；
+     *  - graphicPacks/** —— 内置图形包 bundled_graphic_packs.zip 解包（仅当
+     *    graphicPacks 目录不存在或为空时，避免覆盖用户下载/自装的新包）。
+     *
+     * IO 密集（~30MB）—— 后台线程执行，不阻塞启动。
+     */
+    private fun ensureCemuData() {
+        Thread {
+            try {
+                val cemuDir = File(filesDir, "cemu")
+                if (!cemuDir.exists()) cemuDir.mkdirs()
+                val dataFolder = File(cemuDir, "data")
+
+                // --- 1) hash 比对（上游同算法：整目录 hash 变更才重解） ---
+                val newHash = try {
+                    assets.open("cemu/hash.txt").use { it.reader().readText().trim() }
+                } catch (_: Exception) { "" }
+                if (newHash.isNotBlank()) {
+                    val hashFile = File(dataFolder, "hash.txt")
+                    val oldHash = if (hashFile.isFile) hashFile.readText().trim() else "invalid"
+                    if (oldHash != newHash) {
+                        val t0 = System.currentTimeMillis()
+                        if (dataFolder.exists()) dataFolder.deleteRecursively()
+                        dataFolder.mkdirs()
+                        hashFile.writeText(newHash)
+                        // 递归遍历 assets/cemu/ 下的 gameProfiles/ 与 resources/
+                        // （与上游 filePatterns 白名单一致）
+                        fun traverse(path: String = "cemu"): List<String> {
+                            val files = try { assets.list(path) ?: return emptyList() }
+                            catch (_: Exception) { return emptyList() }
+                            if (files.isEmpty()) return listOf(path)
+                            return files.flatMap { traverse("$path/$it") }
+                        }
+                        var count = 0
+                        for (assetPath in traverse()) {
+                            val rel = assetPath.removePrefix("cemu/")
+                            if (!rel.startsWith("gameProfiles/") && !rel.startsWith("resources/")) continue
+                            val outFile = File(dataFolder, rel)
+                            try {
+                                outFile.parentFile?.mkdirs()
+                                assets.open(assetPath).use { input ->
+                                    outFile.outputStream().use { output -> input.copyTo(output) }
+                                }
+                                count++
+                            } catch (e: Exception) {
+                                Log.w("NesApp", "Cemu data seed failed: $rel", e)
+                            }
+                        }
+                        Log.i("NesApp", "Cemu data seeded: $count files " +
+                            "(${System.currentTimeMillis() - t0}ms, hash=$newHash)")
+                    }
+                } else {
+                    // 无 hash.txt —— :cemu-core staging 未启用（如 skipCemuCore
+                    // 构建），静默跳过（Wii U 平台运行时会报核心不可用）。
+                    Log.i("NesApp", "Cemu assets not staged — skip data seeding")
+                }
+
+                // --- 2) 内置图形包解包（bundled_graphic_packs.zip → graphicPacks/）---
+                val packsDir = File(cemuDir, "graphicPacks")
+                val packsMarker = File(cemuDir, "graphicPacks.version")
+                if (!packsDir.isDirectory || (packsDir.listFiles()?.isEmpty() != false)) {
+                    try {
+                        assets.open("cemu/bundled_graphic_packs.zip").use { zipStream ->
+                            java.util.zip.ZipInputStream(zipStream).use { zis ->
+                                var entry = zis.nextEntry
+                                while (entry != null) {
+                                    val outPath = File(packsDir, entry.name)
+                                    if (entry.isDirectory) {
+                                        outPath.mkdirs()
+                                    } else {
+                                        // Zip Slip 防护：拒绝 .. 路径
+                                        if (!outPath.canonicalPath.startsWith(packsDir.canonicalPath)) {
+                                            throw java.io.IOException("Zip slip blocked: ${entry.name}")
+                                        }
+                                        outPath.parentFile?.mkdirs()
+                                        outPath.outputStream().use { output -> zis.copyTo(output) }
+                                    }
+                                    zis.closeEntry()
+                                    entry = zis.nextEntry
+                                }
+                            }
+                        }
+                        packsMarker.writeText("bundled-v1")
+                        Log.i("NesApp", "Cemu bundled graphic packs installed -> ${packsDir.absolutePath}")
+                    } catch (e: Exception) {
+                        Log.w("NesApp", "Cemu bundled graphic packs install failed (non-fatal)", e)
+                    }
+                }
+            } catch (e: Throwable) {
+                // 资源种子失败不阻塞应用启动（核心运行时仍会尝试读取）
+                Log.w("NesApp", "ensureCemuData failed (non-fatal)", e)
+            }
+        }.start()
     }
 
     /**

@@ -1,0 +1,6 @@
+/build
+/src/main/assets/hash.txt
+*.po
+*.pot
+# shipped UI translations live under assets/translations (re-included below)
+!/src/main/assets/translations/**

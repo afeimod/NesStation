@@ -119,6 +119,7 @@ fun platformFullName(p: GamePlatform): String = when (p) {
     GamePlatform.DOS -> "MS-DOS"
     GamePlatform.JAVA -> "Java Micro Edition"
     GamePlatform.PSP -> "Sony PlayStation Portable"
+    GamePlatform.WIIU -> "Nintendo Wii U"
 }
 
 /** 平台 → 建档年代副标题。 */
@@ -139,6 +140,7 @@ fun platformEra(p: GamePlatform): String = when (p) {
     GamePlatform.DOS -> "1981 · X86"
     GamePlatform.JAVA -> "2000 · J2ME"
     GamePlatform.PSP -> "2004 · UMD"
+    GamePlatform.WIIU -> "2012 · GAMEPAD"
 }
 
 /** 格式化游戏时长（playTimeMs → "3.2小时" / "42分钟" / "—")。 */

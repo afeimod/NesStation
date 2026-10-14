@@ -266,6 +266,11 @@ interface EmulatorEngine {
             GamePlatform.DC     -> DcEngine.get()
             GamePlatform.N3DS   -> AzaharEngine.get()
             GamePlatform.NGCWII -> IshirukaEngine.get()
+            // Wii U -> CemuEngine（Cemu-AZ 源码核心：core/cemu/ 源码树经
+            // :cemu-core 模块 vcpkg+CMake 源码编译产出 libCemuAndroid.so。
+            // 仅 arm64-v8a + API30+；其余环境运行时 probeAvailability()
+            // 报告"核心不可用"，不崩溃。）
+            GamePlatform.WIIU   -> CemuEngine.get()
             // PSP -> PspEngine (PPSSPP v1.20.4 — Sony PSP)。与 DC/PSX 完全
             // 同构的 dlopen 模式：libpspcore.so 运行时加载预编译官方
             // libppsspp_jni.so 并驱动其 JNI 契约（与官方 PpssppActivity

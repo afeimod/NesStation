@@ -884,6 +884,21 @@ class PadLayout {
     var irGcLanguage: String = "0"                   // "0".."5" (Dolphin.ini/Core/SelectedLanguage, NGC 主机语言)
     var irWiiLanguage: String = "1"                  // "0".."6" (SYSCONF IPL.LNG, Wii 主机语言)
 
+    // === WIIU (Cemu-AZ) core options ===
+    // 键名/取值对照上游 NativeSettings.kt（CemuEngine 以 "CemuEngine/<name>"
+    // 门面键消费，直调 NativeSettings setter 热生效）：
+    var cwGameSpeed: String = "1"           // "0".."4" (GameSpeed 0=0.5x 1=1x 2=2x 3=4x 4=8x，快进联动)
+    var cwVsyncMode: String = "0"           // "0" 关 | "1" 双缓冲 | "2" 三缓冲 (VSyncMode)
+    var cwAsyncShaderCompile: String = "true"   // 异步着色器编译（防卡顿，默认开）
+    var cwAccurateBarriers: String = "false"    // 精确屏障（个别游戏修复用，性能开销大）
+    var cwUpscaleFilter: String = "0"       // "0".."3" (ScalingFilter: 双线性/双三次/Hermit/最近邻)
+    var cwFullscreenScaling: String = "0"   // "0" 保持宽高比 | "1" 拉伸全屏
+    var cwTvVolume: String = "100"          // "0".."100" TV 输出音量
+    var cwPadVolume: String = "100"         // "0".."100" GamePad 输出音量
+    var cwAudioLatency: String = "60"       // "0".."276" ms 音频延迟
+    var cwConsoleLanguage: String = "1"     // "0".."11" (ConsoleLanguage: 日/英/法/德/意/西/中/韩/荷/葡/俄/台)
+    var cwOverlayFPS: String = "false"      // 核心内 FPS 覆盖层（LatteOverlay）
+
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
         fun normalizePs2ResMulti(raw: String?): String = when (raw?.trim()) {
@@ -1026,6 +1041,53 @@ class PadLayout {
     var wiiBtnIrNearP: ButtonLayout = ButtonLayout(x = 0.93f, y = 0.28f, sizeDp = 38)
     var wiiBtnIrFarP: ButtonLayout = ButtonLayout(x = 0.93f, y = 0.38f, sizeDp = 38)
 
+    // === WIIU on-screen pad（Wii U GamePad 专属全套布局：双摇杆 + ABXY +
+    //     十字键 + L/R/ZL/ZR + ⧉/−/HOME + TV 切换 + 麦克风 + 摇杆按下）===
+    // Wii U GamePad：左摇杆左上、十字键左下、ABXY 右上（菱形）、右摇杆右下、
+    // 肩键顶部；+/−/HOME 底部中间，TV 按钮（主画布 TV/GamePad 画面切换）
+    // 居中下方，MIC 为 GamePad 麦克风。游戏区触摸直通 GamePad 触摸屏
+    // （Wii U 唯一可触摸屏，见 CemuEngine.setTouchInput）。
+    var wiiuLStick: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.42f, sizeDp = 108)   // 左摇杆
+    var wiiuLStickP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.44f, sizeDp = 94)
+    var wiiuRStick: ButtonLayout = ButtonLayout(x = 0.87f, y = 0.80f, sizeDp = 84)    // 右摇杆
+    var wiiuRStickP: ButtonLayout = ButtonLayout(x = 0.82f, y = 0.82f, sizeDp = 72)
+    var wiiuDpad: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.76f, sizeDp = 100)
+    var wiiuDpadP: ButtonLayout = ButtonLayout(x = 0.18f, y = 0.76f, sizeDp = 92)
+    // ABXY 菱形（Nintendo 布局：A 右、B 下、X 上、Y 左）
+    var wiiuBtnA: ButtonLayout = ButtonLayout(x = 0.90f, y = 0.52f, sizeDp = 54)
+    var wiiuBtnB: ButtonLayout = ButtonLayout(x = 0.83f, y = 0.60f, sizeDp = 54)
+    var wiiuBtnX: ButtonLayout = ButtonLayout(x = 0.83f, y = 0.44f, sizeDp = 54)
+    var wiiuBtnY: ButtonLayout = ButtonLayout(x = 0.76f, y = 0.52f, sizeDp = 54)
+    var wiiuBtnAP: ButtonLayout = ButtonLayout(x = 0.86f, y = 0.56f, sizeDp = 48)
+    var wiiuBtnBP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.64f, sizeDp = 48)
+    var wiiuBtnXP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.48f, sizeDp = 48)
+    var wiiuBtnYP: ButtonLayout = ButtonLayout(x = 0.74f, y = 0.56f, sizeDp = 48)
+    // 肩键：L/R 外侧、ZL/ZR 内侧
+    var wiiuBtnL: ButtonLayout = ButtonLayout(x = 0.09f, y = 0.11f, sizeDp = 56)
+    var wiiuBtnR: ButtonLayout = ButtonLayout(x = 0.91f, y = 0.11f, sizeDp = 56)
+    var wiiuBtnZL: ButtonLayout = ButtonLayout(x = 0.21f, y = 0.06f, sizeDp = 48)
+    var wiiuBtnZR: ButtonLayout = ButtonLayout(x = 0.79f, y = 0.06f, sizeDp = 48)
+    var wiiuBtnLP: ButtonLayout = ButtonLayout(x = 0.09f, y = 0.10f, sizeDp = 48)
+    var wiiuBtnRP: ButtonLayout = ButtonLayout(x = 0.91f, y = 0.10f, sizeDp = 48)
+    var wiiuBtnZLP: ButtonLayout = ButtonLayout(x = 0.21f, y = 0.05f, sizeDp = 40)
+    var wiiuBtnZRP: ButtonLayout = ButtonLayout(x = 0.79f, y = 0.05f, sizeDp = 40)
+    // 中下：− / HOME / +（pill 形）+ TV 切换 + MIC
+    var wiiuBtnMinus: ButtonLayout = ButtonLayout(x = 0.38f, y = 0.93f, sizeDp = 46)
+    var wiiuBtnHome: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.93f, sizeDp = 46)
+    var wiiuBtnPlus: ButtonLayout = ButtonLayout(x = 0.62f, y = 0.93f, sizeDp = 46)
+    var wiiuBtnMinusP: ButtonLayout = ButtonLayout(x = 0.38f, y = 0.93f, sizeDp = 40)
+    var wiiuBtnHomeP: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.93f, sizeDp = 40)
+    var wiiuBtnPlusP: ButtonLayout = ButtonLayout(x = 0.62f, y = 0.93f, sizeDp = 40)
+    var wiiuBtnTV: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.82f, sizeDp = 44)     // TV/GamePad 视图切换
+    var wiiuBtnTVP: ButtonLayout = ButtonLayout(x = 0.50f, y = 0.84f, sizeDp = 38)
+    var wiiuBtnMic: ButtonLayout = ButtonLayout(x = 0.30f, y = 0.93f, sizeDp = 38)    // GamePad 麦克风
+    var wiiuBtnMicP: ButtonLayout = ButtonLayout(x = 0.30f, y = 0.93f, sizeDp = 34)
+    // 摇杆按下（L3/R3）
+    var wiiuBtnL3: ButtonLayout = ButtonLayout(x = 0.26f, y = 0.32f, sizeDp = 38)
+    var wiiuBtnR3: ButtonLayout = ButtonLayout(x = 0.74f, y = 0.88f, sizeDp = 38)
+    var wiiuBtnL3P: ButtonLayout = ButtonLayout(x = 0.30f, y = 0.34f, sizeDp = 34)
+    var wiiuBtnR3P: ButtonLayout = ButtonLayout(x = 0.70f, y = 0.88f, sizeDp = 34)
+
     // === DC (Flycast) on-screen pad extras ===
     // Dreamcast 手柄：十字键（左上）+ 左侧模拟摇杆（左中偏下，真正的模拟轴 ——
     // 绝大多数 DC 游戏靠它移动）+ ABXY + L/R + Start。摇杆为常驻模拟控件
@@ -1123,6 +1185,7 @@ class PadLayout {
     var hiddenButtonsPs2: String = ""     // PS2 hidden button keys (含 l3/r3；双摇杆常驻不隐藏)
     var hiddenButtonsN3ds: String = ""    // 3DS hidden button keys (双摇杆常驻不隐藏)
     var hiddenButtonsNgcWii: String = ""  // NGC/WII hidden button keys (双摇杆常驻不隐藏)
+    var hiddenButtonsWiiu: String = ""     // WIIU hidden button keys (双摇杆常驻不隐藏)
     var hiddenButtonsDc: String = ""      // DC hidden button keys（摇杆常驻不隐藏）
     var hiddenButtonsPsp: String = ""     // PSP hidden button keys（★ v5 补全：此前 PSP 无显隐存储，
                                            //   显隐对话框对 PSP 只有即时存/读档两项，运行时
@@ -1682,6 +1745,17 @@ class PadLayout {
         irWidescreenHack = another.irWidescreenHack
         irGcLanguage = another.irGcLanguage
         irWiiLanguage = another.irWiiLanguage
+        cwGameSpeed = another.cwGameSpeed
+        cwVsyncMode = another.cwVsyncMode
+        cwAsyncShaderCompile = another.cwAsyncShaderCompile
+        cwAccurateBarriers = another.cwAccurateBarriers
+        cwUpscaleFilter = another.cwUpscaleFilter
+        cwFullscreenScaling = another.cwFullscreenScaling
+        cwTvVolume = another.cwTvVolume
+        cwPadVolume = another.cwPadVolume
+        cwAudioLatency = another.cwAudioLatency
+        cwConsoleLanguage = another.cwConsoleLanguage
+        cwOverlayFPS = another.cwOverlayFPS
         n3dsDpad = another.n3dsDpad
         n3dsDpadP = another.n3dsDpadP
         n3dsLStick = another.n3dsLStick
@@ -1713,6 +1787,7 @@ class PadLayout {
         n3dsBtnStartP = another.n3dsBtnStartP
         n3dsBtnSelectP = another.n3dsBtnSelectP
         hiddenButtonsN3ds = another.hiddenButtonsN3ds
+        hiddenButtonsWiiu = another.hiddenButtonsWiiu
         ngcLStick = another.ngcLStick
         ngcLStickP = another.ngcLStickP
         ngcRStick = another.ngcRStick
@@ -1762,6 +1837,42 @@ class PadLayout {
         wiiBtnIrNearP = another.wiiBtnIrNearP
         wiiBtnIrFarP = another.wiiBtnIrFarP
         hiddenButtonsNgcWii = another.hiddenButtonsNgcWii
+        wiiuLStick = another.wiiuLStick
+        wiiuLStickP = another.wiiuLStickP
+        wiiuRStick = another.wiiuRStick
+        wiiuRStickP = another.wiiuRStickP
+        wiiuDpad = another.wiiuDpad
+        wiiuDpadP = another.wiiuDpadP
+        wiiuBtnA = another.wiiuBtnA
+        wiiuBtnB = another.wiiuBtnB
+        wiiuBtnX = another.wiiuBtnX
+        wiiuBtnY = another.wiiuBtnY
+        wiiuBtnAP = another.wiiuBtnAP
+        wiiuBtnBP = another.wiiuBtnBP
+        wiiuBtnXP = another.wiiuBtnXP
+        wiiuBtnYP = another.wiiuBtnYP
+        wiiuBtnL = another.wiiuBtnL
+        wiiuBtnR = another.wiiuBtnR
+        wiiuBtnZL = another.wiiuBtnZL
+        wiiuBtnZR = another.wiiuBtnZR
+        wiiuBtnLP = another.wiiuBtnLP
+        wiiuBtnRP = another.wiiuBtnRP
+        wiiuBtnZLP = another.wiiuBtnZLP
+        wiiuBtnZRP = another.wiiuBtnZRP
+        wiiuBtnMinus = another.wiiuBtnMinus
+        wiiuBtnHome = another.wiiuBtnHome
+        wiiuBtnPlus = another.wiiuBtnPlus
+        wiiuBtnMinusP = another.wiiuBtnMinusP
+        wiiuBtnHomeP = another.wiiuBtnHomeP
+        wiiuBtnPlusP = another.wiiuBtnPlusP
+        wiiuBtnTV = another.wiiuBtnTV
+        wiiuBtnTVP = another.wiiuBtnTVP
+        wiiuBtnMic = another.wiiuBtnMic
+        wiiuBtnMicP = another.wiiuBtnMicP
+        wiiuBtnL3 = another.wiiuBtnL3
+        wiiuBtnR3 = another.wiiuBtnR3
+        wiiuBtnL3P = another.wiiuBtnL3P
+        wiiuBtnR3P = another.wiiuBtnR3P
         btnL2 = another.btnL2
         btnR2 = another.btnR2
         btnL2P = another.btnL2P
@@ -2865,6 +2976,7 @@ object PadLayoutStore {
             n3dsBtnStartP = loadBtn(p, "n3ds_p_btn_start", ButtonLayout(x = 0.58f, y = 0.92f, sizeDp = 40))
             n3dsBtnSelectP = loadBtn(p, "n3ds_p_btn_select", ButtonLayout(x = 0.42f, y = 0.92f, sizeDp = 40))
             hiddenButtonsN3ds = p.getString("hidden_buttons_n3ds", "") ?: ""
+            hiddenButtonsWiiu = p.getString("hidden_buttons_wiiu", "") ?: ""
             // === NGC/WII (Ishiiruka) options + 专属按键布局 ===
             irControlMode = p.getString("ir_control_mode", "auto")?.takeIf {
                 it in setOf("auto", "ngc", "wii") } ?: "auto"
@@ -2908,6 +3020,29 @@ object PadLayoutStore {
             irWidescreenHack = p.getString("ir_widescreen_hack", "disabled") ?: "disabled"
             irGcLanguage = p.getString("ir_gc_language", "0") ?: "0"
             irWiiLanguage = p.getString("ir_wii_language", "1") ?: "1"
+            // === WIIU (Cemu-AZ) options ===
+            cwGameSpeed = (p.getString("cw_game_speed", "1") ?: "1").let {
+                if (it in listOf("0", "1", "2", "3", "4")) it else "1" }
+            cwVsyncMode = (p.getString("cw_vsync_mode", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2")) it else "0" }
+            cwAsyncShaderCompile = (p.getString("cw_async_shader_compile", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            cwAccurateBarriers = (p.getString("cw_accurate_barriers", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            cwUpscaleFilter = (p.getString("cw_upscale_filter", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2", "3")) it else "0" }
+            cwFullscreenScaling = (p.getString("cw_fullscreen_scaling", "0") ?: "0").let {
+                if (it in listOf("0", "1")) it else "0" }
+            cwTvVolume = (p.getString("cw_tv_volume", "100") ?: "100").let {
+                it.toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "100" }
+            cwPadVolume = (p.getString("cw_pad_volume", "100") ?: "100").let {
+                it.toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "100" }
+            cwAudioLatency = (p.getString("cw_audio_latency", "60") ?: "60").let {
+                it.toIntOrNull()?.coerceIn(0, 276)?.toString() ?: "60" }
+            cwConsoleLanguage = (p.getString("cw_console_language", "1") ?: "1").let {
+                it.toIntOrNull()?.coerceIn(0, 11)?.toString() ?: "1" }
+            cwOverlayFPS = (p.getString("cw_overlay_fps", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
             ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
             ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
             ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
@@ -2957,6 +3092,43 @@ object PadLayoutStore {
             wiiBtnIrNearP = loadBtn(p, "wii_p_btn_ir_near", ButtonLayout(x = 0.93f, y = 0.28f, sizeDp = 38))
             wiiBtnIrFarP = loadBtn(p, "wii_p_btn_ir_far", ButtonLayout(x = 0.93f, y = 0.38f, sizeDp = 38))
             hiddenButtonsNgcWii = p.getString("hidden_buttons_ngcwii", "") ?: ""
+            // === WIIU 专属按键布局 ===
+            wiiuLStick = loadBtn(p, "wiiu_lstick", ButtonLayout(x = 0.13f, y = 0.42f, sizeDp = 108))
+            wiiuLStickP = loadBtn(p, "wiiu_p_lstick", ButtonLayout(x = 0.18f, y = 0.44f, sizeDp = 94))
+            wiiuRStick = loadBtn(p, "wiiu_rstick", ButtonLayout(x = 0.87f, y = 0.80f, sizeDp = 84))
+            wiiuRStickP = loadBtn(p, "wiiu_p_rstick", ButtonLayout(x = 0.82f, y = 0.82f, sizeDp = 72))
+            wiiuDpad = loadBtn(p, "wiiu_dpad", ButtonLayout(x = 0.13f, y = 0.76f, sizeDp = 100))
+            wiiuDpadP = loadBtn(p, "wiiu_p_dpad", ButtonLayout(x = 0.18f, y = 0.76f, sizeDp = 92))
+            wiiuBtnA = loadBtn(p, "wiiu_btn_a", ButtonLayout(x = 0.90f, y = 0.52f, sizeDp = 54))
+            wiiuBtnB = loadBtn(p, "wiiu_btn_b", ButtonLayout(x = 0.83f, y = 0.60f, sizeDp = 54))
+            wiiuBtnX = loadBtn(p, "wiiu_btn_x", ButtonLayout(x = 0.83f, y = 0.44f, sizeDp = 54))
+            wiiuBtnY = loadBtn(p, "wiiu_btn_y", ButtonLayout(x = 0.76f, y = 0.52f, sizeDp = 54))
+            wiiuBtnAP = loadBtn(p, "wiiu_p_btn_a", ButtonLayout(x = 0.86f, y = 0.56f, sizeDp = 48))
+            wiiuBtnBP = loadBtn(p, "wiiu_p_btn_b", ButtonLayout(x = 0.80f, y = 0.64f, sizeDp = 48))
+            wiiuBtnXP = loadBtn(p, "wiiu_p_btn_x", ButtonLayout(x = 0.80f, y = 0.48f, sizeDp = 48))
+            wiiuBtnYP = loadBtn(p, "wiiu_p_btn_y", ButtonLayout(x = 0.74f, y = 0.56f, sizeDp = 48))
+            wiiuBtnL = loadBtn(p, "wiiu_btn_l", ButtonLayout(x = 0.09f, y = 0.11f, sizeDp = 56))
+            wiiuBtnR = loadBtn(p, "wiiu_btn_r", ButtonLayout(x = 0.91f, y = 0.11f, sizeDp = 56))
+            wiiuBtnZL = loadBtn(p, "wiiu_btn_zl", ButtonLayout(x = 0.21f, y = 0.06f, sizeDp = 48))
+            wiiuBtnZR = loadBtn(p, "wiiu_btn_zr", ButtonLayout(x = 0.79f, y = 0.06f, sizeDp = 48))
+            wiiuBtnLP = loadBtn(p, "wiiu_p_btn_l", ButtonLayout(x = 0.09f, y = 0.10f, sizeDp = 48))
+            wiiuBtnRP = loadBtn(p, "wiiu_p_btn_r", ButtonLayout(x = 0.91f, y = 0.10f, sizeDp = 48))
+            wiiuBtnZLP = loadBtn(p, "wiiu_p_btn_zl", ButtonLayout(x = 0.21f, y = 0.05f, sizeDp = 40))
+            wiiuBtnZRP = loadBtn(p, "wiiu_p_btn_zr", ButtonLayout(x = 0.79f, y = 0.05f, sizeDp = 40))
+            wiiuBtnMinus = loadBtn(p, "wiiu_btn_minus", ButtonLayout(x = 0.38f, y = 0.93f, sizeDp = 46))
+            wiiuBtnHome = loadBtn(p, "wiiu_btn_home", ButtonLayout(x = 0.50f, y = 0.93f, sizeDp = 46))
+            wiiuBtnPlus = loadBtn(p, "wiiu_btn_plus", ButtonLayout(x = 0.62f, y = 0.93f, sizeDp = 46))
+            wiiuBtnMinusP = loadBtn(p, "wiiu_p_btn_minus", ButtonLayout(x = 0.38f, y = 0.93f, sizeDp = 40))
+            wiiuBtnHomeP = loadBtn(p, "wiiu_p_btn_home", ButtonLayout(x = 0.50f, y = 0.93f, sizeDp = 40))
+            wiiuBtnPlusP = loadBtn(p, "wiiu_p_btn_plus", ButtonLayout(x = 0.62f, y = 0.93f, sizeDp = 40))
+            wiiuBtnTV = loadBtn(p, "wiiu_btn_tv", ButtonLayout(x = 0.50f, y = 0.82f, sizeDp = 44))
+            wiiuBtnTVP = loadBtn(p, "wiiu_p_btn_tv", ButtonLayout(x = 0.50f, y = 0.84f, sizeDp = 38))
+            wiiuBtnMic = loadBtn(p, "wiiu_btn_mic", ButtonLayout(x = 0.30f, y = 0.93f, sizeDp = 38))
+            wiiuBtnMicP = loadBtn(p, "wiiu_p_btn_mic", ButtonLayout(x = 0.30f, y = 0.93f, sizeDp = 34))
+            wiiuBtnL3 = loadBtn(p, "wiiu_btn_l3", ButtonLayout(x = 0.26f, y = 0.32f, sizeDp = 38))
+            wiiuBtnR3 = loadBtn(p, "wiiu_btn_r3", ButtonLayout(x = 0.74f, y = 0.88f, sizeDp = 38))
+            wiiuBtnL3P = loadBtn(p, "wiiu_p_btn_l3", ButtonLayout(x = 0.30f, y = 0.34f, sizeDp = 34))
+            wiiuBtnR3P = loadBtn(p, "wiiu_p_btn_r3", ButtonLayout(x = 0.70f, y = 0.88f, sizeDp = 34))
             hiddenButtonsDc = p.getString("hidden_buttons_dc", "") ?: ""
             hiddenButtonsPsp = p.getString("hidden_buttons_psp", "") ?: ""
             // === Arcade extras ===
@@ -3621,6 +3793,7 @@ object PadLayoutStore {
             saveBtn("n3ds_p_btn_start", layout.n3dsBtnStartP)
             saveBtn("n3ds_p_btn_select", layout.n3dsBtnSelectP)
             putString("hidden_buttons_n3ds", layout.hiddenButtonsN3ds)
+            putString("hidden_buttons_wiiu", layout.hiddenButtonsWiiu)
             // === NGC/WII (Ishiiruka) options + 专属按键布局 ===
             putString("ir_control_mode", layout.irControlMode)
             putString("ir_wii_extension", layout.irWiiExtension)
@@ -3655,6 +3828,18 @@ object PadLayoutStore {
             putString("ir_widescreen_hack", layout.irWidescreenHack)
             putString("ir_gc_language", layout.irGcLanguage)
             putString("ir_wii_language", layout.irWiiLanguage)
+            // === WIIU (Cemu-AZ) options ===
+            putString("cw_game_speed", layout.cwGameSpeed)
+            putString("cw_vsync_mode", layout.cwVsyncMode)
+            putString("cw_async_shader_compile", layout.cwAsyncShaderCompile)
+            putString("cw_accurate_barriers", layout.cwAccurateBarriers)
+            putString("cw_upscale_filter", layout.cwUpscaleFilter)
+            putString("cw_fullscreen_scaling", layout.cwFullscreenScaling)
+            putString("cw_tv_volume", layout.cwTvVolume)
+            putString("cw_pad_volume", layout.cwPadVolume)
+            putString("cw_audio_latency", layout.cwAudioLatency)
+            putString("cw_console_language", layout.cwConsoleLanguage)
+            putString("cw_overlay_fps", layout.cwOverlayFPS)
             saveBtn("ngc_lstick", layout.ngcLStick)
             saveBtn("ngc_p_lstick", layout.ngcLStickP)
             saveBtn("ngc_rstick", layout.ngcRStick)
@@ -3704,6 +3889,43 @@ object PadLayoutStore {
             saveBtn("wii_p_btn_ir_near", layout.wiiBtnIrNearP)
             saveBtn("wii_p_btn_ir_far", layout.wiiBtnIrFarP)
             putString("hidden_buttons_ngcwii", layout.hiddenButtonsNgcWii)
+            // === WIIU 专属按键布局 ===
+            saveBtn("wiiu_lstick", layout.wiiuLStick)
+            saveBtn("wiiu_p_lstick", layout.wiiuLStickP)
+            saveBtn("wiiu_rstick", layout.wiiuRStick)
+            saveBtn("wiiu_p_rstick", layout.wiiuRStickP)
+            saveBtn("wiiu_dpad", layout.wiiuDpad)
+            saveBtn("wiiu_p_dpad", layout.wiiuDpadP)
+            saveBtn("wiiu_btn_a", layout.wiiuBtnA)
+            saveBtn("wiiu_btn_b", layout.wiiuBtnB)
+            saveBtn("wiiu_btn_x", layout.wiiuBtnX)
+            saveBtn("wiiu_btn_y", layout.wiiuBtnY)
+            saveBtn("wiiu_p_btn_a", layout.wiiuBtnAP)
+            saveBtn("wiiu_p_btn_b", layout.wiiuBtnBP)
+            saveBtn("wiiu_p_btn_x", layout.wiiuBtnXP)
+            saveBtn("wiiu_p_btn_y", layout.wiiuBtnYP)
+            saveBtn("wiiu_btn_l", layout.wiiuBtnL)
+            saveBtn("wiiu_btn_r", layout.wiiuBtnR)
+            saveBtn("wiiu_btn_zl", layout.wiiuBtnZL)
+            saveBtn("wiiu_btn_zr", layout.wiiuBtnZR)
+            saveBtn("wiiu_p_btn_l", layout.wiiuBtnLP)
+            saveBtn("wiiu_p_btn_r", layout.wiiuBtnRP)
+            saveBtn("wiiu_p_btn_zl", layout.wiiuBtnZLP)
+            saveBtn("wiiu_p_btn_zr", layout.wiiuBtnZRP)
+            saveBtn("wiiu_btn_minus", layout.wiiuBtnMinus)
+            saveBtn("wiiu_btn_home", layout.wiiuBtnHome)
+            saveBtn("wiiu_btn_plus", layout.wiiuBtnPlus)
+            saveBtn("wiiu_p_btn_minus", layout.wiiuBtnMinusP)
+            saveBtn("wiiu_p_btn_home", layout.wiiuBtnHomeP)
+            saveBtn("wiiu_p_btn_plus", layout.wiiuBtnPlusP)
+            saveBtn("wiiu_btn_tv", layout.wiiuBtnTV)
+            saveBtn("wiiu_p_btn_tv", layout.wiiuBtnTVP)
+            saveBtn("wiiu_btn_mic", layout.wiiuBtnMic)
+            saveBtn("wiiu_p_btn_mic", layout.wiiuBtnMicP)
+            saveBtn("wiiu_btn_l3", layout.wiiuBtnL3)
+            saveBtn("wiiu_btn_r3", layout.wiiuBtnR3)
+            saveBtn("wiiu_p_btn_l3", layout.wiiuBtnL3P)
+            saveBtn("wiiu_p_btn_r3", layout.wiiuBtnR3P)
             putString("hidden_buttons_dc", layout.hiddenButtonsDc)
             putString("hidden_buttons_psp", layout.hiddenButtonsPsp)
             // === Arcade extras ===
@@ -3792,6 +4014,8 @@ object PadLayoutStore {
             GamePlatform.PS2 -> isHiddenInList(layout.hiddenButtonsPs2, key)
             GamePlatform.N3DS -> isHiddenInList(layout.hiddenButtonsN3ds, key)
             GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcWii, key)
+            // ★ Wii U（Cemu）：专属键显隐（wiiu_* / 通用键名）
+            GamePlatform.WIIU -> isHiddenInList(layout.hiddenButtonsWiiu, key)
             GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
             // ★ PSP（v5 补全）：此前落到 else -> false，显隐开关对 PSP 完全无效
             GamePlatform.PSP -> isHiddenInList(layout.hiddenButtonsPsp, key)
@@ -3833,6 +4057,8 @@ object PadLayoutStore {
             GamePlatform.PS2 -> layout.copy {hiddenButtonsPs2 = updateHiddenList(layout.hiddenButtonsPs2, key, hidden)}
             GamePlatform.N3DS -> layout.copy {hiddenButtonsN3ds = updateHiddenList(layout.hiddenButtonsN3ds, key, hidden)}
             GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcWii = updateHiddenList(layout.hiddenButtonsNgcWii, key, hidden)}
+            // ★ Wii U（Cemu）：显隐写回专属列表
+            GamePlatform.WIIU -> layout.copy {hiddenButtonsWiiu = updateHiddenList(layout.hiddenButtonsWiiu, key, hidden)}
             GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
             // ★ PSP（v5 补全）：显隐写回专属列表（旧实现落到 else -> layout，写入被静默丢弃）
             GamePlatform.PSP -> layout.copy {hiddenButtonsPsp = updateHiddenList(layout.hiddenButtonsPsp, key, hidden)}
@@ -3996,6 +4222,20 @@ object PadLayoutStore {
                 //   只用实体手柄或纯体感的玩家可隐藏这四个体感按钮。
                 "l2" to "左倾 (L2)", "r2" to "右倾 (R2)",
                 "l3" to "前晃 (L3)", "r3" to "后晃 (R3)"
+            )
+            GamePlatform.WIIU -> listOf(
+                // Wii U（Cemu）：GamePad 全套按键；双摇杆为常驻模拟控件
+                //（不参与显隐）；游戏区触摸直通 GamePad 触摸屏。
+                "dpad" to "十字键", "a" to "A键", "b" to "B键",
+                "x" to "X键", "y" to "Y键",
+                "l" to "L键", "r" to "R键",
+                "zl" to "ZL键", "zr" to "ZR键",
+                "l3" to "左摇杆按下", "r3" to "右摇杆按下",
+                "wiiu_tv" to "TV/手柄画面切换",
+                "wiiu_mic" to "麦克风",
+                "start" to "+键", "select" to "−键",
+                "home" to "HOME"
+                // 左/右摇杆常驻，不参与显隐
             )
             else -> emptyList()
         } + listOf("qs" to "即时存档", "ql" to "即时读档")

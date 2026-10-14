@@ -122,6 +122,47 @@ interface NgcWiiCoreEngine : EmulatorEngine {
 }
 
 /**
+ * Cemu（Wii U）核心引擎契约 —— 在 [EmulatorEngine] 之上补充 Wii U 专属能力。
+ *
+ * 输入模型（与上游 Cemu-AZ EmulationActivity 同构）：
+ *  - 数字键经 [EmulatorEngine.setPad1] 的 NesStation 位布局进入引擎，
+ *    引擎翻译为 VPAD（GamePad）按钮事件（NativeInput.onOverlayButton）；
+ *  - 双摇杆经 [setAnalogAxes] 推送（GamePad 左/右摇杆，-1..1 屏幕坐标约定）；
+ *  - GamePad 触摸屏（Wii U 唯一可触摸屏）经 [setTouchInput]/[setTouchMoved]
+ *    以【游戏视图像素坐标】进入，引擎换算到 854x480 的 DRC 坐标空间；
+ *  - [toggleTvPadView] 切换主画布显示 TV 画面 / GamePad 画面
+ *    （等价上游 TAB 键 setReplaceTVWithPadView）。
+ */
+interface CemuCoreEngine : EmulatorEngine {
+
+    /**
+     * 推送 GamePad 双摇杆：左摇杆 = (lx, ly)，右摇杆 = (rx, ry)，
+     * 取值 -1..1（屏幕坐标约定，向上为负）。
+     */
+    fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float)
+
+    /**
+     * GamePad 触摸按下/抬起（游戏视图像素坐标；pressed=false 时坐标被忽略）。
+     * 引擎内部把视图坐标换算到 DRC 854x480 坐标空间后喂给核心。
+     */
+    fun setTouchInput(x: Float, y: Float, pressed: Boolean)
+
+    /** GamePad 触摸移动（游戏视图像素坐标）。 */
+    fun setTouchMoved(x: Float, y: Float)
+
+    /**
+     * 主画布 TV/GamePad 视图切换（游戏内菜单/虚拟 TV 按钮用）。
+     * 返回切换后的状态：true = 正在显示 GamePad 画面。
+     */
+    fun toggleTvPadView(): Boolean
+
+    /**
+     * 核心是否已加载完成（.so 存在且 System.loadLibrary 成功、API>=30）。
+     */
+    fun isCoreAvailable(): Boolean
+}
+
+/**
  * Flycast（DC/NAOMI/AtomisWave）核心引擎契约 —— 在 [EmulatorEngine] 之上
  * 补充 DC 手柄模拟摇杆能力。
  *

@@ -5,7 +5,7 @@
 
 一个为 Android 手机与 Android TV 打造的高质感多平台复古游戏模拟器。
 
-支持 **13 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)** / **3DS** / **NGC & Wii**，通过
+支持 **14 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)** / **3DS** / **NGC & Wii** / **Wii U**，通过
 统一的 Compose UI 与一致的游戏内菜单体验，让你在 TV 大屏和手机小屏上都能
 畅玩从 8-bit 到街机再到 128-bit 的所有经典游戏。
 
@@ -22,6 +22,7 @@
 | **NDS**        | **melonDS / DraStic（激烈）双核心，启动时二选一** | `.nds` | 否（melonDS 内置 FreeBIOS；DraStic 自带） |
 | **3DS**        | **Azahar / AzaharPlus 核心**（独立模拟器形态，集成方式与激烈一致） | `.3ds` `.cci` `.cxi` `.cia` | 加密游戏需 `aes_keys.txt`（放 `filesDir/azahar/`）；部分游戏需系统档案 |
 | **NGC / Wii**  | **Ishiiruka 核心**（Dolphin 优化分支，独立模拟器形态，集成方式与激烈一致） | `.gcm` `.rvz` `.wbfs` `.gcz` `.ciso` `.nkit` `.wad` `.dol` `.elf` | GC/Wii 大部分游戏免 BIOS（DSP LLE 需 DSP ROM）；字体/Sys 数据可选放入 `filesDir/ishiiruka/sys/` |
+| **Wii U**      | **Cemu-AZ 核心**（Cemu 2.x Android 移植 + 修改版，**源码级集成**：core/cemu/ 源码树经 :cemu-core 模块 vcpkg+CMake 编译，非预编译 so） | `.wud` `.wux` `.wua` `.wuhb` `.rpx`（`.iso`/`.elf` 平台页消歧） | 免 BIOS（WUD 解密需 otp.bin 放 `filesDir/cemu/`）；仅 arm64-v8a + Android 11+；Vulkan 1.1 |
 | **Java ME**    | J2ME-Loader       | `.jar` `.jad`                 | 否 |
 | **DC / Dreamcast** | **Flycast 独立核心**（NAOMI / AtomisWave） | `.gdi` `.cdi` `.chd` `.cue` `.lst` `.zip` | 光盘游戏需要 `dc_boot.bin` + `dc_flash.bin`（NAOMI zip 自带 BIOS 无需） |
 

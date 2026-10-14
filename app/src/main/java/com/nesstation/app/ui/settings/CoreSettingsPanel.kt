@@ -2206,6 +2206,85 @@ fun CoreSettingsPanel(
                         fontSize = 10.sp, lineHeight = 15.sp)
                 }
             }
+            // ★★ Wii U（Cemu-AZ 源码核心）核心选项 —— cw* 字段经
+            //   "CemuEngine/<name>" 门面键直调 NativeSettings（上游 Cemu-AZ
+            //   Android 设置接口），游戏启动与运行中热生效。键名/取值对照
+            //   上游 info/cemu/cemu/nativeinterface/NativeSettings.kt。
+            GamePlatform.WIIU -> item {
+                SettingsSection("Wii U · 画面 / 性能") {
+                    DropdownRow("垂直同步",
+                        listOf("0" to "关闭 (默认·低延迟不卡顿)", "1" to "双缓冲 (防撕裂)",
+                               "2" to "三缓冲 (最稳·延迟高)"),
+                        padLayout.cwVsyncMode
+                    ) { updateLayout(padLayout.copy {cwVsyncMode = it}) }
+                    DropdownRow("缩放滤镜",
+                        listOf("0" to "双线性 (默认·平滑)", "1" to "双三次 (锐利)",
+                               "2" to "Hermite (均衡)", "3" to "最近邻 (像素风)"),
+                        padLayout.cwUpscaleFilter
+                    ) { updateLayout(padLayout.copy {cwUpscaleFilter = it}) }
+                    DropdownRow("画面缩放",
+                        // 全局「屏幕缩放 stretch」会联动此项为拉伸（见 applyCoreOptions）
+                        listOf("0" to "保持宽高比 (默认)", "1" to "拉伸全屏"),
+                        padLayout.cwFullscreenScaling
+                    ) { updateLayout(padLayout.copy {cwFullscreenScaling = it}) }
+                    DropdownRow("异步着色器编译",
+                        listOf("true" to "开启 (默认·防卡顿)", "false" to "关闭"),
+                        padLayout.cwAsyncShaderCompile
+                    ) { updateLayout(padLayout.copy {cwAsyncShaderCompile = it}) }
+                    DropdownRow("精确屏障",
+                        listOf("false" to "关闭 (默认·快)", "true" to "开启 (个别花屏游戏修复)"),
+                        padLayout.cwAccurateBarriers
+                    ) { updateLayout(padLayout.copy {cwAccurateBarriers = it}) }
+                    DropdownRow("核心 FPS 显示",
+                        listOf("false" to "关闭 (默认)", "true" to "开启 (LatteOverlay)"),
+                        padLayout.cwOverlayFPS
+                    ) { updateLayout(padLayout.copy {cwOverlayFPS = it}) }
+                }
+                SettingsSection("Wii U · 音频") {
+                    DropdownRow("TV 音量",
+                        listOf("0" to "0%", "20" to "20%", "40" to "40%", "60" to "60%",
+                               "80" to "80%", "100" to "100% (默认)"),
+                        padLayout.cwTvVolume
+                    ) { updateLayout(padLayout.copy {cwTvVolume = it}) }
+                    DropdownRow("GamePad 音量",
+                        listOf("0" to "0%", "20" to "20%", "40" to "40%", "60" to "60%",
+                               "80" to "80%", "100" to "100% (默认)"),
+                        padLayout.cwPadVolume
+                    ) { updateLayout(padLayout.copy {cwPadVolume = it}) }
+                    DropdownRow("音频延迟",
+                        listOf("20" to "20ms (低延迟)", "40" to "40ms", "60" to "60ms (默认)",
+                               "100" to "100ms", "160" to "160ms", "276" to "276ms (稳定)"),
+                        padLayout.cwAudioLatency
+                    ) { updateLayout(padLayout.copy {cwAudioLatency = it}) }
+                }
+                SettingsSection("Wii U · 系统") {
+                    DropdownRow("主机语言",
+                        listOf("0" to "日语", "1" to "英语 (默认)", "2" to "法语", "3" to "德语",
+                               "4" to "意大利语", "5" to "西班牙语", "6" to "中文",
+                               "7" to "韩语", "8" to "荷兰语", "9" to "葡萄牙语",
+                               "10" to "俄语", "11" to "台语"),
+                        padLayout.cwConsoleLanguage
+                    ) { updateLayout(padLayout.copy {cwConsoleLanguage = it}) }
+                    DropdownRow("游戏速度",
+                        listOf("0" to "0.5x (慢动作)", "1" to "1x (正常·默认)", "2" to "2x",
+                               "3" to "4x", "4" to "8x (快进·与快进按钮联动)"),
+                        padLayout.cwGameSpeed
+                    ) { updateLayout(padLayout.copy {cwGameSpeed = it}) }
+                }
+                SettingsSection("Wii U · 说明") {
+                    Text(
+                        "Cemu-AZ 源码核心（core/cemu/ 经 :cemu-core 模块 vcpkg+CMake 编译，" +
+                        "非预编译 so），仅支持 arm64-v8a + Android 11(API 30)+，Vulkan 1.1 渲染。" +
+                        "\n\n虚拟按键：GamePad 全套（双摇杆 + ABXY + L/R/ZL/ZR + ⧉/−/HOME + TV 切换 + " +
+                        "麦克风 + 摇杆按下），游戏区触摸直通 GamePad 触摸屏（Wii U 唯一可触摸屏）；" +
+                        "TV 按钮切换主画布 TV/GamePad 画面。均可在 触控 → 布局编辑器 里调位置/大小/显隐。" +
+                        "\n\n即时存档走核心原生槽位（1..6，带缩略图，进程重启保留）；资源（gameProfiles/" +
+                        "resources/内置图形包）由应用启动时自动从 assets 播种到 <filesDir>/cemu/。" +
+                        "\n\n进阶文件（otp.bin 等在线文件、自装图形包）放 <filesDir>/cemu/ 对应目录。",
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
+                        fontSize = 10.sp, lineHeight = 15.sp)
+                }
+            }
         }
 
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在

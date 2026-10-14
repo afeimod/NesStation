@@ -19,6 +19,88 @@ val stageArmsx2Resources = tasks.register<Copy>("stageArmsx2Resources") {
 // Stage before asset merging so the files land in the APK.
 tasks.named("preBuild") { dependsOn(stageArmsx2Resources) }
 
+// ============================================================================
+// ★★ Cemu（Wii U）核心资源 staging —— 与上游 Cemu-AZ 的 cemuDataFilesFolder
+//   机制一致（上游把仓库 bin/ 目录整体作为 assets，运行期按 hash 落盘到
+//   <dataPath>）。这里同样把 core/cemu/bin（gameProfiles + resources）打进
+//   APK 的 assets/cemu/ 命名空间，并由 NesApp.ensureCemuData() 在首启/资源
+//   变更时解包到 <filesDir>/cemu/data/；bundled_graphic_packs.zip 解包到
+//   <filesDir>/cemu/graphicPacks/（GetUserDataPath("graphicPacks")）。
+//   hash.txt 由 computeCemuDataFilesHash 任务生成（对 bin/ 全量 SHA-256，
+//   与上游 ComputeCemuDataFilesHashTask 同算法），用于检测资源变更。
+// ============================================================================
+val cemuBinSrc = rootProject.file("core/cemu/bin")
+val cemuBundledPacks = rootProject.file(
+    "core/cemu/src/android/app/src/main/assets/bundled_graphic_packs.zip")
+val cemuAssetsStaging = layout.buildDirectory.dir("generated/assets/cemu_data")
+val stageCemuDataResources = tasks.register<Copy>("stageCemuDataResources") {
+    onlyIf { cemuBinSrc.isDirectory }
+    from(cemuBinSrc)
+    into(cemuAssetsStaging.map { it.dir("cemu") })
+    // 上游对 bin/ 里的 cemu.mo 有 ignoreAssetsPattern("!*cemu.mo:")；
+    // Kotlin 侧种子逻辑（NesApp.ensureCemuData）只按目录白名单解包
+    // gameProfiles/ 与 resources/，mo 文件留给翻译系统按需读取。
+}
+val stageCemuBundledPacks = tasks.register<Copy>("stageCemuBundledPacks") {
+    onlyIf { cemuBundledPacks.isFile }
+    from(cemuBundledPacks)
+    into(cemuAssetsStaging.map { it.dir("cemu") })
+}
+/** 对 core/cemu/bin 全量内容做 SHA-256（路径+字节，上游同算法），
+ *  写入 staging 目录的 cemu/hash.txt —— NesApp 与已落盘副本比对决定是否重解包。 */
+abstract class ComputeCemuDataFilesHashTask : DefaultTask() {
+    @get:InputDirectory
+    abstract val cemuBinFolder: DirectoryProperty
+
+    @get:OutputFile
+    abstract val hashOut: RegularFileProperty
+
+    @TaskAction
+    fun compute() {
+        val binDir = cemuBinFolder.get().asFile
+        val outFile = hashOut.get().asFile
+        if (!binDir.isDirectory) {
+            outFile.writeText("invalid")
+            return
+        }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        binDir.walkTopDown()
+            .filter { it.isFile }
+            .sortedBy { it.path }
+            .forEach {
+                digest.update(it.relativeTo(binDir).path.toByteArray())
+                it.inputStream().use { s ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = s.read(buf)
+                        if (n < 0) break
+                        digest.update(buf, 0, n)
+                    }
+                }
+            }
+        // JDK 17 无 javax.xml.bind.DatatypeConverter（上游 CI 用 JAXB 依赖），
+        // 直接手写十六进制展开，算法与上游完全一致。
+        outFile.writeText(digest.digest().joinToString("") { "%02X".format(it) })
+    }
+}
+val computeCemuDataFilesHash = tasks.register<ComputeCemuDataFilesHashTask>("computeCemuDataFilesHash") {
+    cemuBinFolder.set(cemuBinSrc)
+    hashOut.set(cemuAssetsStaging.map { it.file("cemu/hash.txt") })
+}
+computeCemuDataFilesHash.configure {
+    // hash 依赖 staging 先拷好文件没意义 —— hash 只看源 bin/；但输出文件在
+    // staging 目录，必须先建目录。直接依赖源目录存在即可。
+    doFirst {
+        hashOut.get().asFile.parentFile?.mkdirs()
+            ?: throw GradleException("cemu hash out dir create failed")
+    }
+}
+tasks.named("preBuild") {
+    dependsOn(stageCemuDataResources)
+    dependsOn(stageCemuBundledPacks)
+    dependsOn(computeCemuDataFilesHash)
+}
+
 android {
     namespace = "com.nesstation.app"
     compileSdk = 34
@@ -112,6 +194,9 @@ android {
             jniLibs.srcDirs("src/main/jniLibs")
             // ARMSX2 resources staged by :stageArmsx2Resources (assets/resources)
             assets.srcDir(armsx2AssetsStaging)
+            // ★ Cemu（Wii U）资源 staged by :stageCemuDataResources 等
+            //   （assets/cemu/{gameProfiles,resources,bundled_graphic_packs.zip,hash.txt}）
+            assets.srcDir(cemuAssetsStaging)
         }
     }
 
@@ -206,6 +291,13 @@ dependencies {
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)
+
+    // ★★ Wii U（Cemu-AZ 源码核心）：libCemuAndroid.so 由 :cemu-core 从
+    //   core/cemu/ 源码编译产出并入 APK。模块可用 settings.gradle.kts 的
+    //   -PskipCemuCore=true 整体移除（此处自动解除依赖）。
+    if (findProject(":cemu-core") != null) {
+        implementation(project(":cemu-core"))
+    }
 
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)

@@ -1,0 +1,1343 @@
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Cemu Android\n"
+"Language: zh\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "A file error occurred. Please try again."
+msgstr "文件操作出错，请重试。"
+
+msgid "About Cemu"
+msgstr "关于 Cemu"
+
+msgid "About title"
+msgstr "关于本游戏"
+
+msgid "Above"
+msgstr "上方"
+
+msgid "Account information"
+msgstr "账户信息"
+
+msgid "Account name may not be empty!"
+msgstr "账户名不能为空！"
+
+msgid "Account settings"
+msgstr "账户设置"
+
+msgid "AccountId missing (The account is not connected to a NNID/PNID)"
+msgstr "缺少账户 ID（该账户未连接 NNID/PNID）"
+
+msgid ""
+"AccountPasswordCache is empty (The remember password option on your Wii U "
+"must be enabled for this account before dumping it)"
+msgstr "AccountPasswordCache 为空（导出前需在 Wii U 上为此账户启用“记住密码”选项）"
+
+msgid "Accurate barriers"
+msgstr "精确屏障"
+
+msgid "Active account"
+msgstr "当前账户"
+
+msgid "Active preset"
+msgstr "当前预设"
+
+msgid "Add game path"
+msgstr "添加游戏路径"
+
+msgid ""
+"Add the root directory of your game(s). It will scan all directories in it "
+"for games"
+msgstr "添加游戏所在的根目录，将自动扫描其中的所有子目录以查找游戏"
+
+msgid "Are you really sure you want to delete the following entry?"
+msgstr "确定要删除以下条目吗？"
+
+msgid "Are you sure you want to delete the account {0} with id {1}?"
+msgstr "确定要删除 ID 为 {1} 的账户 {0} 吗？"
+
+msgid "Are you sure you want to exit?"
+msgstr "确定要退出吗？"
+
+msgid "Async shader compile"
+msgstr "异步着色器编译"
+
+msgid "Audio settings"
+msgstr "音频设置"
+
+msgid "Australia"
+msgstr "澳大利亚"
+
+msgid "Author"
+msgstr "作者"
+
+msgid "Auto"
+msgstr "自动"
+
+msgid "Auto (recommended)"
+msgstr "自动（推荐）"
+
+msgid "Auto backup"
+msgstr "自动备份"
+
+msgid "Axis"
+msgstr "轴"
+
+msgid "Base"
+msgstr "基础"
+
+msgid "Base game"
+msgstr "基础游戏"
+
+msgid "Below"
+msgstr "下方"
+
+msgid "Bicubic"
+msgstr "双三次"
+
+msgid "Bilinear"
+msgstr "双线性"
+
+msgid "Birthday"
+msgstr "生日"
+
+msgid "Blow mic"
+msgstr "对麦克风吹气"
+
+msgid "Bottom center"
+msgstr "底部居中"
+
+msgid "Bottom left"
+msgstr "左下"
+
+msgid "Bottom right"
+msgstr "右下"
+
+msgid "Buttons"
+msgstr "按键"
+
+msgid "CPU mode"
+msgstr "CPU 模式"
+
+msgid "CPU usage"
+msgstr "CPU 占用"
+
+msgid "CPU usage of Cemu in percent"
+msgstr "Cemu 的 CPU 占用率（百分比）"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Cancel compressing title"
+msgstr "取消压缩游戏"
+
+msgid "Cancel installing title"
+msgstr "取消安装游戏"
+
+msgid "Cemu RAM usage in MB"
+msgstr "Cemu 内存占用（MB）"
+
+msgid ""
+"Cemu is a Wii U emulator.\n"
+"\n"
+"Wii and Wii U are trademarks of Nintendo.\n"
+"Cemu is not affiliated with Nintendo."
+msgstr ""
+"Cemu 是一款 Wii U 模拟器。\n"
+"\n"
+"Wii 与 Wii U 是任天堂的商标。\n"
+"Cemu 与任天堂无隶属关系。"
+
+msgid "Checking version..."
+msgstr "正在检查版本…"
+
+msgid "China"
+msgstr "中国"
+
+msgid "Chinese"
+msgstr "中文"
+
+msgid "Clear"
+msgstr "清除"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Collecting list of files..."
+msgstr "正在收集文件列表…"
+
+msgid "Compressing title"
+msgstr "正在压缩游戏"
+
+msgid "Confirmation"
+msgstr "确认"
+
+msgid "Console language"
+msgstr "主机语言"
+
+msgid "Controller"
+msgstr "控制器"
+
+msgid "Controller has no motion sensors"
+msgstr "该控制器没有体感传感器"
+
+msgid "Controller profiles"
+msgstr "控制器配置"
+
+msgid "Controller settings"
+msgstr "控制器设置"
+
+msgid "Controller {0}"
+msgstr "控制器 {0}"
+
+msgid "Controls the accuracy of floating point multiplication in shaders"
+msgstr "控制着色器中浮点乘法的精度"
+
+msgid "Convert to WUA"
+msgstr "转换为 WUA"
+
+msgid "Converting files..."
+msgstr "正在转换文件…"
+
+msgid "Copied to clipboard"
+msgstr "已复制到剪贴板"
+
+msgid "Could not decrypt title because title.tik is missing."
+msgstr "无法解密游戏：缺少 title.tik。"
+
+msgid ""
+"Could not decrypt title. Make sure that keys.txt contains the correct disc "
+"key for this title."
+msgstr "无法解密游戏。请确认 keys.txt 中包含该游戏正确的光盘密钥。"
+
+msgid "Couldn't create shortcut for game"
+msgstr "无法为游戏创建快捷方式"
+
+msgid "Country"
+msgstr "国家/地区"
+
+msgid "Create"
+msgstr "创建"
+
+msgid "Create new account"
+msgstr "新建账户"
+
+msgid "Create shortcut"
+msgstr "创建快捷方式"
+
+msgid "Current choice"
+msgstr "当前选择"
+
+msgid "Custom"
+msgstr "自定义"
+
+msgid "Custom driver"
+msgstr "自定义驱动"
+
+msgid "Custom drivers"
+msgstr "自定义驱动"
+
+msgid "D-pad"
+msgstr "十字键"
+
+msgid "DLC"
+msgstr "DLC"
+
+msgid "Deadzone"
+msgstr "死区"
+
+msgid "Debug"
+msgstr "调试"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Deleted title entry"
+msgstr "已删除游戏条目"
+
+msgid "Deleting"
+msgstr "正在删除"
+
+msgid "Deleting: {0}"
+msgstr "正在删除：{0}"
+
+msgid "Description"
+msgstr "描述"
+
+msgid "Device controller"
+msgstr "实体控制器"
+
+msgid "Device settings"
+msgstr "设备设置"
+
+msgid "Dimensions Figure Mover"
+msgstr "Dimensions 角色移动器"
+
+msgid "Dimensions Toypad"
+msgstr "Dimensions 玩具垫"
+
+msgid "Dimensions figure"
+msgstr "Dimensions 角色"
+
+msgid "Dimensions figure creator"
+msgstr "Dimensions 角色创建器"
+
+msgid "Dimensions figures"
+msgstr "Dimensions 角色"
+
+msgid "Disabled"
+msgstr "已禁用"
+
+msgid ""
+"Disabling the accurate barriers option will lead to flickering graphics but "
+"may improve performance. It is highly recommended to leave it turned on"
+msgstr "关闭“精确屏障”可能导致画面闪烁，但可能提升性能。强烈建议保持开启"
+
+msgid "Displays internal debug information (Vulkan only)"
+msgstr "显示内部调试信息（仅 Vulkan）"
+
+msgid "Displays the active controller profile when starting a game"
+msgstr "启动游戏时显示当前使用的控制器配置"
+
+msgid "Do you really want to cancel compressing the title?"
+msgstr "确定要取消压缩该游戏吗？"
+
+msgid ""
+"Do you really want to cancel the installation process?\n"
+"\n"
+"Canceling the process will delete the applied files."
+msgstr ""
+"确定要取消安装吗？\n"
+"\n"
+"取消将删除已写入的文件。"
+
+msgid "Done"
+msgstr "完成"
+
+msgid "Double buffering"
+msgstr "双缓冲"
+
+msgid "Downloaded latest graphic packs"
+msgstr "已下载最新图像增强包"
+
+msgid "Downloading graphic packs..."
+msgstr "正在下载图像增强包…"
+
+msgid "Downscale filter"
+msgstr "缩小滤镜"
+
+msgid "Draw calls per frame"
+msgstr "每帧绘制调用"
+
+msgid "Driver already installed"
+msgstr "驱动已安装"
+
+msgid "Driver installed successfully"
+msgstr "驱动安装成功"
+
+msgid "Driver version"
+msgstr "驱动版本"
+
+msgid "Dutch"
+msgstr "荷兰语"
+
+msgid "Edit game profile"
+msgstr "编辑游戏配置"
+
+msgid "Edit input positions"
+msgstr "编辑按键位置"
+
+msgid "Edit input size"
+msgstr "编辑按键大小"
+
+msgid "Edit inputs"
+msgstr "编辑按键"
+
+msgid "Email"
+msgstr "邮箱"
+
+msgid "Empty"
+msgstr "空"
+
+msgid "Emulate Dimensions Toypad"
+msgstr "模拟 Dimensions 玩具垫"
+
+msgid "Emulate Infinity Base"
+msgstr "模拟 Infinity 基座"
+
+msgid "Emulate Skylander Portal"
+msgstr "模拟 Skylanders 传送门"
+
+msgid "Emulated USB Devices"
+msgstr "模拟 USB 设备"
+
+msgid "Emulated controller"
+msgstr "模拟控制器"
+
+msgid "Emulated controller: {0}"
+msgstr "模拟控制器：{0}"
+
+msgid "Enable audio output for the Wii U Gamepad"
+msgstr "启用 Wii U GamePad 音频输出"
+
+msgid "Enable audio output for the Wii U TV"
+msgstr "启用 Wii U 电视音频输出"
+
+msgid "Enable input overlay"
+msgstr "启用虚拟按键层"
+
+msgid "Enable motion"
+msgstr "启用体感"
+
+msgid "Enable vibrate on touch"
+msgstr "启用触摸振动"
+
+msgid "Enabled"
+msgstr "已启用"
+
+msgid ""
+"Enables async shader and pipeline compilation. Reduces stutter at the cost of objects not rendering for a short time.\n"
+"Vulkan only"
+msgstr ""
+"启用异步着色器与管线编译，可减少卡顿，代价是物体可能短暂不渲染。\n"
+"仅限 Vulkan"
+
+msgid "English"
+msgstr "英语"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "Error installing"
+msgstr "安装出错"
+
+msgid "Error while converting"
+msgstr "转换出错"
+
+msgid "Europe"
+msgstr "欧洲"
+
+msgid "Exit"
+msgstr "退出"
+
+msgid "Exit confirmation"
+msgstr "退出确认"
+
+msgid "Exited input edit mode"
+msgstr "已退出按键编辑模式"
+
+msgid "Extra"
+msgstr "附加内容"
+
+msgid "Extracting..."
+msgstr "正在解压…"
+
+msgid "FPS"
+msgstr "FPS"
+
+msgid "Failed creating renderer: {0}"
+msgstr "创建渲染器失败：{0}"
+
+msgid "Failed creating surface: {0}"
+msgstr "创建显示表面失败：{0}"
+
+msgid "Failed to create figure"
+msgstr "创建角色失败"
+
+msgid "Failed to delete title entry"
+msgstr "删除游戏条目失败"
+
+msgid "Failed to download graphic packs"
+msgstr "下载图像增强包失败"
+
+msgid "Failed to initialize"
+msgstr "初始化失败"
+
+msgid "Failed to install driver"
+msgstr "安装驱动失败"
+
+msgid "Failed to launch title"
+msgstr "启动游戏失败"
+
+msgid "Failed to load figure"
+msgstr "读取角色失败"
+
+msgid "Failed to open Cemu folder"
+msgstr "无法打开 Cemu 文件夹"
+
+msgid "Failed to open log file"
+msgstr "无法打开日志文件"
+
+msgid "Favorite"
+msgstr "收藏"
+
+msgid "Female"
+msgstr "女"
+
+msgid "Figure number"
+msgstr "角色编号"
+
+msgid "Finalizing..."
+msgstr "正在完成…"
+
+msgid "Finished converting"
+msgstr "转换完成"
+
+msgid "Finished installing"
+msgstr "安装完成"
+
+msgid "Folder"
+msgstr "文件夹"
+
+msgid "Format"
+msgstr "格式"
+
+msgid "Formats"
+msgstr "格式"
+
+msgid "French"
+msgstr "法语"
+
+msgid "Friend list"
+msgstr "好友列表"
+
+msgid "Fullscreen scaling"
+msgstr "全屏缩放"
+
+msgid "Game paths"
+msgstr "游戏路径"
+
+msgid "Game speed"
+msgstr "游戏速度"
+
+msgid "GamePad position"
+msgstr "GamePad 位置"
+
+msgid "Gamepad"
+msgstr "GamePad"
+
+msgid "Gamepad channels"
+msgstr "GamePad 声道"
+
+msgid "Gamepad volume"
+msgstr "GamePad 音量"
+
+msgid "Games path already added"
+msgstr "该游戏路径已添加"
+
+msgid "Gender"
+msgstr "性别"
+
+msgid "General settings"
+msgstr "常规设置"
+
+msgid "German"
+msgstr "德语"
+
+msgid "Global"
+msgstr "全局"
+
+msgid "Graphic packs"
+msgstr "图像增强包"
+
+msgid "Graphic packs download"
+msgstr "图像增强包下载"
+
+msgid "Graphics settings"
+msgstr "图像设置"
+
+msgid "Hermite"
+msgstr "Hermite"
+
+msgid "Hold to confirm"
+msgstr "长按确认"
+
+msgid "Home"
+msgstr "Home 键"
+
+msgid "Hotkey settings"
+msgstr "热键设置"
+
+msgid "Hours: {0} Minutes: {1}"
+msgstr "小时：{0} 分钟：{1}"
+
+msgid "ID"
+msgstr "ID"
+
+msgid "Infinity Base"
+msgstr "Infinity 基座"
+
+msgid "Infinity figure"
+msgstr "Infinity 角色"
+
+msgid "Infinity figure creator"
+msgstr "Infinity 角色创建器"
+
+msgid "Infinity figures"
+msgstr "Infinity 角色"
+
+msgid "Initializing emulation"
+msgstr "正在初始化模拟"
+
+msgid "Input binding"
+msgstr "按键绑定"
+
+msgid "Input overlay"
+msgstr "虚拟按键层"
+
+msgid "Input overlay settings"
+msgstr "虚拟按键层设置"
+
+msgid "Input settings"
+msgstr "输入设置"
+
+msgid "Input text"
+msgstr "输入文本"
+
+msgid "Inputs opacity"
+msgstr "虚拟按键不透明度"
+
+msgid "Install bundled packs (offline)"
+msgstr "安装内置增强包（离线）"
+
+msgid "Installed only"
+msgstr "仅显示已安装"
+
+msgid "Installing"
+msgstr "正在安装"
+
+msgid "Installing driver in progress"
+msgstr "正在安装驱动"
+
+msgid "Installing title"
+msgstr "正在安装游戏"
+
+msgid "Invalid title"
+msgstr "无效的游戏"
+
+msgid ""
+"IsPasswordCacheEnabled is set to false (The remember password option on your"
+" Wii U must be enabled for this account before dumping it)"
+msgstr "IsPasswordCacheEnabled 为 false（导出前需在 Wii U 上为此账户启用“记住密码”选项）"
+
+msgid ""
+"It seems that a newer version is already installed, do you still want to "
+"install the older version?"
+msgstr "检测到已安装更新版本，仍要安装旧版本吗？"
+
+msgid ""
+"It seems that the selected title is already installed, do you want to "
+"reinstall it?"
+msgstr "所选游戏似乎已安装，要重新安装吗？"
+
+msgid "Italian"
+msgstr "意大利语"
+
+msgid "Japan"
+msgstr "日本"
+
+msgid "Japanese"
+msgstr "日语"
+
+msgid "Keep aspect ratio"
+msgstr "保持宽高比"
+
+msgid "Korea"
+msgstr "韩国"
+
+msgid "Korean"
+msgstr "韩语"
+
+msgid "Kotlin libraries:"
+msgstr "Kotlin 库："
+
+msgid "Language"
+msgstr "语言"
+
+msgid "Last played"
+msgstr "上次游玩"
+
+msgid "Latency"
+msgstr "延迟"
+
+msgid "Left"
+msgstr "左"
+
+msgid "Left Axis"
+msgstr "左轴"
+
+msgid "Left joystick"
+msgstr "左摇杆"
+
+msgid "Left stick click"
+msgstr "左摇杆按下"
+
+msgid "Load libraries from the cafeLibs directory"
+msgstr "从 cafeLibs 目录加载库"
+
+msgid "Load shared libraries"
+msgstr "加载共享库"
+
+msgid "Location"
+msgstr "位置"
+
+msgid "Locations"
+msgstr "位置"
+
+msgid "Log file doesn't exist"
+msgstr "日志文件不存在"
+
+msgid "MLC"
+msgstr "MLC"
+
+msgid "Makes the \"show screen\" button toggle between the TV and gamepad screens"
+msgstr "让“显示画面”按钮在电视与 GamePad 画面间切换"
+
+msgid "Male"
+msgstr "男"
+
+msgid "Manage list"
+msgstr "管理列表"
+
+msgid "Many"
+msgstr "多区域"
+
+msgid "Mii name"
+msgstr "Mii 名称"
+
+msgid "Min api"
+msgstr "最低 API"
+
+msgid "Minus"
+msgstr "减号键"
+
+msgid "Minutes: {0}"
+msgstr "分钟：{0}"
+
+msgid "Missing certificate and key files:"
+msgstr "缺少证书与密钥文件："
+
+msgid "Mono"
+msgstr "单声道"
+
+msgid "Move"
+msgstr "移动"
+
+msgid "Move here"
+msgstr "移动到此处"
+
+msgid "Multi-core recompiler"
+msgstr "多核重编译器"
+
+msgid "NUS"
+msgstr "NUS"
+
+msgid "Nearest neighbor"
+msgstr "最近邻"
+
+msgid "Network service"
+msgstr "网络服务"
+
+msgid "Never played"
+msgstr "从未游玩"
+
+msgid "Nintendo"
+msgstr "任天堂"
+
+msgid "No"
+msgstr "否"
+
+msgid "No available figures"
+msgstr "没有可用的角色"
+
+msgid "No controllers available"
+msgstr "没有可用的控制器"
+
+msgid "No emulated USB device is enabled"
+msgstr "未启用任何模拟 USB 设备"
+
+msgid "No persistent id entered!"
+msgstr "未输入持久 ID！"
+
+msgid "No preview"
+msgstr "无预览"
+
+msgid "No save data found. Save your progress in the game first."
+msgstr "未找到存档数据。请先在游戏中保存进度。"
+
+msgid "No updates available."
+msgstr "没有可用更新。"
+
+msgid "None"
+msgstr "无"
+
+msgid "Not enough space"
+msgstr "空间不足"
+
+msgid "Not installed"
+msgstr "未安装"
+
+msgid "Not set"
+msgstr "未设置"
+
+msgid "Notifications"
+msgstr "通知"
+
+msgid "Nunchuck"
+msgstr "双节棍手柄"
+
+msgid "OK"
+msgstr "确定"
+
+msgid "OTP and SEEPROM present but no certificate files were found"
+msgstr "已找到 OTP 和 SEEPROM，但未找到证书文件"
+
+msgid "OTP.bin or SEEPROM.bin is missing"
+msgstr "缺少 OTP.bin 或 SEEPROM.bin"
+
+msgid "Off"
+msgstr "关"
+
+msgid "Offline"
+msgstr "离线"
+
+msgid "Online play is not set up. Follow the guide below to get started"
+msgstr "尚未设置在线联机。请按照以下指南操作"
+
+msgid "Online play requirements"
+msgstr "在线联机所需条件"
+
+msgid "Online play tutorial"
+msgstr "在线联机教程"
+
+msgid "Online status"
+msgstr "在线状态"
+
+msgid "Open Cemu folder"
+msgstr "打开 Cemu 文件夹"
+
+msgid "Operation failed"
+msgstr "操作失败"
+
+msgid "Original authors: {0}"
+msgstr "原作者：{0}"
+
+msgid "Overlay"
+msgstr "叠加层"
+
+msgid "Overlay controller"
+msgstr "虚拟按键层控制器"
+
+msgid "Overlay settings"
+msgstr "叠加层设置"
+
+msgid "Overwrite"
+msgstr "覆盖"
+
+msgid "Overwrite this slot?"
+msgstr "覆盖该存档位？"
+
+msgid "Package version"
+msgstr "安装包版本"
+
+msgid "Parsing title content..."
+msgstr "正在解析游戏内容…"
+
+msgid "Path"
+msgstr "路径"
+
+msgid "PersistentId"
+msgstr "持久 ID"
+
+msgid "Pick a date"
+msgstr "选择日期"
+
+msgid "Pick up and place"
+msgstr "拿起并放置"
+
+msgid "Plus"
+msgstr "加号键"
+
+msgid "Portuguese"
+msgstr "葡萄牙语"
+
+msgid "Position"
+msgstr "位置"
+
+msgid "Press a button"
+msgstr "请按一个按键"
+
+msgid "Press a key combination"
+msgstr "请按下组合键"
+
+msgid "Pretendo"
+msgstr "Pretendo"
+
+msgid "PrincipalId missing"
+msgstr "缺少 PrincipalId"
+
+msgid "Processing..."
+msgstr "正在处理…"
+
+msgid "Quick load"
+msgstr "即时读档"
+
+msgid "Quick save"
+msgstr "即时存档"
+
+msgid "Quit"
+msgstr "退出"
+
+msgid "RAM usage"
+msgstr "内存占用"
+
+msgid "Range"
+msgstr "范围"
+
+msgid "Refreshing titles"
+msgstr "正在刷新游戏列表"
+
+msgid "Region"
+msgstr "区域"
+
+msgid "Remove shader caches"
+msgstr "清除着色器缓存"
+
+msgid "Remove the shader caches for {0}?"
+msgstr "要清除 {0} 的着色器缓存吗？"
+
+msgid "Replace TV with PAD"
+msgstr "用 GamePad 画面替换电视画面"
+
+msgid "Requires Wii U GamePad"
+msgstr "需要 Wii U GamePad"
+
+msgid "Reset input overlay"
+msgstr "重置虚拟按键层"
+
+msgid "Resize"
+msgstr "调整大小"
+
+msgid "Restarting game..."
+msgstr "正在重启游戏…"
+
+msgid "Restore"
+msgstr "恢复"
+
+msgid "Restore this save?"
+msgstr "要恢复该存档吗？"
+
+msgid ""
+"Restoring will restart the game and load the save data from the selected "
+"snapshot."
+msgstr "恢复后游戏将重启，并载入所选快照中的存档数据。"
+
+msgid "Right"
+msgstr "右"
+
+msgid "Right Axis"
+msgstr "右轴"
+
+msgid "Right joystick"
+msgstr "右摇杆"
+
+msgid "Right stick click"
+msgstr "右摇杆按下"
+
+msgid "Rotation"
+msgstr "旋转"
+
+msgid "Rumble"
+msgstr "震动"
+
+msgid "Russian"
+msgstr "俄语"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Save folder"
+msgstr "存档文件夹"
+
+msgid "Saved"
+msgstr "已保存"
+
+msgid "Scale"
+msgstr "缩放"
+
+msgid "Search games"
+msgstr "搜索游戏"
+
+msgid "Search graphic packs"
+msgstr "搜索图像增强包"
+
+msgid "Search titles"
+msgstr "搜索游戏"
+
+msgid "Select"
+msgstr "选择"
+
+msgid "Select a controller"
+msgstr "选择控制器"
+
+msgid "Select a figure"
+msgstr "选择角色"
+
+msgid "Selected account is a valid online account"
+msgstr "所选账户是有效的在线账户"
+
+msgid "Selected account is not linked to a NNID or PNID"
+msgstr "所选账户未绑定 NNID 或 PNID"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Setup all inputs"
+msgstr "设置全部按键"
+
+msgid "Shader caches removed"
+msgstr "着色器缓存已清除"
+
+msgid "Shader compiler"
+msgstr "着色器编译器"
+
+msgid "Shader multiplication accuracy"
+msgstr "着色器乘法精度"
+
+msgid "Share log file"
+msgstr "分享日志文件"
+
+msgid "Show Emulated USB Devices dialog"
+msgstr "显示模拟 USB 设备对话框"
+
+msgid "Show PAD"
+msgstr "显示 GamePad 画面"
+
+msgid "Show input overlay"
+msgstr "显示虚拟按键层"
+
+msgid "Show online status"
+msgstr "显示在线状态"
+
+msgid "Shows a notification after shaders have been compiled"
+msgstr "着色器编译完成后显示通知"
+
+msgid "Shows friend list related data if online"
+msgstr "联网时显示好友列表相关信息"
+
+msgid "Single-core interpreter"
+msgstr "单核解释器"
+
+msgid "Single-core recompiler"
+msgstr "单核重编译器"
+
+msgid "Skylander figure"
+msgstr "Skylanders 角色"
+
+msgid "Skylander figure creator"
+msgstr "Skylanders 角色创建器"
+
+msgid "Skylanders Portal"
+msgstr "Skylanders 传送门"
+
+msgid "Skylanders figures"
+msgstr "Skylanders 角色"
+
+msgid "Slot {0}"
+msgstr "存档位 {0}"
+
+msgid "Slot {0} already contains a save from {1}"
+msgstr "存档位 {0} 已包含 {1} 的存档"
+
+msgid "Spanish"
+msgstr "西班牙语"
+
+msgid "Starting..."
+msgstr "正在启动…"
+
+msgid "Stereo"
+msgstr "立体声"
+
+msgid "Stretch"
+msgstr "拉伸"
+
+msgid "Surround"
+msgstr "环绕声"
+
+msgid "System"
+msgstr "系统"
+
+msgid "System driver"
+msgstr "系统驱动"
+
+msgid "TV"
+msgstr "电视"
+
+msgid "TV channels"
+msgstr "电视声道"
+
+msgid "TV volume"
+msgstr "电视音量"
+
+msgid "Taiwan"
+msgstr "台湾"
+
+msgid "Taiwanese"
+msgstr "繁体中文"
+
+msgid ""
+"The current save progress will be replaced with slot {0}. The game will "
+"restart."
+msgstr "当前存档进度将被存档位 {0} 替换，游戏将重启。"
+
+msgid ""
+"The current save progress will be restored from the auto backup. The game "
+"will restart."
+msgstr "当前存档进度将从自动备份恢复，游戏将重启。"
+
+msgid ""
+"The following content will be converted to a compressed Wii U archive file "
+"(.wua)"
+msgstr "以下内容将被转换为压缩的 Wii U 归档文件（.wua）"
+
+msgid "The number of draw calls per frame. Average over last 5 seconds"
+msgstr "每帧绘制调用次数（最近 5 秒平均值）"
+
+msgid "The number of frames per second. Average over last 5 seconds"
+msgstr "每秒帧数（最近 5 秒平均值）"
+
+msgid "The persistent id must be greater than {0}!"
+msgstr "持久 ID 必须大于 {0}！"
+
+msgid "The persistent id {0} is already in use by account {1}!"
+msgstr "持久 ID {0} 已被账户 {1} 使用！"
+
+msgid "This slot is empty."
+msgstr "该存档位为空。"
+
+msgid "Thread quantum"
+msgstr "线程时间片"
+
+msgid "Title ID"
+msgstr "游戏 ID"
+
+msgid "Title manager"
+msgstr "游戏管理器"
+
+msgid "Title name"
+msgstr "游戏名称"
+
+msgid "To use motion input, the controller type must be set to Wii U GamePad"
+msgstr "要使用体感操作，控制器类型必须设置为 Wii U GamePad"
+
+msgid "Toggle menu"
+msgstr "切换菜单"
+
+msgid "Toggle screen"
+msgstr "切换画面"
+
+msgid "Top center"
+msgstr "顶部居中"
+
+msgid "Top left"
+msgstr "左上"
+
+msgid "Top right"
+msgstr "右上"
+
+msgid "Trigger"
+msgstr "扳机键"
+
+msgid "Trigger an input to bind it to {0}"
+msgstr "触发一个输入以绑定到 {0}"
+
+msgid "Triple buffering"
+msgstr "三重缓冲"
+
+msgid "Type"
+msgstr "类型"
+
+msgid "Types"
+msgstr "类型"
+
+msgid "USA"
+msgstr "美国"
+
+msgid ""
+"Unable to launch game\n"
+"Path: {0}"
+msgstr ""
+"无法启动游戏\n"
+"路径：{0}"
+
+msgid "Unable to launch game because the base files were not found."
+msgstr "无法启动游戏：未找到基础文件。"
+
+msgid "Update"
+msgstr "更新"
+
+msgid "Upscale filter"
+msgstr "放大滤镜"
+
+msgid "Use motion"
+msgstr "使用体感"
+
+msgid "Used libraries:"
+msgstr "使用的库："
+
+msgid "VSync"
+msgstr "垂直同步"
+
+msgid "Variant"
+msgstr "变体"
+
+msgid "Vendor"
+msgstr "厂商"
+
+msgid "Version"
+msgstr "版本"
+
+msgid "Version: {0}"
+msgstr "版本：{0}"
+
+msgid "Vibrate"
+msgstr "振动"
+
+msgid "Visible Inputs"
+msgstr "显示的按键"
+
+msgid "WUA"
+msgstr "WUA"
+
+msgid "WUD"
+msgstr "WUD"
+
+msgid "WUHB"
+msgstr "WUHB"
+
+msgid "Warning"
+msgstr "警告"
+
+msgid "Wii U Classic Controller"
+msgstr "Wii U 经典手柄"
+
+msgid "Wii U GamePad"
+msgstr "Wii U GamePad"
+
+msgid "Wii U Pro Controller"
+msgstr "Wii U Pro 手柄"
+
+msgid "Wiimote"
+msgstr "Wii 遥控器"
+
+msgid "Yes"
+msgstr "是"
+
+msgid "You've played"
+msgstr "已游玩"
+
+msgid "blow mic"
+msgstr "吹麦克风"
+
+msgid "click"
+msgstr "点击"
+
+msgid "down"
+msgstr "下"
+
+msgid "home"
+msgstr "home"
+
+msgid "left"
+msgstr "左"
+
+msgid "otp.bin is invalid"
+msgstr "otp.bin 无效"
+
+msgid "otp.bin missing in Cemu directory"
+msgstr "Cemu 目录中缺少 otp.bin"
+
+msgid "right"
+msgstr "右"
+
+msgid "seeprom.bin is invalid"
+msgstr "seeprom.bin 无效"
+
+msgid "seeprom.bin missing in Cemu directory"
+msgstr "Cemu 目录中缺少 seeprom.bin"
+
+msgid "show screen"
+msgstr "显示画面"
+
+msgid "up"
+msgstr "上"
+
+msgid "Loading the savestate failed. The game is still running."
+msgstr "读取即时存档失败，游戏仍在运行。"
+
+msgid ""
+"Slots with a state file are restored instantly without restarting the game."
+msgstr "带有状态文件的槽位可立即恢复，无需重启游戏。"
+
+msgid ""
+"The game will be restored to the exact state from when this snapshot was "
+"taken."
+msgstr "游戏将恢复到此快照创建时的精确状态。"
+
+msgid "Cheats"
+msgstr "金手指"
+
+msgid "Pause emulation"
+msgstr "暂停模拟"
+
+msgid "Resume emulation"
+msgstr "继续模拟"
+
+msgid "Custom cover"
+msgstr "自定义封面"
+
+msgid "Remove custom cover"
+msgstr "移除自定义封面"
+
+msgid "Floating GamePad screen"
+msgstr "GamePad 悬浮画面"
+
+msgid "Floating overlay"
+msgstr "悬浮画面"
+
+msgid "PAD screen size"
+msgstr "GamePad 画面大小"
+
+msgid "PAD screen opacity"
+msgstr "GamePad 画面不透明度"
+
+msgid "PAD screen blur"
+msgstr "GamePad 画面模糊度"
+
+msgid "PAD screen corner"
+msgstr "GamePad 画面位置"
+
+msgid "Import cheat file (txt)"
+msgstr "导入金手指文件 (txt)"
+
+msgid ""
+"No cheats found for this game. Place cheat files (txt) in the cheatCodes "
+"folder or import one below."
+msgstr "未找到此游戏的金手指。请将金手指文件（txt）放入 cheatCodes 文件夹，或在下方导入。"
+
+msgid ""
+"It seems that there is already a title installed at the target location but it has a different type.\n"
+"Currently installed: '{0}' Installing: '{1}'\n"
+"Do you still want to continue with the installation? It will replace the currently installed title."
+msgstr ""
+"目标位置似乎已存在一个类型不同的已安装游戏。\n"
+"当前已安装：'{0}' 正在安装：'{1}'\n"
+"仍要继续安装吗？这将替换当前已安装的游戏。"
+
+msgid "Use safe mode"
+msgstr "使用安全模式"
+
+msgid "Safe mode: restart the game and load the saved data instead"
+msgstr "安全模式：改为重启游戏并恢复其存档数据"

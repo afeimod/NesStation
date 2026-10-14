@@ -314,6 +314,30 @@ private val NGCWII_ACTIONS = listOf(
     KeyAction("ngc_wii_tilt_b", "倾斜·后",  Color(0xFF7F8C8D), KeyEvent.KEYCODE_BUTTON_THUMBR, "Wii 向后倾斜")
 )
 
+// ★★ Wii U（Cemu-AZ 源码核心）GamePad 按键动作表：id 与 EmulatorScreen 的
+//   KeyActionInternal wiiu_* 表一一对应，实体手柄按键经 actionToBits 的
+//   WIIU 分支映射（L2/R2→ZL/ZR、THUMBL/R→摇杆按下），CemuEngine 按项目
+//   位布局直收并翻译为 VPAD 事件。TV 切换/麦克风为虚拟键专属（无实体默认键）。
+private val WIIU_ACTIONS = listOf(
+    KeyAction("wiiu_up",     "上",    Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,       "方向上"),
+    KeyAction("wiiu_down",   "下",    Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_DOWN,     "方向下"),
+    KeyAction("wiiu_left",   "左",    Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_LEFT,     "方向左"),
+    KeyAction("wiiu_right",  "右",    Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_RIGHT,    "方向右"),
+    KeyAction("wiiu_a",      "A",     Color(0xFFE74C3C), KeyEvent.KEYCODE_BUTTON_A,      "GamePad A"),
+    KeyAction("wiiu_b",      "B",     Color(0xFFE67E22), KeyEvent.KEYCODE_BUTTON_B,      "GamePad B"),
+    KeyAction("wiiu_x",      "X",     Color(0xFF3498DB), KeyEvent.KEYCODE_BUTTON_X,      "GamePad X"),
+    KeyAction("wiiu_y",      "Y",     Color(0xFF2ECC71), KeyEvent.KEYCODE_BUTTON_Y,      "GamePad Y"),
+    KeyAction("wiiu_l",      "L",     Color(0xFF9C27B0), KeyEvent.KEYCODE_BUTTON_L1,     "GamePad L"),
+    KeyAction("wiiu_r",      "R",     Color(0xFF00BCD4), KeyEvent.KEYCODE_BUTTON_R1,     "GamePad R"),
+    KeyAction("wiiu_zl",     "ZL",    Color(0xFF1F6F8B), KeyEvent.KEYCODE_BUTTON_L2,     "GamePad ZL"),
+    KeyAction("wiiu_zr",     "ZR",    Color(0xFF1F8B6F), KeyEvent.KEYCODE_BUTTON_R2,     "GamePad ZR"),
+    KeyAction("wiiu_stickl", "L3",    Color(0xFF7F8C8D), KeyEvent.KEYCODE_BUTTON_THUMBL, "左摇杆按下"),
+    KeyAction("wiiu_stickr", "R3",    Color(0xFF7F8C8D), KeyEvent.KEYCODE_BUTTON_THUMBR, "右摇杆按下"),
+    KeyAction("wiiu_minus",  "−",     Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "GamePad −"),
+    KeyAction("wiiu_plus",   "+",     Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "GamePad +"),
+    KeyAction("wiiu_home",   "HOME",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_MODE,   "GamePad HOME")
+)
+
 private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction> {
     val suffix = "_p${player + 1}"
     return when (platform) {
@@ -341,6 +365,9 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         // PSP（PPSSPP 进程内引擎）：id 对应 EmulatorScreen 的 KeyActionInternal
         // psp_* 表，引擎按项目位布局直收（位→Android 键码→NativeApp.keyDown）。
         GamePlatform.PSP    -> PSP_ACTIONS.map { it.copy(id = it.id + suffix) }
+        // ★ Wii U（Cemu-AZ 源码核心）：id 对应 EmulatorScreen 的 wiiu_* 表，
+        // 位→VPAD 事件由 CemuEngine.setPad1 翻译。
+        GamePlatform.WIIU   -> WIIU_ACTIONS.map { it.copy(id = it.id + suffix) }
     }
 }
 
