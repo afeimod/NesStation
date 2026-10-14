@@ -109,9 +109,16 @@ android {
     externalNativeBuild {
         cmake {
             path = file("../core/cemu/CMakeLists.txt")
-            // 主工程 AGP 8.1.0 随附的 SDK CMake 即 3.22.1（core/cemu 根
-            // CMakeLists 已按此适配，见文件头注释）。
-            version = "3.22.1"
+            // 上游要求 CMake >= 3.25（version = "3.25.0+"），此处与上游完全一致：
+            //   Cemu 源码全局开启 LTO/IPO（CMAKE_INTERPROCEDURAL_OPTIMIZATION_*
+            //   对 Release/RelWithDebInfo 均 ON），AGP 的 release 构建走
+            //   RelWithDebInfo 配置。CMake 3.22 无法在 NDK 工具链下正确处理
+            //   LTO 链接：回退到宿主机 /usr/bin/ld.gold（NDK 无 LLVMgold.so
+            //   插件，gold 亦不识别 aarch64 的 crt 文件），报
+            //   "unsupported ELF machine number 183"。
+            // 解决：CMake 升至 >= 3.25。SDK 仓库中满足要求的版本为
+            //   cmake;3.30.4，CI（android-build.yml）同步安装。
+            version = "3.25.0+"
         }
     }
 

@@ -69,12 +69,20 @@ jobs:
           # std::lexicographical_compare_three_way，r26 的 libc++ 快照没有该符号。
           # GameBox/ARMSX2 各核心用 28.2.13676358；:cemu-core（Cemu Wii U）按上游
           # Cemu-AZ 固定使用 29.0.14206865（见 cemu-core/build.gradle.kts 的 ndkVersion）。
+          #
+          # Cemu(Wii U) 的 CMake 必须 >= 3.25（上游 version = "3.25.0+"）：
+          # Cemu 源码全局开启 LTO/IPO（RelWithDebInfo），CMake 3.22 在 NDK 工具链
+          # 下无法正确处理 LTO 链接，会回退到宿主机 /usr/bin/ld.gold（NDK 无
+          # LLVMgold.so 插件、gold 不识别 aarch64 crt 文件），报
+          # "unsupported ELF machine number 183"。SDK 仓库中满足 >=3.25 的版本
+          # 为 cmake;3.30.4，与 cemu-core/build.gradle.kts 的 version="3.25.0+"
+          # 匹配。
           sdkmanager \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "ndk;28.2.13676358" \
             "ndk;29.0.14206865" \
-            "cmake;3.22.1" \
+            "cmake;3.30.4" \
             > /dev/null 2>&1 || true
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
