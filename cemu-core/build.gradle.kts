@@ -68,9 +68,18 @@ android {
     compileSdk = 34 // 与主工程 app 一致（本模块无 Java/Kotlin 源码，仅原生构建）
 
     defaultConfig {
-        minSdk = 24 // 与主工程一致；Cemu 运行时最低要求 API 30（arm64+Vulkan1.1），
-                    // 由 CemuEngine.probeAvailability() 在运行时守护，低版本设备
-                    // 报告"核心不可用"而非崩溃。
+        minSdk = 30 // 与上游 Cemu-AZ 完全一致（其 src/android/app 即 minSdk=30）。
+                    // Cemu 原生代码使用 API 26+ 的 libc 符号——cpu_features.cpp 的
+                    // __system_property_read_callback 即是一例（NDK 头文件以
+                    // #if __ANDROID_API__ >= 26 暴露）。minSdk=24 时该函数完全不
+                    // 声明，编译报 "use of undeclared identifier"。上游以 API 30
+                    // 编译所以无此问题。
+                    // 运行时守护设计不变：CemuEngine.probeAvailability() 仅在
+                    // API>=30 时启用核心；更低版本设备上 System.loadLibrary 因
+                    // 版本化符号无法解析抛 UnsatisfiedLinkError，同样落入
+                    // "核心不可用" 分支，应用不会崩溃。主工程 minSdk 仍为 24，
+                    // 清单合并冲突由 app 的 AndroidManifest.xml 以
+                    // tools:overrideLibrary 豁免。
         consumerProguardFiles("consumer-rules.pro")
 
         externalNativeBuild {
