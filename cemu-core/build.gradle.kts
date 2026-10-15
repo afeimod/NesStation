@@ -105,6 +105,24 @@ android {
                     "-DEMULATOR_VERSION_MAJOR=2",
                     "-DEMULATOR_VERSION_MINOR=0"
                 )
+                // ★★ Wii U 卡顿修复：强制原生核心以 RelWithDebInfo 编译 ★★
+                // CI（android-build.yml）的主产物之一是 assembleDebug —— AGP 对
+                // debug 变体默认给 CMake 传 CMAKE_BUILD_TYPE=Debug，而 Cemu 根
+                // CMakeLists（core/cemu/CMakeLists.txt）：
+                //   · 仅对 Release/RelWithDebInfo 开 LTO
+                //     （CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE/RELWITHDEBINFO=ON）；
+                //   · Debug 配置定义 CEMU_DEBUG_ASSERT（核心全程运行调试断言）；
+                //   · Debug 无 -O2/-O3 优化。
+                // 三者叠加 = 模拟器核心以无优化 + 断言全开的状态运行，Wii U
+                // 游戏帧率被拉低数倍（"比较卡，像硬件加速没生效"的真正根因）。
+                // AGP 生成 configure 命令时用户 arguments 追加在其自身的
+                // -DCMAKE_BUILD_TYPE=Debug 之后，CMake 对重复 -D 取最后一次
+                // 定义 —— 因此这里显式追加 RelWithDebInfo 可覆盖 Debug，使
+                // 【所有 APK 变体（含 Debug APK）】的原生核心都拿到 -O2 + LTO。
+                // Kotlin/Java 侧不受影响（Debug APK 仍可调试断点）。
+                arguments += listOf(
+                    "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+                )
                 abiFilters += cemuAbiFilters.split(",").map { it.trim() }
             }
         }

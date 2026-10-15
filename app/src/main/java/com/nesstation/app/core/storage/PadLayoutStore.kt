@@ -909,6 +909,11 @@ class PadLayout {
     var cwPadOverlayOpacity: String = "60" // "20".."100" 不透明度（核心输出着色器）
     var cwPadOverlayBlur: String = "0"     // "0".."24" 模糊半径 dp（Android 12+）
     var cwPadOverlayCorner: String = "0"   // "0"左下 "1"右下 "2"左上 "3"右上
+    // ★ 悬浮画面自定义拖动：小窗左上角的归一化位置（0..1，相对“屏幕-小窗尺寸”
+    //   的可用区域）。空串 = 未拖过 → 按 cwPadOverlayCorner 四角默认摆放；
+    //   用户拖动顶部把手后写入，优先于角落设置（重置 = 清空两字段）。
+    var cwPadOverlayX: String = ""       // "" 或 "0.0".."1.0"（左上角 X 归一化）
+    var cwPadOverlayY: String = ""       // "" 或 "0.0".."1.0"（左上角 Y 归一化）
     var cwDownscaleFilter: String = "0"    // "0".."3" 下采样滤镜（ScalingFilter）
     var cwTvAudioEnabled: String = "true"   // TV 音频输出开关
     var cwPadAudioEnabled: String = "true"  // GamePad 音频输出开关
@@ -1176,6 +1181,15 @@ class PadLayout {
     //   同样的按键位 —— 跨系统干扰。现在 DC 使用独立字段存储，
     //   与 NES/GB 彻底隔离。
     var comboButtonsDc: String = ""       // DC combo list (JSON)
+
+    // ★ Wii U / PSP 组合键补齐：此前两个平台在 parseComboButtons 直接返回空，
+    //   游戏内「+ 添加组合键」点了无效果。两引擎的位输入链路现成可用
+    //   （sendStateNow → onPadBits → routePadBits → setPad1）：WIIU 位布局
+    //   直通 CemuEngine.setPad1 的 VPAD 映射（A/B/X/Y/L/R/ZL/ZR/PLUS/
+    //   MINUS/十字…）；PSP 与 PS2 同语义经 ps2ToLibretroLayout 转换
+    //   （A=✕、B=○、X=△、Y=□、L/R）。字段独立存储，互不串扰。
+    var comboButtonsWiiU: String = ""    // Wii U combo list (JSON)
+    var comboButtonsPsp: String = ""     // PSP combo list (JSON)
 
     // === PCE button visibility toggles (which on-screen buttons are shown) ===
     // PCE uses the shared SNES/Arcade/MD layout slots (D-pad, I/II, RUN,
@@ -1787,6 +1801,8 @@ class PadLayout {
         cwPadOverlayOpacity = another.cwPadOverlayOpacity
         cwPadOverlayBlur = another.cwPadOverlayBlur
         cwPadOverlayCorner = another.cwPadOverlayCorner
+        cwPadOverlayX = another.cwPadOverlayX
+        cwPadOverlayY = another.cwPadOverlayY
         cwDownscaleFilter = another.cwDownscaleFilter
         cwTvAudioEnabled = another.cwTvAudioEnabled
         cwPadAudioEnabled = another.cwPadAudioEnabled
@@ -1936,6 +1952,8 @@ class PadLayout {
         comboButtonsMd = another.comboButtonsMd
         comboButtonsPce = another.comboButtonsPce
         comboButtonsDc = another.comboButtonsDc
+        comboButtonsWiiU = another.comboButtonsWiiU
+        comboButtonsPsp = another.comboButtonsPsp
         pceShowDpad = another.pceShowDpad
         pceShowA = another.pceShowA
         pceShowB = another.pceShowB
@@ -3099,6 +3117,10 @@ object PadLayoutStore {
                 it.toIntOrNull()?.coerceIn(0, 24)?.toString() ?: "0" }
             cwPadOverlayCorner = (p.getString("cw_pad_overlay_corner", "0") ?: "0").let {
                 it.toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "0" }
+            cwPadOverlayX = (p.getString("cw_pad_overlay_x", "") ?: "").let {
+                it.toFloatOrNull()?.coerceIn(0f, 1f)?.toString() ?: "" }
+            cwPadOverlayY = (p.getString("cw_pad_overlay_y", "") ?: "").let {
+                it.toFloatOrNull()?.coerceIn(0f, 1f)?.toString() ?: "" }
             cwDownscaleFilter = (p.getString("cw_downscale_filter", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2", "3")) it else "0" }
             cwTvAudioEnabled = (p.getString("cw_tv_audio_enabled", "true") ?: "true").let {
@@ -3236,6 +3258,8 @@ object PadLayoutStore {
             comboButtonsMd = p.getString("combo_buttons_md", "") ?: ""
             comboButtonsPce = p.getString("combo_buttons_pce", "") ?: ""
             comboButtonsDc = p.getString("combo_buttons_dc", "") ?: ""
+            comboButtonsWiiU = p.getString("combo_buttons_wiiu", "") ?: ""
+            comboButtonsPsp = p.getString("combo_buttons_psp", "") ?: ""
             // PCE button visibility toggles
             pceShowDpad = p.getBoolean("pce_show_dpad", true)
             pceShowA = p.getBoolean("pce_show_a", true)
@@ -3930,6 +3954,8 @@ object PadLayoutStore {
             putString("cw_pad_overlay_opacity", layout.cwPadOverlayOpacity)
             putString("cw_pad_overlay_blur", layout.cwPadOverlayBlur)
             putString("cw_pad_overlay_corner", layout.cwPadOverlayCorner)
+            putString("cw_pad_overlay_x", layout.cwPadOverlayX)
+            putString("cw_pad_overlay_y", layout.cwPadOverlayY)
             putString("cw_downscale_filter", layout.cwDownscaleFilter)
             putString("cw_tv_audio_enabled", layout.cwTvAudioEnabled)
             putString("cw_pad_audio_enabled", layout.cwPadAudioEnabled)
@@ -4053,6 +4079,8 @@ object PadLayoutStore {
             putString("combo_buttons_md", layout.comboButtonsMd)
             putString("combo_buttons_pce", layout.comboButtonsPce)
             putString("combo_buttons_dc", layout.comboButtonsDc)
+            putString("combo_buttons_wiiu", layout.comboButtonsWiiU)
+            putString("combo_buttons_psp", layout.comboButtonsPsp)
             // PCE button visibility toggles
             putBoolean("pce_show_dpad", layout.pceShowDpad)
             putBoolean("pce_show_a", layout.pceShowA)

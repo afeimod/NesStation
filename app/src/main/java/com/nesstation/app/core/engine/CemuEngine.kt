@@ -644,35 +644,37 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     }
 
     /**
-     * GamePad 触摸（Wii U 唯一可触摸屏）。游戏视图像素坐标 → DRC 854x480：
-     * 以当前视图尺寸（surfaceWidth/Height，TV 与 Pad 视图同为 16:9）等比缩放，
-     * 两种视图下均可全屏操作 GamePad 触摸。
+     * GamePad 触摸（Wii U 唯一可触摸屏）—— ★完全对齐上游 Cemu-AZ 语义★。
+     *
+     * 上游 CanvasOnTouchListener(isTV=true)：主画布触点【原始视图像素坐标】
+     * 原样透传 NativeInput.onTouchDown(x, y, true)（写入 m_main_mouse）；
+     * 坐标归一化完全由核心侧 VPADController::update_touch 负责：
+     * LatteRenderTarget_getScreenImageArea 计算主窗口内【实际渲染图像矩形】
+     * （fullscreenScaling=kKeepAspectRatio 时保持宽高比的信箱区域、拉伸时
+     * 全窗口），(touch - imagePos) / imageSize → 0..1 → VPAD 触摸范围
+     * （x*3883+92 / 4095-y*3694-254）。
+     *
+     * 旧实现把触点预先线性映射到 DRC 854x480 再传 isTV=false —— 坐标被
+     * 核心按【悬浮 pad 窗口】的物理尺寸重新归一化，画面信箱化/拉伸/
+     * 宽高比不匹配时偏差被放大（“画面拉伸或者不对的时候触摸的位置
+     * 没有变，导致差距很大”）。现在按参考源码改为原始坐标 + isTV=true：
+     * TV 画面、padViewActive 切换后的 GamePad 画面（主画布上）均由核心
+     * 用主窗口图像矩形自动补偿，两种视图下都可全屏操作 GamePad 触摸。
      */
     override fun setTouchInput(x: Float, y: Float, pressed: Boolean) {
         try {
             if (pressed) {
-                val (dx, dy) = viewToDrc(x, y)
-                NativeInput.onTouchDown(dx, dy, false)
+                NativeInput.onTouchDown(x.toInt(), y.toInt(), true)
             } else {
-                NativeInput.onTouchUp(0, 0, false)
+                NativeInput.onTouchUp(0, 0, true)
             }
         } catch (_: Throwable) {}
     }
 
     override fun setTouchMoved(x: Float, y: Float) {
         try {
-            val (dx, dy) = viewToDrc(x, y)
-            NativeInput.onTouchMove(dx, dy, false)
+            NativeInput.onTouchMove(x.toInt(), y.toInt(), true)
         } catch (_: Throwable) {}
-    }
-
-    private fun viewToDrc(x: Float, y: Float): Pair<Int, Int> {
-        val vw = surfaceWidth.toFloat()
-        val vh = surfaceHeight.toFloat()
-        if (vw <= 0f || vh <= 0f) return x.toInt() to y.toInt()
-        val dx = (x / vw * drcWidth).toInt().coerceIn(0, drcWidth - 1)
-        val dy = (y / vh * drcHeight).toInt().coerceIn(0, drcHeight - 1)
-        return dx to dy
     }
 
     /** 主画布 TV/GamePad 画面切换（上游 TAB 键语义）。 */
@@ -762,14 +764,18 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     }
 
     /**
-     * GamePad 悬浮画面触摸（视图归一化坐标 0..1 → DRC 854x480）。
-     * 悬浮小窗即 DRC 触摸屏本体 —— 触点直接映射。
+     * GamePad 悬浮画面触摸 —— ★对齐上游 Cemu-AZ CanvasOnTouchListener(isTV=false)★：
+     * 归一化触点换回悬浮窗原始视图像素（padSurfaceWidth/Height 由 surfaceChanged
+     * 实时维护，与视图尺寸一致）后传 isTV=false（写入 m_pad_mouse）。核心侧用
+     * 【悬浮窗】的图像矩形（GetPadWindowPhysSize + 当前输出图像宽高比）归一化 ——
+     * 悬浮窗固定 16:9（854x480 比例），DRC 内容填满窗口，映射 1:1；若核心侧
+     * 因 fullscreenScaling/分辨率变化产生信箱区，同样被自动补偿。
      */
     override fun setPadTouch(nx: Float, ny: Float, pressed: Boolean) {
         try {
             if (pressed) {
-                val dx = (nx.coerceIn(0f, 1f) * drcWidth).toInt().coerceIn(0, drcWidth - 1)
-                val dy = (ny.coerceIn(0f, 1f) * drcHeight).toInt().coerceIn(0, drcHeight - 1)
+                val dx = (nx.coerceIn(0f, 1f) * padSurfaceWidth.coerceAtLeast(1)).toInt()
+                val dy = (ny.coerceIn(0f, 1f) * padSurfaceHeight.coerceAtLeast(1)).toInt()
                 NativeInput.onTouchDown(dx, dy, false)
             } else {
                 NativeInput.onTouchUp(0, 0, false)
@@ -779,8 +785,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     override fun setPadTouchMoved(nx: Float, ny: Float) {
         try {
-            val dx = (nx.coerceIn(0f, 1f) * drcWidth).toInt().coerceIn(0, drcWidth - 1)
-            val dy = (ny.coerceIn(0f, 1f) * drcHeight).toInt().coerceIn(0, drcHeight - 1)
+            val dx = (nx.coerceIn(0f, 1f) * padSurfaceWidth.coerceAtLeast(1)).toInt()
+            val dy = (ny.coerceIn(0f, 1f) * padSurfaceHeight.coerceAtLeast(1)).toInt()
             NativeInput.onTouchMove(dx, dy, false)
         } catch (_: Throwable) {}
     }

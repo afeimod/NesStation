@@ -3328,18 +3328,18 @@ fun EmulatorScreen(
 
             // ★★ Wii U（Cemu）悬浮 GamePad 画面（上游 Cemu-AZ
             //   EmulationScreen.EmulationSurfaces(OVERLAY) 同构）：主画布 =
-            //   全尺寸 TV 画面，GamePad（DRC）以小窗悬浮在角落 —— 默认开启
-            //   （cwGamePadView == "overlay"），大小/不透明度/模糊/圆角可调。
-            //   pad 输出不透明度由核心输出着色器逐像素预乘 alpha 实现
-            //   （TRANSLUCENT surface + setPadOverlayOpacity），Compose 层
-            //   alpha/blur 管不到 SurfaceView 内容（上游注释同款告诫）。
+            //   全尺寸 TV 画面，GamePad（DRC）以小窗悬浮 —— 默认开启
+            //   （cwGamePadView == "overlay"），大小/不透明度/模糊/圆角可调，
+            //   且小窗支持直接手势调节（顶部把手拖动移位、双击复位；右下
+            //   角把手拖动等比缩放）。pad 输出不透明度由核心输出着色器逐
+            //   像素预乘 alpha（TRANSLUCENT surface + setPadOverlayOpacity），
+            //   Compose 层 alpha/blur 管不到 SurfaceView 内容（上游同款告诫）。
             if (platform == GamePlatform.WIIU && loaded &&
                 padLayout.cwGamePadView == "overlay" && surfaceSize != IntSize.Zero) {
                 CemuPadOverlayView(
                     engine = engine as? com.nesstation.app.core.engine.CemuEngine,
-                    scalePercent = padLayout.cwPadOverlayScale.toIntOrNull() ?: 20,
-                    blurDp = padLayout.cwPadOverlayBlur.toIntOrNull() ?: 0,
-                    corner = padLayout.cwPadOverlayCorner.toIntOrNull() ?: 0
+                    padLayout = padLayout,
+                    onLayoutChange = { padLayout = it }
                 )
             }
 
@@ -7167,10 +7167,15 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         // onGamePadEvent/onTouchEvent 契约，不支持位掩码组合键，返回空。
         GamePlatform.N3DS   -> ""
         GamePlatform.NGCWII -> ""
-        // ★ Wii U（Cemu）同上：推模型核心 + 位掩码组合键不支持，返回空。
-        GamePlatform.WIIU   -> ""
-        // PSP（PPSSPP 进程内引擎）—— 同上，无 NesStation 位掩码组合键。
-        GamePlatform.PSP    -> ""
+        // ★ Wii U（Cemu）组合键补齐：此前返回空（“组合键缺少很多按键”）。
+        //   WIIU 位布局直通 CemuEngine.setPad1 的 VPAD 映射（A/B/X/Y/L/R/
+        //   ZL/ZR/PLUS/MINUS/HOME/十字/摇杆按下），位掩码组合键链路现成，
+        //   存入独立字段 comboButtonsWiiU。
+        GamePlatform.WIIU   -> padLayout.comboButtonsWiiU
+        // ★ PSP（PPSSPP）组合键补齐：与 PS2 同语义（A=✕、B=○、X=△、Y=□、
+        //   L/R），经 routePadBits 的 ps2ToLibretroLayout 转换后进核心，
+        //   存入独立字段 comboButtonsPsp。
+        GamePlatform.PSP    -> padLayout.comboButtonsPsp
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -11868,6 +11873,9 @@ private fun PadLayoutEditor(
                             GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                             GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                             GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
+                            // ★ Wii U / PSP 组合键补齐：独立字段持久化
+                            GamePlatform.WIIU -> padLayout.copy {comboButtonsWiiU = json}
+                            GamePlatform.PSP -> padLayout.copy {comboButtonsPsp = json}
                             else -> padLayout
                         }
                         onLayoutChange(newLayout)
@@ -12232,6 +12240,9 @@ private fun PadLayoutEditor(
                                 GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                                 GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                                 GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
+                                // ★ Wii U / PSP 组合键补齐：独立字段持久化
+                                GamePlatform.WIIU -> padLayout.copy {comboButtonsWiiU = json}
+                                GamePlatform.PSP -> padLayout.copy {comboButtonsPsp = json}
                                 else -> padLayout
                             }
                             onLayoutChange(newLayout)
@@ -12275,6 +12286,9 @@ private fun PadLayoutEditor(
                         GamePlatform.ARCADE -> padLayout.copy {comboButtonsArcade = json}
                         GamePlatform.MD -> padLayout.copy {comboButtonsMd = json}
                         GamePlatform.PCE -> padLayout.copy {comboButtonsPce = json}
+                        // ★ Wii U / PSP 组合键补齐：独立字段持久化
+                        GamePlatform.WIIU -> padLayout.copy {comboButtonsWiiU = json}
+                        GamePlatform.PSP -> padLayout.copy {comboButtonsPsp = json}
                         else -> padLayout
                     }
                     onLayoutChange(newLayout)
@@ -12436,20 +12450,25 @@ private fun ComboButtonPickerDialog(
         // ★ DC 组合键修复：DC 也加 X/Y/L/R
         // X/Y available on SNES/Arcade/MD/PCE/NDS/PSX/DC
         // 街机（FBNeo）屏幕标签为 A/B/C/D：bit8 显示为 C、bit9 显示为 D
+        // ★ Wii U（Cemu）VPAD 有 X/Y（bit8/9 → VPADButton.X/Y）；
+        //   PSP 与 PSX 同语义（屏幕标签 A=✕、B=○、X=△、Y=□，组合键位
+        //   经 ps2ToLibretroLayout 转换链与 PS2 完全一致）。
         if (platform == GamePlatform.SFC || platform == GamePlatform.MD ||
             platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-            platform == GamePlatform.PSX || platform == GamePlatform.DC) {
+            platform == GamePlatform.PSX || platform == GamePlatform.DC ||
+            platform == GamePlatform.WIIU || platform == GamePlatform.PSP) {
             list.add(ButtonOption("X", BTN_X))
             list.add(ButtonOption("Y", BTN_Y))
         } else if (platform == GamePlatform.ARCADE) {
             list.add(ButtonOption("C", BTN_X))
             list.add(ButtonOption("D", BTN_Y))
         }
-        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX/DC
+        // L/R available on GBA/SNES/Arcade/MD/PCE/NDS/PSX/DC/WiiU/PSP
         if (platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
             platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
             platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
-            platform == GamePlatform.PSX || platform == GamePlatform.DC) {
+            platform == GamePlatform.PSX || platform == GamePlatform.DC ||
+            platform == GamePlatform.WIIU || platform == GamePlatform.PSP) {
             list.add(ButtonOption("L", lBit))
             list.add(ButtonOption("R", rBit))
         }
@@ -12457,6 +12476,12 @@ private fun ComboButtonPickerDialog(
         if (platform == GamePlatform.ARCADE || platform == GamePlatform.PCE) {
             list.add(ButtonOption("L2", BTN_L2))
             list.add(ButtonOption("R2", BTN_R2))
+        }
+        // ★ Wii U（Cemu）专属：ZL/ZR（bit16/17 → VPADButton.ZL/ZR）——
+        //   大量 Wii U 游戏的肩键组合（如 ZL+ZR 防御）需要。
+        if (platform == GamePlatform.WIIU) {
+            list.add(ButtonOption("ZL", BTN_ZL))
+            list.add(ButtonOption("ZR", BTN_ZR))
         }
         // ★ 方向键组合（所有平台通用）：用于"↓+A 滑铲"、"↑+B 上挑"等组合
         list.add(ButtonOption("↑", BTN_UP))
@@ -15244,6 +15269,14 @@ private fun SettingsPanel(
                     listOf("0" to "左下 (默认)", "1" to "右下", "2" to "左上", "3" to "右上"),
                     padLayout.cwPadOverlayCorner
                 ) { onLayoutChange(padLayout.copy {cwPadOverlayCorner = it}) }
+                // 自定义拖动复位：清空拖动坐标 → 回到上方“悬浮画面角落”的默认位置
+                if (padLayout.cwPadOverlayX.isNotBlank() || padLayout.cwPadOverlayY.isNotBlank()) {
+                    androidx.compose.material3.TextButton(onClick = {
+                        onLayoutChange(padLayout.copy {cwPadOverlayX = ""; cwPadOverlayY = ""})
+                    }) {
+                        Text("重置悬浮窗位置（回到角落默认）", color = Color(0xFFFFD66B), fontSize = 11.sp)
+                    }
+                }
 
                 Spacer(Modifier.size(8.dp))
                 Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -15305,7 +15338,8 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {cwDimensionsToypad = if (it) "true" else "false"}) }
 
                 Spacer(Modifier.size(2.dp))
-                Text("改动即时热应用。TV/手柄画面切换用虚拟 TV 键；悬浮 GamePad 小窗可直接触摸；" +
+                Text("改动即时热应用。TV/手柄画面切换用虚拟 TV 键；悬浮 GamePad 小窗可直接触摸，" +
+                    "拖动小窗顶部把手可移位（双击复位）、拖动右下角把手可缩放；" +
                     "驱动安装与图形包等进阶功能在 主设置 → 核心设置 → Wii U。",
                     color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                 Spacer(Modifier.size(6.dp))
@@ -16711,9 +16745,9 @@ private fun CemuTextInputDialog() {
 }
 
 /**
- * ★★ Wii U 悬浮 GamePad 画面 —— 上游 Cemu-AZ PadOverlaySurface 完整移植 ★★
+ * ★★ Wii U 悬浮 GamePad 画面 —— 上游 Cemu-AZ PadOverlaySurface 移植 + 自定义拖动 ★★
  *
- * 主画布 = 全尺寸 TV 画面；GamePad（DRC）以小窗悬浮在四角之一。
+ * 主画布 = 全尺寸 TV 画面；GamePad（DRC）以小窗悬浮。
  *  · 小窗宽度 = 主画面宽度 × scalePercent（10%..60%），16:9（854x480）；
  *  · surface 格式 TRANSLUCENT —— 不透明度由核心 pad 输出着色器逐像素
  *    预乘 alpha（setPadOverlayOpacity），Compose 层 alpha 管不到
@@ -16721,64 +16755,257 @@ private fun CemuTextInputDialog() {
  *  · 模糊（Android 12+）走 Modifier.blur（对 SurfaceView 层生效于
  *    Android 12+ 的 RenderEffect 路径，上游同款）；
  *  · 小窗即 DRC 触摸屏本体 —— 触点归一化后直接喂核心。
+ *
+ * ★ 自定义拖动（位置 + 大小直接手势调节）：
+ *  · 顶部把手条：单指拖动 → 小窗跟随移动（任意位置）；双击 → 恢复
+ *    「角落」设置的默认位置（清空自定义坐标）；
+ *  · 右下角把手：单指拖动 → 等比缩放（10%..60%，与快捷设置滑条同源，
+ *    松手时持久化到 cwPadOverlayScale）；
+ *  · 位置持久化为小窗左上角的归一化坐标（cwPadOverlayX/Y，0..1 相对
+ *    "屏幕-小窗尺寸"可用区域），优先于角落设置；把手是 Compose 兄弟
+ *    节点叠在 SurfaceView 之上 —— 命中把手时被消费，其余区域仍透给
+ *    小窗触摸（GamePad 触摸不受影响）；
+ *  · 位置更新只写内存 state（拖动跟手），松手才走 onLayoutChange →
+ *    防抖 LaunchedEffect 落盘（避免 60Hz SharedPreferences 写入卡顿）。
  */
 @Composable
 private fun CemuPadOverlayView(
     engine: com.nesstation.app.core.engine.CemuEngine?,
-    scalePercent: Int,
-    blurDp: Int,
-    corner: Int
+    padLayout: PadLayout,
+    onLayoutChange: (PadLayout) -> Unit
 ) {
     if (engine == null) return
+    // rememberUpdatedState：pointerInput(Unit) 协程不因参数重组而重启，
+    // 闭包里读到的必须是最新值（拖动中参数变化不中断手势）。
+    val currentLayout by rememberUpdatedState(padLayout)
+    val currentOnLayoutChange by rememberUpdatedState(onLayoutChange)
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val scalePercent = (padLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
+        val blurDp = padLayout.cwPadOverlayBlur.toIntOrNull() ?: 0
+        val corner = (padLayout.cwPadOverlayCorner.toIntOrNull() ?: 0).coerceIn(0, 3)
         val scale = (scalePercent / 100f).coerceIn(0.1f, 0.6f)
         val padWidth = maxWidth * scale
         // Wii U GamePad 屏幕 854x480（16:9）
         val padHeight = padWidth * (480f / 854f)
-        val alignment = when (corner.coerceIn(0, 3)) {
-            1 -> Alignment.BottomEnd
-            2 -> Alignment.TopStart
-            3 -> Alignment.TopEnd
-            else -> Alignment.BottomStart // 默认：左下角
+        // 可拖动范围（小窗左上角在此矩形内移动 = 小窗永不移出屏幕）
+        val maxOffX = (maxWidth - padWidth).coerceAtLeast(0.dp)
+        val maxOffY = (maxHeight - padHeight).coerceAtLeast(0.dp)
+        val marginPx = 8.dp
+
+        // 角落默认位置（左上角归一化 0..1：x=0 左缘 / y=1 底缘）
+        fun cornerDefault(): Pair<Float, Float> = when (corner) {
+            1 -> 1f to 1f    // 右下
+            2 -> 0f to 0f    // 左上
+            3 -> 1f to 0f    // 右上
+            else -> 0f to 1f // 左下（默认）
         }
-        var padModifier = Modifier
-            .align(alignment)
-            .padding(8.dp)
-            .width(padWidth)
-            .height(padHeight)
-        if (blurDp > 0 && android.os.Build.VERSION.SDK_INT >= 31) {
-            padModifier = padModifier.blur(blurDp.coerceIn(1, 24).dp)
-        }
-        AndroidView(
-            modifier = padModifier,
-            factory = { ctx ->
-                SurfaceView(ctx).apply {
-                    // ★ 混合（逐像素 alpha）surface：不透明度在核心输出着色器
-                    //   里预乘，SurfaceFlinger 才会真正混合（上游同款）。
-                    holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {}
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                            engine.setPadSurface(holder.surface, width, height)
+
+        // 本次会话的实时拖动位置（归一化）；null = 未拖过 → 用持久化/默认值
+        var liveX by remember(corner) { mutableStateOf<Float?>(null) }
+        var liveY by remember(corner) { mutableStateOf<Float?>(null) }
+
+        val baseX = padLayout.cwPadOverlayX.toFloatOrNull() ?: cornerDefault().first
+        val baseY = padLayout.cwPadOverlayY.toFloatOrNull() ?: cornerDefault().second
+        val normX = (liveX ?: baseX).coerceIn(0f, 1f)
+        val normY = (liveY ?: baseY).coerceIn(0f, 1f)
+
+        // 顶部把手高度（小窗内侧顶边）与右下角把手尺寸
+        val gripHeight = 22.dp
+        val resizeGrip = 26.dp
+
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        (marginPx.roundToPx() + normX * (maxOffX - marginPx * 2).coerceAtLeast(0.dp).toPx()).toInt(),
+                        (marginPx.roundToPx() + normY * (maxOffY - marginPx * 2).coerceAtLeast(0.dp).toPx()).toInt()
+                    )
+                }
+                .width(padWidth)
+                .height(padHeight)
+        ) {
+            var padModifier = Modifier.fillMaxSize()
+            if (blurDp > 0 && android.os.Build.VERSION.SDK_INT >= 31) {
+                padModifier = padModifier.blur(blurDp.coerceIn(1, 24).dp)
+            }
+            AndroidView(
+                modifier = padModifier,
+                factory = { ctx ->
+                    SurfaceView(ctx).apply {
+                        // ★ 混合（逐像素 alpha）surface：不透明度在核心输出着色器
+                        //   里预乘，SurfaceFlinger 才会真正混合（上游同款）。
+                        holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {}
+                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                                engine.setPadSurface(holder.surface, width, height)
+                            }
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                engine.clearPadSurface()
+                            }
+                        })
+                        // 小窗即 GamePad 触摸屏 —— 触点归一化直喂核心
+                        setOnTouchListener { v, event ->
+                            when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN ->
+                                    engine.setPadTouch(event.x / v.width.coerceAtLeast(1), event.y / v.height.coerceAtLeast(1), true)
+                                MotionEvent.ACTION_MOVE ->
+                                    engine.setPadTouchMoved(event.x / v.width.coerceAtLeast(1), event.y / v.height.coerceAtLeast(1))
+                                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                                    engine.setPadTouch(0f, 0f, false)
+                            }
+                            true
                         }
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            engine.clearPadSurface()
-                        }
-                    })
-                    // 小窗即 GamePad 触摸屏 —— 触点归一化直喂核心
-                    setOnTouchListener { v, event ->
-                        when (event.actionMasked) {
-                            MotionEvent.ACTION_DOWN ->
-                                engine.setPadTouch(event.x / v.width.coerceAtLeast(1), event.y / v.height.coerceAtLeast(1), true)
-                            MotionEvent.ACTION_MOVE ->
-                                engine.setPadTouchMoved(event.x / v.width.coerceAtLeast(1), event.y / v.height.coerceAtLeast(1))
-                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                                engine.setPadTouch(0f, 0f, false)
-                        }
-                        true
+                    }
+                }
+            )
+
+            // === 移动把手（顶部横条）：拖动移动小窗 / 双击回默认角落 ===
+            // Compose 兄弟节点位于 SurfaceView 之上：命中区域被本 Box 消费，
+            // 不会透给小窗触摸；其余区域照常透给 GamePad 触摸。
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(gripHeight)
+                    .background(
+                        androidx.compose.ui.graphics.Color(0x661A1A22),
+                        androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
+                    )
+                    // 单指拖动：实时更新内存位置（跟手），松手才持久化。
+                    // ★ 手势闭包只读【活值】（liveX/Y 状态 + currentLayout
+                    //   via rememberUpdatedState）—— pointerInput 协程不随
+                    //   重组重启，捕获的组合期 val 会过期（第二次拖动会跳回
+                    //   第一次的位置），故这里不允许直接引用 normX/normY。
+                    .pointerInput(corner) {
+                        var dragAccX = 0f
+                        var dragAccY = 0f
+                        detectDragGestures(
+                            onDragStart = {
+                                // 从当前显示位置起算：优先本次会话拖动值，
+                                // 其次持久化值，最后角落默认
+                                dragAccX = liveX ?: currentLayout.cwPadOverlayX.toFloatOrNull()
+                                    ?: cornerDefault().first
+                                dragAccY = liveY ?: currentLayout.cwPadOverlayY.toFloatOrNull()
+                                    ?: cornerDefault().second
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                // 面积按【当前】小窗尺寸算（缩放后重拖也正确）
+                                val curPct = (currentLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
+                                val curPadW = maxWidth * (curPct / 100f)
+                                val curPadH = curPadW * (480f / 854f)
+                                val areaW = ((maxWidth - curPadW) - marginPx * 2).coerceAtLeast(0.dp).toPx()
+                                val areaH = ((maxHeight - curPadH) - marginPx * 2).coerceAtLeast(0.dp).toPx()
+                                dragAccX = (dragAccX + if (areaW > 0f) dragAmount.x / areaW else 0f).coerceIn(0f, 1f)
+                                dragAccY = (dragAccY + if (areaH > 0f) dragAmount.y / areaH else 0f).coerceIn(0f, 1f)
+                                liveX = dragAccX
+                                liveY = dragAccY
+                            },
+                            onDragEnd = {
+                                // 持久化（防抖 LaunchedEffect 落盘）
+                                currentOnLayoutChange(
+                                    currentLayout.copy {
+                                        cwPadOverlayX = dragAccX.toString()
+                                        cwPadOverlayY = dragAccY.toString()
+                                    }
+                                )
+                            },
+                            onDragCancel = {
+                                // 取消也保留当前位置（用户可能只是误触边缘）
+                                currentOnLayoutChange(
+                                    currentLayout.copy {
+                                        cwPadOverlayX = dragAccX.toString()
+                                        cwPadOverlayY = dragAccY.toString()
+                                    }
+                                )
+                            }
+                        )
+                    }
+                    // 双击 = 恢复角落默认位置（清空自定义坐标，小窗立即可见跳回）
+                    .pointerInput(corner) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                liveX = null
+                                liveY = null
+                                currentOnLayoutChange(
+                                    currentLayout.copy {
+                                        cwPadOverlayX = ""
+                                        cwPadOverlayY = ""
+                                    }
+                                )
+                            }
+                        )
+                    }
+            ) {
+                // 三点抓手视觉
+                Row(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    repeat(3) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 14.dp, height = 4.dp)
+                                .background(
+                                    androidx.compose.ui.graphics.Color(0x99FFFFFF),
+                                    androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
+                                )
+                        )
                     }
                 }
             }
-        )
+
+            // === 缩放把手（右下角）：拖动等比缩放（宽度 10%..60%）===
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(resizeGrip)
+                    .background(
+                        androidx.compose.ui.graphics.Color(0x661A1A22),
+                        androidx.compose.foundation.shape.RoundedCornerShape(topStart = 8.dp)
+                    )
+                    .pointerInput(Unit) {
+                        // 从【当前】持久化缩放换算起始像素宽（slider 改过/上一次
+                        // 拖大后的重拖都正确 —— pointerInput 协程里的组合期
+                        // val 是首次捕获的旧值，必须从 currentLayout 重新算）
+                        var newWidthPx = 0f
+                        detectDragGestures(
+                            onDragStart = {
+                                val curPct = (currentLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
+                                newWidthPx = maxWidth.toPx() * (curPct / 100f)
+                            },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                newWidthPx = (newWidthPx + dragAmount.x + dragAmount.y).coerceAtLeast(1f)
+                                val pct = ((newWidthPx / maxWidth.toPx()) * 100f)
+                                    .toInt().coerceIn(10, 60)
+                                // 实时缩放（写会话 state，重组即时生效；防抖落盘）
+                                currentOnLayoutChange(
+                                    currentLayout.copy { cwPadOverlayScale = pct.toString() }
+                                )
+                            },
+                            onDragEnd = {
+                                val pct = ((newWidthPx / maxWidth.toPx()) * 100f)
+                                    .toInt().coerceIn(10, 60)
+                                currentOnLayoutChange(
+                                    currentLayout.copy { cwPadOverlayScale = pct.toString() }
+                                )
+                            }
+                        )
+                    }
+            ) {
+                // 对角线斜纹视觉（右下角小三角）
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(width = 12.dp, height = 12.dp)
+                        .background(
+                            androidx.compose.ui.graphics.Color(0x99FFFFFF),
+                            androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
+                        )
+                )
+            }
+        }
     }
 }
