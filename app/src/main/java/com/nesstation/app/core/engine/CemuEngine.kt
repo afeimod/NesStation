@@ -1,6 +1,7 @@
 package com.nesstation.app.core.engine
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.view.Surface
 import com.nesstation.app.core.jni.CemuNative
 import info.cemu.cemu.nativeinterface.NativeActiveSettings
@@ -9,6 +10,7 @@ import info.cemu.cemu.nativeinterface.NativeGraphicPacks
 import info.cemu.cemu.nativeinterface.NativeInput
 import info.cemu.cemu.nativeinterface.NativeQuickSave
 import info.cemu.cemu.nativeinterface.NativeSettings
+import info.cemu.cemu.nativeinterface.NativeSwkbd
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -44,8 +46,9 @@ import kotlin.math.max
  * （gameSpeed/vsyncMode/asyncShaderCompile/upscaleFilter/…，见 applyCoreOption）。
  *
  * ROM：.wud/.wux/.wua/.wuhb/.iso/.rpx/.elf（.wad 归 NGCWII 平台沿用）。
- * 存档：核心 NativeQuickSave 原生槽位（1..6，带缩略图），dst 参数仅作 UI
- * 标记（与 Azahar/PS2 引擎同做法）。
+ * 存档：核心 NativeQuickSave 原生槽位（1..6，带缩略图，语义与上游
+ * QuickSaveSlotsDialog 完全一致：读档默认无 legacy 回退、安全模式重试、
+ * legacy 恢复后进程内重启），dst 参数仅作 UI 标记。
  */
 class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
@@ -89,6 +92,15 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     /** 主画布当前是否显示 GamePad 画面（TV/Pad 视图切换状态）。 */
     @Volatile private var padViewActive = false
+
+    // === GamePad（DRC）悬浮画面 —— pad 画布 surface（上游 Cemu-AZ
+    //     EmulationViewModel 同款护栏：pad swapchain 只能在 Vulkan renderer
+    //     存在后创建，否则原生侧解引用空 g_renderer 直接崩溃） ===
+    @Volatile private var padSurface: Surface? = null
+    @Volatile private var padSurfaceWidth = 0
+    @Volatile private var padSurfaceHeight = 0
+    @Volatile private var rendererReady = false
+    @Volatile private var padSwapchainInitialized = false
 
     /** GamePad（DRC）逻辑分辨率 —— 上游 EmulationScreen 同款常量。 */
     private val drcWidth = 854
@@ -191,6 +203,15 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 NativeActiveSettings.setInternalDir(ctx.dataDir.absolutePath)
                 NativeEmulation.setDPI(ctx.resources.displayMetrics.density)
                 NativeEmulation.initializeEmulation()
+                // ★ SWKBD（游戏内软件键盘）回调注册 —— 上游 CemuApplication
+                //   .initializeCemu() 同款序列。不调用则核心的文本输入请求
+                //   （游戏内输入框弹键盘）永远无法回调到 Java 层 → 弹窗缺席。
+                //   幂等（C++ 侧 static 守卫），重复 loadRom 安全。
+                try {
+                    NativeSwkbd.initializeSwkbd()
+                } catch (t: Throwable) {
+                    android.util.Log.w("CemuEngine", "initializeSwkbd failed", t)
+                }
                 try {
                     NativeGraphicPacks.refreshGraphicPacks()
                 } catch (t: Throwable) {
@@ -240,7 +261,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
      * 上游 EmulationViewModel.initializeEmulation() 同款启动序列
      * （prepareTitle → initializeSystems → initializeRenderer →
      *  setSurface+initializeSurface(main) → launchTitle），在专用线程执行。
-     * launchTitle 阻塞直至核心退出。
+     * launchTitle 在核心内部分离线程上启动游戏并立即返回（上游
+     * CafeSystem::LaunchForegroundTitle 语义）—— 正常返回不代表游戏结束。
      */
     private fun startBootLocked() {
         val path = romPath ?: return
@@ -300,7 +322,17 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     android.util.Log.w("CemuEngine", "boot without surface — will attach on setSurface")
                 }
 
-                // --- 启动（阻塞直至核心退出/用户停止）---
+                // --- renderer 就绪：此刻起创建 pad swapchain 安全（若悬浮
+                //     GamePad 画面的 surface 已先到，在此补建；上游同款护栏）---
+                synchronized(lifecycleLock) {
+                    rendererReady = true
+                    tryInitPadSurfaceLocked()
+                }
+
+                // --- 启动（上游 CafeSystem::LaunchForegroundTitle 在分离线程
+                //     上跑游戏并立即返回 —— 参考源码 EmulationViewModel 对其
+                //     正常返回不做任何错误处理，错误仅在 NativeException 抛出
+                //     时呈现）---
                 try {
                     NativeEmulation.launchTitle()
                 } catch (t: Throwable) {
@@ -308,13 +340,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     failBoot("模拟器运行异常退出：${t.message ?: t.javaClass.simpleName}")
                     return@thread
                 }
-
-                // 正常返回：用户请求停止 or 核心自行退出
-                if (!userRequestedStop) {
-                    val msg = lastErrorText.ifBlank { "核心已退出（未指定原因）" }
-                    android.util.Log.w("CemuEngine", "core exited unexpectedly")
-                    try { onPrematureExit?.invoke(msg) } catch (_: Throwable) {}
-                }
+                // 正常返回 = 启动指令已受理（游戏在核心自己的分离线程上运行）。
+                // ★ 不再把返回当作"核心已退出"误报 —— 修复"明明启动成功却弹
+                //   核心启动失败弹窗"（上游 Cemu-AZ EmulationViewModel 同语义）。
             } catch (t: Throwable) {
                 android.util.Log.e("CemuEngine", "boot sequence failed", t)
                 failBoot("启动失败：${t.message ?: t.javaClass.simpleName}")
@@ -373,8 +401,12 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
             } catch (_: Throwable) {
                 // 核心未启动时 setSurfaceSize 无害失败（WindowSystem 尚未初始化）
             }
-            // GamePad（DRC）逻辑尺寸固定 854x480 —— 触摸坐标换算基准
-            try { NativeEmulation.setSurfaceSize(drcWidth, drcHeight, false) } catch (_: Throwable) {}
+            // GamePad（DRC）pad 画布尺寸：悬浮小窗存在时由 setPadSurface
+            // 提供真实视图尺寸（swapchain 按实际像素建）；无悬浮小窗时
+            // 保持 DRC 逻辑分辨率 854x480（触摸坐标换算基准，无害）。
+            if (padSurface == null) {
+                try { NativeEmulation.setSurfaceSize(drcWidth, drcHeight, false) } catch (_: Throwable) {}
+            }
         }
     }
 
@@ -411,13 +443,41 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 "asyncShaderCompile" -> NativeSettings.setAsyncShaderCompile(value == "true" || value == "enabled")
                 "accurateBarriers" -> NativeSettings.setAccurateBarriers(value == "true" || value == "enabled")
                 "upscaleFilter" -> NativeSettings.setUpscalingFilter(value.toIntOrNull() ?: 0)
-                "downscaleFilter" -> NativeSettings.setDownscalingFilter(value.toIntOrNull() ?: 0)
                 "fullscreenScaling" -> NativeSettings.setFullscreenScaling(value.toIntOrNull() ?: 0)
                 "tvVolume" -> NativeSettings.setAudioDeviceVolume((value.toIntOrNull() ?: 100).coerceIn(0, 100), true)
                 "padVolume" -> NativeSettings.setAudioDeviceVolume((value.toIntOrNull() ?: 100).coerceIn(0, 100), false)
                 "audioLatency" -> NativeSettings.setAudioLatency(value.toIntOrNull() ?: 60)
                 "consoleLanguage" -> NativeSettings.setConsoleLanguage(value.toIntOrNull() ?: 1)
                 "overlayFPS" -> NativeSettings.setOverlayFPSEnabled(value == "true" || value == "enabled")
+                // ★ 下采样滤镜（上游 NativeSettings.ScalingFilter 同款取值）
+                "downscaleFilter" -> NativeSettings.setDownscalingFilter(value.toIntOrNull() ?: 0)
+                // ★ 音频设备开关/声道（TV / GamePad 独立）
+                "tvAudioEnabled" -> NativeSettings.setAudioDeviceEnabled(value == "true" || value == "enabled", true)
+                "padAudioEnabled" -> NativeSettings.setAudioDeviceEnabled(value == "true" || value == "enabled", false)
+                "tvChannels" -> NativeSettings.setAudioDeviceChannels(value.toIntOrNull() ?: 1, true)
+                "padChannels" -> NativeSettings.setAudioDeviceChannels(value.toIntOrNull() ?: 1, false)
+                // ★ 核心内覆盖层（LatteOverlay：位置/文字缩放/绘制调用/CPU/RAM）
+                "overlayPos" -> NativeSettings.setOverlayPosition(value.toIntOrNull() ?: 0)
+                "overlayTextScale" -> NativeSettings.setOverlayTextScalePercentage((value.toIntOrNull() ?: 100).coerceIn(50, 300))
+                "overlayDrawCalls" -> NativeSettings.setOverlayDrawCallsPerFrameEnabled(value == "true" || value == "enabled")
+                "overlayCPU" -> NativeSettings.setOverlayCPUUsageEnabled(value == "true" || value == "enabled")
+                "overlayRAM" -> NativeSettings.setOverlayRAMUsageEnabled(value == "true" || value == "enabled")
+                // ★ 账号网络服务（离线/Nintendo/Pretendo/自定义 —— 写入当前活跃账号）
+                "networkService" -> {
+                    val v = value.toIntOrNull() ?: 0
+                    try {
+                        NativeSettings.setAccountNetworkService(NativeSettings.getAccountPersistentId(), v)
+                    } catch (t: Throwable) {
+                        android.util.Log.w("CemuEngine", "setAccountNetworkService failed", t)
+                    }
+                }
+                // ★ 模拟 USB 设备（Skylanders 传送门 / Infinity Base / Dimensions Toypad）
+                "skylanderPortal" -> NativeSettings.setEmulateSkylanderPortalEnabled(value == "true" || value == "enabled")
+                "infinityBase" -> NativeSettings.setEmulateInfinityBaseEnabled(value == "true" || value == "enabled")
+                "dimensionsToypad" -> NativeSettings.setEmulateDimensionsToypadEnabled(value == "true" || value == "enabled")
+                // ★ 悬浮 GamePad 画面不透明度（核心输出着色器逐像素预乘 alpha；
+                //   上游 PadOverlaySurface 同款链路）
+                "padOverlayOpacity" -> NativeSettings.setPadOverlayOpacity((value.toIntOrNull() ?: 100).coerceIn(0, 100))
                 "padViewSwap" -> {
                     val want = value == "true" || value == "enabled"
                     if (want != padViewActive) toggleTvPadView()
@@ -506,6 +566,10 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
             try { t.join(500) } catch (_: InterruptedException) {}
         }
         heartbeatThread = null
+        // GamePad 悬浮画面状态复位（下一局 loadRom 重新拉起）
+        rendererReady = false
+        padSwapchainInitialized = false
+        padSurface = null
         isLoaded = false
         pendingBoot = false
         bootStarted = false
@@ -631,20 +695,118 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     override fun setSampleRate(rate: Int) {}
 
     // ------------------------------------------------------------------
-    // 即时存档（NativeQuickSave 原生槽位）
+    // GamePad（DRC）悬浮画面 —— pad 画布 surface 生命周期
+    //（上游 EmulationViewModel.CanvasSurfaceHolderCallback(false) 同构）
     // ------------------------------------------------------------------
+
+    /**
+     * 挂载/更新 GamePad 悬浮画面 surface。renderer 就绪前仅记录，
+     * 由启动线程 initializeRenderer 后补建（护栏与上游一致）。
+     * 尺寸变化（用户调节小窗大小/圆角）热更新 —— 与上游
+     * CanvasSurfaceHolderCallback.surfaceChanged 同序：先 setSurfaceSize，
+     * 未初始化过才 setSurface + initializeSurface。
+     */
+    override fun setPadSurface(surface: Surface?, width: Int, height: Int) {
+        synchronized(lifecycleLock) {
+            padSurface = surface
+            if (width > 0) padSurfaceWidth = width
+            if (height > 0) padSurfaceHeight = height
+            if (surface != null) {
+                if (padSwapchainInitialized) {
+                    // 已建 swapchain：仅热更新尺寸（上游 surfaceChanged 首行行为）
+                    try {
+                        NativeEmulation.setSurfaceSize(padSurfaceWidth, padSurfaceHeight, false)
+                    } catch (_: Throwable) {}
+                } else {
+                    tryInitPadSurfaceLocked()
+                }
+            } else {
+                // 上游 surfaceDestroyed → clearPadSurface
+                clearPadSurfaceLocked()
+            }
+        }
+    }
+
+    /** 拆下 GamePad 悬浮画面 surface（StopUsingPadAndWait + pad_open=false）。 */
+    override fun clearPadSurface() {
+        synchronized(lifecycleLock) {
+            clearPadSurfaceLocked()
+        }
+    }
+
+    private fun clearPadSurfaceLocked() {
+        try {
+            NativeEmulation.clearPadSurface()
+        } catch (t: Throwable) {
+            // renderer 尚未创建时无害（上游同样容忍）
+            android.util.Log.w("CemuEngine", "clearPadSurface failed", t)
+        }
+        padSwapchainInitialized = false
+        padSurface = null
+    }
+
+    /** renderer 就绪且 pad surface 已到 → 创建 pad swapchain（幂等）。 */
+    private fun tryInitPadSurfaceLocked() {
+        if (!rendererReady || padSwapchainInitialized) return
+        val s = padSurface ?: return
+        try {
+            NativeEmulation.setSurface(s, false)
+            if (padSurfaceWidth > 0 && padSurfaceHeight > 0) {
+                NativeEmulation.setSurfaceSize(padSurfaceWidth, padSurfaceHeight, false)
+            }
+            NativeEmulation.initializeSurface(false)
+            padSwapchainInitialized = true
+        } catch (t: Throwable) {
+            android.util.Log.w("CemuEngine", "pad surface init failed", t)
+        }
+    }
+
+    /**
+     * GamePad 悬浮画面触摸（视图归一化坐标 0..1 → DRC 854x480）。
+     * 悬浮小窗即 DRC 触摸屏本体 —— 触点直接映射。
+     */
+    override fun setPadTouch(nx: Float, ny: Float, pressed: Boolean) {
+        try {
+            if (pressed) {
+                val dx = (nx.coerceIn(0f, 1f) * drcWidth).toInt().coerceIn(0, drcWidth - 1)
+                val dy = (ny.coerceIn(0f, 1f) * drcHeight).toInt().coerceIn(0, drcHeight - 1)
+                NativeInput.onTouchDown(dx, dy, false)
+            } else {
+                NativeInput.onTouchUp(0, 0, false)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    override fun setPadTouchMoved(nx: Float, ny: Float) {
+        try {
+            val dx = (nx.coerceIn(0f, 1f) * drcWidth).toInt().coerceIn(0, drcWidth - 1)
+            val dy = (ny.coerceIn(0f, 1f) * drcHeight).toInt().coerceIn(0, drcHeight - 1)
+            NativeInput.onTouchMove(dx, dy, false)
+        } catch (_: Throwable) {}
+    }
+
+    // ------------------------------------------------------------------
+    // 即时存档（NativeQuickSave 原生槽位 —— 完全对齐上游 Cemu-AZ
+    // QuickSaveSlotsDialog 语义：槽位 1..6 由 getQuickSaveInfo 驱动，
+    // 读档默认不启用 legacy 回退，STATE_RESTORE_FAILED 时由 UI 提供
+    // “安全模式”重试；legacy 恢复（RESULT_OK）后必须重启游戏）
+    // ------------------------------------------------------------------
+
+    /** UI 槽位（0..9）→ 原生槽位（1..6）。 */
+    private fun nativeSlotFor(uiSlot: Int): Int = ((uiSlot % 6) + 1).coerceIn(1, 6)
 
     override fun saveState(slot: Int, dst: File): Boolean {
         if (!isLoaded) return false
         return try {
-            val r = NativeQuickSave.quickSaveSlot(slot)
+            val nSlot = nativeSlotFor(slot)
+            val r = NativeQuickSave.quickSaveSlot(nSlot)
             when (r) {
                 NativeQuickSave.RESULT_OK, NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE -> {
                     // dst 标记文件（UI 槽位列表/时间戳展示用；核心槽位在
                     // <userDir>/states，进程重启后仍可用）
                     try {
                         dst.parentFile?.mkdirs()
-                        dst.writeText("cemu-quicksave-slot-$slot\n")
+                        dst.writeText("cemu-quicksave-slot-$nSlot\n")
                     } catch (_: Throwable) {}
                     true
                 }
@@ -653,7 +815,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     false
                 }
                 NativeQuickSave.RESULT_ERROR_NO_SAVE_DATA -> {
-                    lastErrorText = "存档失败：无存档数据（游戏尚未产生可快照状态）"
+                    lastErrorText = "存档失败：无存档数据"
                     false
                 }
                 else -> {
@@ -670,17 +832,24 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     override fun loadState(slot: Int, src: File): Boolean {
         if (!isLoaded) return false
         return try {
-            // 优先原生槽位；若 UI 标记文件存在但原生槽位为空（跨安装拷贝等），
-            // 回落到 RESULT_ERROR_SLOT_EMPTY 报错提示
-            val r = NativeQuickSave.quickRestoreSlot(slot, NativeQuickSave.RESTORE_FLAG_ALLOW_LEGACY)
+            // ★ 上游语义：默认 flags=0（不用 legacy 回退）。恢复失败如实报错，
+            //   由上层提供“安全模式”重试，而不是静默关游戏换存档数据。
+            val nSlot = nativeSlotFor(slot)
+            val r = NativeQuickSave.quickRestoreSlot(nSlot, 0)
             when (r) {
-                NativeQuickSave.RESULT_OK, NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE -> true
+                NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE -> true
+                NativeQuickSave.RESULT_OK -> {
+                    // legacy 路径已把游戏关闭（只恢复了存档数据）→
+                    // 上游 relaunchGameInProcess：进程内重启游戏
+                    relaunchTitle()
+                    true
+                }
                 NativeQuickSave.RESULT_ERROR_SLOT_EMPTY -> {
                     lastErrorText = "读档失败：槽位 $slot 为空"
                     false
                 }
                 NativeQuickSave.RESULT_ERROR_STATE_RESTORE_FAILED -> {
-                    lastErrorText = "读档失败：状态恢复失败（版本不匹配或数据损坏）"
+                    lastErrorText = "读档失败：状态恢复失败（可用安全模式重试）"
                     false
                 }
                 else -> {
@@ -694,12 +863,73 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
         }
     }
 
-    /** 槽位信息（带缩略图元数据）—— UI 快速存档面板可选消费。 */
+    /**
+     * 原生槽位快捷存档（上游 QuickSaveSlotsDialog.saveToSlot 同款）。
+     * ⚠ 会阻塞（截图等待 + 全量状态冻结），调用方必须在 IO 线程执行。
+     * @param nativeSlot 原生槽位 1..6（直接透传，不做 UI 映射）
+     * @return NativeQuickSave.RESULT_* 结果码
+     */
+    fun quickSaveSlotRaw(nativeSlot: Int): Int = try {
+        NativeQuickSave.quickSaveSlot(nativeSlot)
+    } catch (t: Throwable) {
+        android.util.Log.w("CemuEngine", "quickSaveSlotRaw($nativeSlot)", t)
+        NativeQuickSave.RESULT_ERROR_IO
+    }
+
+    /**
+     * 原生槽位读档（上游 restoreFromSlot 同款：默认 flags=0，
+     * 安全模式重试时传 RESTORE_FLAG_ALLOW_LEGACY）。⚠ 阻塞，IO 线程执行。
+     */
+    fun quickRestoreSlotRaw(nativeSlot: Int, flags: Int): Int = try {
+        NativeQuickSave.quickRestoreSlot(nativeSlot, flags)
+    } catch (t: Throwable) {
+        android.util.Log.w("CemuEngine", "quickRestoreSlotRaw($nativeSlot)", t)
+        NativeQuickSave.RESULT_ERROR_IO
+    }
+
+    /** 槽位信息（含缩略图元数据）。⚠ 阻塞，IO 线程执行。 */
     fun quickSaveInfo(): info.cemu.cemu.nativeinterface.NativeQuickSave.QuickSaveInfo? {
         if (!isLoaded) return null
         return try {
             NativeQuickSave.parseQuickSaveInfo(NativeQuickSave.getQuickSaveInfo())
         } catch (_: Throwable) { null }
+    }
+
+    /** 槽位缩略图（无图返回 null）。⚠ 阻塞，IO 线程执行。 */
+    fun quickSaveThumbnail(nativeSlot: Int): Bitmap? = try {
+        NativeQuickSave.getQuickSaveThumbnail(nativeSlot)
+    } catch (_: Throwable) { null }
+
+    /**
+     * 进程内重启游戏（上游 relaunchGameInProcess 同款）：
+     * legacy 读档路径已 ShutdownTitle，需重新 prepareTitle →
+     * initializeSystems → launchTitle（renderer/swapchain 保持不变）。
+     */
+    fun relaunchTitle() {
+        val path = romPath ?: return
+        thread(name = "cemu-relaunch", isDaemon = true) {
+            try {
+                val prepareResult = try {
+                    NativeEmulation.prepareTitle(path)
+                } catch (t: Throwable) {
+                    android.util.Log.e("CemuEngine", "relaunch prepareTitle threw", t)
+                    -1
+                }
+                if (prepareResult == NativeEmulation.PrepareTitleResult.SUCCESSFUL) {
+                    NativeEmulation.initializeSystems()
+                    NativeEmulation.launchTitle()
+                } else {
+                    val msg = "读档后重启游戏失败（准备阶段错误码 $prepareResult）\n" +
+                        "存档数据已恢复，请退出后重新进入游戏"
+                    lastErrorText = msg
+                    try { onPrematureExit?.invoke(msg) } catch (_: Throwable) {}
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("CemuEngine", "relaunchTitle failed", t)
+                lastErrorText = "读档后重启游戏异常：${t.message ?: t.javaClass.simpleName}"
+                try { onPrematureExit?.invoke(lastErrorText) } catch (_: Throwable) {}
+            }
+        }
     }
 
     // ------------------------------------------------------------------

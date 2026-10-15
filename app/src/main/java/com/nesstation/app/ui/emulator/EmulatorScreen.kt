@@ -21,6 +21,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.focusRequester
@@ -75,10 +76,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -138,6 +141,8 @@ import com.nesstation.app.ui.fsd.FsdImaging
 import com.nesstation.app.ui.settings.KeyMapStore
 import android.view.KeyEvent
 import android.view.View
+import info.cemu.cemu.nativeinterface.NativeQuickSave
+import info.cemu.cemu.nativeinterface.NativeSwkbd
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -2138,7 +2143,16 @@ fun EmulatorScreen(
                    padLayout.irAudioVolume, padLayout.irAudioLatency,
                    padLayout.irXfbImmediate, padLayout.irXfbToTexture,
                    padLayout.irJitFollowBranch, padLayout.irWidescreenHack,
-                   padLayout.irGcLanguage, padLayout.irWiiLanguage
+                   padLayout.irGcLanguage, padLayout.irWiiLanguage,
+                   // WIIU (Cemu-AZ) options —— 新增设置字段改动即时热应用
+                   padLayout.cwDownscaleFilter, padLayout.cwTvAudioEnabled,
+                   padLayout.cwPadAudioEnabled, padLayout.cwTvChannels,
+                   padLayout.cwPadChannels, padLayout.cwOverlayPos,
+                   padLayout.cwOverlayTextScale, padLayout.cwOverlayDrawCalls,
+                   padLayout.cwOverlayCPU, padLayout.cwOverlayRAM,
+                   padLayout.cwNetworkService, padLayout.cwSkylanderPortal,
+                   padLayout.cwInfinityBase, padLayout.cwDimensionsToypad,
+                   padLayout.cwGamePadView, padLayout.cwPadOverlayOpacity
                    ) {
         applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         // Apply video filter (frontend post-processing, not a core option)
@@ -3312,6 +3326,31 @@ fun EmulatorScreen(
                 )
             }
 
+            // ★★ Wii U（Cemu）悬浮 GamePad 画面（上游 Cemu-AZ
+            //   EmulationScreen.EmulationSurfaces(OVERLAY) 同构）：主画布 =
+            //   全尺寸 TV 画面，GamePad（DRC）以小窗悬浮在角落 —— 默认开启
+            //   （cwGamePadView == "overlay"），大小/不透明度/模糊/圆角可调。
+            //   pad 输出不透明度由核心输出着色器逐像素预乘 alpha 实现
+            //   （TRANSLUCENT surface + setPadOverlayOpacity），Compose 层
+            //   alpha/blur 管不到 SurfaceView 内容（上游注释同款告诫）。
+            if (platform == GamePlatform.WIIU && loaded &&
+                padLayout.cwGamePadView == "overlay" && surfaceSize != IntSize.Zero) {
+                CemuPadOverlayView(
+                    engine = engine as? com.nesstation.app.core.engine.CemuEngine,
+                    scalePercent = padLayout.cwPadOverlayScale.toIntOrNull() ?: 20,
+                    blurDp = padLayout.cwPadOverlayBlur.toIntOrNull() ?: 0,
+                    corner = padLayout.cwPadOverlayCorner.toIntOrNull() ?: 0
+                )
+            }
+
+            // ★★ Wii U（Cemu）游戏内文本输入弹窗（SWKBD）：游戏请求键盘输入
+            //   时核心经 NativeSwkbd 回调置位 StateFlow，此处渲染输入框；
+            //   完成（Done/键盘动作）→ onFinishedInputEdit 送回车键码，游戏
+            //   收到后关闭键盘，C++ 侧回调 hide() 收起弹窗。
+            if (platform == GamePlatform.WIIU) {
+                CemuTextInputDialog()
+            }
+
             // === 联机对战状态条（顶部居中） ===
             // 显示帧号 / 延迟 / desync 计数 / 对手加入离开等提示。
             // 单机模式下不显示。
@@ -3794,39 +3833,98 @@ fun EmulatorScreen(
                     },
                     // 即时存档 / 即时读档：直接操作当前槽位 saveLoadSlot，
                     // 复用与 SlotPickerDialog 相同的引擎链路与 Toast 反馈。
+                    // ★ Wii U（Cemu）：完全对齐上游 Cemu-AZ 语义 ——
+                    //   1) 原生槽位 1..6（UI 槽位 %6+1 映射）；
+                    //   2) native 调用在 IO 线程（截图等待 + 全量状态冻结
+                    //      会阻塞数秒，主线程调用会 ANR）；
+                    //   3) 读档默认不用 legacy 回退（flags=0），恢复失败如实
+                    //      报错并引导走菜单的槽位对话框（安全模式可选）；
+                    //   4) legacy 恢复（RESULT_OK）后由引擎进程内重启游戏。
                     onQuickSave = {
-                        val savesDirS = java.io.File(context.filesDir, "saves").apply { mkdirs() }
-                        val slot = saveLoadSlot
-                        val stateFile = java.io.File(savesDirS, "${game.id}_slot${slot}.state")
-                        try {
-                            val ok = engine.saveState(slot, stateFile)
-                            if (ok) {
-                                Toast.makeText(context, "已快速存档 [槽位 $slot]", Toast.LENGTH_SHORT).show()
+                        if (platform == GamePlatform.WIIU) {
+                            val cemu = engine as? com.nesstation.app.core.engine.CemuEngine
+                            val nSlot = (saveLoadSlot % 6) + 1
+                            if (cemu == null) {
+                                Toast.makeText(context, "Cemu 核心未就绪", Toast.LENGTH_SHORT).show()
                             } else {
-                                val reason = engine.lastError().takeIf { it.isNotBlank() } ?: "核心未能生成即时存档"
-                                Toast.makeText(context, "存档失败：$reason", Toast.LENGTH_LONG).show()
+                                resetScope.launch {
+                                    val r = withContext(Dispatchers.IO) { cemu.quickSaveSlotRaw(nSlot) }
+                                    if (r == NativeQuickSave.RESULT_OK ||
+                                        r == NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE) {
+                                        Toast.makeText(context, "已快速存档 [槽位 $nSlot]", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context,
+                                            "存档失败：${cemuQuickSaveResultMessage(r) ?: "未知错误"}",
+                                            Toast.LENGTH_LONG).show()
+                                    }
+                                }
                             }
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "存档失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        } else {
+                            val savesDirS = java.io.File(context.filesDir, "saves").apply { mkdirs() }
+                            val slot = saveLoadSlot
+                            val stateFile = java.io.File(savesDirS, "${game.id}_slot${slot}.state")
+                            try {
+                                val ok = engine.saveState(slot, stateFile)
+                                if (ok) {
+                                    Toast.makeText(context, "已快速存档 [槽位 $slot]", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val reason = engine.lastError().takeIf { it.isNotBlank() } ?: "核心未能生成即时存档"
+                                    Toast.makeText(context, "存档失败：$reason", Toast.LENGTH_LONG).show()
+                                }
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "存档失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     },
                     onQuickLoad = {
-                        val savesDirS = java.io.File(context.filesDir, "saves").apply { mkdirs() }
-                        val slot = saveLoadSlot
-                        val stateFile = java.io.File(savesDirS, "${game.id}_slot${slot}.state")
-                        if (stateFile.exists()) {
-                            try {
-                                val ok = engine.loadState(slot, stateFile)
-                                if (ok) {
-                                    Toast.makeText(context, "已读取存档 [槽位 $slot]", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, "读档失败：存档损坏或版本不兼容", Toast.LENGTH_SHORT).show()
+                        if (platform == GamePlatform.WIIU) {
+                            val cemu = engine as? com.nesstation.app.core.engine.CemuEngine
+                            val nSlot = (saveLoadSlot % 6) + 1
+                            if (cemu == null) {
+                                Toast.makeText(context, "Cemu 核心未就绪", Toast.LENGTH_SHORT).show()
+                            } else {
+                                resetScope.launch {
+                                    val r = withContext(Dispatchers.IO) {
+                                        cemu.quickRestoreSlotRaw(nSlot, 0)
+                                    }
+                                    when (r) {
+                                        NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE ->
+                                            Toast.makeText(context, "已读取存档 [槽位 $nSlot]", Toast.LENGTH_SHORT).show()
+                                        NativeQuickSave.RESULT_OK -> {
+                                            // legacy 恢复（只还原了存档数据，游戏已被关闭）
+                                            // —— 上游 relaunchGameInProcess：进程内重启
+                                            cemu.relaunchTitle()
+                                            Toast.makeText(context, "已恢复存档数据，正在重启游戏…", Toast.LENGTH_SHORT).show()
+                                        }
+                                        NativeQuickSave.RESULT_ERROR_STATE_RESTORE_FAILED ->
+                                            Toast.makeText(context,
+                                                "读档失败：状态恢复失败。可打开菜单 → 读档，用「安全模式」重试",
+                                                Toast.LENGTH_LONG).show()
+                                        else ->
+                                            Toast.makeText(context,
+                                                "读档失败：${cemuQuickSaveResultMessage(r) ?: "未知错误"}",
+                                                Toast.LENGTH_LONG).show()
+                                    }
                                 }
-                            } catch (e: Exception) {
-                                Toast.makeText(context, "读档失败: ${e.message}", Toast.LENGTH_SHORT).show()
                             }
                         } else {
-                            Toast.makeText(context, "当前槽位 ($slot) 无存档", Toast.LENGTH_SHORT).show()
+                            val savesDirS = java.io.File(context.filesDir, "saves").apply { mkdirs() }
+                            val slot = saveLoadSlot
+                            val stateFile = java.io.File(savesDirS, "${game.id}_slot${slot}.state")
+                            if (stateFile.exists()) {
+                                try {
+                                    val ok = engine.loadState(slot, stateFile)
+                                    if (ok) {
+                                        Toast.makeText(context, "已读取存档 [槽位 $slot]", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "读档失败：存档损坏或版本不兼容", Toast.LENGTH_SHORT).show()
+                                    }
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "读档失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                Toast.makeText(context, "当前槽位 ($slot) 无存档", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     },
                     overlayTheme = overlayTheme
@@ -3987,6 +4085,18 @@ fun EmulatorScreen(
 
         // State slot picker dialog
         if (showSlotPicker != null) {
+            // ★★ Wii U（Cemu）：原生槽位对话框（上游 Cemu-AZ QuickSaveSlotsDialog
+            //   完整移植：6 槽 + 自动备份 + 缩略图 + 安全模式 + legacy 恢复后
+            //   进程内重启）。通用 SlotPickerDialog 的 0..9 文件槽位语义
+            //   与核心原生槽位（1..6，state.bin + 存档数据）不匹配。
+            if (platform == GamePlatform.WIIU) {
+                CemuQuickSaveDialog(
+                    mode = showSlotPicker!!,
+                    engine = engine as? com.nesstation.app.core.engine.CemuEngine,
+                    onDismiss = { showSlotPicker = null },
+                    onSlotPicked = { nSlot -> saveLoadSlot = (nSlot - 1).coerceIn(0, 5) }
+                )
+            } else {
             val savesDir = java.io.File(context.filesDir, "saves").apply { mkdirs() }
             SlotPickerDialog(
                 mode = showSlotPicker!!,
@@ -4030,6 +4140,7 @@ fun EmulatorScreen(
                 },
                 onDismiss = { showSlotPicker = null }
             )
+            }
         }
 
         // ★ 3DS 黑屏修复（错误可见化 · 根治）：旧实现只在 loaded == false 时
@@ -5765,6 +5876,27 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption(
                 "CemuEngine/overlayFPS",
                 if (layout.cwOverlayFPS == "true" || layout.showFps) "true" else "false"
+            )
+            // ★★ 本轮补全（对齐上游 Cemu-AZ 设置面）：下采样滤镜 / 音频设备
+            //   开关与声道 / 覆盖层细节 / 网络服务 / 模拟 USB 设备 / 悬浮
+            //   GamePad 画面不透明度（仅悬浮开启时生效，关闭时恢复 100）。
+            engine.setCoreOption("CemuEngine/downscaleFilter", layout.cwDownscaleFilter)
+            engine.setCoreOption("CemuEngine/tvAudioEnabled", layout.cwTvAudioEnabled)
+            engine.setCoreOption("CemuEngine/padAudioEnabled", layout.cwPadAudioEnabled)
+            engine.setCoreOption("CemuEngine/tvChannels", layout.cwTvChannels)
+            engine.setCoreOption("CemuEngine/padChannels", layout.cwPadChannels)
+            engine.setCoreOption("CemuEngine/overlayPos", layout.cwOverlayPos)
+            engine.setCoreOption("CemuEngine/overlayTextScale", layout.cwOverlayTextScale)
+            engine.setCoreOption("CemuEngine/overlayDrawCalls", layout.cwOverlayDrawCalls)
+            engine.setCoreOption("CemuEngine/overlayCPU", layout.cwOverlayCPU)
+            engine.setCoreOption("CemuEngine/overlayRAM", layout.cwOverlayRAM)
+            engine.setCoreOption("CemuEngine/networkService", layout.cwNetworkService)
+            engine.setCoreOption("CemuEngine/skylanderPortal", layout.cwSkylanderPortal)
+            engine.setCoreOption("CemuEngine/infinityBase", layout.cwInfinityBase)
+            engine.setCoreOption("CemuEngine/dimensionsToypad", layout.cwDimensionsToypad)
+            engine.setCoreOption(
+                "CemuEngine/padOverlayOpacity",
+                if (layout.cwGamePadView == "overlay") layout.cwPadOverlayOpacity else "100"
             )
         }
         GamePlatform.PSP -> {
@@ -15070,9 +15202,63 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {cwAccurateBarriers = if (it) "true" else "false"}) }
                 SwitchSetting("核心 FPS 显示", "LatteOverlay 帧率覆盖层", padLayout.cwOverlayFPS == "true"
                 ) { onLayoutChange(padLayout.copy {cwOverlayFPS = if (it) "true" else "false"}) }
+                DropdownSetting("下采样滤镜",
+                    listOf("0" to "双线性 (默认)", "1" to "双三次", "2" to "Hermite", "3" to "最近邻"),
+                    padLayout.cwDownscaleFilter
+                ) { onLayoutChange(padLayout.copy {cwDownscaleFilter = it}) }
+                DropdownSetting("覆盖层位置",
+                    listOf("0" to "关闭", "1" to "左上", "2" to "上中", "3" to "右上",
+                           "4" to "左下", "5" to "下中", "6" to "右下"),
+                    padLayout.cwOverlayPos
+                ) { onLayoutChange(padLayout.copy {cwOverlayPos = it}) }
+                DropdownSetting("覆盖层文字缩放",
+                    listOf("50" to "50%", "75" to "75%", "100" to "100% (默认)",
+                           "150" to "150%", "200" to "200%", "300" to "300%"),
+                    padLayout.cwOverlayTextScale
+                ) { onLayoutChange(padLayout.copy {cwOverlayTextScale = it}) }
+                SwitchSetting("绘制调用数显示", "每帧 draw calls 覆盖层", padLayout.cwOverlayDrawCalls == "true"
+                ) { onLayoutChange(padLayout.copy {cwOverlayDrawCalls = if (it) "true" else "false"}) }
+                SwitchSetting("CPU 占用显示", "CPU 使用率覆盖层", padLayout.cwOverlayCPU == "true"
+                ) { onLayoutChange(padLayout.copy {cwOverlayCPU = if (it) "true" else "false"}) }
+                SwitchSetting("内存占用显示", "RAM 使用率覆盖层", padLayout.cwOverlayRAM == "true"
+                ) { onLayoutChange(padLayout.copy {cwOverlayRAM = if (it) "true" else "false"}) }
+
+                Spacer(Modifier.size(8.dp))
+                Text("悬浮 GamePad 画面（快捷设置）", color = Color(0xFF8899AA), fontSize = 11.sp)
+                SwitchSetting("悬浮 GamePad 画面", "GamePad 画面以小窗悬浮在 TV 画面角落（默认开）",
+                    padLayout.cwGamePadView == "overlay"
+                ) { onLayoutChange(padLayout.copy {cwGamePadView = if (it) "overlay" else "off"}) }
+                SliderSetting("悬浮画面大小",
+                    "GamePad 小窗宽度占屏幕百分比（当前 ${padLayout.cwPadOverlayScale}%）",
+                    (padLayout.cwPadOverlayScale.toIntOrNull() ?: 20).toFloat(), 10f, 60f
+                ) { v -> onLayoutChange(padLayout.copy {cwPadOverlayScale = v.toInt().toString()}) }
+                SliderSetting("悬浮画面不透明度",
+                    "核心输出着色器逐像素透明（当前 ${padLayout.cwPadOverlayOpacity}%）",
+                    (padLayout.cwPadOverlayOpacity.toIntOrNull() ?: 60).toFloat(), 20f, 100f
+                ) { v -> onLayoutChange(padLayout.copy {cwPadOverlayOpacity = v.toInt().toString()}) }
+                SliderSetting("悬浮画面模糊",
+                    "背景模糊半径 dp，0 = 关闭（需 Android 12+；当前 ${padLayout.cwPadOverlayBlur}）",
+                    (padLayout.cwPadOverlayBlur.toIntOrNull() ?: 0).toFloat(), 0f, 24f
+                ) { v -> onLayoutChange(padLayout.copy {cwPadOverlayBlur = v.toInt().toString()}) }
+                DropdownSetting("悬浮画面角落",
+                    listOf("0" to "左下 (默认)", "1" to "右下", "2" to "左上", "3" to "右上"),
+                    padLayout.cwPadOverlayCorner
+                ) { onLayoutChange(padLayout.copy {cwPadOverlayCorner = it}) }
 
                 Spacer(Modifier.size(8.dp))
                 Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
+                SwitchSetting("TV 音频输出", "TV 画面声音开关", padLayout.cwTvAudioEnabled == "true"
+                ) { onLayoutChange(padLayout.copy {cwTvAudioEnabled = if (it) "true" else "false"}) }
+                SwitchSetting("GamePad 音频输出", "GamePad 声音开关", padLayout.cwPadAudioEnabled == "true"
+                ) { onLayoutChange(padLayout.copy {cwPadAudioEnabled = if (it) "true" else "false"}) }
+                DropdownSetting("TV 声道",
+                    listOf("0" to "单声道", "1" to "立体声 (默认)", "2" to "环绕"),
+                    padLayout.cwTvChannels
+                ) { onLayoutChange(padLayout.copy {cwTvChannels = it}) }
+                DropdownSetting("GamePad 声道",
+                    listOf("0" to "单声道", "1" to "立体声 (默认)", "2" to "环绕"),
+                    padLayout.cwPadChannels
+                ) { onLayoutChange(padLayout.copy {cwPadChannels = it}) }
                 DropdownSetting("TV 音量",
                     listOf("0" to "0%", "20" to "20%", "40" to "40%", "60" to "60%",
                            "80" to "80%", "100" to "100% (默认)"),
@@ -15103,10 +15289,24 @@ private fun SettingsPanel(
                            "3" to "4x", "4" to "8x (快进)"),
                     padLayout.cwGameSpeed
                 ) { onLayoutChange(padLayout.copy {cwGameSpeed = it}) }
+                DropdownSetting("网络服务",
+                    listOf("0" to "离线 (默认)", "1" to "Nintendo 网络", "2" to "Pretendo",
+                           "3" to "自定义"),
+                    padLayout.cwNetworkService
+                ) { onLayoutChange(padLayout.copy {cwNetworkService = it}) }
+                SwitchSetting("Skylanders 传送门", "模拟 Skylanders USB 传送门外设",
+                    padLayout.cwSkylanderPortal == "true"
+                ) { onLayoutChange(padLayout.copy {cwSkylanderPortal = if (it) "true" else "false"}) }
+                SwitchSetting("Infinity Base", "模拟 Disney Infinity 基座外设",
+                    padLayout.cwInfinityBase == "true"
+                ) { onLayoutChange(padLayout.copy {cwInfinityBase = if (it) "true" else "false"}) }
+                SwitchSetting("Dimensions Toypad", "模拟 LEGO Dimensions 玩具Pad 外设",
+                    padLayout.cwDimensionsToypad == "true"
+                ) { onLayoutChange(padLayout.copy {cwDimensionsToypad = if (it) "true" else "false"}) }
 
                 Spacer(Modifier.size(2.dp))
-                Text("改动即时热应用。TV/手柄画面切换用虚拟 TV 键；GamePad 触摸 = " +
-                    "游戏区直接触摸；图形包/金手指等进阶功能在 <filesDir>/cemu/ 目录管理。",
+                Text("改动即时热应用。TV/手柄画面切换用虚拟 TV 键；悬浮 GamePad 小窗可直接触摸；" +
+                    "驱动安装与图形包等进阶功能在 主设置 → 核心设置 → Wii U。",
                     color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                 Spacer(Modifier.size(6.dp))
             }
@@ -16108,6 +16308,477 @@ private fun SwitchSetting(
                 checkedThumbColor = Color.White,
                 checkedTrackColor = Color(0xFFE74C3C)
             )
+        )
+    }
+}
+
+// ===========================================================================
+// ★★ Wii U（Cemu-AZ）专属组件 —— 上游 Cemu-AZ 对应文件完整移植 ★★
+//   · CemuQuickSaveDialog  ← QuickSaveSlotsDialog.kt（存档槽位对话框）
+//   · CemuTextInputDialog  ← EmulationTextInputDialog.kt（游戏文本输入）
+//   · CemuPadOverlayView   ← EmulationScreen.kt PadOverlaySurface（悬浮画面）
+// ===========================================================================
+
+/**
+ * TV-friendly slider setting row（游戏内快捷设置的悬浮画面调节用）。
+ */
+@Composable
+private fun SliderSetting(
+    label: String,
+    description: String,
+    value: Float,
+    valueFrom: Float,
+    valueTo: Float,
+    onValueChange: (Float) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 4.dp)
+    ) {
+        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+        Text(description, color = Color.White.copy(alpha = 0.6f), fontSize = 10.sp)
+        Slider(
+            value = value.coerceIn(valueFrom, valueTo),
+            onValueChange = onValueChange,
+            valueRange = valueFrom..valueTo,
+            colors = androidx.compose.material3.SliderDefaults.colors(
+                thumbColor = Color(0xFFFFD66B),
+                activeTrackColor = Color(0xFFE74C3C)
+            )
+        )
+    }
+}
+
+/** 存/读档结果码 → 用户可读消息（上游 resultToMessage 同款映射，null = 成功）。 */
+private fun cemuQuickSaveResultMessage(result: Int): String? = when (result) {
+    NativeQuickSave.RESULT_OK, NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE -> null
+    NativeQuickSave.RESULT_ERROR_NO_SAVE_DATA -> "无存档数据。请先在游戏内保存进度。"
+    NativeQuickSave.RESULT_ERROR_SLOT_EMPTY -> "该槽位为空。"
+    NativeQuickSave.RESULT_ERROR_STATE_RESTORE_FAILED -> "读取即时存档失败，游戏仍在运行。"
+    NativeQuickSave.RESULT_ERROR_IO, NativeQuickSave.RESULT_ERROR_NOT_RUNNING -> "发生文件错误，请重试。"
+    else -> "发生文件错误，请重试。"
+}
+
+/**
+ * ★★ Wii U 即时存档槽位对话框 —— 上游 Cemu-AZ QuickSaveSlotsDialog 完整移植 ★★
+ *
+ * 与通用 SlotPickerDialog（文件槽位 0..9）不同：
+ *  · 槽位来自核心 getQuickSaveInfo()（原生槽位 1..6 + 自动备份）；
+ *  · 每槽带 TGA 缩略图（getQuickSaveThumbnail）；
+ *  · 存档前对已有槽位弹确认；读档对已有槽位弹确认；
+ *  · 读档默认 flags=0（状态原地恢复，游戏不重启）；
+ *    STATE_RESTORE_FAILED 时提供「安全模式」按钮（ALLOW_LEGACY：
+ *    关游戏 → 还原槽位的存档数据）；
+ *  · legacy 恢复（RESULT_OK）后调引擎 relaunchTitle() 进程内重启游戏
+ *    （上游 relaunchGameInProcess 同款）。
+ * 全部 native 调用在 Dispatchers.IO 执行（上游 withContext(IO) 同款）。
+ */
+@Composable
+private fun CemuQuickSaveDialog(
+    mode: String, // "save" | "load"
+    engine: com.nesstation.app.core.engine.CemuEngine?,
+    onDismiss: () -> Unit,
+    onSlotPicked: (nativeSlot: Int) -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var info by remember { mutableStateOf<NativeQuickSave.QuickSaveInfo?>(null) }
+    var working by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var confirmSaveSlot by remember { mutableStateOf<NativeQuickSave.QuickSaveSlot?>(null) }
+    var confirmRestoreSlot by remember { mutableStateOf<NativeQuickSave.QuickSaveSlot?>(null) }
+    var failedSlot by remember { mutableStateOf<Int?>(null) }
+    val thumbnails = remember { mutableStateMapOf<Int, Bitmap?>() }
+
+    fun refreshInfo() {
+        val eng = engine ?: return
+        scope.launch {
+            val parsed = withContext(Dispatchers.IO) { eng.quickSaveInfo() } ?: return@launch
+            info = parsed
+            // 自动备份槽（读档模式）：-1
+            if (mode == "load") {
+                val backup = parsed.autoBackup
+                if (backup?.exists == true && backup.thumb && !thumbnails.containsKey(-1)) {
+                    thumbnails[-1] = withContext(Dispatchers.IO) { eng.quickSaveThumbnail(-1) }
+                }
+            }
+            for (slot in parsed.slots) {
+                if (slot.exists && slot.thumb && !thumbnails.containsKey(slot.slot)) {
+                    thumbnails[slot.slot] = withContext(Dispatchers.IO) { eng.quickSaveThumbnail(slot.slot) }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { refreshInfo() }
+
+    fun saveToSlot(slotIndex: Int) {
+        val eng = engine ?: return
+        working = true
+        errorMessage = null
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { eng.quickSaveSlotRaw(slotIndex) }
+            working = false
+            cemuQuickSaveResultMessage(result)?.let { errorMessage = it } ?: run {
+                onSlotPicked(slotIndex)
+                refreshInfo()
+            }
+        }
+    }
+
+    fun restoreFromSlot(slotIndex: Int, allowLegacy: Boolean = false) {
+        val eng = engine ?: return
+        working = true
+        errorMessage = null
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                eng.quickRestoreSlotRaw(slotIndex, if (allowLegacy) NativeQuickSave.RESTORE_FLAG_ALLOW_LEGACY else 0)
+            }
+            working = false
+            when (result) {
+                // 状态原地恢复成功，游戏继续（无重启）
+                NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE -> {
+                    onSlotPicked(slotIndex)
+                    onDismiss()
+                }
+                // legacy 恢复：游戏已被关闭（只还原了存档数据）→ 进程内重启
+                //（RESULT_ERROR_IO 同样重启 —— legacy 路径出错前可能已关掉游戏，
+                //  与上游 QuickSaveSlotsDialog 行为一致）
+                NativeQuickSave.RESULT_OK, NativeQuickSave.RESULT_ERROR_IO -> {
+                    onSlotPicked(slotIndex)
+                    eng.relaunchTitle()
+                    if (result == NativeQuickSave.RESULT_OK) {
+                        Toast.makeText(context, "已恢复存档数据，正在重启游戏…", Toast.LENGTH_SHORT).show()
+                    }
+                    onDismiss()
+                }
+                else -> {
+                    errorMessage = cemuQuickSaveResultMessage(result) ?: "未知错误"
+                    if (result == NativeQuickSave.RESULT_ERROR_STATE_RESTORE_FAILED && !allowLegacy) {
+                        // 提供基于重启的可靠回退（安全模式）
+                        failedSlot = slotIndex
+                    }
+                }
+            }
+        }
+    }
+
+    if (engine == null) {
+        // 核心未就绪（库缺失 / 非 arm64）—— 直接提示并关闭
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("核心不可用") },
+            text = { Text("Cemu 核心未加载（需要 arm64-v8a + Android 11+）。") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = onDismiss) { Text("确定") }
+            }
+        )
+        return
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!working) onDismiss() },
+        title = {
+            Column {
+                Text(if (mode == "save") "快速存档" else "快速读档")
+                info?.titleName?.takeIf { it.isNotBlank() }?.let {
+                    Text(text = it, fontSize = 12.sp, color = Color(0xFF8899AA))
+                }
+            }
+        },
+        text = {
+            Column {
+                if (working) {
+                    androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                val slots = info?.slots ?: emptyList()
+                for (row in slots.chunked(2)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (slot in row) {
+                            CemuSlotCard(
+                                slot = slot,
+                                bitmap = thumbnails[slot.slot],
+                                enabled = !working && (mode == "save" || slot.exists),
+                                onClick = {
+                                    if (mode == "save") {
+                                        if (slot.exists) confirmSaveSlot = slot else saveToSlot(slot.slot)
+                                    } else {
+                                        confirmRestoreSlot = slot
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+                // 读档模式：自动备份槽（读档安全网，-1）
+                val backup = info?.autoBackup
+                if (mode == "load" && backup?.exists == true) {
+                    CemuSlotCard(
+                        slot = NativeQuickSave.QuickSaveSlot(
+                            slot = -1, exists = true, timestamp = backup.timestamp,
+                            sizeBytes = 0, thumb = backup.thumb
+                        ),
+                        bitmap = thumbnails[-1],
+                        label = "自动备份",
+                        enabled = !working,
+                        onClick = {
+                            confirmRestoreSlot = NativeQuickSave.QuickSaveSlot(
+                                slot = -1, exists = true, timestamp = backup.timestamp,
+                                sizeBytes = 0, thumb = backup.thumb
+                            )
+                        }
+                    )
+                }
+                errorMessage?.let {
+                    Text(text = it, fontSize = 12.sp, color = Color(0xFFE74C3C),
+                        modifier = Modifier.padding(top = 4.dp))
+                }
+                failedSlot?.let { failed ->
+                    androidx.compose.material3.TextButton(onClick = {
+                        val slotIndex = failed
+                        failedSlot = null
+                        restoreFromSlot(slotIndex, allowLegacy = true)
+                    }) { Text("使用安全模式") }
+                }
+                if (mode == "load") {
+                    Text(
+                        text = "带状态文件的槽位可即时恢复，无需重启游戏。",
+                        fontSize = 11.sp, color = Color(0xFF8899AA),
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { if (!working) onDismiss() }) { Text("取消") }
+        }
+    )
+
+    // 覆盖已有槽位存档确认
+    confirmSaveSlot?.let { slot ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmSaveSlot = null },
+            title = { Text("覆盖存档") },
+            text = { Text("槽位 ${slot.slot} 已有存档（${slot.timestamp.ifBlank { "已保存" }}）。\n确定要覆盖吗？") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    val s = slot.slot
+                    confirmSaveSlot = null
+                    saveToSlot(s)
+                }) { Text("覆盖") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmSaveSlot = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // 读档确认
+    confirmRestoreSlot?.let { slot ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmRestoreSlot = null },
+            title = { Text("读取存档") },
+            text = {
+                Text(if (slot.slot == -1) "读取自动备份？（读档失败时的安全网）"
+                     else "读取槽位 ${slot.slot} 的存档（${slot.timestamp.ifBlank { "已保存" }}）？")
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    val s = slot.slot
+                    confirmRestoreSlot = null
+                    restoreFromSlot(s)
+                }) { Text("读取") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmRestoreSlot = null }) { Text("取消") }
+            }
+        )
+    }
+}
+
+/** 存档槽卡片（缩略图 + 槽位号 + 时间戳）—— 上游 SlotCard 简化移植。 */
+@Composable
+private fun CemuSlotCard(
+    slot: NativeQuickSave.QuickSaveSlot,
+    bitmap: Bitmap?,
+    label: String = "槽位 ${slot.slot}",
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val exists = slot.exists
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .alpha(if (enabled) 1f else 0.4f)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(4.dp)
+    ) {
+        val thumbModifier = Modifier
+            .size(width = 96.dp, height = 54.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF22303F))
+        if (exists && bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                modifier = thumbModifier
+            )
+        } else {
+            Box(modifier = thumbModifier, contentAlignment = Alignment.Center) {
+                Text(
+                    text = if (exists) "无预览" else "空",
+                    fontSize = 10.sp, color = Color(0xFF8899AA)
+                )
+            }
+        }
+        Text(text = label, fontSize = 12.sp, color = Color.White,
+            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+        Text(
+            text = if (exists) slot.timestamp.takeIf { it.isNotBlank() } ?: "已保存" else "空",
+            fontSize = 10.sp, maxLines = 1,
+            color = Color(0xFF8899AA),
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * ★★ Wii U 游戏文本输入弹窗 —— 上游 Cemu-AZ EmulationTextInputDialog 完整移植 ★★
+ *
+ * 游戏请求键盘输入时（swkbd），核心经 NativeSwkbd 回调置位 StateFlow
+ * （makeVisible(initialText, maxLength)），此处渲染输入框：
+ *  · 文本变化 → SwkbdState.updateText（过滤非法字符 + 截断到 maxLength）
+ *    → native onTextChanged（差分退格/补字键码注入游戏）；
+ *  · Done（按钮或键盘动作）→ onFinishedInputEdit（回车键码）→ 游戏收起
+ *    键盘 → C++ 回调 hide() → StateFlow 清空 → 弹窗消失。
+ */
+@Composable
+private fun CemuTextInputDialog() {
+    val swkbdState = NativeSwkbd.SwkbdState.data.collectAsState()
+    val swkbdStateData = swkbdState.value ?: return
+
+    fun onDone() {
+        if (swkbdStateData.text.isNotEmpty()) {
+            NativeSwkbd.onFinishedInputEdit()
+        }
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { /* 游戏请求的键盘 —— 不允许点外关闭（上游同款 onDismissRequest = {}） */ },
+        title = { Text("输入文本") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = swkbdStateData.text,
+                    onValueChange = { NativeSwkbd.SwkbdState.updateText(it) },
+                    placeholder = { Text("请输入文本") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onDone = { onDone() }
+                    ),
+                    singleLine = true,
+                    supportingText = {
+                        if (swkbdStateData.maxLength > 0) {
+                            Text(
+                                text = "${swkbdStateData.text.length} / ${swkbdStateData.maxLength}",
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                )
+                Text(
+                    "完成输入后点击「完成」送回游戏",
+                    fontSize = 10.sp, color = Color(0xFF8899AA),
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                enabled = swkbdStateData.text.isNotEmpty(),
+                onClick = { onDone() }
+            ) { Text("完成") }
+        }
+    )
+}
+
+/**
+ * ★★ Wii U 悬浮 GamePad 画面 —— 上游 Cemu-AZ PadOverlaySurface 完整移植 ★★
+ *
+ * 主画布 = 全尺寸 TV 画面；GamePad（DRC）以小窗悬浮在四角之一。
+ *  · 小窗宽度 = 主画面宽度 × scalePercent（10%..60%），16:9（854x480）；
+ *  · surface 格式 TRANSLUCENT —— 不透明度由核心 pad 输出着色器逐像素
+ *    预乘 alpha（setPadOverlayOpacity），Compose 层 alpha 管不到
+ *    SurfaceView 内容（上游注释同款告诫）；
+ *  · 模糊（Android 12+）走 Modifier.blur（对 SurfaceView 层生效于
+ *    Android 12+ 的 RenderEffect 路径，上游同款）；
+ *  · 小窗即 DRC 触摸屏本体 —— 触点归一化后直接喂核心。
+ */
+@Composable
+private fun CemuPadOverlayView(
+    engine: com.nesstation.app.core.engine.CemuEngine?,
+    scalePercent: Int,
+    blurDp: Int,
+    corner: Int
+) {
+    if (engine == null) return
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val scale = (scalePercent / 100f).coerceIn(0.1f, 0.6f)
+        val padWidth = maxWidth * scale
+        // Wii U GamePad 屏幕 854x480（16:9）
+        val padHeight = padWidth * (480f / 854f)
+        val alignment = when (corner.coerceIn(0, 3)) {
+            1 -> Alignment.BottomEnd
+            2 -> Alignment.TopStart
+            3 -> Alignment.TopEnd
+            else -> Alignment.BottomStart // 默认：左下角
+        }
+        var padModifier = Modifier
+            .align(alignment)
+            .padding(8.dp)
+            .width(padWidth)
+            .height(padHeight)
+        if (blurDp > 0 && android.os.Build.VERSION.SDK_INT >= 31) {
+            padModifier = padModifier.blur(blurDp.coerceIn(1, 24).dp)
+        }
+        AndroidView(
+            modifier = padModifier,
+            factory = { ctx ->
+                SurfaceView(ctx).apply {
+                    // ★ 混合（逐像素 alpha）surface：不透明度在核心输出着色器
+                    //   里预乘，SurfaceFlinger 才会真正混合（上游同款）。
+                    holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+                    holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) {}
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                            engine.setPadSurface(holder.surface, width, height)
+                        }
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            engine.clearPadSurface()
+                        }
+                    })
+                    // 小窗即 GamePad 触摸屏 —— 触点归一化直喂核心
+                    setOnTouchListener { v, event ->
+                        when (event.actionMasked) {
+                            MotionEvent.ACTION_DOWN ->
+                                engine.setPadTouch(event.x / v.width.coerceAtLeast(1), event.y / v.height.coerceAtLeast(1), true)
+                            MotionEvent.ACTION_MOVE ->
+                                engine.setPadTouchMoved(event.x / v.width.coerceAtLeast(1), event.y / v.height.coerceAtLeast(1))
+                            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                                engine.setPadTouch(0f, 0f, false)
+                        }
+                        true
+                    }
+                }
+            }
         )
     }
 }

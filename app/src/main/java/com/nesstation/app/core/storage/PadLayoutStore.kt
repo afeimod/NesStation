@@ -899,6 +899,32 @@ class PadLayout {
     var cwConsoleLanguage: String = "1"     // "0".."11" (ConsoleLanguage: 日/英/法/德/意/西/中/韩/荷/葡/俄/台)
     var cwOverlayFPS: String = "false"      // 核心内 FPS 覆盖层（LatteOverlay）
 
+    // ★★ 本轮补全（对齐上游 Cemu-AZ 设置面）：悬浮 GamePad 画面 /
+    //     下采样滤镜 / 音频设备开关与声道 / 覆盖层细节 / 网络服务 /
+    //     模拟 USB 设备 / 自定义驱动路径。键名/取值对照
+    //     NativeSettings.kt（CemuEngine 以 "CemuEngine/<name>" 门面键消费）
+    // ★ 悬浮 GamePad 画面（上游 GamePadPosition.OVERLAY 的默认布局）。
+    var cwGamePadView: String = "overlay"   // "overlay" 悬浮（默认） | "off" 关闭
+    var cwPadOverlayScale: String = "20"    // "10".."60" 悬浮画面宽度占主画面百分比
+    var cwPadOverlayOpacity: String = "60" // "20".."100" 不透明度（核心输出着色器）
+    var cwPadOverlayBlur: String = "0"     // "0".."24" 模糊半径 dp（Android 12+）
+    var cwPadOverlayCorner: String = "0"   // "0"左下 "1"右下 "2"左上 "3"右上
+    var cwDownscaleFilter: String = "0"    // "0".."3" 下采样滤镜（ScalingFilter）
+    var cwTvAudioEnabled: String = "true"   // TV 音频输出开关
+    var cwPadAudioEnabled: String = "true"  // GamePad 音频输出开关
+    var cwTvChannels: String = "1"          // "0"单声道 "1"立体声 "2"环绕（TV）
+    var cwPadChannels: String = "1"         // 同上（GamePad）
+    var cwOverlayPos: String = "0"          // "0".."6" 覆盖层位置（OverlayScreenPosition）
+    var cwOverlayTextScale: String = "100"  // "50".."300" 覆盖层文字缩放百分比
+    var cwOverlayDrawCalls: String = "false"// 每帧绘制调用数覆盖层
+    var cwOverlayCPU: String = "false"      // CPU 占用覆盖层
+    var cwOverlayRAM: String = "false"      // RAM 占用覆盖层
+    var cwNetworkService: String = "0"     // "0"离线 "1"Nintendo "2"Pretendo "3"自定义
+    var cwSkylanderPortal: String = "false"// Skylanders 传送门模拟
+    var cwInfinityBase: String = "false"    // Infinity Base 模拟
+    var cwDimensionsToypad: String = "false"// Dimensions Toypad 模拟
+    var cwDriverPath: String = ""          // 自定义 Vulkan 驱动目录（空 = 系统驱动）
+
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
         fun normalizePs2ResMulti(raw: String?): String = when (raw?.trim()) {
@@ -1756,6 +1782,26 @@ class PadLayout {
         cwAudioLatency = another.cwAudioLatency
         cwConsoleLanguage = another.cwConsoleLanguage
         cwOverlayFPS = another.cwOverlayFPS
+        cwGamePadView = another.cwGamePadView
+        cwPadOverlayScale = another.cwPadOverlayScale
+        cwPadOverlayOpacity = another.cwPadOverlayOpacity
+        cwPadOverlayBlur = another.cwPadOverlayBlur
+        cwPadOverlayCorner = another.cwPadOverlayCorner
+        cwDownscaleFilter = another.cwDownscaleFilter
+        cwTvAudioEnabled = another.cwTvAudioEnabled
+        cwPadAudioEnabled = another.cwPadAudioEnabled
+        cwTvChannels = another.cwTvChannels
+        cwPadChannels = another.cwPadChannels
+        cwOverlayPos = another.cwOverlayPos
+        cwOverlayTextScale = another.cwOverlayTextScale
+        cwOverlayDrawCalls = another.cwOverlayDrawCalls
+        cwOverlayCPU = another.cwOverlayCPU
+        cwOverlayRAM = another.cwOverlayRAM
+        cwNetworkService = another.cwNetworkService
+        cwSkylanderPortal = another.cwSkylanderPortal
+        cwInfinityBase = another.cwInfinityBase
+        cwDimensionsToypad = another.cwDimensionsToypad
+        cwDriverPath = another.cwDriverPath
         n3dsDpad = another.n3dsDpad
         n3dsDpadP = another.n3dsDpadP
         n3dsLStick = another.n3dsLStick
@@ -3043,6 +3089,45 @@ object PadLayoutStore {
                 it.toIntOrNull()?.coerceIn(0, 11)?.toString() ?: "1" }
             cwOverlayFPS = (p.getString("cw_overlay_fps", "false") ?: "false").let {
                 if (it in listOf("true", "false")) it else "false" }
+            cwGamePadView = (p.getString("cw_game_pad_view", "overlay") ?: "overlay").let {
+                if (it in listOf("overlay", "off")) it else "overlay" }
+            cwPadOverlayScale = (p.getString("cw_pad_overlay_scale", "20") ?: "20").let {
+                it.toIntOrNull()?.coerceIn(10, 60)?.toString() ?: "20" }
+            cwPadOverlayOpacity = (p.getString("cw_pad_overlay_opacity", "60") ?: "60").let {
+                it.toIntOrNull()?.coerceIn(20, 100)?.toString() ?: "60" }
+            cwPadOverlayBlur = (p.getString("cw_pad_overlay_blur", "0") ?: "0").let {
+                it.toIntOrNull()?.coerceIn(0, 24)?.toString() ?: "0" }
+            cwPadOverlayCorner = (p.getString("cw_pad_overlay_corner", "0") ?: "0").let {
+                it.toIntOrNull()?.coerceIn(0, 3)?.toString() ?: "0" }
+            cwDownscaleFilter = (p.getString("cw_downscale_filter", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2", "3")) it else "0" }
+            cwTvAudioEnabled = (p.getString("cw_tv_audio_enabled", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            cwPadAudioEnabled = (p.getString("cw_pad_audio_enabled", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            cwTvChannels = (p.getString("cw_tv_channels", "1") ?: "1").let {
+                if (it in listOf("0", "1", "2")) it else "1" }
+            cwPadChannels = (p.getString("cw_pad_channels", "1") ?: "1").let {
+                if (it in listOf("0", "1", "2")) it else "1" }
+            cwOverlayPos = (p.getString("cw_overlay_pos", "0") ?: "0").let {
+                it.toIntOrNull()?.coerceIn(0, 6)?.toString() ?: "0" }
+            cwOverlayTextScale = (p.getString("cw_overlay_text_scale", "100") ?: "100").let {
+                it.toIntOrNull()?.coerceIn(50, 300)?.toString() ?: "100" }
+            cwOverlayDrawCalls = (p.getString("cw_overlay_draw_calls", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            cwOverlayCPU = (p.getString("cw_overlay_cpu", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            cwOverlayRAM = (p.getString("cw_overlay_ram", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            cwNetworkService = (p.getString("cw_network_service", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2", "3")) it else "0" }
+            cwSkylanderPortal = (p.getString("cw_skylander_portal", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            cwInfinityBase = (p.getString("cw_infinity_base", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            cwDimensionsToypad = (p.getString("cw_dimensions_toypad", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            cwDriverPath = p.getString("cw_driver_path", "") ?: ""
             ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
             ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
             ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
@@ -3840,6 +3925,26 @@ object PadLayoutStore {
             putString("cw_audio_latency", layout.cwAudioLatency)
             putString("cw_console_language", layout.cwConsoleLanguage)
             putString("cw_overlay_fps", layout.cwOverlayFPS)
+            putString("cw_game_pad_view", layout.cwGamePadView)
+            putString("cw_pad_overlay_scale", layout.cwPadOverlayScale)
+            putString("cw_pad_overlay_opacity", layout.cwPadOverlayOpacity)
+            putString("cw_pad_overlay_blur", layout.cwPadOverlayBlur)
+            putString("cw_pad_overlay_corner", layout.cwPadOverlayCorner)
+            putString("cw_downscale_filter", layout.cwDownscaleFilter)
+            putString("cw_tv_audio_enabled", layout.cwTvAudioEnabled)
+            putString("cw_pad_audio_enabled", layout.cwPadAudioEnabled)
+            putString("cw_tv_channels", layout.cwTvChannels)
+            putString("cw_pad_channels", layout.cwPadChannels)
+            putString("cw_overlay_pos", layout.cwOverlayPos)
+            putString("cw_overlay_text_scale", layout.cwOverlayTextScale)
+            putString("cw_overlay_draw_calls", layout.cwOverlayDrawCalls)
+            putString("cw_overlay_cpu", layout.cwOverlayCPU)
+            putString("cw_overlay_ram", layout.cwOverlayRAM)
+            putString("cw_network_service", layout.cwNetworkService)
+            putString("cw_skylander_portal", layout.cwSkylanderPortal)
+            putString("cw_infinity_base", layout.cwInfinityBase)
+            putString("cw_dimensions_toypad", layout.cwDimensionsToypad)
+            putString("cw_driver_path", layout.cwDriverPath)
             saveBtn("ngc_lstick", layout.ngcLStick)
             saveBtn("ngc_p_lstick", layout.ngcLStickP)
             saveBtn("ngc_rstick", layout.ngcRStick)

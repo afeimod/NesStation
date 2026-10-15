@@ -38,7 +38,9 @@ SYSTEMS = [
     "NEC - PC Engine - TurboGrafx 16",   # 注意：站上目录名是空格不是连字符
     "Sony - PlayStation",
     "Sony - PlayStation 2",
+    "Sony - PlayStation Portable",       # ★ PSP 补录（此前漏打 → 封面索引缺失）
     "Nintendo - Wii",
+    "Nintendo - Wii U",                  # ★ Wii U 补录（同批缺源）
     "Nintendo - GameCube",
     "FBNeo - Arcade Games",
 ]

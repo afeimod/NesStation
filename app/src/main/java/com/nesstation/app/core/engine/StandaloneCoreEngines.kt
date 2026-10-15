@@ -157,6 +157,26 @@ interface CemuCoreEngine : EmulatorEngine {
     fun toggleTvPadView(): Boolean
 
     /**
+     * 挂载/更新 GamePad（DRC）悬浮画面 surface（上游 Cemu-AZ
+     * EmulationViewModel pad 画布链路同构）。renderer 就绪前仅记录，
+     * 由引擎在 initializeRenderer 后补建 pad swapchain；width/height
+     * 为悬浮小窗像素尺寸（0 = 保持上次）。
+     */
+    fun setPadSurface(surface: android.view.Surface?, width: Int, height: Int)
+
+    /** 拆下 GamePad 悬浮画面 surface（停用 pad 输出，pad_open=false）。 */
+    fun clearPadSurface()
+
+    /**
+     * GamePad 悬浮小窗触摸（归一化坐标 0..1，pressed=false 时坐标忽略）。
+     * 悬浮小窗即 DRC 触摸屏本体 —— 引擎直接映射到 854x480 坐标空间。
+     */
+    fun setPadTouch(nx: Float, ny: Float, pressed: Boolean)
+
+    /** GamePad 悬浮小窗触摸移动（归一化坐标 0..1）。 */
+    fun setPadTouchMoved(nx: Float, ny: Float)
+
+    /**
      * 核心是否已加载完成（.so 存在且 System.loadLibrary 成功、API>=30）。
      */
     fun isCoreAvailable(): Boolean

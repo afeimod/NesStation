@@ -2,19 +2,28 @@ package com.nesstation.app.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.Toast
+import kotlinx.coroutines.launch
 import com.nesstation.app.core.model.GamePlatform
+import com.nesstation.app.core.storage.CemuDriverStore
 import com.nesstation.app.core.storage.PadLayout
 import com.nesstation.app.core.storage.JAVA_MAPPABLE_BUTTONS
 import com.nesstation.app.core.storage.JAVA_PHONE_KEY_OPTIONS
@@ -2222,6 +2231,10 @@ fun CoreSettingsPanel(
                                "2" to "Hermite (均衡)", "3" to "最近邻 (像素风)"),
                         padLayout.cwUpscaleFilter
                     ) { updateLayout(padLayout.copy {cwUpscaleFilter = it}) }
+                    DropdownRow("下采样滤镜",
+                        listOf("0" to "双线性 (默认)", "1" to "双三次", "2" to "Hermite", "3" to "最近邻"),
+                        padLayout.cwDownscaleFilter
+                    ) { updateLayout(padLayout.copy {cwDownscaleFilter = it}) }
                     DropdownRow("画面缩放",
                         // 全局「屏幕缩放 stretch」会联动此项为拉伸（见 applyCoreOptions）
                         listOf("0" to "保持宽高比 (默认)", "1" to "拉伸全屏"),
@@ -2239,8 +2252,71 @@ fun CoreSettingsPanel(
                         listOf("false" to "关闭 (默认)", "true" to "开启 (LatteOverlay)"),
                         padLayout.cwOverlayFPS
                     ) { updateLayout(padLayout.copy {cwOverlayFPS = it}) }
+                    DropdownRow("覆盖层位置",
+                        listOf("0" to "关闭 (默认)", "1" to "左上", "2" to "上中", "3" to "右上",
+                               "4" to "左下", "5" to "下中", "6" to "右下"),
+                        padLayout.cwOverlayPos
+                    ) { updateLayout(padLayout.copy {cwOverlayPos = it}) }
+                    DropdownRow("覆盖层文字缩放",
+                        listOf("50" to "50%", "75" to "75%", "100" to "100% (默认)",
+                               "150" to "150%", "200" to "200%", "300" to "300%"),
+                        padLayout.cwOverlayTextScale
+                    ) { updateLayout(padLayout.copy {cwOverlayTextScale = it}) }
+                    DropdownRow("绘制调用数显示",
+                        listOf("false" to "关闭 (默认)", "true" to "开启 (每帧 draw calls)"),
+                        padLayout.cwOverlayDrawCalls
+                    ) { updateLayout(padLayout.copy {cwOverlayDrawCalls = it}) }
+                    DropdownRow("CPU 占用显示",
+                        listOf("false" to "关闭 (默认)", "true" to "开启 (CPU 使用率)"),
+                        padLayout.cwOverlayCPU
+                    ) { updateLayout(padLayout.copy {cwOverlayCPU = it}) }
+                    DropdownRow("内存占用显示",
+                        listOf("false" to "关闭 (默认)", "true" to "开启 (RAM 使用率)"),
+                        padLayout.cwOverlayRAM
+                    ) { updateLayout(padLayout.copy {cwOverlayRAM = it}) }
+                }
+                SettingsSection("Wii U · 悬浮 GamePad 画面") {
+                    DropdownRow("悬浮 GamePad 画面",
+                        listOf("overlay" to "开启 (默认·小窗悬浮在 TV 角落)", "off" to "关闭 (仅 TV 画面)"),
+                        padLayout.cwGamePadView
+                    ) { updateLayout(padLayout.copy {cwGamePadView = it}) }
+                    DropdownRow("悬浮画面大小",
+                        listOf("10" to "10%", "15" to "15%", "20" to "20% (默认)", "25" to "25%",
+                               "30" to "30%", "40" to "40%", "50" to "50%", "60" to "60%"),
+                        padLayout.cwPadOverlayScale
+                    ) { updateLayout(padLayout.copy {cwPadOverlayScale = it}) }
+                    DropdownRow("悬浮画面不透明度",
+                        listOf("20" to "20%", "40" to "40%", "60" to "60% (默认)", "80" to "80%",
+                               "90" to "90%", "100" to "100% (不透明)"),
+                        padLayout.cwPadOverlayOpacity
+                    ) { updateLayout(padLayout.copy {cwPadOverlayOpacity = it}) }
+                    DropdownRow("悬浮画面模糊",
+                        listOf("0" to "关闭 (默认)", "2" to "2 dp", "4" to "4 dp", "8" to "8 dp",
+                               "12" to "12 dp", "16" to "16 dp", "24" to "24 dp"),
+                        padLayout.cwPadOverlayBlur
+                    ) { updateLayout(padLayout.copy {cwPadOverlayBlur = it}) }
+                    DropdownRow("悬浮画面角落",
+                        listOf("0" to "左下 (默认)", "1" to "右下", "2" to "左上", "3" to "右上"),
+                        padLayout.cwPadOverlayCorner
+                    ) { updateLayout(padLayout.copy {cwPadOverlayCorner = it}) }
                 }
                 SettingsSection("Wii U · 音频") {
+                    DropdownRow("TV 音频输出",
+                        listOf("true" to "开启 (默认)", "false" to "关闭"),
+                        padLayout.cwTvAudioEnabled
+                    ) { updateLayout(padLayout.copy {cwTvAudioEnabled = it}) }
+                    DropdownRow("GamePad 音频输出",
+                        listOf("true" to "开启 (默认)", "false" to "关闭"),
+                        padLayout.cwPadAudioEnabled
+                    ) { updateLayout(padLayout.copy {cwPadAudioEnabled = it}) }
+                    DropdownRow("TV 声道",
+                        listOf("0" to "单声道", "1" to "立体声 (默认)", "2" to "环绕"),
+                        padLayout.cwTvChannels
+                    ) { updateLayout(padLayout.copy {cwTvChannels = it}) }
+                    DropdownRow("GamePad 声道",
+                        listOf("0" to "单声道", "1" to "立体声 (默认)", "2" to "环绕"),
+                        padLayout.cwPadChannels
+                    ) { updateLayout(padLayout.copy {cwPadChannels = it}) }
                     DropdownRow("TV 音量",
                         listOf("0" to "0%", "20" to "20%", "40" to "40%", "60" to "60%",
                                "80" to "80%", "100" to "100% (默认)"),
@@ -2270,16 +2346,38 @@ fun CoreSettingsPanel(
                                "3" to "4x", "4" to "8x (快进·与快进按钮联动)"),
                         padLayout.cwGameSpeed
                     ) { updateLayout(padLayout.copy {cwGameSpeed = it}) }
+                    DropdownRow("网络服务",
+                        listOf("0" to "离线 (默认)", "1" to "Nintendo 网络",
+                               "2" to "Pretendo", "3" to "自定义"),
+                        padLayout.cwNetworkService
+                    ) { updateLayout(padLayout.copy {cwNetworkService = it}) }
                 }
+                SettingsSection("Wii U · 模拟 USB 设备") {
+                    DropdownRow("Skylanders 传送门",
+                        listOf("false" to "关闭 (默认)", "true" to "开启"),
+                        padLayout.cwSkylanderPortal
+                    ) { updateLayout(padLayout.copy {cwSkylanderPortal = it}) }
+                    DropdownRow("Disney Infinity 基座",
+                        listOf("false" to "关闭 (默认)", "true" to "开启"),
+                        padLayout.cwInfinityBase
+                    ) { updateLayout(padLayout.copy {cwInfinityBase = it}) }
+                    DropdownRow("LEGO Dimensions Toypad",
+                        listOf("false" to "关闭 (默认)", "true" to "开启"),
+                        padLayout.cwDimensionsToypad
+                    ) { updateLayout(padLayout.copy {cwDimensionsToypad = it}) }
+                }
+                CemuDriverSection(padLayout, updateLayout)
                 SettingsSection("Wii U · 说明") {
                     Text(
                         "Cemu-AZ 源码核心（core/cemu/ 经 :cemu-core 模块 vcpkg+CMake 编译，" +
                         "非预编译 so），仅支持 arm64-v8a + Android 11(API 30)+，Vulkan 1.1 渲染。" +
                         "\n\n虚拟按键：GamePad 全套（双摇杆 + ABXY + L/R/ZL/ZR + ⧉/−/HOME + TV 切换 + " +
                         "麦克风 + 摇杆按下），游戏区触摸直通 GamePad 触摸屏（Wii U 唯一可触摸屏）；" +
-                        "TV 按钮切换主画布 TV/GamePad 画面。均可在 触控 → 布局编辑器 里调位置/大小/显隐。" +
-                        "\n\n即时存档走核心原生槽位（1..6，带缩略图，进程重启保留）；资源（gameProfiles/" +
-                        "resources/内置图形包）由应用启动时自动从 assets 播种到 <filesDir>/cemu/。" +
+                        "悬浮 GamePad 小窗（默认开启）可直接触摸，TV 按钮切换主画布 TV/GamePad 画面。" +
+                        "均可在 触控 → 布局编辑器 里调位置/大小/显隐。" +
+                        "\n\n即时存档走核心原生槽位（1..6，带缩略图与自动备份，读档支持安全模式，" +
+                        "进程重启保留）；资源（gameProfiles/resources/内置图形包）由应用启动时" +
+                        "自动从 assets 播种到 <filesDir>/cemu/。" +
                         "\n\n进阶文件（otp.bin 等在线文件、自装图形包）放 <filesDir>/cemu/ 对应目录。",
                         color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
                         fontSize = 10.sp, lineHeight = 15.sp)
@@ -2352,3 +2450,176 @@ private fun PspAdhocServerRow() {
     }
 }
 
+
+// ===========================================================================
+// ★★ Wii U（Cemu-AZ）自定义 Vulkan 驱动管理 —— 上游 CustomDriversScreen 移植 ★★
+//   · 安装：SAF 选 zip → 校验 meta.json（schemaVersion/minApi/libraryName）
+//     → 移入 <filesDir>/cemu/customDrivers/<uuid>/
+//   · 选择：系统驱动 / 已装驱动单选 → NativeSettings.setCustomDriverPath
+//     （写入 settings.xml，adrenotools 在渲染器初始化时加载 → 重启游戏生效）
+//   · 删除：卸下驱动目录（当前选中被删时自动回退系统驱动）
+// ===========================================================================
+@Composable
+fun CemuDriverSection(
+    padLayout: PadLayout,
+    updateLayout: (PadLayout) -> Unit
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var installed by remember { mutableStateOf<List<com.nesstation.app.core.storage.CemuDriverStore.CemuDriver>>(emptyList()) }
+    var installing by remember { mutableStateOf(false) }
+    var refreshKey by remember { mutableStateOf(0) }
+    var coreAvailable by remember { mutableStateOf(false) }
+    var driverSupported by remember { mutableStateOf(false) }
+    // 当前选中：核心 settings.xml 里的值优先（selectDriver 即时写入），
+    // 核心不可用时回落 PadLayout 记录（cwDriverPath，仅 UI 展示）
+    var selectedPath by remember { mutableStateOf<String?>(null) }
+
+    // 初始化：核心可用性 + 驱动列表 + 当前选中（后台线程，避免 IO 卡 UI）；
+    // refreshKey 变化（安装/删除后）重新扫描
+    androidx.compose.runtime.LaunchedEffect(installing, refreshKey) {
+        coreAvailable = com.nesstation.app.core.jni.CemuNative.ensureLoaded()
+        installed = if (coreAvailable) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.nesstation.app.core.storage.CemuDriverStore.parseInstalledDrivers(ctx)
+            }
+        } else emptyList()
+        driverSupported = com.nesstation.app.core.storage.CemuDriverStore.supportsLoadingCustomDriver()
+        selectedPath = com.nesstation.app.core.storage.CemuDriverStore.getCurrentDriverPath()
+            ?: padLayout.cwDriverPath.ifBlank { null }
+    }
+
+    val installLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        installing = true
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val (status, driver) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.nesstation.app.core.storage.CemuDriverStore.installDriverFromZip(ctx, uri)
+            }
+            installing = false
+            refreshKey++
+            val msg = when (status) {
+                com.nesstation.app.core.storage.CemuDriverStore.InstallStatus.ALREADY_INSTALLED -> "该驱动已安装"
+                com.nesstation.app.core.storage.CemuDriverStore.InstallStatus.ERROR_INSTALLING ->
+                    "安装失败（zip 缺 meta.json / 版本不匹配 / 库文件缺失）"
+                com.nesstation.app.core.storage.CemuDriverStore.InstallStatus.INSTALLED -> "驱动安装成功：${driver?.metadata?.name ?: ""}"
+            }
+            Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    SettingsSection("Wii U · 驱动管理（Vulkan）") {
+        if (!coreAvailable) {
+            Text("Cemu 核心未加载（需要 arm64-v8a + Android 11+），驱动管理不可用。",
+                color = Color(0xFFB00020), fontSize = 11.sp, lineHeight = 15.sp)
+        } else {
+            Text(
+                "自定义驱动经 adrenotools 在核心渲染器初始化时加载 —— " +
+                "切换驱动后需重启游戏生效。驱动 zip 需含 meta.json（schemaVersion=1）与对应的 .so 库。" +
+                (if (!driverSupported) "\n当前环境不支持加载自定义驱动。" else ""),
+                color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
+                fontSize = 10.sp, lineHeight = 15.sp)
+
+            // 系统驱动（默认项）
+            val systemSelected = (selectedPath ?: "") == ""
+            TextButtonRow(
+                label = "系统驱动${if (systemSelected) " ✓" else ""}",
+                sub = "使用设备自带 Vulkan 驱动（默认）",
+                enabled = !installing
+            ) {
+                com.nesstation.app.core.storage.CemuDriverStore.selectSystemDriver()
+                selectedPath = null
+                updateLayout(padLayout.copy { cwDriverPath = "" })
+            }
+
+            // 已安装驱动列表
+            for (driver in installed) {
+                val isSel = selectedPath == driver.path
+                TextButtonRow(
+                    label = "${driver.metadata.name}${if (isSel) " ✓" else ""}",
+                    sub = "v${driver.metadata.driverVersion} · ${driver.metadata.vendor} · API ${driver.metadata.minApi}+",
+                    enabled = !installing
+                ) {
+                    if (!isSel) {
+                        val ok = com.nesstation.app.core.storage.CemuDriverStore.selectDriver(driver)
+                        if (ok) {
+                            selectedPath = driver.path
+                            updateLayout(padLayout.copy { cwDriverPath = driver.path })
+                        } else {
+                            Toast.makeText(ctx, "选择失败（核心不可用）", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                if (isSel) {
+                    Text(
+                        "当前选中（重启游戏后生效）",
+                        color = Color(0xFF27AE60), fontSize = 10.sp,
+                        modifier = Modifier.padding(start = 16.dp, bottom = 4.dp)
+                    )
+                }
+            }
+
+            // 删除按钮行（对选中项）
+            val selDriver = installed.firstOrNull { it.path == selectedPath }
+            if (selDriver != null) {
+                TextButtonRow(
+                    label = "删除「${selDriver.metadata.name}」",
+                    sub = "移除驱动文件（将回退系统驱动）",
+                    enabled = !installing
+                ) {
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            com.nesstation.app.core.storage.CemuDriverStore.deleteDriver(ctx, selDriver)
+                        }
+                        selectedPath = null
+                        updateLayout(padLayout.copy { cwDriverPath = "" })
+                        refreshKey++
+                    }
+                }
+            }
+
+            // 安装按钮
+            TextButtonRow(
+                label = if (installing) "正在安装…" else "＋ 从 zip 安装驱动",
+                sub = "选择包含 meta.json + .so 的驱动压缩包（如 Turnip/Mesa 构建）",
+                enabled = !installing
+            ) {
+                installLauncher.launch(arrayOf("application/zip"))
+            }
+        }
+    }
+}
+
+/** 简单文字按钮行（驱动管理用；主面板无 Icon 可用，纯文本最简）。 */
+@Composable
+private fun TextButtonRow(
+    label: String,
+    sub: String,
+    enabled: Boolean = true,
+    trailing: String? = null,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 4.dp, vertical = 6.dp)
+    ) {
+        androidx.compose.foundation.layout.Row(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                label,
+                color = if (enabled) Color(0xFF1E2A3A) else Color(0xFF8899AA),
+                fontSize = 14.sp, fontWeight = FontWeight.Medium
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+            if (trailing != null) {
+                Text(trailing, color = Color(0xFFB00020), fontSize = 12.sp)
+            }
+        }
+        Text(sub, color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 13.sp)
+    }
+}
