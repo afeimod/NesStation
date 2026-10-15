@@ -12,6 +12,7 @@ import info.cemu.cemu.nativeinterface.NativeSettings
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
+import kotlin.math.max
 
 /**
  * Cemu（Wii U 模拟器核心）引擎 —— NesStation 集成。
@@ -354,6 +355,10 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 // loadRom 已就绪、Surface 首次到达 → 开跑
                 startBootLocked()
             }
+            // 尾部显式 Unit：切断 synchronized 泛型 R 对块值的推断依赖，
+            // 使上方 if 链 / try 块 / 嵌套 if 均处于语句位置（无 else 的 if
+            // 在语句位置完全合法，作表达式才要求双分支）。
+            Unit
         }
     }
 
@@ -380,6 +385,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 try { NativeEmulation.pauseTitle() } catch (_: Throwable) {}
                 _paused = true
             }
+            // 同 setSurface：尾部 Unit 使无 else 的 if 处于语句位置。
+            Unit
         }
     }
 

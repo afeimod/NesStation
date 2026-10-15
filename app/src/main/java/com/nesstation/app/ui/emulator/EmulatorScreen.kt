@@ -7998,6 +7998,7 @@ fun OnScreenController(
                                             BtnType.L3, BtnType.R3,
                                             BtnType.ZL, BtnType.ZR, BtnType.Z,
                                             BtnType.HOME,
+                                            BtnType.WIIU_TV, BtnType.WIIU_MIC, BtnType.WIIU_HOME,
                                             BtnType.WII_1, BtnType.WII_2,
                                             BtnType.WII_PLUS, BtnType.WII_MINUS,
                                             BtnType.WII_C, BtnType.WII_Z,
@@ -10888,6 +10889,12 @@ private fun PadLayoutEditor(
         !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_near")
     val showWiiIrFar = ngcWiiWiiSet && !ngcWiiClassic &&
         !PadLayoutStore.isButtonHidden(padLayout, platform, "wii_ir_far")
+    // ★ Wii U（Cemu）专属可编辑键可见性 —— 与 OnScreenController 的
+    //   showWiiuTvBtn/MicBtn/HomeBtn 同源同键（"wiiu_tv"/"wiiu_mic"/"home"），
+    //   编辑器所见即运行时所得，保证两处渲染门槛一致。
+    val showWiiuTvBtn = isWiiU && !PadLayoutStore.isButtonHidden(padLayout, platform, "wiiu_tv")
+    val showWiiuMicBtn = isWiiU && !PadLayoutStore.isButtonHidden(padLayout, platform, "wiiu_mic")
+    val showWiiuHomeBtn = isWiiU && !PadLayoutStore.isButtonHidden(padLayout, platform, "home")
 
     // === Per-button visibility for ALL platforms ===
     // Each platform can independently hide/show individual buttons via the
