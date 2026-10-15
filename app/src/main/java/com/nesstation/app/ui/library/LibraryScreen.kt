@@ -156,6 +156,15 @@ val ROM_EXTENSIONS = listOf(
     //   扫描之外。现在全部收录 —— 与 GamePlatform.fromExtension 的
     //   NGCWII 映射及 PlatformDetector.AUTO_TRUSTED_EXTENSIONS 保持一致。
     "gcm", "rvz", "gcz", "wbfs", "wad", "dol", "nkit", "ciso",
+    // ★★ Wii U（Cemu-AZ）原生格式补录 —— 修复"wiiu导入文件夹没有识别wiiu
+    //   的wua等格式，无法导入"：此前 ROM_EXTENSIONS 完全没有 Wii U 专属
+    //   扩展名，Neon/FSD 两套库的「导入ROM」（importPickedFiles 按
+    //   `e in ROM_EXTENSIONS` 过滤）与「导入文件夹」（scanUriForRomsRecursive/
+    //   scanLocalFolderForRoms/FileBrowserDialog 全按本表过滤）把 .wua/.wud/
+    //   .wux/.wuhb/.rpx 全部挡在门外。现在全部收录 —— 与 GamePlatform.
+    //   fromExtension 的 WIIU 映射及 PlatformDetector.AUTO_TRUSTED_EXTENSIONS
+    //   保持一致（.iso/.elf 与其它平台共用，走平台页 hint 消歧，本就有）。
+    "wud", "wux", "wua", "wuhb", "rpx",
     // PlayStation 1 (PCSX-ReARMed)
     "pbp", "m3u", "ecm", "mdf", "mds",
     // SEGA Dreamcast / NAOMI (Flycast standalone)
@@ -665,7 +674,7 @@ fun LibraryScreen(
         // Recursively scan the selected folder for ROM files
         val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5)
         if (romFiles.isEmpty()) {
-            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd .3ds .cci .cxi .app）\n" +
+            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd .3ds .cci .cxi .app .wua .wud .wux .wuhb .rpx）\n" +
                 "（.cia 是安装包不是可直接启动镜像 —— 请用「安装CIA」入口安装）"
             return
         }

@@ -315,6 +315,10 @@ fun SettingsScreen(
                             SettingsRow("DC / Dreamcast", "Flycast 核心 · 分辨率/宽屏/排序/主机区域/GD-ROM", trailing = { Arrow() }) { selectedCore = GamePlatform.DC }
                             SettingsRow("3DS", "Azahar 核心 · 图形后端/分辨率/屏幕布局/3D/系统", trailing = { Arrow() }) { selectedCore = GamePlatform.N3DS }
                             SettingsRow("NGC / Wii", "Ishiiruka (Dolphin) 核心 · 后端/EFB 分辨率/CPU/控制模式", trailing = { Arrow() }) { selectedCore = GamePlatform.NGCWII }
+                            // ★★ Wii U（v7 补全）：FSD 经典设置页的核心设置入口漏了
+                            //   Wii U（子页 CoreSettingsPanel 本身有完整 Wii U 分区）
+                            //   —— 与 Neon 设置页同批修复。
+                            SettingsRow("Wii U", "Cemu-AZ 源码核心 · 垂直同步/滤镜/音频/主机语言/游戏速度", trailing = { Arrow() }) { selectedCore = GamePlatform.WIIU }
                             SettingsRow("PSP", "PPSSPP 核心 · 后端/分辨率/纹理/CPU/联机 + 独立设置入口", trailing = { Arrow() }) { selectedCore = GamePlatform.PSP }
                         }
                     }
@@ -489,10 +493,10 @@ fun SettingsScreen(
                     item {
                         SettingsSection("关于") {
                             SettingsRow("版本", "3.9", trailing = { ValueText("3.9") })
-                            SettingsRow("核心", "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC/NAOMI) · Azahar (3DS) · Ishiiruka (NGC/WII)",
-                                trailing = { ValueText("14 个模拟核心") })
+                            SettingsRow("核心", "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC/NAOMI) · PPSSPP (PSP) · Azahar (3DS) · Ishiiruka (NGC/WII) · Cemu-AZ (Wii U)",
+                                trailing = { ValueText("16 个模拟核心") })
                             SettingsRow("开源许可", "MIT License", trailing = { Arrow() }) {
-                                dialogText = "GameBox 基于 FCEUmm (NES)、Snes9x (SFC)、mGBA (GB/GBC/GBA)、Genesis-Plus-GX (MD)、Geargrafx (PCE)、DOSBox-Pure (DOS)、FBNeo (Arcade)、melonDS (NDS)、PCSX-ReARMed (PSX)、PCEE2 / PCSX2 (PS2)、Flycast (DC/NAOMI)、Azahar / AzaharPlus (3DS)、Ishiiruka / Dolphin (NGC/WII) 核心构建，遵循各自开源许可证"
+                                dialogText = "GameBox 基于 FCEUmm (NES)、Snes9x (SFC)、mGBA (GB/GBC/GBA)、Genesis-Plus-GX (MD)、Geargrafx (PCE)、DOSBox-Pure (DOS)、FBNeo (Arcade)、melonDS (NDS)、PCSX-ReARMed (PSX)、PCEE2 / PCSX2 (PS2)、Flycast (DC/NAOMI)、PPSSPP (PSP)、Azahar / AzaharPlus (3DS)、Ishiiruka / Dolphin (NGC/WII)、Cemu-AZ (Wii U) 核心构建，遵循各自开源许可证"
                             }
                         }
                     }

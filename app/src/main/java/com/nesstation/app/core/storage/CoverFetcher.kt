@@ -392,6 +392,18 @@ object CoverFetcher {
             //   括号后缀 + 模糊匹配（与其它平台同一套规则），命中率与
             //   站点命名（多为游戏常用名）一致。
             GamePlatform.DOS -> listOf("DOS")
+            // ★★ PSP（v7 补全）：libretro 缩略图站实测存在
+            //   http://thumbnails.libretro.com/Sony - PlayStation Portable/
+            //   目录（Named_Boxarts/Named_Snaps/Named_Titles 三件套齐全）。
+            //   此前 PSP 与 Wii U 一样落到 else「无源跳过」→ 封面批量抓取
+            //   统计里 noSource+1，一张图都下不了。与 Wii U 同批补录。
+            GamePlatform.PSP -> listOf("Sony - PlayStation Portable")
+            // ★★ Wii U（v7 补全，回应"neon游戏库没有加wiiu"同批的封面缺源）：
+            //   libretro 缩略图站实测存在
+            //   http://thumbnails.libretro.com/Nintendo - Wii U/ 目录。
+            //   旧实现 Wii U 落到 else -> emptyList()（无源跳过），库里的
+            //   Wii U 游戏永远抓不到封面。目录名已 curl 站点目录列表核实。
+            GamePlatform.WIIU -> listOf("Nintendo - Wii U")
             // JAVA 仍无源 —— 跳过（Java 已有内置 icon）
             else -> emptyList()
         }
