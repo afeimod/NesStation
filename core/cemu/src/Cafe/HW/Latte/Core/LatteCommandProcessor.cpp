@@ -2,6 +2,7 @@
 #include "Cafe/OS/libs/gx2/GX2.h" // for write gatherer and special state. Get rid of dependency
 #include "Cafe/OS/libs/gx2/GX2_Event.h" // for notification callbacks
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h" // ★ pad swapchain 销毁泵（防暂停期卡死）
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
@@ -197,6 +198,12 @@ uint32 LatteCP_readU32Deprc()
 			return cmdWord;
 		if (Latte_GetStopSignal())
 			LatteThread_Exit();
+
+		// ★ 防卡死加固：游戏暂停期无 flip → SwapBuffers/Acquire 路径停摆，
+		// clearPadSurface（StopUsingPadAndWait）设置的销毁标志原依赖下一次
+		// pad acquire 清除 —— 暂停期永远等不到。空闲周期主动泵一次。
+		if (g_renderer && g_renderer->GetType() == RendererAPI::Vulkan)
+			VulkanRenderer::GetInstance()->ProcessPendingPadSwapchainDestroy();
 
 		// still no command data available, do some other tasks
 		LatteTiming_HandleTimedVsync();

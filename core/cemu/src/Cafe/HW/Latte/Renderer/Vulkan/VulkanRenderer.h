@@ -206,6 +206,8 @@ public:
 	SwapchainInfoVk& GetChainInfo(bool mainWindow) const;
 
 	void StopUsingPadAndWait();
+	// ★ 在 Latte 线程空闲周期泵一次 pad swapchain 销毁请求（游戏暂停期也能释放）
+	void ProcessPendingPadSwapchainDestroy();
 	bool IsPadWindowActive() override;
 
 	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;

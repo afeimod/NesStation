@@ -145,5 +145,9 @@ extern performanceMonitor_t performanceMonitor;
 void LattePerformanceMonitor_frameEnd();
 void LattePerformanceMonitor_frameBegin();
 
+// ★ NesStation 前端全局 FPS 显示用：返回渲染线程最近一次统计的真实呈现帧率
+//   （每秒由 LattePerformanceMonitor_frameEnd 刷新一次）。
+double LattePerformanceMonitor_GetRendererFps();
+
 #define beginPerfMonProfiling(__obj) if( THasProfiling ) __obj.beginMeasuring()
 #define endPerfMonProfiling(__obj) if( THasProfiling ) __obj.endMeasuring()

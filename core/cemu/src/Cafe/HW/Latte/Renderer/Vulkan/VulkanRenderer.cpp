@@ -990,7 +990,38 @@ SwapchainInfoVk& VulkanRenderer::GetChainInfo(bool mainWindow) const
 void VulkanRenderer::StopUsingPadAndWait()
 {
 	m_destroyPadSwapchainNextAcquire.test_and_set();
+	if (!IsSwapchainInfoValid(false))
+	{
+		// ★ 防卡死加固：pad swapchain 不存在（从未创建/已销毁）时，Latte 线程
+		// 永远不会走 AcquireNextSwapchainImage 去清标志，这里若继续 wait 将
+		// 无人唤醒（游戏暂停期尤其如此 —— 无 flip 就无 present 路径），
+		// 直接清除并返回。
+		m_destroyPadSwapchainNextAcquire.clear();
+		m_destroyPadSwapchainNextAcquire.notify_all();
+		return;
+	}
 	m_destroyPadSwapchainNextAcquire.wait(true);
+}
+
+// ★ 防卡死加固：在 Latte 线程空闲周期泵一次 pad swapchain 销毁请求。
+// 游戏暂停时不再产生 flip，SwapBuffers/Acquire 路径停摆，StopUsingPadAndWait
+// 设置的标志原依赖下一次 pad acquire 才被清除 —— 暂停期永远等不到，导致
+// clearPadSurface 永久阻塞。空闲周期主动处理一次即可保证毫秒级释放。
+void VulkanRenderer::ProcessPendingPadSwapchainDestroy()
+{
+	if (!m_destroyPadSwapchainNextAcquire.test())
+		return;
+	if (!IsSwapchainInfoValid(false))
+	{
+		// pad swapchain 不存在，无需清理，直接释放等待者
+		//（与 StopUsingPadAndWait 的兜底一致）
+		m_destroyPadSwapchainNextAcquire.clear();
+		m_destroyPadSwapchainNextAcquire.notify_all();
+		return;
+	}
+	RecreateSwapchain(false, true); // 清理 pad swapchain（不重建）
+	m_destroyPadSwapchainNextAcquire.clear();
+	m_destroyPadSwapchainNextAcquire.notify_all();
 }
 
 bool VulkanRenderer::IsPadWindowActive()

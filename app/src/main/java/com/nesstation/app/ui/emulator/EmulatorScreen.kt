@@ -2152,6 +2152,7 @@ fun EmulatorScreen(
                    padLayout.irJitFollowBranch, padLayout.irWidescreenHack,
                    padLayout.irGcLanguage, padLayout.irWiiLanguage,
                    // WIIU (Cemu-AZ) options —— 新增设置字段改动即时热应用
+                   padLayout.cwRenderScale,
                    padLayout.cwDownscaleFilter, padLayout.cwTvAudioEnabled,
                    padLayout.cwPadAudioEnabled, padLayout.cwTvChannels,
                    padLayout.cwPadChannels, padLayout.cwOverlayPos,
@@ -5979,6 +5980,9 @@ private fun applyCoreOptionsInner(
             //     - 全局屏幕缩放 stretch → fullscreenScaling=拉伸，其余 →
             //       保持宽高比（画面形状由核心侧按 16:9 TV 输出）。
             engine.setCoreOption("CemuEngine/gameSpeed", layout.cwGameSpeed)
+            // ★ 渲染分辨率缩放（1x/0.75x/0.5x）：缩小主画布 swapchain 提速降功耗，
+            //   触摸坐标引擎内同比例换算；运行中热生效（swapchain 自动重建）。
+            engine.setCoreOption("CemuEngine/renderScale", layout.cwRenderScale)
             engine.setCoreOption("CemuEngine/vsyncMode", layout.cwVsyncMode)
             engine.setCoreOption("CemuEngine/asyncShaderCompile", layout.cwAsyncShaderCompile)
             engine.setCoreOption("CemuEngine/accurateBarriers", layout.cwAccurateBarriers)
@@ -15338,6 +15342,15 @@ private fun SettingsPanel(
                 Spacer(Modifier.size(6.dp))
 
                 Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("渲染分辨率",
+                    // ★ 提速/省电：按比例缩小 Vulkan swapchain（画面由系统拉伸回全屏），
+                    //   0.75x/0.5x 显著降低 GPU 填充率与带宽 —— 弱设备提速、整机降功耗；
+                    //   运行中切换即时生效（核心自动重建 swapchain），触摸映射不受影响。
+                    listOf("1" to "1x (默认·原生)",
+                           "0.75" to "0.75x (提速·省电)",
+                           "0.5" to "0.5x (大幅提速·最省电)"),
+                    padLayout.cwRenderScale
+                ) { onLayoutChange(padLayout.copy {cwRenderScale = it}) }
                 DropdownSetting("垂直同步",
                     listOf("0" to "关闭 (默认·低延迟)", "1" to "双缓冲", "2" to "三缓冲"),
                     padLayout.cwVsyncMode

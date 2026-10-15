@@ -2,6 +2,7 @@
 #include "AndroidInputHelpers.h"
 #include "Cafe/CafeSystem.h"
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
+#include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/OS/libs/snd_core/ax.h"
@@ -421,4 +422,12 @@ extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_shutdownTitle([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
 	CafeSystem::ShutdownTitle();
+}
+
+// ★ NesStation 前端全局 FPS 显示：返回核心渲染线程最近统计的真实呈现帧率
+//   （每秒刷新；未出帧时为 0，前端据此回退心跳计数）。
+extern "C" [[maybe_unused]] JNIEXPORT jdouble JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_getRendererFps([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return (jdouble)LattePerformanceMonitor_GetRendererFps();
 }

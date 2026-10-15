@@ -51,6 +51,10 @@ object NativeEmulation {
     @JvmStatic
     external fun shutdownTitle()
 
+    // ★ 核心渲染线程真实帧率（每秒刷新，未出帧为 0）—— NesStation 前端全局 FPS 显示用
+    @JvmStatic
+    external fun getRendererFps(): Double
+
     @JvmStatic
     external fun initializeSystems()
 

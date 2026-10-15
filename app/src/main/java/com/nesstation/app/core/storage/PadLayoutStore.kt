@@ -888,6 +888,7 @@ class PadLayout {
     // 键名/取值对照上游 NativeSettings.kt（CemuEngine 以 "CemuEngine/<name>"
     // 门面键消费，直调 NativeSettings setter 热生效）：
     var cwGameSpeed: String = "1"           // "0".."4" (GameSpeed 0=0.5x 1=1x 2=2x 3=4x 4=8x，快进联动)
+    var cwRenderScale: String = "1"         // 渲染分辨率缩放："1" 1x(默认) | "0.75" 0.75x | "0.5" 0.5x (缩小 swapchain 提速省电)
     var cwVsyncMode: String = "0"           // "0" 关 | "1" 双缓冲 | "2" 三缓冲 (VSyncMode)
     var cwAsyncShaderCompile: String = "true"   // 异步着色器编译（防卡顿，默认开）
     var cwAccurateBarriers: String = "false"    // 精确屏障（个别游戏修复用，性能开销大）
@@ -1798,6 +1799,7 @@ class PadLayout {
         irGcLanguage = another.irGcLanguage
         irWiiLanguage = another.irWiiLanguage
         cwGameSpeed = another.cwGameSpeed
+        cwRenderScale = another.cwRenderScale
         cwVsyncMode = another.cwVsyncMode
         cwAsyncShaderCompile = another.cwAsyncShaderCompile
         cwAccurateBarriers = another.cwAccurateBarriers
@@ -3116,6 +3118,8 @@ object PadLayoutStore {
             // === WIIU (Cemu-AZ) options ===
             cwGameSpeed = (p.getString("cw_game_speed", "1") ?: "1").let {
                 if (it in listOf("0", "1", "2", "3", "4")) it else "1" }
+            cwRenderScale = (p.getString("cw_render_scale", "1") ?: "1").let {
+                if (it in listOf("1", "0.75", "0.5")) it else "1" }
             cwVsyncMode = (p.getString("cw_vsync_mode", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2")) it else "0" }
             cwAsyncShaderCompile = (p.getString("cw_async_shader_compile", "true") ?: "true").let {
@@ -3977,6 +3981,7 @@ object PadLayoutStore {
             putString("ir_wii_language", layout.irWiiLanguage)
             // === WIIU (Cemu-AZ) options ===
             putString("cw_game_speed", layout.cwGameSpeed)
+            putString("cw_render_scale", layout.cwRenderScale)
             putString("cw_vsync_mode", layout.cwVsyncMode)
             putString("cw_async_shader_compile", layout.cwAsyncShaderCompile)
             putString("cw_accurate_barriers", layout.cwAccurateBarriers)

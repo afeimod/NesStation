@@ -2,7 +2,19 @@
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
 #include "WindowSystem.h"
 
+#include <atomic>
+
 performanceMonitor_t performanceMonitor{};
+
+// ★ NesStation 前端全局 FPS 显示：渲染线程每秒统计的真实呈现帧率
+//   （LatteOverlay_updateStats 在 overlay 关闭时会提前返回，不能复用其状态，
+//   这里独立保存，供 JNI NativeEmulation.getRendererFps 读取）
+static std::atomic<double> s_rendererFps{ 0.0 };
+
+double LattePerformanceMonitor_GetRendererFps()
+{
+	return s_rendererFps.load(std::memory_order_relaxed);
+}
 
 void LattePerformanceMonitor_frameEnd()
 {
@@ -106,11 +118,13 @@ void LattePerformanceMonitor_frameEnd()
 		if (isFirstUpdate)
 		{
 			LatteOverlay_updateStats(0.0, 0, 0);
+			s_rendererFps.store(0.0, std::memory_order_relaxed);
 			WindowSystem::UpdateWindowTitles(false, false, 0.0);
 		}
 		else
 		{
 			LatteOverlay_updateStats(fps, drawCallCounter / elapsedFrames, fastDrawCallCounter / elapsedFrames);
+			s_rendererFps.store(fps, std::memory_order_relaxed);
 			WindowSystem::UpdateWindowTitles(false, false, fps);
 		}
 	}

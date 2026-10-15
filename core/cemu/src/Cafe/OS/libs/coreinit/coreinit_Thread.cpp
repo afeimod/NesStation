@@ -1479,6 +1479,22 @@ namespace coreinit
 				std::this_thread::yield();
 				continue;
 			}
+			// ★ Android 关游戏卡死修复（NesStation/Cemu-AZ）:
+			// CafeSystem::ShutdownTitle() -> OSSchedulerEnd() 将 sSchedulerActive 置 false
+			// 后 join 全部调度线程。Android 以单核模式(OSSchedulerBegin(1))运行, isMainCore
+			// 恒为 true —— 下方 idle 分支从不阻塞在 run-queue 信号量上, 也从不检查
+			// sSchedulerActive; 唯一退出路径是某 PPC 线程时间片耗尽经 __OSThreadSwitchToNext
+			// 切回。游戏被暂停(SuspendActiveThreads —— Android 前端关游戏时 Surface 拆卸
+			// 必先 pauseTitle)或所有线程阻塞等待时, 运行队列恒空 -> idle 自旋 -> join
+			// 永久挂起 -> 前端 unload 持锁 -> 整个模拟器卡死。故调度器一旦关闭, idle fiber
+			// 必须主动切回调度器 fiber 让调度线程退出（与上方 hold 分支同款出口）。
+			// 注意不能以 run-queue 计数为条件: OSSchedulerEnd 会人为递增计数唤醒等待中的
+			// 核, 队列里却并没有可运行的线程。（idle fiber 执行中意味着本调度线程上没有
+			// 活跃的线程 fiber, 不会打断正在运行的 PPC 线程。）
+			if (!sSchedulerActive.load(std::memory_order_relaxed))
+			{
+				Fiber::Switch(*t_schedulerFiber); // scheduler shut down while idle - exit
+			}
 			if (!g_coreRunQueueThreadCount[coreIndex].isZero()) // avoid hammering the lock on the main core if there is no runable thread
 			{
 				__OSLockScheduler();

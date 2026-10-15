@@ -66,6 +66,10 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     @Volatile private var _paused = false
     @Volatile private var _ffSpeed = 0
+    /** 基准游戏速度档（设置页“游戏速度”0..4，快进关闭时恢复到该档）。 */
+    @Volatile private var _baseGameSpeed = 1
+    /** 渲染分辨率缩放（1x / 0.75x / 0.5x，缩放 Vulkan swapchain 尺寸降负载省电）。 */
+    @Volatile private var _renderScale = 1f
     @Volatile private var lastErrorText = ""
 
     @Volatile private var surface: Surface? = null
@@ -311,8 +315,11 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 // --- 主画布 surface（TV 画面）---
                 val s = surface
                 if (s != null && s.isValid) {
-                    val w = if (surfaceWidth > 0) surfaceWidth else 1280
-                    val h = if (surfaceHeight > 0) surfaceHeight else 720
+                    // ★ 主画布尺寸按渲染分辨率缩放（1x/0.75x/0.5x）—— swapchain
+                    //   以缩放后尺寸创建，降低填充率/带宽提速省电；触摸坐标由
+                    //   setTouchInput/setTouchMoved 同比例换算。
+                    val w = scaledMainWidth().takeIf { it > 0 } ?: 1280
+                    val h = scaledMainHeight().takeIf { it > 0 } ?: 720
                     NativeEmulation.setSurface(s, true)
                     NativeEmulation.setSurfaceSize(w, h, true)
                     NativeEmulation.initializeSurface(true)
@@ -370,7 +377,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 try {
                     NativeEmulation.setSurface(surface, true)
                     if (surfaceWidth > 0 && surfaceHeight > 0) {
-                        NativeEmulation.setSurfaceSize(surfaceWidth, surfaceHeight, true)
+                        NativeEmulation.setSurfaceSize(scaledMainWidth(), scaledMainHeight(), true)
                     }
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
@@ -397,7 +404,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
             if (surface != null) this.surface = surface
             if (width <= 0 || height <= 0) return
             try {
-                NativeEmulation.setSurfaceSize(width, height, true)
+                // ★ 按渲染分辨率缩放后下发（swapchain 热重建由核心自动完成）
+                NativeEmulation.setSurfaceSize(scaledMainWidth(), scaledMainHeight(), true)
             } catch (_: Throwable) {
                 // 核心未启动时 setSurfaceSize 无害失败（WindowSystem 尚未初始化）
             }
@@ -438,7 +446,21 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
         try {
             val v = key.removePrefix("CemuEngine/")
             when (v) {
-                "gameSpeed" -> NativeSettings.setGameSpeed(value.toIntOrNull() ?: 1)
+                "gameSpeed" -> {
+                    // ★ 快进联动修复：游戏内快捷菜单的快进按钮与设置页“游戏速度”
+                    //   共用核心同一条 gameSpeed 通道（ActiveSettings timer shift +
+                    //   LatteTiming 模拟 vsync 频率缩放）。快进激活期间这里只把值
+                    //   记为“基准档”，不下发 —— 否则 applyCoreOptions 重放（改任意
+                    //   其它设置/布局变更）会把快进静默踩回常速，表现为“快进按钮
+                    //   按了没反应/自动失效”。快进关闭时恢复到该基准档。
+                    val mode = (value.toIntOrNull() ?: 1).coerceIn(0, 4)
+                    _baseGameSpeed = mode
+                    if (_ffSpeed <= 0) {
+                        try { NativeSettings.setGameSpeed(mode) } catch (t: Throwable) {
+                            android.util.Log.w("CemuEngine", "setGameSpeed failed", t)
+                        }
+                    }
+                }
                 "vsyncMode" -> NativeSettings.setVsyncMode(value.toIntOrNull() ?: 0)
                 "asyncShaderCompile" -> NativeSettings.setAsyncShaderCompile(value == "true" || value == "enabled")
                 "accurateBarriers" -> NativeSettings.setAccurateBarriers(value == "true" || value == "enabled")
@@ -451,6 +473,19 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 "overlayFPS" -> NativeSettings.setOverlayFPSEnabled(value == "true" || value == "enabled")
                 // ★ 下采样滤镜（上游 NativeSettings.ScalingFilter 同款取值）
                 "downscaleFilter" -> NativeSettings.setDownscalingFilter(value.toIntOrNull() ?: 0)
+                // ★ 渲染分辨率缩放（1x / 0.75x / 0.5x）：按比例缩小主画布 Vulkan
+                //   swapchain 尺寸 —— 核心的 VulkanRenderer::UpdateSwapchainProperties
+                //   检测到 GetWindowPhysSize 与 swapchain extent 不一致会自动重建，
+                //   输出着色器把游戏画面 blit 进更小的交换链（降低填充率/带宽，
+                //   提速降功耗），再由系统合成器拉伸回全屏显示。触摸坐标按同比例
+                //   缩放（见 setTouchInput/setTouchMoved），映射不受影响。
+                "renderScale" -> {
+                    val newScale = (value.toFloatOrNull() ?: 1f).coerceIn(0.25f, 1f)
+                    if (newScale != _renderScale) {
+                        _renderScale = newScale
+                        applyRenderScaleLocked()
+                    }
+                }
                 // ★ 音频设备开关/声道（TV / GamePad 独立）
                 "tvAudioEnabled" -> NativeSettings.setAudioDeviceEnabled(value == "true" || value == "enabled", true)
                 "padAudioEnabled" -> NativeSettings.setAudioDeviceEnabled(value == "true" || value == "enabled", false)
@@ -513,6 +548,27 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     // 视频（直绘核心：尺寸/滤镜由核心内部管理）
     // ------------------------------------------------------------------
 
+    /** 渲染分辨率缩放后的主画布像素尺寸（至少 1px，防止取整为 0）。 */
+    private fun scaledMainWidth(): Int = if (surfaceWidth > 0) max(1, (surfaceWidth * _renderScale).toInt()) else 0
+    private fun scaledMainHeight(): Int = if (surfaceHeight > 0) max(1, (surfaceHeight * _renderScale).toInt()) else 0
+
+    /**
+     * 渲染分辨率切换后立即重推缩放后的主画布尺寸 —— 核心检测到窗口物理尺寸与
+     * swapchain extent 不一致会自动重建（VulkanRenderer::UpdateSwapchainProperties），
+     * 运行中热生效。核心未启动/surface 未就绪时跳过（启动/变更链路会用新值）。
+     */
+    private fun applyRenderScaleLocked() {
+        val w = scaledMainWidth()
+        val h = scaledMainHeight()
+        if (w <= 0 || h <= 0) return
+        if (!bootStarted || pendingBoot) return
+        try {
+            NativeEmulation.setSurfaceSize(w, h, true)
+        } catch (t: Throwable) {
+            android.util.Log.w("CemuEngine", "applyRenderScale failed", t)
+        }
+    }
+
     override fun videoWidth(): Int = 0
 
     override fun videoHeight(): Int = 0
@@ -529,12 +585,15 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
         try {
-            // 上游档位：0=0.5x 1=1x 2=2x 3=4x 4=8x
+            // ★ 游戏内快捷菜单快进按钮 → 核心变速，运行中即时生效。
+            //   核心档位：0=0.5x 1=1x 2=2x 3=4x 4=8x（NativeSettings.setGameSpeed 同款）。
+            //   关闭 → 恢复设置页“游戏速度”基准档（不再硬编码 1x）；
+            //   2x/4x/8x 直映射；6x/16x 等前端档位取不超过它的最近核心档。
             val mode = when {
-                speed <= 0 -> 1   // 关闭 → 常速
-                speed >= 8 -> 4
-                speed >= 4 -> 3
-                else -> 2
+                speed <= 0 -> _baseGameSpeed   // 关闭 → 基准速度
+                speed >= 8 -> 4                // 8x
+                speed >= 4 -> 3                // 4x
+                else -> 2                      // 2x
             }
             NativeSettings.setGameSpeed(mode)
         } catch (t: Throwable) {
@@ -684,7 +743,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     override fun setTouchInput(x: Float, y: Float, pressed: Boolean) {
         try {
             if (pressed) {
-                NativeInput.onTouchDown(x.toInt(), y.toInt(), true)
+                // ★ 渲染分辨率缩放联动：核心按窗口物理尺寸（已缩放）归一化，
+                //   这里把视图原始像素乘以同一比例换算到窗口坐标空间。
+                NativeInput.onTouchDown((x * _renderScale).toInt(), (y * _renderScale).toInt(), true)
             } else {
                 NativeInput.onTouchUp(0, 0, true)
             }
@@ -693,7 +754,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     override fun setTouchMoved(x: Float, y: Float) {
         try {
-            NativeInput.onTouchMove(x.toInt(), y.toInt(), true)
+            NativeInput.onTouchMove((x * _renderScale).toInt(), (y * _renderScale).toInt(), true)
         } catch (_: Throwable) {}
     }
 
@@ -965,9 +1026,12 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     override fun captureFrame(): FrameCapture? = null
 
     override fun realtimeFps(): Double {
-        // 推模型核心：HUD 由心跳计数（onFrame 每 16ms 一次 ≈ 恒 60，不反映
-        // 真实性能）—— 返回 0 让 UI 回退心跳计数，与 Azahar 引擎同策略。
-        return 0.0
+        // ★ 修全局帧数显示不准：直接读核心渲染线程的真实呈现帧率
+        //   （LattePerformanceMonitor 每秒统计一次 —— 30 帧游戏显示 30、
+        //   掉帧/快进均如实反映）。旧实现恒回 0，UI 回退心跳计数，
+        //   而心跳是固定 16ms 节拍 → 显示恒 ≈60，与真实性能无关。
+        //   核心未出帧/未启动时返回 0，UI 仍回退心跳计数。
+        return try { NativeEmulation.getRendererFps() } catch (_: Throwable) { 0.0 }
     }
 
     override fun lastError(): String = lastErrorText
