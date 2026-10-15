@@ -16959,8 +16959,10 @@ private fun CemuPadOverlayView(
             }
             val normX = (padLayout.cwPadOverlayX.toFloatOrNull() ?: cornerDefault().first).coerceIn(0f, 1f)
             val normY = (padLayout.cwPadOverlayY.toFloatOrNull() ?: cornerDefault().second).coerceIn(0f, 1f)
-            val offXDp = marginPx + normX * (maxOffX - marginPx * 2).coerceAtLeast(0.dp)
-            val offYDp = marginPx + normY * (maxOffY - marginPx * 2).coerceAtLeast(0.dp)
+            // ★ Compose 的 Dp 只有 Dp*Float 运算符、没有 Float*Dp —— 乘法必须
+            //   以 Dp 操作数开头（CI 报 None of the following functions 的根因）
+            val offXDp = marginPx + (maxOffX - marginPx * 2).coerceAtLeast(0.dp) * normX
+            val offYDp = marginPx + (maxOffY - marginPx * 2).coerceAtLeast(0.dp) * normY
             windowModifier = Modifier
                 .offset { IntOffset(offXDp.roundToPx(), offYDp.roundToPx()) }
                 .width(padWidth)
