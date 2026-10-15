@@ -16791,6 +16791,13 @@ private fun CemuPadOverlayView(
         val maxOffX = (maxWidth - padWidth).coerceAtLeast(0.dp)
         val maxOffY = (maxHeight - padHeight).coerceAtLeast(0.dp)
         val marginPx = 8.dp
+        // ★ maxWidth/maxHeight 是 BoxWithConstraintsScope（@Composable lambda 接收者）
+        //   的成员，不能在 pointerInput 的 suspend 块/手势回调里经隐式接收者访问
+        //   （否则 K1 报 "can't be called in this context by implicit receiver"）；
+        //   且 pointerInput 协程不随重组重启，直接捕获的组合期 Dp 会在转屏后过期 ——
+        //   故用 rememberUpdatedState 活值喂给手势闭包（与 currentLayout 同款防陈旧策略）。
+        val liveMaxWidth by rememberUpdatedState(maxWidth)
+        val liveMaxHeight by rememberUpdatedState(maxHeight)
 
         // 角落默认位置（左上角归一化 0..1：x=0 左缘 / y=1 底缘）
         fun cornerDefault(): Pair<Float, Float> = when (corner) {
@@ -16893,10 +16900,10 @@ private fun CemuPadOverlayView(
                                 change.consume()
                                 // 面积按【当前】小窗尺寸算（缩放后重拖也正确）
                                 val curPct = (currentLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
-                                val curPadW = maxWidth * (curPct / 100f)
+                                val curPadW = liveMaxWidth * (curPct / 100f)
                                 val curPadH = curPadW * (480f / 854f)
-                                val areaW = ((maxWidth - curPadW) - marginPx * 2).coerceAtLeast(0.dp).toPx()
-                                val areaH = ((maxHeight - curPadH) - marginPx * 2).coerceAtLeast(0.dp).toPx()
+                                val areaW = ((liveMaxWidth - curPadW) - marginPx * 2).coerceAtLeast(0.dp).toPx()
+                                val areaH = ((liveMaxHeight - curPadH) - marginPx * 2).coerceAtLeast(0.dp).toPx()
                                 dragAccX = (dragAccX + if (areaW > 0f) dragAmount.x / areaW else 0f).coerceIn(0f, 1f)
                                 dragAccY = (dragAccY + if (areaH > 0f) dragAmount.y / areaH else 0f).coerceIn(0f, 1f)
                                 liveX = dragAccX
@@ -16973,12 +16980,12 @@ private fun CemuPadOverlayView(
                         detectDragGestures(
                             onDragStart = {
                                 val curPct = (currentLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
-                                newWidthPx = maxWidth.toPx() * (curPct / 100f)
+                                newWidthPx = liveMaxWidth.toPx() * (curPct / 100f)
                             },
                             onDrag = { change, dragAmount ->
                                 change.consume()
                                 newWidthPx = (newWidthPx + dragAmount.x + dragAmount.y).coerceAtLeast(1f)
-                                val pct = ((newWidthPx / maxWidth.toPx()) * 100f)
+                                val pct = ((newWidthPx / liveMaxWidth.toPx()) * 100f)
                                     .toInt().coerceIn(10, 60)
                                 // 实时缩放（写会话 state，重组即时生效；防抖落盘）
                                 currentOnLayoutChange(
@@ -16986,7 +16993,7 @@ private fun CemuPadOverlayView(
                                 )
                             },
                             onDragEnd = {
-                                val pct = ((newWidthPx / maxWidth.toPx()) * 100f)
+                                val pct = ((newWidthPx / liveMaxWidth.toPx()) * 100f)
                                     .toInt().coerceIn(10, 60)
                                 currentOnLayoutChange(
                                     currentLayout.copy { cwPadOverlayScale = pct.toString() }
