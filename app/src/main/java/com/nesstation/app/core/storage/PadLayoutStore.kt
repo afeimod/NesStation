@@ -914,6 +914,18 @@ class PadLayout {
     //   用户拖动顶部把手后写入，优先于角落设置（重置 = 清空两字段）。
     var cwPadOverlayX: String = ""       // "" 或 "0.0".."1.0"（左上角 X 归一化）
     var cwPadOverlayY: String = ""       // "" 或 "0.0".."1.0"（左上角 Y 归一化）
+    // ★★ 自由布局矩形（videoScale == "custom" 时生效，与主屏 customLayout* 同款
+    //     机制）：GamePad 小窗的归一化 0..1 四角矩形 [left, top, right, bottom]，
+    //     在双屏自由布局编辑器里拖 4 角调大小 / 拖内部移位置（与主屏完全
+    //     一致的交互）；横竖屏分别保存。非 custom 模式仍按角落+百分比摆放。
+    var cwPadRectLeft: Float = 0.02f
+    var cwPadRectTop: Float = 0.68f
+    var cwPadRectRight: Float = 0.32f
+    var cwPadRectBottom: Float = 0.98f
+    var cwPadRectLeftP: Float = 0.02f
+    var cwPadRectTopP: Float = 0.68f
+    var cwPadRectRightP: Float = 0.32f
+    var cwPadRectBottomP: Float = 0.98f
     var cwDownscaleFilter: String = "0"    // "0".."3" 下采样滤镜（ScalingFilter）
     var cwTvAudioEnabled: String = "true"   // TV 音频输出开关
     var cwPadAudioEnabled: String = "true"  // GamePad 音频输出开关
@@ -1803,6 +1815,14 @@ class PadLayout {
         cwPadOverlayCorner = another.cwPadOverlayCorner
         cwPadOverlayX = another.cwPadOverlayX
         cwPadOverlayY = another.cwPadOverlayY
+        cwPadRectLeft = another.cwPadRectLeft
+        cwPadRectTop = another.cwPadRectTop
+        cwPadRectRight = another.cwPadRectRight
+        cwPadRectBottom = another.cwPadRectBottom
+        cwPadRectLeftP = another.cwPadRectLeftP
+        cwPadRectTopP = another.cwPadRectTopP
+        cwPadRectRightP = another.cwPadRectRightP
+        cwPadRectBottomP = another.cwPadRectBottomP
         cwDownscaleFilter = another.cwDownscaleFilter
         cwTvAudioEnabled = another.cwTvAudioEnabled
         cwPadAudioEnabled = another.cwPadAudioEnabled
@@ -2139,6 +2159,15 @@ object PadLayoutStore {
     private const val KEY_CUSTOM_LAYOUT_TOP_P = "custom_layout_top_p"
     private const val KEY_CUSTOM_LAYOUT_RIGHT_P = "custom_layout_right_p"
     private const val KEY_CUSTOM_LAYOUT_BOTTOM_P = "custom_layout_bottom_p"
+    // ★ Wii U GamePad 悬浮小窗自由布局矩形（videoScale == "custom" 时生效）
+    private const val KEY_CW_PAD_RECT_LEFT = "cw_pad_rect_left"
+    private const val KEY_CW_PAD_RECT_TOP = "cw_pad_rect_top"
+    private const val KEY_CW_PAD_RECT_RIGHT = "cw_pad_rect_right"
+    private const val KEY_CW_PAD_RECT_BOTTOM = "cw_pad_rect_bottom"
+    private const val KEY_CW_PAD_RECT_LEFT_P = "cw_pad_rect_left_p"
+    private const val KEY_CW_PAD_RECT_TOP_P = "cw_pad_rect_top_p"
+    private const val KEY_CW_PAD_RECT_RIGHT_P = "cw_pad_rect_right_p"
+    private const val KEY_CW_PAD_RECT_BOTTOM_P = "cw_pad_rect_bottom_p"
     // NDS 双屏独立布局 rect keys（videoScale=="custom" 时上/下屏各一个矩形）
     private const val KEY_NDS_TOP_LEFT = "nds_top_layout_left"
     private const val KEY_NDS_TOP_TOP = "nds_top_layout_top"
@@ -3121,6 +3150,15 @@ object PadLayoutStore {
                 it.toFloatOrNull()?.coerceIn(0f, 1f)?.toString() ?: "" }
             cwPadOverlayY = (p.getString("cw_pad_overlay_y", "") ?: "").let {
                 it.toFloatOrNull()?.coerceIn(0f, 1f)?.toString() ?: "" }
+            // ★ GamePad 自由布局矩形（与 customLayout* 同款 Float/pk 存储）
+            cwPadRectLeft = p.getFp(platform, KEY_CW_PAD_RECT_LEFT, 0.02f)
+            cwPadRectTop = p.getFp(platform, KEY_CW_PAD_RECT_TOP, 0.68f)
+            cwPadRectRight = p.getFp(platform, KEY_CW_PAD_RECT_RIGHT, 0.32f)
+            cwPadRectBottom = p.getFp(platform, KEY_CW_PAD_RECT_BOTTOM, 0.98f)
+            cwPadRectLeftP = p.getFp(platform, KEY_CW_PAD_RECT_LEFT_P, 0.02f)
+            cwPadRectTopP = p.getFp(platform, KEY_CW_PAD_RECT_TOP_P, 0.68f)
+            cwPadRectRightP = p.getFp(platform, KEY_CW_PAD_RECT_RIGHT_P, 0.32f)
+            cwPadRectBottomP = p.getFp(platform, KEY_CW_PAD_RECT_BOTTOM_P, 0.98f)
             cwDownscaleFilter = (p.getString("cw_downscale_filter", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2", "3")) it else "0" }
             cwTvAudioEnabled = (p.getString("cw_tv_audio_enabled", "true") ?: "true").let {
@@ -3956,6 +3994,14 @@ object PadLayoutStore {
             putString("cw_pad_overlay_corner", layout.cwPadOverlayCorner)
             putString("cw_pad_overlay_x", layout.cwPadOverlayX)
             putString("cw_pad_overlay_y", layout.cwPadOverlayY)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_LEFT), layout.cwPadRectLeft)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_TOP), layout.cwPadRectTop)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_RIGHT), layout.cwPadRectRight)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_BOTTOM), layout.cwPadRectBottom)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_LEFT_P), layout.cwPadRectLeftP)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_TOP_P), layout.cwPadRectTopP)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_RIGHT_P), layout.cwPadRectRightP)
+            putFloat(pk(platform, KEY_CW_PAD_RECT_BOTTOM_P), layout.cwPadRectBottomP)
             putString("cw_downscale_filter", layout.cwDownscaleFilter)
             putString("cw_tv_audio_enabled", layout.cwTvAudioEnabled)
             putString("cw_pad_audio_enabled", layout.cwPadAudioEnabled)

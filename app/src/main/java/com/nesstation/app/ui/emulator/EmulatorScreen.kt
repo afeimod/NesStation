@@ -139,6 +139,7 @@ import com.nesstation.app.core.storage.withJavaSettings
 import com.nesstation.app.ui.swf.ScreenPositionEditor
 import com.nesstation.app.ui.fsd.FsdImaging
 import com.nesstation.app.ui.settings.KeyMapStore
+import com.nesstation.app.ui.settings.CemuDriverSection
 import android.view.KeyEvent
 import android.view.View
 import info.cemu.cemu.nativeinterface.NativeQuickSave
@@ -1827,6 +1828,12 @@ fun EmulatorScreen(
     //   块据此跳过回写；松手（confirm）时同步一次新矩形再持久化。
     var ndsEditorDragging by remember { mutableStateOf(false) }
 
+    // ★★ 双屏自由布局编辑器·切换屏幕（"被挡住无法拖动"修复）★★
+    //   两个矩形完全重叠时后置的永远拖不到 —— 编辑器 UI 提供「切换屏幕」
+    //   按钮把被遮住的屏幕换到前面（NDS/3DS/Wii U 双屏通用）。
+    var ndsEditorFrontIsTop by remember { mutableStateOf(true) }
+    val ndsEditorRef = remember { mutableStateOf<NdsScreenPositionEditor?>(null) }
+
     // === Debounced persistence of PadLayout ===
     // Dragging a button fires onLayoutChange on EVERY pointer move event
     // (60+ times per second). Calling PadLayoutStore.save() on each event
@@ -2152,7 +2159,8 @@ fun EmulatorScreen(
                    padLayout.cwOverlayCPU, padLayout.cwOverlayRAM,
                    padLayout.cwNetworkService, padLayout.cwSkylanderPortal,
                    padLayout.cwInfinityBase, padLayout.cwDimensionsToypad,
-                   padLayout.cwGamePadView, padLayout.cwPadOverlayOpacity
+                   padLayout.cwGamePadView, padLayout.cwPadOverlayOpacity,
+                   padLayout.cwDriverPath
                    ) {
         applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         // Apply video filter (frontend post-processing, not a core option)
@@ -2339,10 +2347,14 @@ fun EmulatorScreen(
         if (showNdsCustomLayoutEditor) {
             Toast.makeText(
                 context,
-                if (platform == GamePlatform.N3DS)
-                    "3DS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成"
-                else
-                    "NDS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成",
+                when (platform) {
+                    GamePlatform.N3DS ->
+                        "3DS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成"
+                    GamePlatform.WIIU ->
+                        "Wii U 双屏自由布局：分别拖动主屏(蓝)/GamePad(粉)的四角与内部 · 松手即保存，返回键完成"
+                    else ->
+                        "NDS 双屏自由布局：分别拖动上屏(蓝)/下屏(粉)的四角与内部 · 松手即保存，返回键完成"
+                },
                 Toast.LENGTH_LONG
             ).show()
         } else {
@@ -3164,7 +3176,15 @@ fun EmulatorScreen(
         // 等设置（组合时先于 loadRom 运行的那次 applyCoreOptions 会被整个
         // 覆盖掉）。加载成功后重新应用 GameBox 的 J2ME 设置，保证
         // “游戏内设置 / 全局 Java 设置”真正生效且优先级高于旧配置文件。
-        if (loaded && platform == GamePlatform.JAVA) {
+        //
+        // ★ Wii U 同机制（cw* 设置首次进游戏从未生效的根治）：组合期先于
+        //   loadRom 运行的那次 applyCoreOptions 在核心 .so 加载前执行
+        //   （setCoreOption 全部抛 UnsatisfiedLinkError 被吞掉）—— 所有
+        //   cw* 设置（含驱动路径、垂直同步、音量、覆盖层等）此前只在
+        //   用户改动某个设置后才被应用。加载成功后重放一次，保证每次
+        //   启动都真正下发（此时 initializeEmulation 已完成，
+        //   settings.xml 文件名已就绪，驱动选择还能顺带落盘保存）。
+        if (loaded && (platform == GamePlatform.JAVA || platform == GamePlatform.WIIU)) {
             applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         }
     }
@@ -3329,17 +3349,20 @@ fun EmulatorScreen(
             // ★★ Wii U（Cemu）悬浮 GamePad 画面（上游 Cemu-AZ
             //   EmulationScreen.EmulationSurfaces(OVERLAY) 同构）：主画布 =
             //   全尺寸 TV 画面，GamePad（DRC）以小窗悬浮 —— 默认开启
-            //   （cwGamePadView == "overlay"），大小/不透明度/模糊/圆角可调，
-            //   且小窗支持直接手势调节（顶部把手拖动移位、双击复位；右下
-            //   角把手拖动等比缩放）。pad 输出不透明度由核心输出着色器逐
-            //   像素预乘 alpha（TRANSLUCENT surface + setPadOverlayOpacity），
+            //   （cwGamePadView == "overlay"），不透明度/模糊可调。位置与
+            //   大小与主屏同机制：videoScale == "custom" 时走双屏自由布局
+            //   编辑器（主屏 + GamePad 各自四角矩形，编辑器拖动期间经
+            //   livePadRect 实时预览），其余模式按「角落 + 百分比」摆放。
+            //   pad 输出不透明度由核心输出着色器逐像素预乘 alpha
+            //   （TRANSLUCENT surface + setPadOverlayOpacity），
             //   Compose 层 alpha/blur 管不到 SurfaceView 内容（上游同款告诫）。
             if (platform == GamePlatform.WIIU && loaded &&
                 padLayout.cwGamePadView == "overlay" && surfaceSize != IntSize.Zero) {
                 CemuPadOverlayView(
                     engine = engine as? com.nesstation.app.core.engine.CemuEngine,
                     padLayout = padLayout,
-                    onLayoutChange = { padLayout = it }
+                    // 双屏自由布局编辑器拖动中 → GamePad 矩形实时预览
+                    livePadRect = if (showNdsCustomLayoutEditor) ndsBottomRect else null
                 )
             }
 
@@ -4313,14 +4336,33 @@ fun EmulatorScreen(
                     applyCoreOptions(engine, newLayout, platform, n3dsSurfaceSize = surfaceSize)
                 },
                 onEnterCustomLayout = {
-                    // ★ 双屏平台（NDS / 3DS）走双屏独立编辑器（上/下屏各自
-                    //   矩形）；3DS 与 NDS 同模型 —— 参考 NDS 核心相关实现，
-                    //   3DS 的矩形经核心原生 CustomLayout 生效（applyCoreOptions
-                    //   N3DS 分支下发 custom_top_*/custom_bottom_* 像素矩形）。
+                    // ★ 双屏平台（NDS / 3DS / Wii U）走双屏独立编辑器（各自
+                    //   矩形，拖 4 角调大小 / 拖内部移位置）；3DS 与 NDS 同模型
+                    //   —— 参考 NDS 核心相关实现，3DS 的矩形经核心原生
+                    //   CustomLayout 生效（applyCoreOptions N3DS 分支下发
+                    //   custom_top_*/custom_bottom_* 像素矩形）。
+                    //   ★ Wii U：主屏(蓝) = customLayout*（TV 画面矩形，
+                    //   与单屏自由布局完全同款字段），GamePad(粉) =
+                    //   cwPadRect*（悬浮小窗矩形）—— GamePad 布局编辑
+                    //   与主屏同机制，不再单独乱弄。
                     val isDualScreenPlatform =
-                        platform == GamePlatform.NDS || platform == GamePlatform.N3DS
+                        platform == GamePlatform.NDS || platform == GamePlatform.N3DS ||
+                        platform == GamePlatform.WIIU
                     if (isDualScreenPlatform) {
-                        if (platform == GamePlatform.N3DS) {
+                        if (platform == GamePlatform.WIIU) {
+                            ndsTopRect = floatArrayOf(
+                                if (isPortrait) padLayout.customLayoutLeftP else padLayout.customLayoutLeft,
+                                if (isPortrait) padLayout.customLayoutTopP else padLayout.customLayoutTop,
+                                if (isPortrait) padLayout.customLayoutRightP else padLayout.customLayoutRight,
+                                if (isPortrait) padLayout.customLayoutBottomP else padLayout.customLayoutBottom
+                            )
+                            ndsBottomRect = floatArrayOf(
+                                if (isPortrait) padLayout.cwPadRectLeftP else padLayout.cwPadRectLeft,
+                                if (isPortrait) padLayout.cwPadRectTopP else padLayout.cwPadRectTop,
+                                if (isPortrait) padLayout.cwPadRectRightP else padLayout.cwPadRectRight,
+                                if (isPortrait) padLayout.cwPadRectBottomP else padLayout.cwPadRectBottom
+                            )
+                        } else if (platform == GamePlatform.N3DS) {
                             ndsTopRect = floatArrayOf(
                                 if (isPortrait) padLayout.n3dsTopLayoutLeftP else padLayout.n3dsTopLayoutLeft,
                                 if (isPortrait) padLayout.n3dsTopLayoutTopP else padLayout.n3dsTopLayoutTop,
@@ -4481,11 +4523,39 @@ fun EmulatorScreen(
         //   n3ds* 字段并即时下发给 Azahar 核心原生 CustomLayout（LaunchedEffect
         //   监听 n3ds* 字段 → applyCoreOptions → reloadSettings + updateFramebuffer）。
         if (showNdsCustomLayoutEditor) {
-            // 按平台把双屏矩形写回 padLayout（NDS → nds*，3DS → n3ds*）。
+            // 双屏屏幕名称（Wii U：主屏 / GamePad；NDS、3DS：上屏 / 下屏）
+            val dualTopName = if (platform == GamePlatform.WIIU) "主屏" else "上屏"
+            val dualBottomName = if (platform == GamePlatform.WIIU) "GamePad" else "下屏"
+            // 按平台把双屏矩形写回 padLayout（NDS → nds*，3DS → n3ds*，
+            // Wii U → 主屏 customLayout* + GamePad cwPadRect*）。
             // 3DS 时同步重新下发核心设置（config.ini + reloadSettings →
             // updateFramebuffer 热重算布局）。
             fun persistDualRects(top: FloatArray, bottom: FloatArray) {
-                if (platform == GamePlatform.N3DS) {
+                if (platform == GamePlatform.WIIU) {
+                    padLayout = if (isPortrait) {
+                        padLayout.copy {
+                            customLayoutLeftP = top[0]
+                            customLayoutTopP = top[1]
+                            customLayoutRightP = top[2]
+                            customLayoutBottomP = top[3]
+                            cwPadRectLeftP = bottom[0]
+                            cwPadRectTopP = bottom[1]
+                            cwPadRectRightP = bottom[2]
+                            cwPadRectBottomP = bottom[3]
+                        }
+                    } else {
+                        padLayout.copy {
+                            customLayoutLeft = top[0]
+                            customLayoutTop = top[1]
+                            customLayoutRight = top[2]
+                            customLayoutBottom = top[3]
+                            cwPadRectLeft = bottom[0]
+                            cwPadRectTop = bottom[1]
+                            cwPadRectRight = bottom[2]
+                            cwPadRectBottom = bottom[3]
+                        }
+                    }
+                } else if (platform == GamePlatform.N3DS) {
                     padLayout = if (isPortrait) {
                         padLayout.copy {
                             n3dsTopLayoutLeftP = top[0]
@@ -4538,10 +4608,28 @@ fun EmulatorScreen(
             AndroidView(
                 factory = { ctx ->
                     NdsScreenPositionEditor(ctx).apply {
+                        // ★ 屏幕标签（Wii U：主屏 / GamePad）
+                        if (platform == GamePlatform.WIIU) {
+                            setLabels("主屏", "GamePad")
+                        }
+                        setFrontRect(ndsEditorFrontIsTop)
+                        ndsEditorRef.value = this
                         setRects(ndsTopRect, ndsBottomRect)
                         listener = object : NdsScreenPositionEditor.Listener {
                             override fun onRectChanged(top: FloatArray, bottom: FloatArray, confirm: Boolean) {
-                                if (platform == GamePlatform.N3DS) {
+                                if (platform == GamePlatform.WIIU) {
+                                    // ★ Wii U：主屏矩形同步写 customRect（TV 画面
+                                    //   SurfaceView 消费它 → 拖动实时预览，与单屏
+                                    //   自由布局编辑器完全同款）；GamePad 小窗
+                                    //   由 CemuPadOverlayView 读 livePadRect 实时
+                                    //   跟随。松手才持久化（防抖落盘）。
+                                    ndsTopRect = top
+                                    ndsBottomRect = bottom
+                                    customRect = top.copyOf()
+                                    if (confirm) {
+                                        persistDualRects(top, bottom)
+                                    }
+                                } else if (platform == GamePlatform.N3DS) {
                                     // ★ 3DS 拖动卡顿根治：3DS 的自定义布局走核心
                                     //   CustomLayout（全屏 Surface 不随矩形变化），
                                     //   游戏视图完全不消费 ndsTopRect/ndsBottomRect
@@ -4581,6 +4669,7 @@ fun EmulatorScreen(
                     }
                 },
                 update = { ed: NdsScreenPositionEditor ->
+                    ndsEditorRef.value = ed
                     // ★ 3DS 拖动中禁止回写：拖动期间外部状态是过期值（性能
                     //   优化有意为之），此时任何重组（FPS 计数器、进度回调等）
                     //   触发本 update 都会把编辑器矩形重置回拖前位置 ——
@@ -4599,18 +4688,47 @@ fun EmulatorScreen(
                     .padding(8.dp)
             ) {
                 Text(
-                    if (platform == GamePlatform.N3DS)
-                        "3DS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部"
-                    else
-                        "NDS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部",
+                    when (platform) {
+                        GamePlatform.N3DS ->
+                            "3DS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部"
+                        GamePlatform.WIIU ->
+                            "Wii U 双屏自由布局:分别拖动 主屏(蓝)/GamePad(粉) 的 4 角与内部"
+                        else ->
+                            "NDS 双屏自由布局:分别拖动 上屏(蓝)/下屏(粉) 的 4 角与内部"
+                    },
                     color = Color.White,
                     fontSize = 13.sp
+                )
+            }
+            // ★ 切换屏幕按钮（底部居中，双屏通用）：两屏完全重叠时被遮住的
+            //   屏幕拖不到 —— 点按把后置屏幕换到前面（编辑器内前置可拖），
+            //   再点切回。不改变游戏画面层叠（仅编辑器内前置）。
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    ndsEditorFrontIsTop = !ndsEditorFrontIsTop
+                    ndsEditorRef.value?.setFrontRect(ndsEditorFrontIsTop)
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    // 抬高一层：避免与底部两角的「完成 / 重置」横向重叠（窄屏）
+                    .padding(bottom = 72.dp)
+            ) {
+                Text(
+                    if (ndsEditorFrontIsTop)
+                        "切换屏幕（当前前置: $dualTopName）"
+                    else
+                        "切换屏幕（当前前置: $dualBottomName）",
+                    fontSize = 12.sp
                 )
             }
             // Bottom-right confirm button
             androidx.compose.material3.Button(
                 onClick = {
                     showNdsCustomLayoutEditor = false
+                    if (platform == GamePlatform.WIIU) {
+                        // 主屏矩形同步回 customRect（与持久化值一致）
+                        customRect = ndsTopRect.copyOf()
+                    }
                     persistDualRects(ndsTopRect, ndsBottomRect)
                 },
                 modifier = Modifier
@@ -4622,19 +4740,24 @@ fun EmulatorScreen(
             // Bottom-left reset button (restore default stacked layout)
             androidx.compose.material3.OutlinedButton(
                 onClick = {
-                    // ★ 默认堆叠布局（与各平台字段默认值一致）
-                    val defaultTop = if (platform == GamePlatform.N3DS) {
-                        floatArrayOf(0.05f, 0.03f, 0.95f, 0.48f)
-                    } else {
-                        floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f)
-                    }
-                    val defaultBottom = if (platform == GamePlatform.N3DS) {
-                        floatArrayOf(0.15f, 0.52f, 0.85f, 0.97f)
-                    } else {
-                        floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
+                    // ★ 默认布局（与各平台字段默认值一致）
+                    val (defaultTop, defaultBottom) = when (platform) {
+                        GamePlatform.N3DS ->
+                            floatArrayOf(0.05f, 0.03f, 0.95f, 0.48f) to
+                                floatArrayOf(0.15f, 0.52f, 0.85f, 0.97f)
+                        GamePlatform.WIIU ->
+                            // 主屏全屏 + GamePad 左下角小窗（约 30% 宽）
+                            floatArrayOf(0f, 0f, 1f, 1f) to
+                                floatArrayOf(0.02f, 0.68f, 0.32f, 0.98f)
+                        else ->
+                            floatArrayOf(0.05f, 0.05f, 0.95f, 0.48f) to
+                                floatArrayOf(0.05f, 0.52f, 0.95f, 0.98f)
                     }
                     ndsTopRect = defaultTop
                     ndsBottomRect = defaultBottom
+                    if (platform == GamePlatform.WIIU) {
+                        customRect = defaultTop.copyOf()
+                    }
                     persistDualRects(defaultTop, defaultBottom)
                 },
                 modifier = Modifier
@@ -5898,6 +6021,12 @@ private fun applyCoreOptionsInner(
                 "CemuEngine/padOverlayOpacity",
                 if (layout.cwGamePadView == "overlay") layout.cwPadOverlayOpacity else "100"
             )
+            // ★ 自定义 Vulkan 驱动路径（cwDriverPath）：每次游戏启动下发核心
+            //   配置 + saveSettings 落盘 —— 主面板选驱动时核心未初始化，
+            //   settings.xml 保存链会静默失败，且 Android 端从不回读；
+            //   PadLayout 是唯一可靠持久层，此处重放保证选择真正生效
+            //   （渲染器初始化时 adrenotools 读取）。仅在值变化时落盘。
+            engine.setCoreOption("CemuEngine/customDriverPath", layout.cwDriverPath)
         }
         GamePlatform.PSP -> {
             // PSP（PPSSPP 进程内引擎）—— applyCoreOptions 的通用 PadLayout
@@ -15277,6 +15406,13 @@ private fun SettingsPanel(
                         Text("重置悬浮窗位置（回到角落默认）", color = Color(0xFFFFD66B), fontSize = 11.sp)
                     }
                 }
+                // ★ 画面缩放为「自定义」时小窗走自由布局矩形（cwPadRect*），
+                //   本区滑条/角落被覆盖 —— 提示去双屏编辑器调整。
+                if (padLayout.videoScale == "custom") {
+                    Text("当前「画面缩放 = 自定义」：小窗位置/大小在 画面缩放 → 自定义 的" +
+                        "双屏编辑器里调整（本区滑条与角落暂不生效，切回其它缩放模式后恢复）",
+                        color = Color(0xFFFFD66B), fontSize = 10.sp, lineHeight = 14.sp)
+                }
 
                 Spacer(Modifier.size(8.dp))
                 Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -15337,10 +15473,22 @@ private fun SettingsPanel(
                     padLayout.cwDimensionsToypad == "true"
                 ) { onLayoutChange(padLayout.copy {cwDimensionsToypad = if (it) "true" else "false"}) }
 
+                Spacer(Modifier.size(8.dp))
+                Text("驱动（Vulkan）", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // ★ Wii U 驱动选择加入游戏内菜单（与主设置页同一组件，深色配色）：
+                //   安装/选择/删除即时写入核心配置 + PadLayout；游戏内选择时
+                //   核心已初始化，settings.xml 直接保存成功（主面板选择的
+                //   经启动重放下发，见 loadRom 后的 applyCoreOptions 重放）。
+                CemuDriverSection(
+                    padLayout = padLayout,
+                    updateLayout = onLayoutChange,
+                    dark = true
+                )
+
                 Spacer(Modifier.size(2.dp))
-                Text("改动即时热应用。TV/手柄画面切换用虚拟 TV 键；悬浮 GamePad 小窗可直接触摸，" +
-                    "拖动小窗顶部把手可移位（双击复位）、拖动右下角把手可缩放；" +
-                    "驱动安装与图形包等进阶功能在 主设置 → 核心设置 → Wii U。",
+                Text("改动即时热应用。TV/手柄画面切换用虚拟 TV 键；悬浮 GamePad 小窗可直接触摸。" +
+                    "画面与 GamePad 小窗的自由布局：核心设置 → 画面缩放 → 自定义（双屏编辑器，" +
+                    "拖 4 角调大小、拖内部移位置、可切换屏幕）；非自定义模式下用上方「悬浮画面」滑条与角落。",
                     color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                 Spacer(Modifier.size(6.dp))
             }
@@ -16745,91 +16893,82 @@ private fun CemuTextInputDialog() {
 }
 
 /**
- * ★★ Wii U 悬浮 GamePad 画面 —— 上游 Cemu-AZ PadOverlaySurface 移植 + 自定义拖动 ★★
+ * ★★ Wii U 悬浮 GamePad 画面 —— 上游 Cemu-AZ PadOverlaySurface 移植 ★★
  *
  * 主画布 = 全尺寸 TV 画面；GamePad（DRC）以小窗悬浮。
- *  · 小窗宽度 = 主画面宽度 × scalePercent（10%..60%），16:9（854x480）；
+ *  · 摆放与主屏完全同机制（"不要单独乱弄"）：
+ *    - videoScale == "custom"：小窗 = 自由布局矩形（cwPadRect*），在双屏
+ *      自由布局编辑器里拖 4 角调大小 / 拖内部移位置（与主屏、NDS/3DS
+ *      双屏编辑器完全一致的交互）；编辑器拖动期间经 livePadRect 实时预览；
+ *    - 其余模式：按「悬浮画面角落 + 大小百分比」摆放（快捷设置滑条），
+ *      历史拖动坐标（cwPadOverlayX/Y，旧版把手遗留）优先于角落 —— 游戏内
+ *      不再有独立把手，位置/大小统一在 核心设置 → 画面缩放 → 自定义 里调；
  *  · surface 格式 TRANSLUCENT —— 不透明度由核心 pad 输出着色器逐像素
  *    预乘 alpha（setPadOverlayOpacity），Compose 层 alpha 管不到
  *    SurfaceView 内容（上游注释同款告诫）；
  *  · 模糊（Android 12+）走 Modifier.blur（对 SurfaceView 层生效于
  *    Android 12+ 的 RenderEffect 路径，上游同款）；
  *  · 小窗即 DRC 触摸屏本体 —— 触点归一化后直接喂核心。
- *
- * ★ 自定义拖动（位置 + 大小直接手势调节）：
- *  · 顶部把手条：单指拖动 → 小窗跟随移动（任意位置）；双击 → 恢复
- *    「角落」设置的默认位置（清空自定义坐标）；
- *  · 右下角把手：单指拖动 → 等比缩放（10%..60%，与快捷设置滑条同源，
- *    松手时持久化到 cwPadOverlayScale）；
- *  · 位置持久化为小窗左上角的归一化坐标（cwPadOverlayX/Y，0..1 相对
- *    "屏幕-小窗尺寸"可用区域），优先于角落设置；把手是 Compose 兄弟
- *    节点叠在 SurfaceView 之上 —— 命中把手时被消费，其余区域仍透给
- *    小窗触摸（GamePad 触摸不受影响）；
- *  · 位置更新只写内存 state（拖动跟手），松手才走 onLayoutChange →
- *    防抖 LaunchedEffect 落盘（避免 60Hz SharedPreferences 写入卡顿）。
  */
 @Composable
 private fun CemuPadOverlayView(
     engine: com.nesstation.app.core.engine.CemuEngine?,
     padLayout: PadLayout,
-    onLayoutChange: (PadLayout) -> Unit
+    // 双屏自由布局编辑器拖动中的实时矩形（custom 模式实时预览）；null = 用持久化值
+    livePadRect: FloatArray? = null
 ) {
     if (engine == null) return
-    // rememberUpdatedState：pointerInput(Unit) 协程不因参数重组而重启，
-    // 闭包里读到的必须是最新值（拖动中参数变化不中断手势）。
-    val currentLayout by rememberUpdatedState(padLayout)
-    val currentOnLayoutChange by rememberUpdatedState(onLayoutChange)
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val scalePercent = (padLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
         val blurDp = padLayout.cwPadOverlayBlur.toIntOrNull() ?: 0
-        val corner = (padLayout.cwPadOverlayCorner.toIntOrNull() ?: 0).coerceIn(0, 3)
-        val scale = (scalePercent / 100f).coerceIn(0.1f, 0.6f)
-        val padWidth = maxWidth * scale
-        // Wii U GamePad 屏幕 854x480（16:9）
-        val padHeight = padWidth * (480f / 854f)
-        // 可拖动范围（小窗左上角在此矩形内移动 = 小窗永不移出屏幕）
-        val maxOffX = (maxWidth - padWidth).coerceAtLeast(0.dp)
-        val maxOffY = (maxHeight - padHeight).coerceAtLeast(0.dp)
-        val marginPx = 8.dp
-        // ★ maxWidth/maxHeight 是 BoxWithConstraintsScope（@Composable lambda 接收者）
-        //   的成员，不能在 pointerInput 的 suspend 块/手势回调里经隐式接收者访问
-        //   （否则 K1 报 "can't be called in this context by implicit receiver"）；
-        //   且 pointerInput 协程不随重组重启，直接捕获的组合期 Dp 会在转屏后过期 ——
-        //   故用 rememberUpdatedState 活值喂给手势闭包（与 currentLayout 同款防陈旧策略）。
-        val liveMaxWidth by rememberUpdatedState(maxWidth)
-        val liveMaxHeight by rememberUpdatedState(maxHeight)
 
-        // 角落默认位置（左上角归一化 0..1：x=0 左缘 / y=1 底缘）
-        fun cornerDefault(): Pair<Float, Float> = when (corner) {
-            1 -> 1f to 1f    // 右下
-            2 -> 0f to 0f    // 左上
-            3 -> 1f to 0f    // 右上
-            else -> 0f to 1f // 左下（默认）
-        }
+        // ★ 几何全部在组合期计算成 Dp（offset lambda 是非 Composable 的
+        //   Density 作用域，不能读 maxWidth/maxHeight —— 上轮 CI 报错同款）。
+        val windowModifier: Modifier
+        if (padLayout.videoScale == "custom") {
+            // ★ 自由布局矩形（与主屏 customLayout* 同款四角矩形机制）
+            val r = livePadRect ?: floatArrayOf(
+                padLayout.cwPadRectLeft, padLayout.cwPadRectTop,
+                padLayout.cwPadRectRight, padLayout.cwPadRectBottom
+            )
+            val leftDp = maxWidth * r[0].coerceIn(0f, 1f)
+            val topDp = maxHeight * r[1].coerceIn(0f, 1f)
+            val wDp = (maxWidth * (r[2] - r[0]).coerceIn(0.005f, 1f)).coerceAtLeast(1.dp)
+            val hDp = (maxHeight * (r[3] - r[1]).coerceIn(0.005f, 1f)).coerceAtLeast(1.dp)
+            windowModifier = Modifier
+                .offset { IntOffset(leftDp.roundToPx(), topDp.roundToPx()) }
+                .size(width = wDp, height = hDp)
+        } else {
+            // ★ 角落 + 百分比摆放（快捷设置滑条；历史拖动坐标优先于角落）
+            val scalePercent = (padLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
+            val corner = (padLayout.cwPadOverlayCorner.toIntOrNull() ?: 0).coerceIn(0, 3)
+            val scale = (scalePercent / 100f).coerceIn(0.1f, 0.6f)
+            val padWidth = maxWidth * scale
+            // Wii U GamePad 屏幕 854x480（16:9）
+            val padHeight = padWidth * (480f / 854f)
+            // 可移动范围（小窗左上角在此矩形内移动 = 小窗永不移出屏幕）
+            val maxOffX = (maxWidth - padWidth).coerceAtLeast(0.dp)
+            val maxOffY = (maxHeight - padHeight).coerceAtLeast(0.dp)
+            val marginPx = 8.dp
 
-        // 本次会话的实时拖动位置（归一化）；null = 未拖过 → 用持久化/默认值
-        var liveX by remember(corner) { mutableStateOf<Float?>(null) }
-        var liveY by remember(corner) { mutableStateOf<Float?>(null) }
-
-        val baseX = padLayout.cwPadOverlayX.toFloatOrNull() ?: cornerDefault().first
-        val baseY = padLayout.cwPadOverlayY.toFloatOrNull() ?: cornerDefault().second
-        val normX = (liveX ?: baseX).coerceIn(0f, 1f)
-        val normY = (liveY ?: baseY).coerceIn(0f, 1f)
-
-        // 顶部把手高度（小窗内侧顶边）与右下角把手尺寸
-        val gripHeight = 22.dp
-        val resizeGrip = 26.dp
-
-        Box(
-            modifier = Modifier
-                .offset {
-                    IntOffset(
-                        (marginPx.roundToPx() + normX * (maxOffX - marginPx * 2).coerceAtLeast(0.dp).toPx()).toInt(),
-                        (marginPx.roundToPx() + normY * (maxOffY - marginPx * 2).coerceAtLeast(0.dp).toPx()).toInt()
-                    )
-                }
+            // 角落默认位置（左上角归一化 0..1：x=0 左缘 / y=1 底缘）
+            fun cornerDefault(): Pair<Float, Float> = when (corner) {
+                1 -> 1f to 1f    // 右下
+                2 -> 0f to 0f    // 左上
+                3 -> 1f to 0f    // 右上
+                else -> 0f to 1f // 左下（默认）
+            }
+            val normX = (padLayout.cwPadOverlayX.toFloatOrNull() ?: cornerDefault().first).coerceIn(0f, 1f)
+            val normY = (padLayout.cwPadOverlayY.toFloatOrNull() ?: cornerDefault().second).coerceIn(0f, 1f)
+            val offXDp = marginPx + normX * (maxOffX - marginPx * 2).coerceAtLeast(0.dp)
+            val offYDp = marginPx + normY * (maxOffY - marginPx * 2).coerceAtLeast(0.dp)
+            windowModifier = Modifier
+                .offset { IntOffset(offXDp.roundToPx(), offYDp.roundToPx()) }
                 .width(padWidth)
                 .height(padHeight)
+        }
+
+        Box(
+            modifier = windowModifier
         ) {
             var padModifier = Modifier.fillMaxSize()
             if (blurDp > 0 && android.os.Build.VERSION.SDK_INT >= 31) {
@@ -16866,153 +17005,6 @@ private fun CemuPadOverlayView(
                     }
                 }
             )
-
-            // === 移动把手（顶部横条）：拖动移动小窗 / 双击回默认角落 ===
-            // Compose 兄弟节点位于 SurfaceView 之上：命中区域被本 Box 消费，
-            // 不会透给小窗触摸；其余区域照常透给 GamePad 触摸。
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .height(gripHeight)
-                    .background(
-                        androidx.compose.ui.graphics.Color(0x661A1A22),
-                        androidx.compose.foundation.shape.RoundedCornerShape(6.dp)
-                    )
-                    // 单指拖动：实时更新内存位置（跟手），松手才持久化。
-                    // ★ 手势闭包只读【活值】（liveX/Y 状态 + currentLayout
-                    //   via rememberUpdatedState）—— pointerInput 协程不随
-                    //   重组重启，捕获的组合期 val 会过期（第二次拖动会跳回
-                    //   第一次的位置），故这里不允许直接引用 normX/normY。
-                    .pointerInput(corner) {
-                        var dragAccX = 0f
-                        var dragAccY = 0f
-                        detectDragGestures(
-                            onDragStart = {
-                                // 从当前显示位置起算：优先本次会话拖动值，
-                                // 其次持久化值，最后角落默认
-                                dragAccX = liveX ?: currentLayout.cwPadOverlayX.toFloatOrNull()
-                                    ?: cornerDefault().first
-                                dragAccY = liveY ?: currentLayout.cwPadOverlayY.toFloatOrNull()
-                                    ?: cornerDefault().second
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                // 面积按【当前】小窗尺寸算（缩放后重拖也正确）
-                                val curPct = (currentLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
-                                val curPadW = liveMaxWidth * (curPct / 100f)
-                                val curPadH = curPadW * (480f / 854f)
-                                val areaW = ((liveMaxWidth - curPadW) - marginPx * 2).coerceAtLeast(0.dp).toPx()
-                                val areaH = ((liveMaxHeight - curPadH) - marginPx * 2).coerceAtLeast(0.dp).toPx()
-                                dragAccX = (dragAccX + if (areaW > 0f) dragAmount.x / areaW else 0f).coerceIn(0f, 1f)
-                                dragAccY = (dragAccY + if (areaH > 0f) dragAmount.y / areaH else 0f).coerceIn(0f, 1f)
-                                liveX = dragAccX
-                                liveY = dragAccY
-                            },
-                            onDragEnd = {
-                                // 持久化（防抖 LaunchedEffect 落盘）
-                                currentOnLayoutChange(
-                                    currentLayout.copy {
-                                        cwPadOverlayX = dragAccX.toString()
-                                        cwPadOverlayY = dragAccY.toString()
-                                    }
-                                )
-                            },
-                            onDragCancel = {
-                                // 取消也保留当前位置（用户可能只是误触边缘）
-                                currentOnLayoutChange(
-                                    currentLayout.copy {
-                                        cwPadOverlayX = dragAccX.toString()
-                                        cwPadOverlayY = dragAccY.toString()
-                                    }
-                                )
-                            }
-                        )
-                    }
-                    // 双击 = 恢复角落默认位置（清空自定义坐标，小窗立即可见跳回）
-                    .pointerInput(corner) {
-                        detectTapGestures(
-                            onDoubleTap = {
-                                liveX = null
-                                liveY = null
-                                currentOnLayoutChange(
-                                    currentLayout.copy {
-                                        cwPadOverlayX = ""
-                                        cwPadOverlayY = ""
-                                    }
-                                )
-                            }
-                        )
-                    }
-            ) {
-                // 三点抓手视觉
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    repeat(3) {
-                        Box(
-                            modifier = Modifier
-                                .size(width = 14.dp, height = 4.dp)
-                                .background(
-                                    androidx.compose.ui.graphics.Color(0x99FFFFFF),
-                                    androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
-                                )
-                        )
-                    }
-                }
-            }
-
-            // === 缩放把手（右下角）：拖动等比缩放（宽度 10%..60%）===
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .size(resizeGrip)
-                    .background(
-                        androidx.compose.ui.graphics.Color(0x661A1A22),
-                        androidx.compose.foundation.shape.RoundedCornerShape(topStart = 8.dp)
-                    )
-                    .pointerInput(Unit) {
-                        // 从【当前】持久化缩放换算起始像素宽（slider 改过/上一次
-                        // 拖大后的重拖都正确 —— pointerInput 协程里的组合期
-                        // val 是首次捕获的旧值，必须从 currentLayout 重新算）
-                        var newWidthPx = 0f
-                        detectDragGestures(
-                            onDragStart = {
-                                val curPct = (currentLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
-                                newWidthPx = liveMaxWidth.toPx() * (curPct / 100f)
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                newWidthPx = (newWidthPx + dragAmount.x + dragAmount.y).coerceAtLeast(1f)
-                                val pct = ((newWidthPx / liveMaxWidth.toPx()) * 100f)
-                                    .toInt().coerceIn(10, 60)
-                                // 实时缩放（写会话 state，重组即时生效；防抖落盘）
-                                currentOnLayoutChange(
-                                    currentLayout.copy { cwPadOverlayScale = pct.toString() }
-                                )
-                            },
-                            onDragEnd = {
-                                val pct = ((newWidthPx / liveMaxWidth.toPx()) * 100f)
-                                    .toInt().coerceIn(10, 60)
-                                currentOnLayoutChange(
-                                    currentLayout.copy { cwPadOverlayScale = pct.toString() }
-                                )
-                            }
-                        )
-                    }
-            ) {
-                // 对角线斜纹视觉（右下角小三角）
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(width = 12.dp, height = 12.dp)
-                        .background(
-                            androidx.compose.ui.graphics.Color(0x99FFFFFF),
-                            androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
-                        )
-                )
-            }
         }
     }
 }

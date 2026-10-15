@@ -478,6 +478,26 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 // ★ 悬浮 GamePad 画面不透明度（核心输出着色器逐像素预乘 alpha；
                 //   上游 PadOverlaySurface 同款链路）
                 "padOverlayOpacity" -> NativeSettings.setPadOverlayOpacity((value.toIntOrNull() ?: 100).coerceIn(0, 100))
+                // ★ 自定义 Vulkan 驱动路径（"驱动选择无法保存"根治）：
+                //   主面板选驱动时核心多未初始化 —— settings.xml 文件名尚未
+                //   设置（NativeEmulation.initializeEmulation 才 SetFilename），
+                //   Save() 静默失败；且 Android 端从不回读 settings.xml。
+                //   → PadLayout 的 cwDriverPath 是唯一可靠持久层，每次游戏
+                //   启动经 applyCoreOptions 下发到核心配置 + saveSettings 落盘
+                //   （此时文件名已就绪，保存成功），渲染器初始化时 adrenotools
+                //   读取生效。仅在值变化时落盘，避免滑条类设置 60Hz 重入。
+                "customDriverPath" -> {
+                    val want = value.takeIf { it.isNotBlank() }
+                    val cur = try {
+                        NativeSettings.getCustomDriverPath()
+                    } catch (_: Throwable) {
+                        "\u0000unset" // 探测失败 → 视为不同值，走一次完整写入
+                    }
+                    if (cur != want) {
+                        NativeSettings.setCustomDriverPath(want)
+                        NativeSettings.saveSettings()
+                    }
+                }
                 "padViewSwap" -> {
                     val want = value == "true" || value == "enabled"
                     if (want != padViewActive) toggleTvPadView()

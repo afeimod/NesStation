@@ -2463,7 +2463,10 @@ private fun PspAdhocServerRow() {
 @Composable
 fun CemuDriverSection(
     padLayout: PadLayout,
-    updateLayout: (PadLayout) -> Unit
+    updateLayout: (PadLayout) -> Unit,
+    // ★ 游戏内深色面板（EmulatorScreen 核心设置）：不用浅色 SettingsSection
+    //   卡片包裹，文字换深色背景可读配色；主设置页保持原样。
+    dark: Boolean = false
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var installed by remember { mutableStateOf<List<com.nesstation.app.core.storage.CemuDriverStore.CemuDriver>>(emptyList()) }
@@ -2510,7 +2513,8 @@ fun CemuDriverSection(
         }
     }
 
-    SettingsSection("Wii U · 驱动管理（Vulkan）") {
+    // 驱动区内容（主设置页 SettingsSection 卡片 / 游戏内深色面板共用）
+    val driverContent: @Composable () -> Unit = {
         if (!coreAvailable) {
             Text("Cemu 核心未加载（需要 arm64-v8a + Android 11+），驱动管理不可用。",
                 color = Color(0xFFB00020), fontSize = 11.sp, lineHeight = 15.sp)
@@ -2519,7 +2523,9 @@ fun CemuDriverSection(
                 "自定义驱动经 adrenotools 在核心渲染器初始化时加载 —— " +
                 "切换驱动后需重启游戏生效。驱动 zip 需含 meta.json（schemaVersion=1）与对应的 .so 库。" +
                 (if (!driverSupported) "\n当前环境不支持加载自定义驱动。" else ""),
-                color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
+                color = if (dark) Color(0xFF8899AA)
+                        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
+                        else Color(0xFF4A5568),
                 fontSize = 10.sp, lineHeight = 15.sp)
 
             // 系统驱动（默认项）
@@ -2527,7 +2533,8 @@ fun CemuDriverSection(
             TextButtonRow(
                 label = "系统驱动${if (systemSelected) " ✓" else ""}",
                 sub = "使用设备自带 Vulkan 驱动（默认）",
-                enabled = !installing
+                enabled = !installing,
+                dark = dark
             ) {
                 com.nesstation.app.core.storage.CemuDriverStore.selectSystemDriver()
                 selectedPath = null
@@ -2540,7 +2547,8 @@ fun CemuDriverSection(
                 TextButtonRow(
                     label = "${driver.metadata.name}${if (isSel) " ✓" else ""}",
                     sub = "v${driver.metadata.driverVersion} · ${driver.metadata.vendor} · API ${driver.metadata.minApi}+",
-                    enabled = !installing
+                    enabled = !installing,
+                    dark = dark
                 ) {
                     if (!isSel) {
                         val ok = com.nesstation.app.core.storage.CemuDriverStore.selectDriver(driver)
@@ -2567,7 +2575,8 @@ fun CemuDriverSection(
                 TextButtonRow(
                     label = "删除「${selDriver.metadata.name}」",
                     sub = "移除驱动文件（将回退系统驱动）",
-                    enabled = !installing
+                    enabled = !installing,
+                    dark = dark
                 ) {
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -2584,10 +2593,20 @@ fun CemuDriverSection(
             TextButtonRow(
                 label = if (installing) "正在安装…" else "＋ 从 zip 安装驱动",
                 sub = "选择包含 meta.json + .so 的驱动压缩包（如 Turnip/Mesa 构建）",
-                enabled = !installing
+                enabled = !installing,
+                dark = dark
             ) {
                 installLauncher.launch(arrayOf("application/zip"))
             }
+        }
+    }
+
+    if (dark) {
+        // 游戏内深色面板：无卡片包裹，直接排布（外层已提供分区标题）
+        driverContent()
+    } else {
+        SettingsSection("Wii U · 驱动管理（Vulkan）") {
+            driverContent()
         }
     }
 }
@@ -2599,6 +2618,7 @@ private fun TextButtonRow(
     sub: String,
     enabled: Boolean = true,
     trailing: String? = null,
+    dark: Boolean = false,
     onClick: () -> Unit
 ) {
     Column(
@@ -2613,7 +2633,11 @@ private fun TextButtonRow(
         ) {
             Text(
                 label,
-                color = if (enabled) Color(0xFF1E2A3A) else Color(0xFF8899AA),
+                color = when {
+                    !enabled -> Color(0xFF8899AA)
+                    dark -> Color.White
+                    else -> Color(0xFF1E2A3A)
+                },
                 fontSize = 14.sp, fontWeight = FontWeight.Medium
             )
             androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
@@ -2621,6 +2645,8 @@ private fun TextButtonRow(
                 Text(trailing, color = Color(0xFFB00020), fontSize = 12.sp)
             }
         }
-        Text(sub, color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 13.sp)
+        Text(sub,
+            color = if (dark) Color(0xFF8899AA) else Color(0xFF667788),
+            fontSize = 10.sp, lineHeight = 13.sp)
     }
 }

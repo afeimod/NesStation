@@ -14,8 +14,11 @@ import android.view.View
  * NDS 双屏自由布局编辑器：上屏 / 下屏各一个独立矩形，可分别拖动 4 角调整
  * 大小、拖动矩形内部移动位置。交互逻辑复用 [ScreenPositionEditor] 的成熟
  * 方案（5 个 hot zone：4 角 + body），区别是这里同时管理两个矩形：
- * - 触摸先检测上屏的角/主体，再检测下屏，命中哪个就操作哪个
- * - 上屏用蓝色、下屏用粉红色绘制，便于区分
+ * - 触摸先检测前置矩形（默认上屏）的角/主体，再检测后置 —— ★ 切换
+ *   前置（[setFrontRect]）后两矩形完全重叠时也能拖到被遮住的那个
+ *   （“被挡住无法拖动”修复，NDS/3DS/Wii U 双屏通用）
+ * - 上屏用蓝色、下屏用粉红色绘制，便于区分（标签可自定义，
+ *   Wii U 用「主屏 / GamePad」）
  * - 参照 melonDS 官方 Android 布局模型：TOP_SCREEN / BOTTOM_SCREEN 各自
  *   一个独立矩形，互不影响
  *
@@ -37,6 +40,15 @@ class NdsScreenPositionEditor @JvmOverloads constructor(
     }
 
     var listener: Listener? = null
+
+    // ★ 屏幕标签（Wii U 双屏编辑器用「主屏 / GamePad」）
+    private var topLabelText = "上屏"
+    private var bottomLabelText = "下屏"
+
+    // ★ 前置矩形（默认 true = 上屏在前）：触摸命中检测前置矩形优先、
+    //   绘制前置矩形在后（覆盖在上层）。完全重叠时切换前置即可拖到
+    //   被遮住的那个 —— 外部「切换屏幕」按钮消费。
+    private var frontIsTop = true
 
     init {
         isClickable = true
@@ -92,10 +104,14 @@ class NdsScreenPositionEditor @JvmOverloads constructor(
         val h = height
         if (w <= 0 || h <= 0) return
 
-        // 上屏
-        drawRect(canvas, topRect, w, h, topFillPaint, topBorderPaint, topHandlePaint, "上屏")
-        // 下屏（触摸屏）
-        drawRect(canvas, bottomRect, w, h, bottomFillPaint, bottomBorderPaint, bottomHandlePaint, "下屏")
+        // 后置的先画（在下层），前置的后画（覆盖在上）—— 与命中检测顺序一致
+        if (frontIsTop) {
+            drawRect(canvas, bottomRect, w, h, bottomFillPaint, bottomBorderPaint, bottomHandlePaint, bottomLabelText)
+            drawRect(canvas, topRect, w, h, topFillPaint, topBorderPaint, topHandlePaint, topLabelText)
+        } else {
+            drawRect(canvas, topRect, w, h, topFillPaint, topBorderPaint, topHandlePaint, topLabelText)
+            drawRect(canvas, bottomRect, w, h, bottomFillPaint, bottomBorderPaint, bottomHandlePaint, bottomLabelText)
+        }
     }
 
     private fun drawRect(
@@ -174,6 +190,23 @@ class NdsScreenPositionEditor @JvmOverloads constructor(
         invalidate()
     }
 
+    /** ★ 自定义屏幕标签（Wii U：主屏 / GamePad）。 */
+    fun setLabels(top: String, bottom: String) {
+        topLabelText = top
+        bottomLabelText = bottom
+        invalidate()
+    }
+
+    /** ★ 切换前置矩形（true = 上屏/主屏在前）：完全重叠时把被遮住的屏幕
+     *   换到前面即可拖动。 */
+    fun setFrontRect(frontTop: Boolean) {
+        frontIsTop = frontTop
+        invalidate()
+    }
+
+    /** 当前前置是否为上屏（主屏）。 */
+    fun isFrontTop(): Boolean = frontIsTop
+
     fun setTopRect(nx1: Float, ny1: Float, nx2: Float, ny2: Float) {
         setRect(topRect, floatArrayOf(nx1, ny1, nx2, ny2))
         invalidate()
@@ -201,9 +234,13 @@ class NdsScreenPositionEditor @JvmOverloads constructor(
     }
 
     private fun pickHandle(nx: Float, ny: Float): Int {
-        // 上屏优先（有重叠时先操作上屏），再检测下屏
-        pickInRect(topRect, nx, ny, RECT_TOP)?.let { return it }
-        pickInRect(bottomRect, nx, ny, RECT_BOTTOM)?.let { return it }
+        // ★ 前置矩形优先（完全重叠时切前置即可拖到被遮住的那个），再检测后置
+        val front = if (frontIsTop) topRect else bottomRect
+        val back = if (frontIsTop) bottomRect else topRect
+        val frontTag = if (frontIsTop) RECT_TOP else RECT_BOTTOM
+        val backTag = if (frontIsTop) RECT_BOTTOM else RECT_TOP
+        pickInRect(front, nx, ny, frontTag)?.let { return it }
+        pickInRect(back, nx, ny, backTag)?.let { return it }
         return HANDLE_NONE
     }
 
