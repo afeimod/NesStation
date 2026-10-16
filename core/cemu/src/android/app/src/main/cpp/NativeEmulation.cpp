@@ -339,7 +339,11 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setSurfaceSize([[maybe_unuse
 extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setOutputRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
 {
-	LatteTexture_SetInternalRenderScale(scale);
+	// ★ NesStation R8: 分辨率缩放改为纯呈现侧（VulkanRenderer 离屏目标）。
+	// 内部渲染目标缩放（R3~R7 的 LatteTexture_SetInternalRenderScale）会破坏
+	// 游戏光照/阴影采样（非 1x 画面发黑），彻底停用 —— 内部恒 1.0，游戏
+	// 内部渲染与 1x 完全一致，用户选择的档位仅影响最终上屏分辨率。
+	VulkanRenderer::SetOutputRenderScale(scale);
 }
 
 // ★ NesStation R5: GamePad 悬浮画面更新频率（省电）—— 纯呈现侧节流

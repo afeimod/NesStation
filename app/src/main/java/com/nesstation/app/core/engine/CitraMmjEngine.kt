@@ -86,10 +86,22 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         private const val IDX_B = 1
         private const val IDX_X = 2
         private const val IDX_Y = 3
-        private const val IDX_UP = 4
-        private const val IDX_DOWN = 5
-        private const val IDX_LEFT = 6
-        private const val IDX_RIGHT = 7
+        // ★★★ R8：十字键不再走 InputEvent(4..7)！！（libcitra_mmj.so 反汇编实证）
+        // 分发器入口（0x25c6a0）对 InputEvent 的 key∈{4,5} 强制 value 取反
+        //（and w8, w1, #0xfffffffd; cmp w8, #4; fcsel s0, s1, s0, eq）—— 4/5 是
+        // dpad 的 X/Y 轴语义通道，按钮值 1f 被翻成 -1f 永远判不中"按下"；
+        // 6/7 亦非 left/right（so 默认绑定表 .rodata 实证 dpad 四方向绑定：
+        //   button_up   = code:16,dir:-   button_down = code:16,dir:+
+        //   button_left = code:15,dir:-   button_right= code:15,dir:+ ）。
+        // 分发器对 value<0 的输入以 probe=key+0x1000 匹配负方向槽
+        // → dir:- 项的注册 ID = code+0x1000。
+        // KeyEvent/MoveEvent 无 table 映射（key 直接寻址）—— 四方向恒用
+        // 正值 1f/0f 直接寻 ID：UP=4112(16+0x1000) DOWN=16 LEFT=4111(15+0x1000)
+        // RIGHT=15。原 IDX_UP..IDX_RIGHT 常量保留仅供注释溯源，不再下发。
+        private const val MMJ_DPAD_UP = 0x1000 + 16
+        private const val MMJ_DPAD_DOWN = 16
+        private const val MMJ_DPAD_LEFT = 0x1000 + 15
+        private const val MMJ_DPAD_RIGHT = 15
         private const val IDX_L = 8
         private const val IDX_R = 9
         private const val IDX_START = 10
@@ -1583,8 +1595,9 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
      * 按键（数字通道）—— 只走 InputEvent 固定索引（原版 overlay 同款）。
      *
      * 索引表（原版 InputOverlay 构造表 + so KeyEvent 反汇编双向实证）：
-     *   A=0 B=1 X=2 Y=3 | 十字键 up=4 down=5 left=6 right=7 | L=8 R=9 |
-     *   start=10 select=11 | zl=14 zr=15
+     *   A=0 B=1 X=2 Y=3 | L=8 R=9 | start=10 select=11 | zl=14 zr=15
+     *   十字键四方向不走本通道 —— R8 起改 MoveEvent 直接 ID 寻址
+     *   （InputEvent(4..7) 被分发器 key 4/5 强制取反规则破坏，见常量区注释）
      *
      * ★★★ 本轮两处根治（详见方法体注释）★★★
      *   1. 绝不下发索引 12（本核心的 enum 12 是【加速键】不是 HOME ——
@@ -1598,28 +1611,41 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         val idxEvents = intArrayOf(
             IDX_A, IDX_B, IDX_X, IDX_Y,
             IDX_L, IDX_R, IDX_START, IDX_SELECT,
-            IDX_UP, IDX_DOWN, IDX_LEFT, IDX_RIGHT,
             IDX_ZL, IDX_ZR
         )
         val states = booleanArrayOf(
             pressed(BIT_A), pressed(BIT_B), pressed(BIT_X), pressed(BIT_Y),
             pressed(BIT_L), pressed(BIT_R), pressed(BIT_START), pressed(BIT_SELECT),
-            pressed(BIT_UP), pressed(BIT_DOWN), pressed(BIT_LEFT), pressed(BIT_RIGHT),
             pressed(BIT_ZL), pressed(BIT_ZR)
         )
         for (i in idxEvents.indices) {
             try { lib.InputEvent(idxEvents[i], if (states[i]) 1f else 0f) } catch (_: Throwable) {}
         }
-        // ★★★ 本轮：恢复【纯数字十字键】（对齐参考 APK —— overlay/b.java
-        //   四键类 l() = InputEvent(4..7, 1f/0f)；input-layout.ini 里 dpad 与
-        //   joystick 是两个独立控件，互不代役）。
+        // ★★★ R8：十字键改走 MoveEvent 直接 ID 寻址（按键 1f / 松开 0f）。
+        //   KeyEvent/MoveEvent 的 key 不过 table 映射、不受 4/5 取反规则影响，
+        //   正值恒走 dir:+ 槽/注册项 —— up/left 的 dir:- 项以 code+0x1000 注册，
+        //   直接以该 ID 寻址即可命中（分发器 0x25c6a0/0x25c6bc/0x25ca80 反汇编）。
+        //   原 InputEvent(4..7) 通道整体废弃（上/左失效根因，见常量区注释）。
+        val dpadEvents = intArrayOf(MMJ_DPAD_UP, MMJ_DPAD_DOWN, MMJ_DPAD_LEFT, MMJ_DPAD_RIGHT)
+        val dpadStates = booleanArrayOf(
+            pressed(BIT_UP), pressed(BIT_DOWN), pressed(BIT_LEFT), pressed(BIT_RIGHT)
+        )
+        for (i in dpadEvents.indices) {
+            try { lib.MoveEvent(dpadEvents[i], if (dpadStates[i]) 1f else 0f) } catch (_: Throwable) {}
+        }
+        // ★★★ R8 根因修订（推翻上文"对齐参考 APK 的 InputEvent(4..7)"结论）：
+        //   上面的 l() = InputEvent(4..7) 推断有误 —— so 反汇编实证分发器对
+        //   key 4/5 强制取反（轴语义），且默认绑定表显示 dpad 四方向注册为
+        //   code:15/16（±dir）。本轮改为 MoveEvent 直接 ID 寻址（见上方代码），
+        //   十字键仍是【纯数字语义】（按下/松开，无圆盘合成）—— 只换了承载
+        //   通道，手感与历史一致。
         //
-        // 【删除「D-pad → CirclePad 合成」的理由】：合成让十字键同时在圆盘上
-        //   输出满幅 ±1.0 —— 用户实测手感就是「方向键变成了摇杆输出」（本轮
-        //   用户原话："mmj核心的方向键你怎么改成摇杆的输出了，神经病吧，
+        // 【保留历史结论：不做「D-pad → CirclePad 合成」】合成让十字键同时在
+        //   圆盘上输出满幅 ±1.0 —— 用户实测手感就是「方向键变成了摇杆输出」
+        //  （用户原话："mmj核心的方向键你怎么改成摇杆的输出了，神经病吧，
         //   3ds的方向键你不知道吗"）。3DS 硬件上十字键与圆盘本就是两个独立
         //   输入，各司其职：
-        //     - 十字键（IDX 4..7）→ 纯数字通道（菜单导航 / 纯十字键游戏）；
+        //     - 十字键 → MoveEvent(4112/16/4111/15) 纯数字通道（本轮 R8 新路径）；
         //     - 圆盘（IDX 21/22）→ 模拟通道（摇杆拖动 / inputMode=analog 的
         //       虚拟摇杆 / 实体手柄左摇杆 —— setAnalogAxes 通道）；
         //     - C 摇杆（IDX 23/24）→ 右摇杆。
