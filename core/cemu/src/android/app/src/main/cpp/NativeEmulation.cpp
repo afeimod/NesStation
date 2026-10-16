@@ -2,6 +2,7 @@
 #include "AndroidInputHelpers.h"
 #include "Cafe/CafeSystem.h"
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
+#include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
@@ -331,13 +332,14 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setSurfaceSize([[maybe_unuse
 	}
 }
 
-// ★ NesStation R2: 输出渲染分辨率缩放（0.25..1.0）—— 游戏画面渲染进低分辨率
-// 离屏目标后线性放大回全尺寸 swapchain，显示大小不变、填充率按 scale^2 下降。
-// 线程安全（静态原子值，渲染线程逐帧读取，运行中热生效）。
-extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+// ★ NesStation R3: 全局内部分辨率缩放（0.25..3.0）—— 渲染目标纹理按比例
+// 创建（真实降低/提升游戏内部渲染分辨率，填充率按 scale^2 变化），视口/
+// 剪裁/拷贝由 Cemu 图形包分辨率管线自动联动，输出画面大小不变。任意线程
+// 记录待生效值，GPU 线程在帧边界应用并重建纹理缓存（运行中热生效）。
+extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setOutputRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
 {
-	VulkanRenderer::SetOutputRenderScale(scale);
+	LatteTexture_SetInternalRenderScale(scale);
 }
 
 extern "C" [[maybe_unused]] JNIEXPORT void JNICALL

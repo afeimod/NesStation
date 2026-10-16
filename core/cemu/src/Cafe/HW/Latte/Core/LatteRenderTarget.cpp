@@ -223,7 +223,9 @@ void LatteMRT::BindDepthBufferOnly(LatteTextureView* view)
 
 LatteTextureView* LatteMRT_CreateDepthBuffer(MPTR depthBufferPhysMem, uint32 width, uint32 height, uint32 pitch, Latte::E_HWTILEMODE tileMode, Latte::E_GX2SURFFMT format, uint32 swizzle, sint32 viewSlice)
 {
+	LatteTexture_SetRTCreationHint(true); // NesStation: 深度渲染目标 —— 允许内部分辨率缩放
 	LatteTextureView* textureView = LatteTexture_CreateMapping(depthBufferPhysMem, MPTR_NULL, width, height, viewSlice+1, pitch, tileMode, swizzle, 0, 1, viewSlice, 1, format, viewSlice > 0 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, true);
+	LatteTexture_SetRTCreationHint(false);
 	LatteMRT::SetDepthAndStencilAttachment(textureView, textureView->baseTexture->hasStencil);
 	return textureView;
 }
@@ -304,7 +306,9 @@ LatteTextureView* LatteMRT::GetColorAttachmentTexture(uint32 index, bool createN
 	if (colorBufferView == nullptr)
 	{
 		// create color buffer view
+		LatteTexture_SetRTCreationHint(true); // NesStation: 颜色渲染目标 —— 允许内部分辨率缩放
 		colorBufferView = LatteTexture_CreateMapping(colorBufferPhysMem, 0, colorBufferWidth, colorBufferHeight, (viewFirstSlice + viewNumSlices), colorBufferPitch, colorBufferTileMode, colorBufferSwizzle>>8, viewFirstMip, 1, viewFirstSlice, viewNumSlices, (Latte::E_GX2SURFFMT)colorBufferFormat, (viewFirstSlice + viewNumSlices)>1? Latte::E_DIM::DIM_2D_ARRAY: Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, false, true);
+		LatteTexture_SetRTCreationHint(false);
 		LatteGPUState.repeatTextureInitialization = true;
 		checkForTextureChanges = false;
 	}
@@ -569,7 +573,9 @@ bool LatteMRT::UpdateCurrentFBO()
 				if (!depthBufferView)
 				{
 					// create new depth buffer view and if it doesn't exist then also create the texture
+					LatteTexture_SetRTCreationHint(true); // NesStation: 深度渲染目标 —— 允许内部分辨率缩放
 					depthBufferView = LatteTexture_CreateMapping(depthBufferPhysMem, 0, depthBufferWidth, depthBufferHeight, depthBufferViewFirstSlice+1, depthBufferPitch, depthBufferTileMode, depthBufferSwizzle, 0, 1, depthBufferViewFirstSlice, 1, depthBufferFormat, depthBufferViewFirstSlice > 0 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, true, true);
+					LatteTexture_SetRTCreationHint(false);
 					LatteGPUState.repeatTextureInitialization = true;
 				}
 				else
@@ -684,6 +690,9 @@ void LatteRenderTarget_itHLESwapScanBuffer()
 	LattePerformanceMonitor_frameEnd();
 	LatteGPUState.frameCounter++;
 	g_renderer->SwapBuffers(true, true);
+	// NesStation R3: 帧边界安全点应用待生效的内部分辨率缩放（GPU 线程；
+	// 生效时整体重建纹理缓存，下一次绘制按新比例重建渲染目标）
+	LatteTexture_ApplyPendingInternalRenderScale();
 
 	catchOpenGLError();
 	performanceMonitor.gpuTime_frameTime.beginMeasuring();
@@ -786,7 +795,9 @@ void LatteRenderTarget_itHLEClearColorDepthStencil(uint32 clearMask,
 		{
 			// create new texture with matching format
 			cemu_assert_debug(colorBufferViewNumSlice <= 1);
+			LatteTexture_SetRTCreationHint(true); // NesStation: 颜色渲染目标清除路径
 			LatteTextureView* newColorView = LatteTexture_CreateMapping(colorBufferMPTR, MPTR_NULL, colorBufferWidth, colorBufferHeight, colorBufferViewFirstSlice+1, colorBufferPitch, colorBufferTilemode, colorBufferSwizzle, 0, 1, colorBufferViewFirstSlice, 1, colorBufferFormat, colorBufferViewFirstSlice > 0 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, false);
+			LatteTexture_SetRTCreationHint(false);
 			LatteRenderTarget_applyTextureColorClear(newColorView->baseTexture, colorBufferViewFirstSlice, colorBufferMipIndex, r, g, b, a, eventCounter);
 		}
 	}
@@ -864,6 +875,12 @@ void LatteRenderTarget_getScreenImageArea(sint32* x, sint32* y, sint32* width, s
 
 void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView)
 {
+	// NesStation R3: GamePad 悬浮画面时间片节流 —— pad 是 TV 的镜像画面，
+	// 至多 30fps 呈现（33ms 间隔）足够流畅；被跳过的帧连纹理同步/截图
+	// 检查一并省去，pad 路径 CPU/GPU 占用进一步减半（悬浮 pad 窗口为
+	// 唯一显示时该节流同样生效，由合成器保持上一帧画面）。
+	if (isPadView && g_renderer->PadViewSkipPresent())
+		return;
 	// make sure texture is updated to latest data in cache
 	LatteTexture_UpdateDataToLatest(textureView->baseTexture);
 	// mark source texture as still in use

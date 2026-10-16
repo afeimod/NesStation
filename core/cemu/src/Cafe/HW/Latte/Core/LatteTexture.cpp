@@ -10,6 +10,9 @@
 
 #include <boost/container/small_vector.hpp>
 
+#include <algorithm>
+#include <cmath>
+
 struct TexMemOccupancyEntry
 {
 	uint32 addrStart;
@@ -1207,6 +1210,38 @@ std::vector<LatteTexture*>& LatteTexture::GetAllTextures()
 	return sAllTextures;
 }
 
+// NesStation R3: 全局内部分辨率缩放实现。待生效比例由 JNI 线程写入，
+// GPU 线程在帧边界（LatteRenderTarget_itHLESwapScanBuffer）应用并整体
+// 重建纹理缓存 —— 与存档同步卸载缓存同一条安全路径。渲染目标创建点由
+// LatteRenderTarget.cpp 置位 s_rtCreationHint（thread_local，GPU 线程
+// 单线程创建渲染目标，无竞争）。
+static std::atomic<float> s_internalRenderScale{ 1.0f };
+static std::atomic<float> s_pendingInternalRenderScale{ 1.0f };
+static thread_local bool s_rtCreationHint{ false };
+
+void LatteTexture_SetInternalRenderScale(float scale)
+{
+	scale = std::clamp(scale, 0.25f, 3.0f);
+	s_pendingInternalRenderScale.store(scale, std::memory_order_relaxed);
+}
+
+bool LatteTexture_ApplyPendingInternalRenderScale()
+{
+	float pending = s_pendingInternalRenderScale.load(std::memory_order_relaxed);
+	if (pending == s_internalRenderScale.load(std::memory_order_relaxed))
+		return false;
+	s_internalRenderScale.store(pending, std::memory_order_relaxed);
+	// 重建全部纹理：已存在的渲染目标按旧尺寸分配，必须删除后让下一次
+	// 绘制按新比例重新创建（与 LatteAsyncCommands 存档同步卸载同路径）
+	LatteTC_UnloadAllTextures();
+	return true;
+}
+
+void LatteTexture_SetRTCreationHint(bool hint)
+{
+	s_rtCreationHint = hint;
+}
+
 bool LatteTexture_GX2FormatHasStencil(bool isDepth, Latte::E_GX2SURFFMT format)
 {
 	if (!isDepth)
@@ -1304,6 +1339,29 @@ LatteTexture::LatteTexture(Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddre
 			if (rule.overwrite_settings.anistropic_value != -1)
 			{
 				this->overwriteInfo.anisotropicLevel = rule.overwrite_settings.anistropic_value;
+			}
+		}
+	}
+	// NesStation R3: 全局内部分辨率缩放 —— 仅作用于宏平铺的 2D 渲染目标
+	// （颜色缓冲/深度缓冲创建点由 RT hint 标记）；线性表面（CPU 共享/
+	// 回读）与图形包规则已命中的纹理保持原样。有效尺寸写入 overwriteInfo
+	// 后，Vulkan 分配、视口/剪裁缩放、fragCoord 比例、跨尺寸拷贝均走
+	// Cemu 既有图形包分辨率管线。
+	if (s_rtCreationHint && !this->overwriteInfo.hasResolutionOverwrite
+		&& (dim == Latte::E_DIM::DIM_2D || dim == Latte::E_DIM::DIM_2D_ARRAY || dim == Latte::E_DIM::DIM_2D_MSAA)
+		&& Latte::TM_IsMacroTiled(tileMode))
+	{
+		const float rtScale = s_internalRenderScale.load(std::memory_order_relaxed);
+		if (rtScale > 0.001f && (rtScale < 0.999f || rtScale > 1.001f))
+		{
+			sint32 scaledWidth = std::max(1, (sint32)std::lround((float)width * rtScale));
+			sint32 scaledHeight = std::max(1, (sint32)std::lround((float)height * rtScale));
+			if (scaledWidth != (sint32)width || scaledHeight != (sint32)height)
+			{
+				this->overwriteInfo.hasResolutionOverwrite = true;
+				this->overwriteInfo.width = scaledWidth;
+				this->overwriteInfo.height = scaledHeight;
+				this->overwriteInfo.depth = depth;
 			}
 		}
 	}

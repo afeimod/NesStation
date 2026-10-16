@@ -60,7 +60,10 @@ void SwapchainInfoVk::Create()
 	m_actualExtent = ChooseSwapExtent(details.capabilities);
 
 	// use at least two swapchain images. fewer than that causes problems on some drivers
-	uint32_t image_count = std::max(2u, details.capabilities.minImageCount);
+	// NesStation R3: pad 悬浮窗用 3 张图 —— 配合非阻塞 acquire 平滑 pad 更新
+	// 节奏（合成器 60Hz 排空时仍有余量，避免连续跳帧）
+	uint32_t image_count = mainWindow ? std::max(2u, details.capabilities.minImageCount)
+		: std::max(3u, details.capabilities.minImageCount);
 	if(details.capabilities.maxImageCount > 0)
 		image_count = std::min(image_count, details.capabilities.maxImageCount);
 	if(image_count < 2)
@@ -250,12 +253,13 @@ VkSemaphore SwapchainInfoVk::ConsumeAcquireSemaphore()
 	return ret;
 }
 
-bool SwapchainInfoVk::AcquireImage()
+bool SwapchainInfoVk::AcquireImage(uint64_t timeoutNs)
 {
 	ResetAvailableFence();
 
 	VkSemaphore acquireSemaphore = m_acquireSemaphores[m_acquireIndex];
-	VkResult result = vkAcquireNextImageKHR(m_logicalDevice, m_swapchain, 1'000'000'000, acquireSemaphore, m_imageAvailableFence, &swapchainImageIndex);
+	// NesStation R3: 超时可配 —— pad 悬浮窗传 0（非阻塞），图像未就绪立即返回
+	VkResult result = vkAcquireNextImageKHR(m_logicalDevice, m_swapchain, timeoutNs, acquireSemaphore, m_imageAvailableFence, &swapchainImageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
 		m_shouldRecreate = true;
 
@@ -267,7 +271,9 @@ bool SwapchainInfoVk::AcquireImage()
 	}
 #endif
 
-	if (result == VK_TIMEOUT)
+	// NesStation R3: VK_NOT_READY（timeout=0 且无可用图像）与 VK_TIMEOUT 同样
+	// 处理 —— 不消耗信号量/不递增 acquireIndex，直接跳过本帧
+	if (result == VK_TIMEOUT || result == VK_NOT_READY)
 	{
 		swapchainImageIndex = -1;
 		return false;

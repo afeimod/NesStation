@@ -1936,6 +1936,8 @@ fun EmulatorScreen(
         gameViewPosInRoot = coords.positionInRoot()
         gameViewSize = coords.size
     }
+    // Wii U 悬浮 GamePad 触摸换算用屏幕密度（组合期取值，供非组合 lambda 使用）
+    val screenDensity = androidx.compose.ui.platform.LocalDensity.current.density
 
     // Apply high-quality scaling flag to the engine whenever it changes.
     // This controls whether the native surface buffer uses source resolution
@@ -3688,10 +3690,16 @@ fun EmulatorScreen(
                             }
                         }
                         // ★★ Wii U（Cemu）：GamePad 触摸屏（Wii U 唯一可触摸屏）。
-                        //   游戏区（TV 或 GamePad 画面，同为 16:9）的未命中触摸
-                        //   换算为游戏视图局部坐标后直通引擎，引擎再等比缩放到
-                        //   DRC 854x480 坐标空间（见 CemuEngine.viewToDrc）——
-                        //   两种视图下均可全屏操作 GamePad 触摸。
+                        //   ★ R3 修复"GamePad 触摸逻辑丢失"：虚拟手柄覆盖层
+                        //   （fillMaxSize + pointerInput）是悬浮小窗的高 z 兄弟节点，
+                        //   Compose 命中测试会拦截全部触摸 —— 小窗 SurfaceView 的
+                        //   setOnTouchListener 永远收不到事件。这里把落入悬浮
+                        //   GamePad 窗口矩形（与 CemuPadOverlayView 布局同源）的
+                        //   未命中触摸归一化后直喂 pad 触摸链（setPadTouch →
+                        //   NativeInput onTouch* isTV=false → m_pad_mouse →
+                        //   VPADController::update_touch），与上游
+                        //   CanvasOnTouchListener(isTV=false) 语义一致；
+                        //   窗口外触摸保持主画布语义（TV/替换视图的 DRC 触摸）。
                         platform == GamePlatform.WIIU -> {
                             { rootPos, action ->
                                 val cemuEngine = engine as? com.nesstation.app.core.engine.CemuCoreEngine
@@ -3701,14 +3709,43 @@ fun EmulatorScreen(
                                     val lx = rootPos.x - gameViewPosInRoot.x
                                     val ly = rootPos.y - gameViewPosInRoot.y
                                     val inside = lx >= 0 && ly >= 0 && lx < vw && ly < vh
-                                    when (action) {
-                                        android.view.MotionEvent.ACTION_UP,
-                                        android.view.MotionEvent.ACTION_CANCEL ->
-                                            cemuEngine.setTouchInput(0f, 0f, false)
-                                        android.view.MotionEvent.ACTION_DOWN ->
-                                            if (inside) cemuEngine.setTouchInput(lx, ly, true)
-                                        android.view.MotionEvent.ACTION_MOVE ->
-                                            if (inside) cemuEngine.setTouchMoved(lx, ly)
+                                    // 悬浮 GamePad 窗口矩形（像素，游戏视图坐标系）
+                                    val padRect = if (padLayout.cwGamePadView == "overlay") {
+                                        cemuPadOverlayRectPx(
+                                            padLayout = padLayout,
+                                            livePadRect = if (showNdsCustomLayoutEditor) ndsBottomRect else null,
+                                            boxW = vw.toFloat(),
+                                            boxH = vh.toFloat(),
+                                            density = screenDensity
+                                        )
+                                    } else null
+                                    val inPad = padRect != null &&
+                                        lx >= padRect[0] && ly >= padRect[1] &&
+                                        lx < padRect[2] && ly < padRect[3]
+                                    if (inPad && padRect != null) {
+                                        val pw = (padRect[2] - padRect[0]).coerceAtLeast(1f)
+                                        val ph = (padRect[3] - padRect[1]).coerceAtLeast(1f)
+                                        val nx = ((lx - padRect[0]) / pw).coerceIn(0f, 1f)
+                                        val ny = ((ly - padRect[1]) / ph).coerceIn(0f, 1f)
+                                        when (action) {
+                                            android.view.MotionEvent.ACTION_UP,
+                                            android.view.MotionEvent.ACTION_CANCEL ->
+                                                cemuEngine.setPadTouch(0f, 0f, false)
+                                            android.view.MotionEvent.ACTION_DOWN ->
+                                                cemuEngine.setPadTouch(nx, ny, true)
+                                            android.view.MotionEvent.ACTION_MOVE ->
+                                                cemuEngine.setPadTouchMoved(nx, ny)
+                                        }
+                                    } else {
+                                        when (action) {
+                                            android.view.MotionEvent.ACTION_UP,
+                                            android.view.MotionEvent.ACTION_CANCEL ->
+                                                cemuEngine.setTouchInput(0f, 0f, false)
+                                            android.view.MotionEvent.ACTION_DOWN ->
+                                                if (inside) cemuEngine.setTouchInput(lx, ly, true)
+                                            android.view.MotionEvent.ACTION_MOVE ->
+                                                if (inside) cemuEngine.setTouchMoved(lx, ly)
+                                        }
                                     }
                                 }
                             }
@@ -15343,12 +15380,17 @@ private fun SettingsPanel(
 
                 Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("渲染分辨率",
-                    // ★ R2: 内部低分辨率渲染 + 全尺寸呈现 —— 画面大小不变，渲染填充率
-                    //   按 scale^2 下降（0.5x 约降至 1/4），弱设备提速、整机降功耗；
-                    //   运行中切换即时热生效，触摸映射不受影响。
-                    listOf("1" to "1x (默认·原生)",
+                    // ★ R3: 真实内部分辨率缩放 —— 游戏渲染目标纹理按比例创建
+                    //   （视口/剪裁/跨尺寸拷贝由 Cemu 图形包分辨率管线自动联动），
+                    //   GPU 填充率/带宽按 scale^2 变化，输出画面大小不变。
+                    //   <1x 提速省电（0.3x 约降至 1/11 填充），1.5x 超采样更精细；
+                    //   运行中切换即时热生效（重建纹理缓存），触摸映射不受影响。
+                    listOf("1.5" to "1.5x (超采样·更精细)",
+                           "1" to "1x (默认·原生)",
                            "0.75" to "0.75x (提速·省电)",
-                           "0.5" to "0.5x (大幅提速·最省电)"),
+                           "0.5" to "0.5x (大幅提速)",
+                           "0.4" to "0.4x (极速·低功耗)",
+                           "0.3" to "0.3x (极致省电)"),
                     padLayout.cwRenderScale
                 ) { onLayoutChange(padLayout.copy {cwRenderScale = it}) }
                 DropdownSetting("垂直同步",
@@ -15395,28 +15437,19 @@ private fun SettingsPanel(
                 SwitchSetting("悬浮 GamePad 画面", "GamePad 画面以小窗悬浮在 TV 画面角落（默认开）",
                     padLayout.cwGamePadView == "overlay"
                 ) { onLayoutChange(padLayout.copy {cwGamePadView = if (it) "overlay" else "off"}) }
-                SliderSetting("悬浮画面大小",
-                    "GamePad 小窗宽度占屏幕百分比（当前 ${padLayout.cwPadOverlayScale}%）",
-                    (padLayout.cwPadOverlayScale.toIntOrNull() ?: 20).toFloat(), 10f, 60f
-                ) { v -> onLayoutChange(padLayout.copy {cwPadOverlayScale = v.toInt().toString()}) }
+                // ★ R3: 大小/模糊/角落设置已移除 —— 小窗支持自由拖动摆放
+                //   （画面缩放 → 自定义 双屏编辑器 + 历史拖动坐标），
+                //   固定大小/角落选择与模糊强度不再暴露（存档字段保留兼容）。
                 SliderSetting("悬浮画面不透明度",
                     "核心输出着色器逐像素透明（当前 ${padLayout.cwPadOverlayOpacity}%）",
                     (padLayout.cwPadOverlayOpacity.toIntOrNull() ?: 60).toFloat(), 20f, 100f
                 ) { v -> onLayoutChange(padLayout.copy {cwPadOverlayOpacity = v.toInt().toString()}) }
-                SliderSetting("悬浮画面模糊",
-                    "背景模糊半径 dp，0 = 关闭（需 Android 12+；当前 ${padLayout.cwPadOverlayBlur}）",
-                    (padLayout.cwPadOverlayBlur.toIntOrNull() ?: 0).toFloat(), 0f, 24f
-                ) { v -> onLayoutChange(padLayout.copy {cwPadOverlayBlur = v.toInt().toString()}) }
-                DropdownSetting("悬浮画面角落",
-                    listOf("0" to "左下 (默认)", "1" to "右下", "2" to "左上", "3" to "右上"),
-                    padLayout.cwPadOverlayCorner
-                ) { onLayoutChange(padLayout.copy {cwPadOverlayCorner = it}) }
-                // 自定义拖动复位：清空拖动坐标 → 回到上方“悬浮画面角落”的默认位置
+                // 自定义拖动复位：清空拖动坐标 → 小窗回到默认位置（左下角）
                 if (padLayout.cwPadOverlayX.isNotBlank() || padLayout.cwPadOverlayY.isNotBlank()) {
                     androidx.compose.material3.TextButton(onClick = {
                         onLayoutChange(padLayout.copy {cwPadOverlayX = ""; cwPadOverlayY = ""})
                     }) {
-                        Text("重置悬浮窗位置（回到角落默认）", color = Color(0xFFFFD66B), fontSize = 11.sp)
+                        Text("重置悬浮窗位置", color = Color(0xFFFFD66B), fontSize = 11.sp)
                     }
                 }
                 // ★ 画面缩放为「自定义」时小窗走自由布局矩形（cwPadRect*），
@@ -16903,6 +16936,55 @@ private fun CemuTextInputDialog() {
             ) { Text("完成") }
         }
     )
+}
+
+/**
+ * 计算 Wii U 悬浮 GamePad 小窗在宿主 Box 内的像素矩形 [l, t, r, b]
+ * （与 CemuPadOverlayView 的摆放几何严格同源，供触摸命中测试复用）：
+ *  · videoScale == "custom"：自由布局矩形（livePadRect 优先，其次 cwPadRect*）
+ *  · 其余模式：角落默认位置 / 历史拖动坐标（cwPadOverlayX/Y）+ 宽度百分比
+ */
+private fun cemuPadOverlayRectPx(
+    padLayout: PadLayout,
+    livePadRect: FloatArray?,
+    boxW: Float,
+    boxH: Float,
+    density: Float
+): FloatArray? {
+    if (boxW <= 0f || boxH <= 0f) return null
+    return if (padLayout.videoScale == "custom") {
+        val r = livePadRect ?: floatArrayOf(
+            padLayout.cwPadRectLeft, padLayout.cwPadRectTop,
+            padLayout.cwPadRectRight, padLayout.cwPadRectBottom
+        )
+        floatArrayOf(
+            r[0].coerceIn(0f, 1f) * boxW,
+            r[1].coerceIn(0f, 1f) * boxH,
+            r[2].coerceIn(0f, 1f) * boxW,
+            r[3].coerceIn(0f, 1f) * boxH
+        )
+    } else {
+        val scalePercent = (padLayout.cwPadOverlayScale.toIntOrNull() ?: 20).coerceIn(10, 60)
+        val corner = (padLayout.cwPadOverlayCorner.toIntOrNull() ?: 0).coerceIn(0, 3)
+        val scale = (scalePercent / 100f).coerceIn(0.1f, 0.6f)
+        val padW = boxW * scale
+        // Wii U GamePad 屏幕 854x480（16:9）
+        val padH = padW * (480f / 854f)
+        val maxOffX = (boxW - padW).coerceAtLeast(0f)
+        val maxOffY = (boxH - padH).coerceAtLeast(0f)
+        val marginPx = 8f * density
+        fun cornerDefault(): Pair<Float, Float> = when (corner) {
+            1 -> 1f to 1f    // 右下
+            2 -> 0f to 0f    // 左上
+            3 -> 1f to 0f    // 右上
+            else -> 0f to 1f // 左下（默认）
+        }
+        val normX = (padLayout.cwPadOverlayX.toFloatOrNull() ?: cornerDefault().first).coerceIn(0f, 1f)
+        val normY = (padLayout.cwPadOverlayY.toFloatOrNull() ?: cornerDefault().second).coerceIn(0f, 1f)
+        val offX = marginPx + (maxOffX - marginPx * 2).coerceAtLeast(0f) * normX
+        val offY = marginPx + (maxOffY - marginPx * 2).coerceAtLeast(0f) * normY
+        floatArrayOf(offX, offY, offX + padW, offY + padH)
+    }
 }
 
 /**

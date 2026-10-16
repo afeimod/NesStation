@@ -2223,11 +2223,16 @@ fun CoreSettingsPanel(
             GamePlatform.WIIU -> item {
                 SettingsSection("Wii U · 画面 / 性能") {
                     DropdownRow("渲染分辨率",
-                        // ★ R2: 内部低分辨率渲染 + 全尺寸呈现 —— 画面大小不变，渲染填充率
-                        //   按 scale^2 下降；运行中切换即时热生效，触摸映射不受影响。
-                        listOf("1" to "1x (默认·原生)",
+                        // ★ R3: 真实内部分辨率缩放 —— 游戏渲染目标纹理按比例创建
+                        //   （视口/剪裁/跨尺寸拷贝由 Cemu 图形包分辨率管线自动联动），
+                        //   GPU 填充率/带宽按 scale^2 变化，输出画面大小不变。
+                        //   <1x 提速省电，1.5x 超采样更精细；运行中切换即时热生效。
+                        listOf("1.5" to "1.5x (超采样·更精细)",
+                               "1" to "1x (默认·原生)",
                                "0.75" to "0.75x (提速·省电)",
-                               "0.5" to "0.5x (大幅提速·最省电)"),
+                               "0.5" to "0.5x (大幅提速)",
+                               "0.4" to "0.4x (极速·低功耗)",
+                               "0.3" to "0.3x (极致省电)"),
                         padLayout.cwRenderScale
                     ) { updateLayout(padLayout.copy {cwRenderScale = it}) }
                     DropdownRow("垂直同步",
@@ -2289,25 +2294,14 @@ fun CoreSettingsPanel(
                         listOf("overlay" to "开启 (默认·小窗悬浮在 TV 角落)", "off" to "关闭 (仅 TV 画面)"),
                         padLayout.cwGamePadView
                     ) { updateLayout(padLayout.copy {cwGamePadView = it}) }
-                    DropdownRow("悬浮画面大小",
-                        listOf("10" to "10%", "15" to "15%", "20" to "20% (默认)", "25" to "25%",
-                               "30" to "30%", "40" to "40%", "50" to "50%", "60" to "60%"),
-                        padLayout.cwPadOverlayScale
-                    ) { updateLayout(padLayout.copy {cwPadOverlayScale = it}) }
+                    // ★ R3: 大小/模糊/角落设置已移除 —— 小窗支持自由拖动摆放
+                    //   （画面缩放 → 自定义 双屏编辑器 + 历史拖动坐标），
+                    //   固定大小/角落选择与模糊强度不再暴露（存档字段保留兼容）。
                     DropdownRow("悬浮画面不透明度",
                         listOf("20" to "20%", "40" to "40%", "60" to "60% (默认)", "80" to "80%",
                                "90" to "90%", "100" to "100% (不透明)"),
                         padLayout.cwPadOverlayOpacity
                     ) { updateLayout(padLayout.copy {cwPadOverlayOpacity = it}) }
-                    DropdownRow("悬浮画面模糊",
-                        listOf("0" to "关闭 (默认)", "2" to "2 dp", "4" to "4 dp", "8" to "8 dp",
-                               "12" to "12 dp", "16" to "16 dp", "24" to "24 dp"),
-                        padLayout.cwPadOverlayBlur
-                    ) { updateLayout(padLayout.copy {cwPadOverlayBlur = it}) }
-                    DropdownRow("悬浮画面角落",
-                        listOf("0" to "左下 (默认)", "1" to "右下", "2" to "左上", "3" to "右上"),
-                        padLayout.cwPadOverlayCorner
-                    ) { updateLayout(padLayout.copy {cwPadOverlayCorner = it}) }
                 }
                 SettingsSection("Wii U · 音频") {
                     DropdownRow("TV 音频输出",

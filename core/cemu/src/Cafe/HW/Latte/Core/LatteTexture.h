@@ -362,3 +362,11 @@ void LatteTexture_MarkDynamicTextureAsChanged(LatteTextureView* textureView, sin
 void LatteTexture_UpdateTextureFromDynamicChanges(LatteTexture* texture);
 
 void LatteTexture_UpdateDataToLatest(LatteTexture* texture);
+
+// NesStation R3: 全局内部分辨率缩放 —— 渲染目标纹理按比例创建（等效自动
+// [TextureRedefine] 规则）：scale<1 真实降低游戏内部渲染分辨率（填充率/
+// 带宽按 scale^2 下降），scale>1 超采样；视口/剪裁/fragCoord/拷贝由
+// GetEffectiveSize 管线自动联动，最终输出画面大小不变。
+void LatteTexture_SetInternalRenderScale(float scale); // 任意线程：记录待生效比例
+bool LatteTexture_ApplyPendingInternalRenderScale();   // 仅 GPU 线程帧边界调用：生效 + 重建纹理缓存
+void LatteTexture_SetRTCreationHint(bool hint);        // 包住渲染目标纹理创建点（同线程内配对调用）

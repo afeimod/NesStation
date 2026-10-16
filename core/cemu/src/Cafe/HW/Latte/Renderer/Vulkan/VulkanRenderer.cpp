@@ -1761,152 +1761,16 @@ void VulkanRenderer::CreateCommandBuffers()
 	}
 }
 
-// ★ NesStation R2: 输出渲染分辨率缩放（1.0 = 原生）。经 JNI
-// NativeEmulation.setOutputRenderScale 设置，渲染线程逐帧读取。
-static std::atomic<float> s_outputRenderScale{ 1.0f };
-
-void VulkanRenderer::SetOutputRenderScale(float scale)
+// ★ NesStation R3: GamePad 悬浮画面时间片节流 —— pad 呈现至多 30fps。
+//   R2 的奇偶隔帧在主屏/pad 同频时仍会按对齐相位阻塞 acquire；时间片
+//   节流与非阻塞 acquire 组合后，pad 何时更新完全由合成器可用图像驱动，
+//   GPU 线程对 pad 零等待。
+bool VulkanRenderer::PadViewSkipPresent()
 {
-	if (scale < 0.25f)
-		scale = 0.25f;
-	if (scale > 1.0f)
-		scale = 1.0f;
-	s_outputRenderScale.store(scale, std::memory_order_relaxed);
+	const auto now = std::chrono::steady_clock::now();
+	return std::chrono::duration_cast<std::chrono::milliseconds>(now - m_padLastPresent).count() < 33;
 }
 
-float VulkanRenderer::GetOutputRenderScale()
-{
-	return s_outputRenderScale.load(std::memory_order_relaxed);
-}
-
-bool VulkanRenderer::IsPadViewSkippedFrame() const
-{
-	return (m_padPresentCounter & 1) != 0;
-}
-
-// ★ NesStation R2: 确保低分辨率离屏输出目标与（全尺寸 swapchain extent × scale）
-//   匹配，不匹配（首帧/切换分辨率/旋转/格式变化）时重建。重建是低频事件，
-//   采用与 RecreateSwapchain 相同的提交+等待空闲策略销毁旧资源。
-bool VulkanRenderer::EnsureScaledOutputTarget(bool mainWindow, const VkExtent2D& fullExtent, VkFormat format, float scale, ScaledOutputTarget** targetOut)
-{
-	auto& target = m_scaledOutput[mainWindow ? 0 : 1];
-	VkExtent2D scaledExtent;
-	scaledExtent.width = std::max(1u, (uint32)((float)fullExtent.width * scale));
-	scaledExtent.height = std::max(1u, (uint32)((float)fullExtent.height * scale));
-	if (target.valid && target.extent.width == scaledExtent.width && target.extent.height == scaledExtent.height
-		&& target.format == format && target.scale == scale)
-	{
-		*targetOut = &target;
-		return true;
-	}
-	if (target.valid)
-	{
-		// 旧目标可能仍被在途 command buffer 引用 —— 与 RecreateSwapchain 同款等待
-		SubmitCommandBuffer();
-		WaitDeviceIdle();
-		DestroyScaledOutputTarget(target);
-	}
-	VkImageCreateInfo imageInfo{};
-	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	imageInfo.imageType = VK_IMAGE_TYPE_2D;
-	imageInfo.format = format;
-	imageInfo.extent = { scaledExtent.width, scaledExtent.height, 1 };
-	imageInfo.mipLevels = 1;
-	imageInfo.arrayLayers = 1;
-	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	if (vkCreateImage(m_logicalDevice, &imageInfo, nullptr, &target.image) != VK_SUCCESS)
-	{
-		target.image = VK_NULL_HANDLE;
-		cemuLog_log(LogType::Force, "Vulkan: failed to create scaled output image ({}x{})", scaledExtent.width, scaledExtent.height);
-		return false;
-	}
-	target.allocation = memoryManager->imageMemoryAllocate(target.image);
-	VkImageViewCreateInfo viewInfo{};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = target.image;
-	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	viewInfo.format = format;
-	viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	viewInfo.subresourceRange.levelCount = 1;
-	viewInfo.subresourceRange.layerCount = 1;
-	if (vkCreateImageView(m_logicalDevice, &viewInfo, nullptr, &target.view) != VK_SUCCESS)
-	{
-		target.view = VK_NULL_HANDLE;
-		DestroyScaledOutputTarget(target);
-		return false;
-	}
-	// 专用 render pass：每帧整帧 CLEAR（信箱区恒黑），结束自动转入 TRANSFER_SRC
-	// 供放大 blit 使用。格式与 swapchain render pass 一致 -> 管线兼容。
-	VkAttachmentDescription colorAttachment{};
-	colorAttachment.format = format;
-	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	VkAttachmentReference colorAttachmentRef{};
-	colorAttachmentRef.attachment = 0;
-	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	VkSubpassDescription subpass{};
-	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subpass.colorAttachmentCount = 1;
-	subpass.pColorAttachments = &colorAttachmentRef;
-	VkRenderPassCreateInfo renderPassInfo{};
-	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = 1;
-	renderPassInfo.pAttachments = &colorAttachment;
-	renderPassInfo.subpassCount = 1;
-	renderPassInfo.pSubpasses = &subpass;
-	if (vkCreateRenderPass(m_logicalDevice, &renderPassInfo, nullptr, &target.renderPass) != VK_SUCCESS)
-	{
-		target.renderPass = VK_NULL_HANDLE;
-		DestroyScaledOutputTarget(target);
-		return false;
-	}
-	VkFramebufferCreateInfo framebufferInfo{};
-	framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-	framebufferInfo.renderPass = target.renderPass;
-	framebufferInfo.attachmentCount = 1;
-	framebufferInfo.pAttachments = &target.view;
-	framebufferInfo.width = scaledExtent.width;
-	framebufferInfo.height = scaledExtent.height;
-	framebufferInfo.layers = 1;
-	if (vkCreateFramebuffer(m_logicalDevice, &framebufferInfo, nullptr, &target.framebuffer) != VK_SUCCESS)
-	{
-		target.framebuffer = VK_NULL_HANDLE;
-		DestroyScaledOutputTarget(target);
-		return false;
-	}
-	target.extent = scaledExtent;
-	target.format = format;
-	target.scale = scale;
-	target.valid = true;
-	*targetOut = &target;
-	return true;
-}
-
-void VulkanRenderer::DestroyScaledOutputTarget(ScaledOutputTarget& target)
-{
-	if (target.framebuffer != VK_NULL_HANDLE)
-		vkDestroyFramebuffer(m_logicalDevice, target.framebuffer, nullptr);
-	if (target.renderPass != VK_NULL_HANDLE)
-		vkDestroyRenderPass(m_logicalDevice, target.renderPass, nullptr);
-	if (target.view != VK_NULL_HANDLE)
-		vkDestroyImageView(m_logicalDevice, target.view, nullptr);
-	if (target.image != VK_NULL_HANDLE)
-	{
-		vkDestroyImage(m_logicalDevice, target.image, nullptr);
-		if (target.allocation)
-			memoryManager->imageMemoryFree(target.allocation);
-	}
-	target = {};
-}
 
 bool VulkanRenderer::IsSwapchainInfoValid(bool mainWindow) const
 {
@@ -2073,9 +1937,6 @@ void VulkanRenderer::Shutdown()
 {
 	SubmitCommandBuffer();
 	WaitDeviceIdle();
-	// ★ NesStation R2: 释放低分辨率离屏输出目标
-	DestroyScaledOutputTarget(m_scaledOutput[0]);
-	DestroyScaledOutputTarget(m_scaledOutput[1]);
 	// stop compilation threads
 	RendererShaderVk::Shutdown();
 	PipelineCompiler::CompileThreadPool_Stop();
@@ -2243,9 +2104,10 @@ void VulkanRenderer::QueryAvailableFormats()
 
 bool VulkanRenderer::ImguiBegin(bool mainWindow)
 {
-	// ★ NesStation R2: pad 隔帧跳过帧同步跳过 pad 侧 ImGui 渲染
-	//   （LatteOverlay/erreula/swkbd 在悬浮 pad 视图 30fps 更新，观感无损）
-	if (!mainWindow && IsPadViewSkippedFrame())
+	// ★ NesStation R3: pad 本帧未成功获取交换链图像（节流/非阻塞 acquire
+	//   未就绪）则同步跳过 pad 侧 ImGui 渲染 —— 与 DrawBackbufferQuad/
+	//   SwapBuffers 用同一 m_padFrameActive 标志对齐
+	if (!mainWindow && !m_padFrameActive)
 		return false;
 	if (!Renderer::ImguiBegin(mainWindow))
 		return false;
@@ -3196,7 +3058,11 @@ bool VulkanRenderer::AcquireNextSwapchainImage(bool mainWindow)
 	if (!UpdateSwapchainProperties(mainWindow))
 		return false;
 
-	bool result = chainInfo.AcquireImage();
+	// ★ NesStation R3: pad 交换链非阻塞获取（timeout=0）—— 图像未就绪
+	//   （合成器尚未释放）立即返回 VK_NOT_READY，跳过本帧 pad 绘制/呈现，
+	//   GPU 线程绝不因 pad 悬浮窗阻塞（R2 隔帧的 acquire 仍可能按 vsync
+	//   相位阻塞，这正是开启 GamePad 大幅掉帧的根源）
+	bool result = chainInfo.AcquireImage(mainWindow ? 1'000'000'000ull : 0ull);
 	if (!result)
 		return false;
 
@@ -3387,16 +3253,22 @@ void VulkanRenderer::SwapBuffers(bool swapTV, bool swapDRC)
 	if (swapTV && IsSwapchainInfoValid(true))
 		SwapBuffer(true);
 
+	// ★ NesStation R3: GamePad 悬浮画面按帧状态呈现 —— 仅当本帧 pad 成功
+	//   获取并绘制（m_padFrameActive）才 present；呈现后记录时间戳供
+	//   33ms 时间片节流判定并复位标志。pad 被节流/未就绪的帧既不绘制
+	//   也不 present，GPU 线程零等待，合成器保持上一帧画面。
 	if (swapDRC && IsSwapchainInfoValid(false))
 	{
-		// ★ NesStation R2: GamePad 悬浮画面隔帧呈现 —— acquire/present/同步等待
-		//   序列与 pad swapchain 的 GPU 填充同步减半（开启 GamePad 画面时
-		//   性能占用显著下降）。DrawBackbufferQuad 与 ImguiBegin 用同一奇偶
-		//   计数跳过对应帧的绘制，跳过帧由合成器保持上一帧画面。
-		const bool skipPadPresent = (m_padPresentCounter & 1) != 0;
-		m_padPresentCounter++;
-		if (!skipPadPresent)
+		if (m_padFrameActive)
+		{
 			SwapBuffer(false);
+			m_padLastPresent = std::chrono::steady_clock::now();
+			m_padFrameActive = false;
+		}
+	}
+	else
+	{
+		m_padFrameActive = false;
 	}
 
 	if(swapTV)
@@ -3483,14 +3355,17 @@ void VulkanRenderer::ClearColorImage(LatteTextureVk* vkTexture, uint32 sliceInde
 
 void VulkanRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter, sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight, bool padView, bool clearBackground)
 {
-	// ★ NesStation R2: GamePad 悬浮画面隔帧跳过 —— pad 是 TV 的镜像画面，
-	//   隔帧绘制/呈现（30fps）观感无损，pad 路径占用减半。呈现端 SwapBuffers
-	//   用同一奇偶计数，保证跳过帧既不绘制也不呈现（合成器保持上一帧）。
-	if (padView && IsPadViewSkippedFrame())
+	// ★ NesStation R3: GamePad 悬浮画面节流 + 非阻塞获取 —— 距上次呈现
+	//   不足 33ms 直接跳过；acquire 未就绪（VK_NOT_READY）同样跳过。
+	//   两者都不阻塞 GPU 线程，被跳过帧由合成器保持上一帧画面。
+	if (padView && PadViewSkipPresent())
 		return;
 
 	if(!AcquireNextSwapchainImage(!padView))
 		return;
+
+	if (padView)
+		m_padFrameActive = true; // 本帧 pad 已获取图像 —— 呈现与覆盖层同步进行
 
 	auto& chainInfo = GetChainInfo(!padView);
 	LatteTextureViewVk* texViewVk = (LatteTextureViewVk*)texView;
@@ -3506,109 +3381,6 @@ void VulkanRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutpu
 	vkCmdPipelineBarrier(m_state.currentCommandBuffer, srcStage, dstStage, 0, 1, &memoryBarrier, 0, nullptr, 0, nullptr);
 
 	auto pipeline = backbufferBlit_createGraphicsPipeline(m_swapchainDescriptorSetLayout, padView, shader);
-
-	// ★ NesStation R2: 输出渲染分辨率缩放 —— 游戏画面先渲染进低分辨率离屏
-	//   目标（离屏整帧 CLEAR，信箱区恒黑），再线性放大 blit 到全尺寸 swapchain。
-	//   【显示大小不变】，填充率/显存带宽按 scale^2 下降；ensure 失败时
-	//   回退下方全尺寸直绘路径。仅作用于主画布（悬浮 pad 窗口本身很小，
-	//   保持原生分辨率避免画质劣化，其占用已由隔帧跳过减半）。
-	const float outScale = GetOutputRenderScale();
-	if (!padView && outScale < 0.999f && chainInfo.m_actualExtent.width > 0 && chainInfo.m_actualExtent.height > 0)
-	{
-		ScaledOutputTarget* scaledTarget = nullptr;
-		if (EnsureScaledOutputTarget(!padView, chainInfo.m_actualExtent, chainInfo.m_surfaceFormat.format, outScale, &scaledTarget))
-		{
-			VkClearValue scaledClearValue{};
-			scaledClearValue.color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
-			VkRenderPassBeginInfo scaledPassInfo = {};
-			scaledPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-			scaledPassInfo.renderPass = scaledTarget->renderPass;
-			scaledPassInfo.framebuffer = scaledTarget->framebuffer;
-			scaledPassInfo.renderArea.offset = { 0, 0 };
-			scaledPassInfo.renderArea.extent = scaledTarget->extent;
-			scaledPassInfo.clearValueCount = 1;
-			scaledPassInfo.pClearValues = &scaledClearValue;
-
-			VkViewport scaledViewport{};
-			scaledViewport.x = (float)imageX * outScale;
-			scaledViewport.y = (float)imageY * outScale;
-			scaledViewport.width = (float)imageWidth * outScale;
-			scaledViewport.height = (float)imageHeight * outScale;
-			scaledViewport.minDepth = 0.0f;
-			scaledViewport.maxDepth = 1.0f;
-			vkCmdSetViewport(m_state.currentCommandBuffer, 0, 1, &scaledViewport);
-
-			VkRect2D scaledScissor{};
-			scaledScissor.extent = scaledTarget->extent;
-			vkCmdSetScissor(m_state.currentCommandBuffer, 0, 1, &scaledScissor);
-
-			auto descriptSet = backbufferBlit_createDescriptorSet(m_swapchainDescriptorSetLayout, texViewVk, useLinearTexFilter);
-
-			vkCmdBeginRenderPass(m_state.currentCommandBuffer, &scaledPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-			vkCmdBindPipeline(m_state.currentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-			m_state.currentPipeline = pipeline;
-
-			auto outputUniforms = shader->FillUniformBlockBuffer(*texView, {imageWidth, imageHeight}, padView);
-
-			auto outputUniformOffset = uniformData_uploadUniformDataBufferGetOffset({(uint8*)&outputUniforms, sizeof(decltype(outputUniforms))});
-
-			vkCmdBindDescriptorSets(m_state.currentCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &descriptSet,
-				1, &outputUniformOffset);
-
-			vkCmdDraw(m_state.currentCommandBuffer, 6, 1, 0, 0);
-
-			vkCmdEndRenderPass(m_state.currentCommandBuffer);
-
-			// 低分辨率整帧线性放大到全尺寸 swapchain 图像（信箱区一并覆盖）
-			VkImage swapchainImage = chainInfo.m_swapchainImages[chainInfo.swapchainImageIndex];
-			VkImageSubresourceRange swapchainRange{};
-			swapchainRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			swapchainRange.levelCount = 1;
-			swapchainRange.layerCount = 1;
-			VkImageMemoryBarrier toTransferDst = {};
-			toTransferDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			toTransferDst.srcAccessMask = 0;
-			toTransferDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			toTransferDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			toTransferDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			toTransferDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			toTransferDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			toTransferDst.image = swapchainImage;
-			toTransferDst.subresourceRange = swapchainRange;
-			vkCmdPipelineBarrier(m_state.currentCommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransferDst);
-
-			VkImageBlit upscaleBlit{};
-			upscaleBlit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			upscaleBlit.srcSubresource.mipLevel = 0;
-			upscaleBlit.srcSubresource.baseArrayLayer = 0;
-			upscaleBlit.srcSubresource.layerCount = 1;
-			upscaleBlit.srcOffsets[0] = { 0, 0, 0 };
-			upscaleBlit.srcOffsets[1] = { (sint32)scaledTarget->extent.width, (sint32)scaledTarget->extent.height, 1 };
-			upscaleBlit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			upscaleBlit.dstSubresource.mipLevel = 0;
-			upscaleBlit.dstSubresource.baseArrayLayer = 0;
-			upscaleBlit.dstSubresource.layerCount = 1;
-			upscaleBlit.dstOffsets[0] = { 0, 0, 0 };
-			upscaleBlit.dstOffsets[1] = { (sint32)chainInfo.m_actualExtent.width, (sint32)chainInfo.m_actualExtent.height, 1 };
-			vkCmdBlitImage(m_state.currentCommandBuffer, scaledTarget->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &upscaleBlit, VK_FILTER_LINEAR);
-
-			// 转入 PRESENT_SRC —— 与 ImGui render pass 的 initialLayout(PRESENT_SRC) 匹配，
-			// 也满足 present 队列的布局要求
-			VkImageMemoryBarrier toPresent = toTransferDst;
-			toPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			toPresent.dstAccessMask = 0;
-			toPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-			vkCmdPipelineBarrier(m_state.currentCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
-
-			// restore viewport
-			vkCmdSetViewport(m_state.currentCommandBuffer, 0, 1, &m_state.currentViewport);
-
-			// mark current swapchain image as well defined
-			chainInfo.hasDefinedSwapchainImage = true;
-			return;
-		}
-	}
 
 	VkRenderPassBeginInfo renderPassInfo = {};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

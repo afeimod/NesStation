@@ -33,7 +33,9 @@ struct SwapchainInfoVk
 	void WaitAvailableFence();
 	void ResetAvailableFence() const;
 
-	bool AcquireImage();
+	// NesStation R3: timeoutNs 可配 —— pad 悬浮窗传 0（非阻塞），未就绪直接
+	// 返回 false（VK_NOT_READY），GPU 线程绝不因 pad 交换链等待
+	bool AcquireImage(uint64_t timeoutNs = 1'000'000'000ull);
 	// retrieve semaphore of last acquire for submitting a wait operation
 	// only one wait operation must be submitted per acquire (which submits a single signal operation)
 	// therefore subsequent calls will return a NULL handle

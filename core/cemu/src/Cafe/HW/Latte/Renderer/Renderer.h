@@ -58,6 +58,9 @@ public:
 	virtual void Initialize();
 	virtual void Shutdown();
 	virtual bool IsPadWindowActive() = 0;
+	// NesStation R3: GamePad 悬浮画面本帧是否跳过呈现（Vulkan 时间片节流；
+	// 其余后端默认不跳过，行为同上游）
+	virtual bool PadViewSkipPresent() { return false; }
 
 	virtual bool GetVRAMInfo(int& usageInMB, int& totalInMB) const;
 

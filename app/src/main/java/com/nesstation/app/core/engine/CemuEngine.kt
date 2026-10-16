@@ -68,8 +68,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _ffSpeed = 0
     /** 基准游戏速度档（设置页“游戏速度”0..4，快进关闭时恢复到该档）。 */
     @Volatile private var _baseGameSpeed = 1
-    /** 渲染分辨率缩放（1x / 0.75x / 0.5x）—— 经 setOutputRenderScale 下发到核心，
-     *  内部低分辨率渲染 + 全尺寸呈现（画面大小不变，填充率按 scale^2 下降）。 */
+    /** 渲染分辨率缩放（0.25x..3x，1 = 原生）—— 经 setOutputRenderScale 下发到核心，
+     *  渲染目标纹理按比例创建（真实内部渲染分辨率变化，填充率按 scale^2 变化，
+     *  输出画面大小不变；GPU 线程帧边界应用并重建纹理缓存）。 */
     @Volatile private var _renderScale = 1f
     @Volatile private var lastErrorText = ""
 
@@ -322,8 +323,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 val s = surface
                 if (s != null && s.isValid) {
                     // ★ 主画布恒为全尺寸 swapchain；渲染分辨率缩放经
-                    //   setOutputRenderScale 下发（核心内部低分辨率渲染 +
-                    //   全尺寸呈现，画面大小不变），触摸坐标无需换算。
+                    //   setOutputRenderScale 下发（核心内渲染目标纹理按比例创建，
+                    //   真实内部分辨率变化、输出画面大小不变），触摸坐标无需换算。
                     val w = if (surfaceWidth > 0) surfaceWidth else 1280
                     val h = if (surfaceHeight > 0) surfaceHeight else 720
                     NativeEmulation.setSurface(s, true)
@@ -386,7 +387,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     if (surfaceWidth > 0 && surfaceHeight > 0) {
                         NativeEmulation.setSurfaceSize(surfaceWidth, surfaceHeight, true)
                     }
-                    // 重挂后确保核心侧渲染分辨率缩放仍在（静态值不随 swapchain 重建丢失，
+                    // 重挂后确保核心侧渲染分辨率缩放仍在（待生效值不随 swapchain 重建丢失，
                     // 这里幂等重发一次，防御核心重启场景）
                     try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
@@ -484,14 +485,12 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 "overlayFPS" -> NativeSettings.setOverlayFPSEnabled(value == "true" || value == "enabled")
                 // ★ 下采样滤镜（上游 NativeSettings.ScalingFilter 同款取值）
                 "downscaleFilter" -> NativeSettings.setDownscalingFilter(value.toIntOrNull() ?: 0)
-                // ★ 渲染分辨率缩放（1x / 0.75x / 0.5x）：R2 起不再缩小主画布
-                //   swapchain（那种做法画面会跟着变小）—— surface 恒为全尺寸，
-                //   改经 setOutputRenderScale 把比例下发到核心：核心把游戏画面
-                //   渲染进低分辨率离屏目标再线性放大回全尺寸交换链呈现，
-                //   画面显示大小不变，渲染填充率按 scale^2 下降。触摸坐标
-                //   不再需要换算（核心按全尺寸窗口归一化）。
+                // ★ 渲染分辨率缩放（0.25x..3x）：R3 起为真实内部分辨率缩放 ——
+                //   surface 恒为全尺寸，比例下发到核心后由渲染目标纹理按比例
+                //   创建实现（等效自动 [TextureRedefine] 规则），视口/剪裁/拷贝
+                //   自动联动，输出画面大小不变；GPU 线程帧边界热生效。
                 "renderScale" -> {
-                    val newScale = (value.toFloatOrNull() ?: 1f).coerceIn(0.25f, 1f)
+                    val newScale = (value.toFloatOrNull() ?: 1f).coerceIn(0.25f, 3f)
                     if (newScale != _renderScale) {
                         _renderScale = newScale
                         applyRenderScaleLocked()
@@ -560,8 +559,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     // ------------------------------------------------------------------
 
     /**
-     * 渲染分辨率切换后立即下发到核心（VulkanRenderer 静态原子值，逐帧读取，
-     * 运行中热生效：下一帧自动重建离屏目标）。核心未启动时下发同样无害。
+     * 渲染分辨率切换后立即下发到核心（LatteTexture 待生效原子值，GPU 线程
+     * 帧边界应用：生效时重建纹理缓存，下一次绘制按新比例重建渲染目标）。
+     * 核心未启动时下发同样无害。
      */
     private fun applyRenderScaleLocked() {
         try {
