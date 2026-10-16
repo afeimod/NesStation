@@ -172,10 +172,30 @@ bool LatteTextureReadback_ReadbackToLinearBlocking(LatteTextureView* sourceView,
 
 	uint8* data = info->GetData(); // returned pixel format should match Latte format
 	uint32 bpp = Latte::GetFormatBits(sourceView->baseTexture->format) / 8;
-	uint32 srcRowBytes = sourceView->baseTexture->width * bpp;
-	uint32 dstRowBytes = dstWidth * bpp;
-	for (uint32 y = 0; y < dstHeight; y++)
-		memcpy(dstPtr + y * dstPitch * bpp, data + y * srcRowBytes, dstRowBytes);
+	// NesStation R7: 缩放源的回读数据按有效分辨率布局 —— 行距必须按有效
+	// 尺寸解释；逻辑尺寸与有效尺寸不一致时做最近邻重采样（旧实现按逻辑
+	// 宽度解释有效宽度数据 → 行错位乱码 + 越界读）。
+	sint32 srcEffWidth, srcEffHeight;
+	sourceView->baseTexture->GetEffectiveSize(srcEffWidth, srcEffHeight, sourceView->firstMip);
+	if ((sint32)dstWidth == srcEffWidth && (sint32)dstHeight == srcEffHeight)
+	{
+		uint32 srcRowBytes = (uint32)srcEffWidth * bpp;
+		uint32 dstRowBytes = dstWidth * bpp;
+		for (uint32 y = 0; y < dstHeight; y++)
+			memcpy(dstPtr + y * dstPitch * bpp, data + y * srcRowBytes, dstRowBytes);
+	}
+	else if (dstWidth > 0 && dstHeight > 0)
+	{
+		for (uint32 y = 0; y < dstHeight; y++)
+		{
+			uint32 sy = std::min<uint32>((uint32)((uint64)y * (uint64)srcEffHeight / (uint64)dstHeight), (uint32)srcEffHeight - 1);
+			for (uint32 x = 0; x < dstWidth; x++)
+			{
+				uint32 sx = std::min<uint32>((uint32)((uint64)x * (uint64)srcEffWidth / (uint64)dstWidth), (uint32)srcEffWidth - 1);
+				memcpy(dstPtr + ((uint64)y * dstPitch + x) * bpp, data + ((uint64)sy * (uint32)srcEffWidth + sx) * bpp, bpp);
+			}
+		}
+	}
 
 	info->ReleaseData();
 	delete info;

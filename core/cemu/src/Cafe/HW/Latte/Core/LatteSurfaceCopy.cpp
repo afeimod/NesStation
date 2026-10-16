@@ -83,12 +83,42 @@ void LatteSurfaceCopy_copySurfaceNew(const LatteSurfaceCopyParam& src, const Lat
 	// create destination texture if it doesnt exist
 	if (!destinationTexture)
 	{
+		// NesStation R7: 拷贝目标跟随源的有效分辨率 —— 官方 [TextureRedefine]
+		// 语义：参与拷贝的全部表面必须共享同一有效比例，否则下方比例检查
+		// 失败 → 拷贝被静默跳过 → 游戏采样未初始化缓冲（非 1x 分辨率阴影/
+		// 光照发黑的根因）。线性目标由构造器宏平铺守卫拒绝，不受影响。
+		if (sourceTexture->overwriteInfo.hasResolutionOverwrite)
+			LatteTexture_SetRTCreationHint(RT_HINT_RT);
 		destinationView = LatteTexture_CreateMapping(dst.physDataAddr, MPTR_NULL, rect.x + rect.width, rect.y + rect.height, 1, dst.pitch, Latte::MakeHWTileMode(dst.tilemode), dst.swizzle, 0, 1, dst.sliceIndex, 1, dst.surfaceFormat, dst.dim, Latte::IsMSAA(dst.dim) ? Latte::E_DIM::DIM_2D_MSAA : Latte::E_DIM::DIM_2D, false);
+		LatteTexture_SetRTCreationHint(RT_HINT_NONE);
 		destinationTexture = destinationView->baseTexture;
 	}
 	// copy texture
 	if (sourceTexture && destinationTexture)
 	{
+		// NesStation R7: 既有目标纹理与源的有效比例不匹配（此前按原生尺寸
+		// 创建）→ 删除并按源的有效比例重建后再拷贝。旧行为静默跳过拷贝，
+		// 目标保持未初始化，游戏采样到垃圾数据（非 1x 阴影发黑根因之一）。
+		// 仅处理基纹理精确命中拷贝区域的情况；线性/图形包覆盖纹理保持原样。
+		if (sourceTexture->overwriteInfo.hasResolutionOverwrite &&
+			!destinationTexture->overwriteInfo.hasResolutionOverwrite &&
+			destinationTexture != sourceTexture &&
+			destinationTexture->physAddress == dst.physDataAddr &&
+			destinationTexture->width == (sint32)(rect.x + rect.width) &&
+			destinationTexture->height == (sint32)(rect.y + rect.height) &&
+			Latte::TM_IsMacroTiled(Latte::MakeHWTileMode(dst.tilemode)) &&
+			!LatteTexture_doesEffectiveRescaleRatioMatch(sourceTexture, sourceView->firstMip, destinationTexture, destinationView->firstMip))
+		{
+			LatteTexture_Delete(destinationTexture);
+			destinationTexture = nullptr;
+			LatteTexture_SetRTCreationHint(RT_HINT_RT);
+			destinationView = LatteTexture_CreateMapping(dst.physDataAddr, MPTR_NULL, rect.x + rect.width, rect.y + rect.height, 1, dst.pitch, Latte::MakeHWTileMode(dst.tilemode), dst.swizzle, 0, 1, dst.sliceIndex, 1, dst.surfaceFormat, dst.dim, Latte::IsMSAA(dst.dim) ? Latte::E_DIM::DIM_2D_MSAA : Latte::E_DIM::DIM_2D, false);
+			LatteTexture_SetRTCreationHint(RT_HINT_NONE);
+			if (destinationView)
+				destinationTexture = destinationView->baseTexture;
+			if (!destinationTexture)
+				return; // 重建失败（理论不可达）：放弃本次拷贝，避免悬空访问
+		}
 		// mark source and destination texture as still in use
 		LatteTC_MarkTextureStillInUse(destinationTexture);
 		LatteTC_MarkTextureStillInUse(sourceTexture);

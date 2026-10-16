@@ -15,35 +15,39 @@ LatteTextureReadbackInfoVk::~LatteTextureReadbackInfoVk()
 uint32 LatteTextureReadbackInfoVk::GetImageSize(LatteTextureView* textureView)
 {
 	const auto* baseTexture = (LatteTextureVk*)textureView->baseTexture;
+	// NesStation R7: 缩放纹理的 Vulkan 图像按有效分辨率分配，回读缓冲尺寸
+	// 必须按有效尺寸计算（逻辑尺寸会在缩放时超出图像实际大小）
+	sint32 effWidth, effHeight;
+	baseTexture->GetEffectiveSize(effWidth, effHeight, 0);
 	// handle format
 	const auto textureFormat = baseTexture->GetFormat();
 	if (textureView->format == Latte::E_GX2SURFFMT::R8_G8_B8_A8_UNORM)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R8G8B8A8_UNORM);
-		return baseTexture->width * baseTexture->height * 4;
+		return (uint32)effWidth * (uint32)effHeight * 4;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R8_UNORM )
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R8_UNORM);
-		return baseTexture->width * baseTexture->height * 1;
+		return (uint32)effWidth * (uint32)effHeight * 1;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R8_G8_B8_A8_SRGB)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R8G8B8A8_SRGB);
-		return baseTexture->width * baseTexture->height * 4;
+		return (uint32)effWidth * (uint32)effHeight * 4;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R32_G32_B32_A32_FLOAT)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R32G32B32A32_SFLOAT);
-		return baseTexture->width * baseTexture->height * 16;
+		return (uint32)effWidth * (uint32)effHeight * 16;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R32_FLOAT)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R32_SFLOAT || textureFormat == VK_FORMAT_D32_SFLOAT);
 		if (baseTexture->isDepth)
-			return baseTexture->width * baseTexture->height * 4;
+			return (uint32)effWidth * (uint32)effHeight * 4;
 		else
-			return baseTexture->width * baseTexture->height * 4;		
+			return (uint32)effWidth * (uint32)effHeight * 4;            
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R16_UNORM)
 	{
@@ -51,39 +55,39 @@ uint32 LatteTextureReadbackInfoVk::GetImageSize(LatteTextureView* textureView)
 		if (baseTexture->isDepth)
 		{
 			cemu_assert_debug(false);
-			return baseTexture->width * baseTexture->height * 2;
+			return (uint32)effWidth * (uint32)effHeight * 2;
 		}
 		else
 		{
-			return baseTexture->width * baseTexture->height * 2;
+			return (uint32)effWidth * (uint32)effHeight * 2;
 		}
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R16_G16_B16_A16_FLOAT)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R16G16B16A16_SFLOAT);
-		return baseTexture->width * baseTexture->height * 8;
+		return (uint32)effWidth * (uint32)effHeight * 8;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R8_G8_UNORM)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R8G8_UNORM);
-		return baseTexture->width * baseTexture->height * 2;
+		return (uint32)effWidth * (uint32)effHeight * 2;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R16_G16_B16_A16_UNORM)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_R16G16B16A16_UNORM);
-		return baseTexture->width * baseTexture->height * 8;
+		return (uint32)effWidth * (uint32)effHeight * 8;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::D24_S8_UNORM)
 	{
 		cemu_assert(textureFormat == VK_FORMAT_D24_UNORM_S8_UINT);
 		// todo - if driver does not support VK_FORMAT_D24_UNORM_S8_UINT this is represented as VK_FORMAT_D32_SFLOAT_S8_UINT which is 8 bytes
-		return baseTexture->width * baseTexture->height * 4;
+		return (uint32)effWidth * (uint32)effHeight * 4;
 	}
 	else if (textureView->format == Latte::E_GX2SURFFMT::R5_G6_B5_UNORM )
 	{
 		if(textureFormat == VK_FORMAT_R5G6B5_UNORM_PACK16){
-			return baseTexture->width * baseTexture->height * 2;
-		}	
+			return (uint32)effWidth * (uint32)effHeight * 2;
+		}       
 		return 0;
 	}
 	else
@@ -106,10 +110,14 @@ void LatteTextureReadbackInfoVk::StartTransfer()
 	cemu_assert_debug(m_textureView->firstMip == 0);
 	cemu_assert_debug(m_textureView->baseTexture->dim != Latte::E_DIM::DIM_3D);
 
+	// NesStation R7: imageExtent/bufferRowLength 必须用有效分辨率 —— 缩放纹理
+	// 的 Vulkan 图像按有效尺寸分配，用逻辑尺寸拷贝会越界（Vulkan 规范违规）
+	sint32 effWidth, effHeight;
+	baseTexture->GetEffectiveSize(effWidth, effHeight, 0);
 	VkBufferImageCopy region{};
 	region.bufferOffset = m_buffer_offset;
-	region.bufferRowLength = baseTexture->width;
-	region.bufferImageHeight = baseTexture->height;
+	region.bufferRowLength = effWidth;
+	region.bufferImageHeight = effHeight;
 
 	region.imageSubresource.aspectMask = baseTexture->GetImageAspect();
 	region.imageSubresource.baseArrayLayer = 0;
@@ -117,7 +125,7 @@ void LatteTextureReadbackInfoVk::StartTransfer()
 	region.imageSubresource.mipLevel = 0;
 
 	region.imageOffset = {0,0,0};
-	region.imageExtent = {(uint32)baseTexture->width,(uint32)baseTexture->height,1};
+	region.imageExtent = {(uint32)effWidth,(uint32)effHeight,1};
 
 	const auto renderer = VulkanRenderer::GetInstance();
 	renderer->draw_endRenderPass();
