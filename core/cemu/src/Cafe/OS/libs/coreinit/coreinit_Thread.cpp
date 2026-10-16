@@ -1703,6 +1703,12 @@ namespace coreinit
 			threadItr.join();
 		sSchedulerThreads.clear();
 		g_schedulerThreadHandles.clear();
+		// ★ NesStation R2 重开崩溃修复: 上方为唤醒暂停中的核人为递增了
+		// run-queue 计数, 关机后残留。下一局启动时非零的旧计数会让 idle fiber
+		// 的信号量等待立即通过并高频轮询, 调度状态不干净（与进程内存读档路径
+		// 的 reset() 同款清零语义）。调度线程已全部 join, 此处复位安全。
+		for (size_t i = 0; i < Espresso::CORE_COUNT; i++)
+			g_coreRunQueueThreadCount[i].reset();
 #if BOOST_OS_LINUX
 		{
 			std::lock_guard schedulerThreadIdsLockGuard(g_schedulerThreadIdsLock);

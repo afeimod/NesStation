@@ -22,6 +22,14 @@ object NativeEmulation {
     @JvmStatic
     external fun setSurfaceSize(width: Int, height: Int, isMainCanvas: Boolean)
 
+    /**
+     * ★ NesStation R2: 输出渲染分辨率缩放（0.25..1.0，1=原生）。
+     * 游戏画面渲染进低分辨率离屏目标后线性放大回全尺寸交换链 ——
+     * 显示大小不变、渲染填充率按 scale^2 下降；运行中调用即时热生效。
+     */
+    @JvmStatic
+    external fun setOutputRenderScale(scale: Float)
+
     @JvmStatic
     external fun initializeRenderer()
 

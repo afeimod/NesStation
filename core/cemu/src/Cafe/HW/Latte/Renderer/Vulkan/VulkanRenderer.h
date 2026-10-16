@@ -208,6 +208,15 @@ public:
 	void StopUsingPadAndWait();
 	// ★ 在 Latte 线程空闲周期泵一次 pad swapchain 销毁请求（游戏暂停期也能释放）
 	void ProcessPendingPadSwapchainDestroy();
+
+	// ★ NesStation R2: 输出渲染分辨率缩放（0.25..1.0，1=原生）。游戏画面先渲染进
+	//   低分辨率离屏目标，再线性放大到全尺寸 swapchain 呈现 —— 显示大小不变，
+	//   填充率/显存带宽按 scale^2 下降；运行中热切换。线程安全（JNI 直接调用）。
+	static void SetOutputRenderScale(float scale);
+	static float GetOutputRenderScale();
+	// ★ NesStation R2: GamePad 悬浮画面隔帧跳过（pad 为 TV 镜像，30fps 观感无损，
+	//   pad 路径 GPU/CPU 占用减半；pad 为唯一显示时由 SwapBuffers 保证不跳过）
+	bool IsPadViewSkippedFrame() const;
 	bool IsPadWindowActive() override;
 
 	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
@@ -437,6 +446,24 @@ private:
 
 	std::unique_ptr<SwapchainInfoVk> m_mainSwapchainInfo{}, m_padSwapchainInfo{};
 	std::atomic_flag m_destroyPadSwapchainNextAcquire{};
+
+	// ★ NesStation R2: 低分辨率离屏输出目标（主画布/悬浮 pad 各一个）
+	struct ScaledOutputTarget
+	{
+		VkImage image{};
+		VkImageMemAllocation* allocation{};
+		VkImageView view{};
+		VkFramebuffer framebuffer{};
+		VkRenderPass renderPass{};
+		VkExtent2D extent{};
+		VkFormat format{ VK_FORMAT_UNDEFINED };
+		float scale{ 0.0f };
+		bool valid{ false };
+	};
+	ScaledOutputTarget m_scaledOutput[2]{};
+	uint32 m_padPresentCounter{ 0 }; // GamePad 隔帧呈现奇偶计数
+	bool EnsureScaledOutputTarget(bool mainWindow, const VkExtent2D& fullExtent, VkFormat format, float scale, ScaledOutputTarget** targetOut);
+	void DestroyScaledOutputTarget(ScaledOutputTarget& target);
 	bool IsSwapchainInfoValid(bool mainWindow) const;
 
 	VkRenderPass m_imguiRenderPass = VK_NULL_HANDLE;

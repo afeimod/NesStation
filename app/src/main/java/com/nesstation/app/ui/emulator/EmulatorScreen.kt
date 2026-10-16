@@ -5980,8 +5980,8 @@ private fun applyCoreOptionsInner(
             //     - 全局屏幕缩放 stretch → fullscreenScaling=拉伸，其余 →
             //       保持宽高比（画面形状由核心侧按 16:9 TV 输出）。
             engine.setCoreOption("CemuEngine/gameSpeed", layout.cwGameSpeed)
-            // ★ 渲染分辨率缩放（1x/0.75x/0.5x）：缩小主画布 swapchain 提速降功耗，
-            //   触摸坐标引擎内同比例换算；运行中热生效（swapchain 自动重建）。
+            // ★ 渲染分辨率缩放（1x/0.75x/0.5x）：R2 起核心内部低分辨率渲染 + 全尺寸
+            //   呈现（画面大小不变）提速降功耗；运行中热生效，触摸坐标无需换算。
             engine.setCoreOption("CemuEngine/renderScale", layout.cwRenderScale)
             engine.setCoreOption("CemuEngine/vsyncMode", layout.cwVsyncMode)
             engine.setCoreOption("CemuEngine/asyncShaderCompile", layout.cwAsyncShaderCompile)
@@ -15343,9 +15343,9 @@ private fun SettingsPanel(
 
                 Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("渲染分辨率",
-                    // ★ 提速/省电：按比例缩小 Vulkan swapchain（画面由系统拉伸回全屏），
-                    //   0.75x/0.5x 显著降低 GPU 填充率与带宽 —— 弱设备提速、整机降功耗；
-                    //   运行中切换即时生效（核心自动重建 swapchain），触摸映射不受影响。
+                    // ★ R2: 内部低分辨率渲染 + 全尺寸呈现 —— 画面大小不变，渲染填充率
+                    //   按 scale^2 下降（0.5x 约降至 1/4），弱设备提速、整机降功耗；
+                    //   运行中切换即时热生效，触摸映射不受影响。
                     listOf("1" to "1x (默认·原生)",
                            "0.75" to "0.75x (提速·省电)",
                            "0.5" to "0.5x (大幅提速·最省电)"),

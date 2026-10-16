@@ -223,6 +223,13 @@ void Latte_Start()
 	cemu_assert_debug(!sLatteThreadRunning);
 	sLatteThreadRunning = true;
 	sLatteThreadFinishedInit = false;
+	// ★ NesStation R2 重开崩溃修复: g_isGPUInitFinished 是"GPU 线程完成
+	// 初始化（初始寄存器装入/图形包/着色器缓存就绪）"的门闩, cemu_initForGame
+	// 等它为 true 后才调用游戏入口点。上一局关闭时无人复位 —— 第二次启动
+	// 该等待被跳过, 游戏入口在 GPU 线程仍在初始化时并发执行, LatteGPUState
+	// 初始寄存器写入与游戏侧 GX2 状态读写竞态 -> 重开游戏即崩溃闪退。
+	// 此处复位, 保证每局启动都完整等待 GPU 就绪（首局行为不变）。
+	g_isGPUInitFinished = false;
 	sLatteThread = std::thread(Latte_ThreadEntry);
 	// wait until initialized
 	while (!sLatteThreadFinishedInit)
@@ -268,6 +275,11 @@ void LatteThread_Exit()
 	}
 	// reset GPU7 state
 	std::memset(&LatteGPUState, 0, sizeof(LatteGPUState));
+	// ★ NesStation R2 重开崩溃修复: 清空 OSScreen 全局纹理视图指针。
+	// 上方 LatteTC_UnloadAllTextures() 已释放这些视图指向的对象, 残留的
+	// 悬空指针在下一局启动、OSScreen 重建前一旦被触碰即 use-after-free。
+	osScreenTVTex[0] = osScreenTVTex[1] = nullptr;
+	osScreenDRCTex[0] = osScreenDRCTex[1] = nullptr;
 	#if BOOST_OS_WINDOWS
 	ExitThread(0);
 	#else

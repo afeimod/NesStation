@@ -68,7 +68,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _ffSpeed = 0
     /** 基准游戏速度档（设置页“游戏速度”0..4，快进关闭时恢复到该档）。 */
     @Volatile private var _baseGameSpeed = 1
-    /** 渲染分辨率缩放（1x / 0.75x / 0.5x，缩放 Vulkan swapchain 尺寸降负载省电）。 */
+    /** 渲染分辨率缩放（1x / 0.75x / 0.5x）—— 经 setOutputRenderScale 下发到核心，
+     *  内部低分辨率渲染 + 全尺寸呈现（画面大小不变，填充率按 scale^2 下降）。 */
     @Volatile private var _renderScale = 1f
     @Volatile private var lastErrorText = ""
 
@@ -232,8 +233,13 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
             isLoaded = true
             _paused = false
             _ffSpeed = 0
-            userRequestedStop = false
+            // ★ R2 重开修复：复位核心侧 TAB 键态（TV/Pad 视图切换）。
+            //   WindowSystem 键态是进程级全局，上一局开启过 GamePad 大画面
+            //   （setReplaceTVWithPadView(true)）后关游戏不清理的话，下一局
+            //   开局就会停留在 GamePad 画面（主画布显示错误内容）。
+            try { NativeEmulation.setReplaceTVWithPadView(false) } catch (_: Throwable) {}
             padViewActive = false
+            userRequestedStop = false
             pendingBoot = true
             bootStarted = false
             running.set(true)
@@ -315,13 +321,14 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 // --- 主画布 surface（TV 画面）---
                 val s = surface
                 if (s != null && s.isValid) {
-                    // ★ 主画布尺寸按渲染分辨率缩放（1x/0.75x/0.5x）—— swapchain
-                    //   以缩放后尺寸创建，降低填充率/带宽提速省电；触摸坐标由
-                    //   setTouchInput/setTouchMoved 同比例换算。
-                    val w = scaledMainWidth().takeIf { it > 0 } ?: 1280
-                    val h = scaledMainHeight().takeIf { it > 0 } ?: 720
+                    // ★ 主画布恒为全尺寸 swapchain；渲染分辨率缩放经
+                    //   setOutputRenderScale 下发（核心内部低分辨率渲染 +
+                    //   全尺寸呈现，画面大小不变），触摸坐标无需换算。
+                    val w = if (surfaceWidth > 0) surfaceWidth else 1280
+                    val h = if (surfaceHeight > 0) surfaceHeight else 720
                     NativeEmulation.setSurface(s, true)
                     NativeEmulation.setSurfaceSize(w, h, true)
+                    try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                 } else {
                     // 无 Surface 启动（TV 后台等极端场景）：核心仍可跑，
@@ -377,8 +384,11 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 try {
                     NativeEmulation.setSurface(surface, true)
                     if (surfaceWidth > 0 && surfaceHeight > 0) {
-                        NativeEmulation.setSurfaceSize(scaledMainWidth(), scaledMainHeight(), true)
+                        NativeEmulation.setSurfaceSize(surfaceWidth, surfaceHeight, true)
                     }
+                    // 重挂后确保核心侧渲染分辨率缩放仍在（静态值不随 swapchain 重建丢失，
+                    // 这里幂等重发一次，防御核心重启场景）
+                    try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
                         try { NativeEmulation.resumeTitle() } catch (_: Throwable) {}
@@ -404,8 +414,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
             if (surface != null) this.surface = surface
             if (width <= 0 || height <= 0) return
             try {
-                // ★ 按渲染分辨率缩放后下发（swapchain 热重建由核心自动完成）
-                NativeEmulation.setSurfaceSize(scaledMainWidth(), scaledMainHeight(), true)
+                // ★ 全尺寸下发（swapchain 热重建由核心自动完成）；渲染分辨率
+                //   缩放在核心内部离屏目标上生效，与 surface 尺寸解耦
+                NativeEmulation.setSurfaceSize(surfaceWidth, surfaceHeight, true)
             } catch (_: Throwable) {
                 // 核心未启动时 setSurfaceSize 无害失败（WindowSystem 尚未初始化）
             }
@@ -473,12 +484,12 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 "overlayFPS" -> NativeSettings.setOverlayFPSEnabled(value == "true" || value == "enabled")
                 // ★ 下采样滤镜（上游 NativeSettings.ScalingFilter 同款取值）
                 "downscaleFilter" -> NativeSettings.setDownscalingFilter(value.toIntOrNull() ?: 0)
-                // ★ 渲染分辨率缩放（1x / 0.75x / 0.5x）：按比例缩小主画布 Vulkan
-                //   swapchain 尺寸 —— 核心的 VulkanRenderer::UpdateSwapchainProperties
-                //   检测到 GetWindowPhysSize 与 swapchain extent 不一致会自动重建，
-                //   输出着色器把游戏画面 blit 进更小的交换链（降低填充率/带宽，
-                //   提速降功耗），再由系统合成器拉伸回全屏显示。触摸坐标按同比例
-                //   缩放（见 setTouchInput/setTouchMoved），映射不受影响。
+                // ★ 渲染分辨率缩放（1x / 0.75x / 0.5x）：R2 起不再缩小主画布
+                //   swapchain（那种做法画面会跟着变小）—— surface 恒为全尺寸，
+                //   改经 setOutputRenderScale 把比例下发到核心：核心把游戏画面
+                //   渲染进低分辨率离屏目标再线性放大回全尺寸交换链呈现，
+                //   画面显示大小不变，渲染填充率按 scale^2 下降。触摸坐标
+                //   不再需要换算（核心按全尺寸窗口归一化）。
                 "renderScale" -> {
                     val newScale = (value.toFloatOrNull() ?: 1f).coerceIn(0.25f, 1f)
                     if (newScale != _renderScale) {
@@ -548,22 +559,13 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     // 视频（直绘核心：尺寸/滤镜由核心内部管理）
     // ------------------------------------------------------------------
 
-    /** 渲染分辨率缩放后的主画布像素尺寸（至少 1px，防止取整为 0）。 */
-    private fun scaledMainWidth(): Int = if (surfaceWidth > 0) max(1, (surfaceWidth * _renderScale).toInt()) else 0
-    private fun scaledMainHeight(): Int = if (surfaceHeight > 0) max(1, (surfaceHeight * _renderScale).toInt()) else 0
-
     /**
-     * 渲染分辨率切换后立即重推缩放后的主画布尺寸 —— 核心检测到窗口物理尺寸与
-     * swapchain extent 不一致会自动重建（VulkanRenderer::UpdateSwapchainProperties），
-     * 运行中热生效。核心未启动/surface 未就绪时跳过（启动/变更链路会用新值）。
+     * 渲染分辨率切换后立即下发到核心（VulkanRenderer 静态原子值，逐帧读取，
+     * 运行中热生效：下一帧自动重建离屏目标）。核心未启动时下发同样无害。
      */
     private fun applyRenderScaleLocked() {
-        val w = scaledMainWidth()
-        val h = scaledMainHeight()
-        if (w <= 0 || h <= 0) return
-        if (!bootStarted || pendingBoot) return
         try {
-            NativeEmulation.setSurfaceSize(w, h, true)
+            NativeEmulation.setOutputRenderScale(_renderScale)
         } catch (t: Throwable) {
             android.util.Log.w("CemuEngine", "applyRenderScale failed", t)
         }
@@ -743,9 +745,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     override fun setTouchInput(x: Float, y: Float, pressed: Boolean) {
         try {
             if (pressed) {
-                // ★ 渲染分辨率缩放联动：核心按窗口物理尺寸（已缩放）归一化，
-                //   这里把视图原始像素乘以同一比例换算到窗口坐标空间。
-                NativeInput.onTouchDown((x * _renderScale).toInt(), (y * _renderScale).toInt(), true)
+                // ★ R2: 核心按全尺寸窗口图像矩形归一化（LatteRenderTarget_getScreenImageArea），
+                //   surface 不再缩放 —— 原始视图像素坐标直接透传。
+                NativeInput.onTouchDown(x.toInt(), y.toInt(), true)
             } else {
                 NativeInput.onTouchUp(0, 0, true)
             }
@@ -754,7 +756,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     override fun setTouchMoved(x: Float, y: Float) {
         try {
-            NativeInput.onTouchMove((x * _renderScale).toInt(), (y * _renderScale).toInt(), true)
+            NativeInput.onTouchMove(x.toInt(), y.toInt(), true)
         } catch (_: Throwable) {}
     }
 

@@ -888,7 +888,7 @@ class PadLayout {
     // 键名/取值对照上游 NativeSettings.kt（CemuEngine 以 "CemuEngine/<name>"
     // 门面键消费，直调 NativeSettings setter 热生效）：
     var cwGameSpeed: String = "1"           // "0".."4" (GameSpeed 0=0.5x 1=1x 2=2x 3=4x 4=8x，快进联动)
-    var cwRenderScale: String = "1"         // 渲染分辨率缩放："1" 1x(默认) | "0.75" 0.75x | "0.5" 0.5x (缩小 swapchain 提速省电)
+    var cwRenderScale: String = "1"         // 渲染分辨率缩放："1" 1x(默认) | "0.75" 0.75x | "0.5" 0.5x (核心内部低分辨率渲染+全尺寸呈现，提速省电)
     var cwVsyncMode: String = "0"           // "0" 关 | "1" 双缓冲 | "2" 三缓冲 (VSyncMode)
     var cwAsyncShaderCompile: String = "true"   // 异步着色器编译（防卡顿，默认开）
     var cwAccurateBarriers: String = "false"    // 精确屏障（个别游戏修复用，性能开销大）
