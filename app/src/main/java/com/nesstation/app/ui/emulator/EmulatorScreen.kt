@@ -3719,8 +3719,8 @@ fun EmulatorScreen(
                                         rootPos.x >= pr.left && rootPos.x < pr.right &&
                                         rootPos.y >= pr.top && rootPos.y < pr.bottom) {
                                         // 触点在悬浮 GamePad 小窗内 → GamePad 触摸屏
-                                        val nx = ((rootPos.x - pr.left) / pr.width).coerceIn(0f, 1f)
-                                        val ny = ((rootPos.y - pr.top) / pr.height).coerceIn(0f, 1f)
+                                        val nx = ((rootPos.x - pr.left) / pr.width()).coerceIn(0f, 1f)
+                                        val ny = ((rootPos.y - pr.top) / pr.height()).coerceIn(0f, 1f)
                                         when (action) {
                                             android.view.MotionEvent.ACTION_UP,
                                             android.view.MotionEvent.ACTION_CANCEL ->
@@ -17038,8 +17038,8 @@ private fun CemuPadOverlayView(
         modifier = Modifier
             .offset { IntOffset(java.lang.Math.round(padRect.left).toInt(), java.lang.Math.round(padRect.top).toInt()) }
             .size(
-                width = with(density) { padRect.width.toDp() },
-                height = with(density) { padRect.height.toDp() }
+                width = with(density) { padRect.width().toDp() },
+                height = with(density) { padRect.height().toDp() }
             )
     ) {
             var padModifier = Modifier.fillMaxSize()
