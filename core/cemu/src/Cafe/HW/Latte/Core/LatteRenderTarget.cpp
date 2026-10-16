@@ -221,11 +221,47 @@ void LatteMRT::BindDepthBufferOnly(LatteTextureView* view)
 	ApplyCurrentState();
 }
 
+// NesStation R4: 深度渲染目标分类 —— 与当前活跃颜色缓冲寄存器解码尺寸比对。
+// 任一活跃颜色缓冲与该深度表面同尺寸 → 主帧缓冲配对（跟随全局渲染分辨率，
+// 保证 Vulkan 帧缓冲颜色/深度附件尺寸一致）；否则视为独立深度目标（阴影图/
+// 深度 prepass，只跟随阴影质量档位）。颜色尺寸解码与 GetColorAttachmentTexture
+// 同源（含剪刀口尺寸优化），保证与颜色纹理创建时的逻辑尺寸一致。GPU 线程调用。
+static int NesStationDecideDepthScaleHint(uint32 width, uint32 height)
+{
+	for (uint32 i = 0; i < 8; i++)
+	{
+		uint32* colorBufferRegBase = LatteGPUState.contextRegister + (mmCB_COLOR0_BASE + i);
+		uint32 regColorBufferBase = colorBufferRegBase[mmCB_COLOR0_BASE - mmCB_COLOR0_BASE] & 0xFFFFFF00;
+		if (regColorBufferBase == MPTR_NULL)
+			continue;
+		uint32 regColorSize = colorBufferRegBase[mmCB_COLOR0_SIZE - mmCB_COLOR0_BASE];
+		uint32 colorBufferPitch = (((regColorSize >> 0) & 0x3FF) + 1);
+		colorBufferPitch <<= 3;
+		uint32 pitchHeight = (((regColorSize >> 10) & 0xFFFFF) + 1);
+		pitchHeight <<= 6;
+		uint32 colorBufferHeight = pitchHeight / colorBufferPitch;
+		uint32 colorBufferWidth = colorBufferPitch;
+		if (LatteGPUState.allowFramebufferSizeOptimization)
+		{
+			uint32 scissorBoxWidth = LatteGPUState.contextNew.PA_SC_GENERIC_SCISSOR_BR.get_BR_X();
+			uint32 scissorBoxHeight = LatteGPUState.contextNew.PA_SC_GENERIC_SCISSOR_BR.get_BR_Y();
+			if (((scissorBoxWidth + 7) & ~7) == colorBufferWidth)
+				colorBufferWidth = scissorBoxWidth;
+			if (((colorBufferHeight + 31) & ~31) == colorBufferHeight)
+				colorBufferHeight = scissorBoxHeight;
+		}
+		if (colorBufferWidth == width && colorBufferHeight == height)
+			return RT_HINT_DEPTH_MAIN;
+	}
+	return RT_HINT_SHADOW;
+}
+
 LatteTextureView* LatteMRT_CreateDepthBuffer(MPTR depthBufferPhysMem, uint32 width, uint32 height, uint32 pitch, Latte::E_HWTILEMODE tileMode, Latte::E_GX2SURFFMT format, uint32 swizzle, sint32 viewSlice)
 {
-	LatteTexture_SetRTCreationHint(true); // NesStation: 深度渲染目标 —— 允许内部分辨率缩放
+	// NesStation R4: 深度目标分类 —— 与活跃颜色缓冲配对 → 全局比例；独立深度 → 阴影档位
+	LatteTexture_SetRTCreationHint(NesStationDecideDepthScaleHint(width, height));
 	LatteTextureView* textureView = LatteTexture_CreateMapping(depthBufferPhysMem, MPTR_NULL, width, height, viewSlice+1, pitch, tileMode, swizzle, 0, 1, viewSlice, 1, format, viewSlice > 0 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, true);
-	LatteTexture_SetRTCreationHint(false);
+	LatteTexture_SetRTCreationHint(RT_HINT_NONE);
 	LatteMRT::SetDepthAndStencilAttachment(textureView, textureView->baseTexture->hasStencil);
 	return textureView;
 }
@@ -306,9 +342,9 @@ LatteTextureView* LatteMRT::GetColorAttachmentTexture(uint32 index, bool createN
 	if (colorBufferView == nullptr)
 	{
 		// create color buffer view
-		LatteTexture_SetRTCreationHint(true); // NesStation: 颜色渲染目标 —— 允许内部分辨率缩放
+		LatteTexture_SetRTCreationHint(RT_HINT_COLOR); // NesStation R4: 颜色渲染目标（全局比例 + 光照档位）
 		colorBufferView = LatteTexture_CreateMapping(colorBufferPhysMem, 0, colorBufferWidth, colorBufferHeight, (viewFirstSlice + viewNumSlices), colorBufferPitch, colorBufferTileMode, colorBufferSwizzle>>8, viewFirstMip, 1, viewFirstSlice, viewNumSlices, (Latte::E_GX2SURFFMT)colorBufferFormat, (viewFirstSlice + viewNumSlices)>1? Latte::E_DIM::DIM_2D_ARRAY: Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, false, true);
-		LatteTexture_SetRTCreationHint(false);
+		LatteTexture_SetRTCreationHint(RT_HINT_NONE);
 		LatteGPUState.repeatTextureInitialization = true;
 		checkForTextureChanges = false;
 	}
@@ -573,9 +609,10 @@ bool LatteMRT::UpdateCurrentFBO()
 				if (!depthBufferView)
 				{
 					// create new depth buffer view and if it doesn't exist then also create the texture
-					LatteTexture_SetRTCreationHint(true); // NesStation: 深度渲染目标 —— 允许内部分辨率缩放
+					// NesStation R4: 深度目标分类 —— 与活跃颜色缓冲配对 → 全局比例；独立深度 → 阴影档位
+					LatteTexture_SetRTCreationHint(NesStationDecideDepthScaleHint(depthBufferWidth, depthBufferHeight));
 					depthBufferView = LatteTexture_CreateMapping(depthBufferPhysMem, 0, depthBufferWidth, depthBufferHeight, depthBufferViewFirstSlice+1, depthBufferPitch, depthBufferTileMode, depthBufferSwizzle, 0, 1, depthBufferViewFirstSlice, 1, depthBufferFormat, depthBufferViewFirstSlice > 0 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, true, true);
-					LatteTexture_SetRTCreationHint(false);
+					LatteTexture_SetRTCreationHint(RT_HINT_NONE);
 					LatteGPUState.repeatTextureInitialization = true;
 				}
 				else
@@ -795,9 +832,9 @@ void LatteRenderTarget_itHLEClearColorDepthStencil(uint32 clearMask,
 		{
 			// create new texture with matching format
 			cemu_assert_debug(colorBufferViewNumSlice <= 1);
-			LatteTexture_SetRTCreationHint(true); // NesStation: 颜色渲染目标清除路径
+			LatteTexture_SetRTCreationHint(RT_HINT_COLOR); // NesStation R4: 颜色渲染目标清除路径
 			LatteTextureView* newColorView = LatteTexture_CreateMapping(colorBufferMPTR, MPTR_NULL, colorBufferWidth, colorBufferHeight, colorBufferViewFirstSlice+1, colorBufferPitch, colorBufferTilemode, colorBufferSwizzle, 0, 1, colorBufferViewFirstSlice, 1, colorBufferFormat, colorBufferViewFirstSlice > 0 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, false);
-			LatteTexture_SetRTCreationHint(false);
+			LatteTexture_SetRTCreationHint(RT_HINT_NONE);
 			LatteRenderTarget_applyTextureColorClear(newColorView->baseTexture, colorBufferViewFirstSlice, colorBufferMipIndex, r, g, b, a, eventCounter);
 		}
 	}

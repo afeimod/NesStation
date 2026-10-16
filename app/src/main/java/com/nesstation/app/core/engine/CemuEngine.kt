@@ -72,6 +72,10 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
      *  渲染目标纹理按比例创建（真实内部渲染分辨率变化，填充率按 scale^2 变化，
      *  输出画面大小不变；GPU 线程帧边界应用并重建纹理缓存）。 */
     @Volatile private var _renderScale = 1f
+    // ★ R4: 阴影渲染 / 光照渲染质量比例 + 帧率限制（见 setCoreOption）
+    @Volatile private var _shadowScale = 1f
+    @Volatile private var _auxScale = 1f
+    @Volatile private var _frameLimit = 0
     @Volatile private var lastErrorText = ""
 
     @Volatile private var surface: Surface? = null
@@ -330,6 +334,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     NativeEmulation.setSurface(s, true)
                     NativeEmulation.setSurfaceSize(w, h, true)
                     try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setShadowRenderScale(_shadowScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setAuxRenderScale(_auxScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                 } else {
                     // 无 Surface 启动（TV 后台等极端场景）：核心仍可跑，
@@ -390,6 +397,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     // 重挂后确保核心侧渲染分辨率缩放仍在（待生效值不随 swapchain 重建丢失，
                     // 这里幂等重发一次，防御核心重启场景）
                     try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setShadowRenderScale(_shadowScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setAuxRenderScale(_auxScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
                         try { NativeEmulation.resumeTitle() } catch (_: Throwable) {}
@@ -494,6 +504,48 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     if (newScale != _renderScale) {
                         _renderScale = newScale
                         applyRenderScaleLocked()
+                    }
+                }
+                // ★ R4 阴影渲染质量（三档）：作用于独立深度目标（阴影图/深度
+                //   prepass）。全局降分辨率不再波及阴影图（修复阴影发黑），
+                //   需要进一步省电时单独降低阴影档位（0.5x/0.3x）。
+                "shadowQuality" -> {
+                    val newScale = when (value) {
+                        "low" -> 0.3f
+                        "mid" -> 0.5f
+                        else -> 1.0f
+                    }
+                    if (newScale != _shadowScale) {
+                        _shadowScale = newScale
+                        try { NativeEmulation.setShadowRenderScale(newScale) } catch (_: Throwable) {}
+                    }
+                }
+                // ★ R4 光照渲染质量（三档）：作用于泛光/光照等辅助小目标 ——
+                //   多级模糊 pass 填充率按比例平方下降，全屏泛光游戏收益明显。
+                "lightQuality" -> {
+                    val newScale = when (value) {
+                        "low" -> 0.35f
+                        "mid" -> 0.6f
+                        else -> 1.0f
+                    }
+                    if (newScale != _auxScale) {
+                        _auxScale = newScale
+                        try { NativeEmulation.setAuxRenderScale(newScale) } catch (_: Throwable) {}
+                    }
+                }
+                // ★ R4 帧率限制（省电）：复用核心自定义 vsync 频率通道 ——
+                //   翻转锁步游戏按目标帧率节流，GPU/CPU/屏幕功耗随帧率线性
+                //   下降（30fps ≈ 一半占用）。与快进倍率叠加生效。
+                "frameLimit" -> {
+                    val newLimit = when (value) {
+                        "30" -> 30
+                        "45" -> 45
+                        "60" -> 60
+                        else -> 0
+                    }
+                    if (newLimit != _frameLimit) {
+                        _frameLimit = newLimit
+                        try { NativeEmulation.setFrameLimit(newLimit) } catch (_: Throwable) {}
                     }
                 }
                 // ★ 音频设备开关/声道（TV / GamePad 独立）

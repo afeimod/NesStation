@@ -30,6 +30,10 @@ object NativeEmulation {
     @JvmStatic
     external fun setOutputRenderScale(scale: Float)
 
+    // ★ NesStation R4: 阴影/光照渲染质量（三档）+ 帧率限制（运行中热生效）
+    external fun setShadowRenderScale(scale: Float)
+    external fun setAuxRenderScale(scale: Float)
+    external fun setFrameLimit(fps: Int)
     @JvmStatic
     external fun initializeRenderer()
 

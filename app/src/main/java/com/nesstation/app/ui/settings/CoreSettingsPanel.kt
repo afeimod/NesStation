@@ -2235,6 +2235,32 @@ fun CoreSettingsPanel(
                                "0.3" to "0.3x (极致省电)"),
                         padLayout.cwRenderScale
                     ) { updateLayout(padLayout.copy {cwRenderScale = it}) }
+                    DropdownRow("阴影渲染",
+                        // ★ R4: 阴影图独立质量档 —— 独立深度目标（阴影图/深度
+                        //   prepass）按比例创建；主画面深度缓冲不受影响。全局降
+                        //   分辨率不再波及阴影（修复阴影发黑），需进一步省电再用。
+                        listOf("high" to "高 (默认·原生分辨率)",
+                               "mid" to "中 (0.5x·省电提速)",
+                               "low" to "低 (0.3x·极速省电)"),
+                        padLayout.cwShadowQuality
+                    ) { updateLayout(padLayout.copy {cwShadowQuality = it}) }
+                    DropdownRow("光照渲染",
+                        // ★ R4: 泛光/光照等辅助小目标独立质量档 —— 多级模糊
+                        //   pass 填充率按比例平方下降，全屏泛光游戏收益明显。
+                        listOf("high" to "高 (默认·原生分辨率)",
+                               "mid" to "中 (0.6x·省电提速)",
+                               "low" to "低 (0.35x·极速省电)"),
+                        padLayout.cwLightQuality
+                    ) { updateLayout(padLayout.copy {cwLightQuality = it}) }
+                    DropdownRow("帧率限制",
+                        // ★ R4: 省电利器 —— 锁步游戏按目标帧率节流，功耗随
+                        //   帧率线性下降（30 帧 ≈ 一半 GPU/CPU 占用）。
+                        listOf("off" to "不限制 (默认·原生帧率)",
+                               "60" to "60 帧 (上限)",
+                               "45" to "45 帧 (平衡省电)",
+                               "30" to "30 帧 (强力省电)"),
+                        padLayout.cwFrameLimit
+                    ) { updateLayout(padLayout.copy {cwFrameLimit = it}) }
                     DropdownRow("垂直同步",
                         listOf("0" to "关闭 (默认·低延迟不卡顿)", "1" to "双缓冲 (防撕裂)",
                                "2" to "三缓冲 (最稳·延迟高)"),

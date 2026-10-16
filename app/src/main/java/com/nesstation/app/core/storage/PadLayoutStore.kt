@@ -889,6 +889,10 @@ class PadLayout {
     // 门面键消费，直调 NativeSettings setter 热生效）：
     var cwGameSpeed: String = "1"           // "0".."4" (GameSpeed 0=0.5x 1=1x 2=2x 3=4x 4=8x，快进联动)
     var cwRenderScale: String = "1"         // 渲染分辨率缩放："1.5" 1.5x 超采样 | "1" 1x(默认·原生) | "0.75"/"0.5"/"0.4"/"0.3" 降采样提速省电 (R3: 核心渲染目标纹理按比例创建 = 真实内部分辨率缩放，输出画面大小不变)
+    // ★ R4: 阴影/光照渲染质量（三档）+ 帧率限制（省电）—— 见核心设置页
+    var cwShadowQuality: String = "high"    // 阴影渲染质量："high" 原生(默认) | "mid" 0.5x | "low" 0.3x（作用于独立深度目标=阴影图）
+    var cwLightQuality: String = "high"     // 光照渲染质量："high" 原生(默认) | "mid" 0.6x | "low" 0.35x（作用于泛光/光照辅助小目标）
+    var cwFrameLimit: String = "off"        // 帧率限制："off" 不限制(默认) | "60"/"45"/"30" 帧率上限（翻转锁步游戏节流省电）
     var cwVsyncMode: String = "0"           // "0" 关 | "1" 双缓冲 | "2" 三缓冲 (VSyncMode)
     var cwAsyncShaderCompile: String = "true"   // 异步着色器编译（防卡顿，默认开）
     var cwAccurateBarriers: String = "false"    // 精确屏障（个别游戏修复用，性能开销大）
@@ -1800,6 +1804,9 @@ class PadLayout {
         irWiiLanguage = another.irWiiLanguage
         cwGameSpeed = another.cwGameSpeed
         cwRenderScale = another.cwRenderScale
+        cwShadowQuality = another.cwShadowQuality
+        cwLightQuality = another.cwLightQuality
+        cwFrameLimit = another.cwFrameLimit
         cwVsyncMode = another.cwVsyncMode
         cwAsyncShaderCompile = another.cwAsyncShaderCompile
         cwAccurateBarriers = another.cwAccurateBarriers
@@ -3119,7 +3126,15 @@ object PadLayoutStore {
             cwGameSpeed = (p.getString("cw_game_speed", "1") ?: "1").let {
                 if (it in listOf("0", "1", "2", "3", "4")) it else "1" }
             cwRenderScale = (p.getString("cw_render_scale", "1") ?: "1").let {
-                if (it in listOf("1", "0.75", "0.5")) it else "1" }
+                // ★ R4: 白名单补齐 R3 新增的 "1.5"/"0.4"/"0.3" —— 此前这三档
+                //   会在重启应用后被静默重置回 1x
+                if (it in listOf("1.5", "1", "0.75", "0.5", "0.4", "0.3")) it else "1" }
+            cwShadowQuality = (p.getString("cw_shadow_quality", "high") ?: "high").let {
+                if (it in listOf("high", "mid", "low")) it else "high" }
+            cwLightQuality = (p.getString("cw_light_quality", "high") ?: "high").let {
+                if (it in listOf("high", "mid", "low")) it else "high" }
+            cwFrameLimit = (p.getString("cw_frame_limit", "off") ?: "off").let {
+                if (it in listOf("off", "60", "45", "30")) it else "off" }
             cwVsyncMode = (p.getString("cw_vsync_mode", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2")) it else "0" }
             cwAsyncShaderCompile = (p.getString("cw_async_shader_compile", "true") ?: "true").let {
@@ -3982,6 +3997,9 @@ object PadLayoutStore {
             // === WIIU (Cemu-AZ) options ===
             putString("cw_game_speed", layout.cwGameSpeed)
             putString("cw_render_scale", layout.cwRenderScale)
+            putString("cw_shadow_quality", layout.cwShadowQuality)
+            putString("cw_light_quality", layout.cwLightQuality)
+            putString("cw_frame_limit", layout.cwFrameLimit)
             putString("cw_vsync_mode", layout.cwVsyncMode)
             putString("cw_async_shader_compile", layout.cwAsyncShaderCompile)
             putString("cw_accurate_barriers", layout.cwAccurateBarriers)

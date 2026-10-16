@@ -342,6 +342,33 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setOutputRenderScale([[maybe
 	LatteTexture_SetInternalRenderScale(scale);
 }
 
+// ★ NesStation R4: 阴影渲染质量（三档）—— 独立深度目标（阴影图/深度
+// prepass）按比例创建；主画面深度缓冲不受影响。1.0=原生 / 0.5 / 0.3
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setShadowRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
+{
+	LatteTexture_SetShadowRenderScale(scale);
+}
+
+// ★ NesStation R4: 光照渲染质量（三档）—— 泛光/光照等辅助小目标按比例
+// 创建，多级模糊 pass 填充率按比例平方下降。1.0=原生 / 0.6 / 0.35
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setAuxRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
+{
+	LatteTexture_SetAuxRenderScale(scale);
+}
+
+// ★ NesStation R4: 帧率限制（省电）—— 复用 LatteTiming 自定义 vsync 频率
+// 通道：翻转锁步游戏按该频率节流，GPU/CPU 占用随帧率线性下降。<=0 关闭。
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setFrameLimit([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint fps)
+{
+	if (fps <= 0)
+		LatteTiming_disableCustomVsyncFrequency();
+	else
+		LatteTiming_setCustomVsyncFrequency(fps);
+}
+
 extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_initializeSystems([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
