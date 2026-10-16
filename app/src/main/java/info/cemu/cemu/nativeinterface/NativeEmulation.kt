@@ -30,10 +30,10 @@ object NativeEmulation {
     @JvmStatic
     external fun setOutputRenderScale(scale: Float)
 
-    // ★ NesStation R4: 阴影/光照渲染质量（三档）+ 帧率限制（运行中热生效）
-    external fun setShadowRenderScale(scale: Float)
-    external fun setAuxRenderScale(scale: Float)
+    // ★ NesStation R5: 帧率限制（运行中热生效）+ GamePad 悬浮画面更新频率
+    //   （setPadPresentInterval：纯呈现侧节流省电，0=每帧 / 33≈30fps / 50=20fps）
     external fun setFrameLimit(fps: Int)
+    external fun setPadPresentInterval(intervalMs: Int)
     @JvmStatic
     external fun initializeRenderer()
 

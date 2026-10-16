@@ -72,9 +72,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
      *  渲染目标纹理按比例创建（真实内部渲染分辨率变化，填充率按 scale^2 变化，
      *  输出画面大小不变；GPU 线程帧边界应用并重建纹理缓存）。 */
     @Volatile private var _renderScale = 1f
-    // ★ R4: 阴影渲染 / 光照渲染质量比例 + 帧率限制（见 setCoreOption）
-    @Volatile private var _shadowScale = 1f
-    @Volatile private var _auxScale = 1f
+    // ★ R5: GamePad 悬浮画面呈现节流间隔（ms）+ 帧率限制（见 setCoreOption）
+    @Volatile private var _padPresentIntervalMs = 33
     @Volatile private var _frameLimit = 0
     @Volatile private var lastErrorText = ""
 
@@ -334,8 +333,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     NativeEmulation.setSurface(s, true)
                     NativeEmulation.setSurfaceSize(w, h, true)
                     try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
-                    try { NativeEmulation.setShadowRenderScale(_shadowScale) } catch (_: Throwable) {}
-                    try { NativeEmulation.setAuxRenderScale(_auxScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setPadPresentInterval(_padPresentIntervalMs) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                 } else {
@@ -397,8 +395,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     // 重挂后确保核心侧渲染分辨率缩放仍在（待生效值不随 swapchain 重建丢失，
                     // 这里幂等重发一次，防御核心重启场景）
                     try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
-                    try { NativeEmulation.setShadowRenderScale(_shadowScale) } catch (_: Throwable) {}
-                    try { NativeEmulation.setAuxRenderScale(_auxScale) } catch (_: Throwable) {}
+                    try { NativeEmulation.setPadPresentInterval(_padPresentIntervalMs) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
@@ -506,31 +503,18 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                         applyRenderScaleLocked()
                     }
                 }
-                // ★ R4 阴影渲染质量（三档）：作用于独立深度目标（阴影图/深度
-                //   prepass）。全局降分辨率不再波及阴影图（修复阴影发黑），
-                //   需要进一步省电时单独降低阴影档位（0.5x/0.3x）。
-                "shadowQuality" -> {
-                    val newScale = when (value) {
-                        "low" -> 0.3f
-                        "mid" -> 0.5f
-                        else -> 1.0f
+                // ★ R5 GamePad 悬浮画面更新频率（省电）：纯呈现侧节流 ——
+                //   "1" 每帧 / "2" 每2帧(约30fps·默认) / "3" 每3帧(约20fps)。
+                //   不触碰游戏渲染管线；被跳过的帧由合成器保持上一帧画面。
+                "padPresentRate" -> {
+                    val newMs = when (value) {
+                        "2" -> 33
+                        "3" -> 50
+                        else -> 0
                     }
-                    if (newScale != _shadowScale) {
-                        _shadowScale = newScale
-                        try { NativeEmulation.setShadowRenderScale(newScale) } catch (_: Throwable) {}
-                    }
-                }
-                // ★ R4 光照渲染质量（三档）：作用于泛光/光照等辅助小目标 ——
-                //   多级模糊 pass 填充率按比例平方下降，全屏泛光游戏收益明显。
-                "lightQuality" -> {
-                    val newScale = when (value) {
-                        "low" -> 0.35f
-                        "mid" -> 0.6f
-                        else -> 1.0f
-                    }
-                    if (newScale != _auxScale) {
-                        _auxScale = newScale
-                        try { NativeEmulation.setAuxRenderScale(newScale) } catch (_: Throwable) {}
+                    if (newMs != _padPresentIntervalMs) {
+                        _padPresentIntervalMs = newMs
+                        try { NativeEmulation.setPadPresentInterval(newMs) } catch (_: Throwable) {}
                     }
                 }
                 // ★ R4 帧率限制（省电）：复用核心自定义 vsync 频率通道 ——

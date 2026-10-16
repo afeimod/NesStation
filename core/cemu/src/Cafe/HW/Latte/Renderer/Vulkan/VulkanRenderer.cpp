@@ -1761,14 +1761,19 @@ void VulkanRenderer::CreateCommandBuffers()
 	}
 }
 
-// ★ NesStation R3: GamePad 悬浮画面时间片节流 —— pad 呈现至多 30fps。
+// ★ NesStation R3: GamePad 悬浮画面时间片节流（R5 参数化：间隔可配）。
 //   R2 的奇偶隔帧在主屏/pad 同频时仍会按对齐相位阻塞 acquire；时间片
 //   节流与非阻塞 acquire 组合后，pad 何时更新完全由合成器可用图像驱动，
-//   GPU 线程对 pad 零等待。
+//   GPU 线程对 pad 零等待。R5: 间隔 <=0 时每帧呈现（用户选"不节流"）。
+std::atomic<int> VulkanRenderer::s_padPresentIntervalMs{ 33 };
+
 bool VulkanRenderer::PadViewSkipPresent()
 {
+	const int intervalMs = s_padPresentIntervalMs.load(std::memory_order_relaxed);
+	if (intervalMs <= 0)
+		return false;
 	const auto now = std::chrono::steady_clock::now();
-	return std::chrono::duration_cast<std::chrono::milliseconds>(now - m_padLastPresent).count() < 33;
+	return std::chrono::duration_cast<std::chrono::milliseconds>(now - m_padLastPresent).count() < intervalMs;
 }
 
 

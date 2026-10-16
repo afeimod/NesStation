@@ -1216,26 +1216,13 @@ std::vector<LatteTexture*>& LatteTexture::GetAllTextures()
 	return sAllTextures;
 }
 
-// NesStation R3: 全局内部分辨率缩放实现。待生效比例由 JNI 线程写入，
-// GPU 线程在帧边界（LatteRenderTarget_itHLESwapScanBuffer）应用并整体
-// 重建纹理缓存 —— 与存档同步卸载缓存同一条安全路径。渲染目标创建点由
-// LatteRenderTarget.cpp 置位 s_rtCreationHint（thread_local，GPU 线程
-// 单线程创建渲染目标，无竞争）。
+// NesStation R5: 全局内部分辨率缩放实现（纯分辨率缩放，不动渲染分类）。
+// 待生效比例由 JNI 线程写入，GPU 线程在帧边界应用并整体重建纹理缓存 ——
+// 与存档同步卸载缓存同一条安全路径。渲染目标创建点由 LatteRenderTarget.cpp
+// 置位 s_rtCreationHint（thread_local，GPU 线程单线程创建渲染目标，无竞争）。
+// 所有渲染目标（颜色/深度/阴影图）统一跟随同一比例 —— 官方图形包语义。
 static std::atomic<float> s_internalRenderScale{ 1.0f };
 static std::atomic<float> s_pendingInternalRenderScale{ 1.0f };
-// NesStation R4: 阴影图 / 辅助小目标（泛光·光照）独立比例（待生效 + 已生效成对）
-static std::atomic<float> s_shadowRenderScale{ 1.0f };
-static std::atomic<float> s_pendingShadowRenderScale{ 1.0f };
-static std::atomic<float> s_auxRenderScale{ 1.0f };
-static std::atomic<float> s_pendingAuxRenderScale{ 1.0f };
-// NesStation R4: 已缩放颜色渲染目标的原始尺寸表 —— 深度缓冲创建点用它判断
-// 是否与颜色目标配对（主帧缓冲深度必须与颜色同比例，否则 Vulkan 帧缓冲
-// 附件尺寸不一致）。GPU 线程单线程读写，互斥锁仅防 JNI 线程侧重置竞争。
-static std::mutex s_scaledColorRTMutex;
-static std::vector<std::pair<sint32, sint32>> s_scaledColorRTSizes;
-// NesStation R4: 见过的最大颜色渲染目标尺寸（识别泛光/光照等辅助小目标用）
-static std::atomic<sint32> s_maxColorRTWidth{ 0 };
-static std::atomic<sint32> s_maxColorRTHeight{ 0 };
 static thread_local int s_rtCreationHint{ RT_HINT_NONE };
 
 void LatteTexture_SetInternalRenderScale(float scale)
@@ -1247,15 +1234,9 @@ void LatteTexture_SetInternalRenderScale(float scale)
 bool LatteTexture_ApplyPendingInternalRenderScale()
 {
 	float pending = s_pendingInternalRenderScale.load(std::memory_order_relaxed);
-	float pendingShadow = s_pendingShadowRenderScale.load(std::memory_order_relaxed);
-	float pendingAux = s_pendingAuxRenderScale.load(std::memory_order_relaxed);
-	if (pending == s_internalRenderScale.load(std::memory_order_relaxed)
-		&& pendingShadow == s_shadowRenderScale.load(std::memory_order_relaxed)
-		&& pendingAux == s_auxRenderScale.load(std::memory_order_relaxed))
+	if (pending == s_internalRenderScale.load(std::memory_order_relaxed))
 		return false;
 	s_internalRenderScale.store(pending, std::memory_order_relaxed);
-	s_shadowRenderScale.store(pendingShadow, std::memory_order_relaxed);
-	s_auxRenderScale.store(pendingAux, std::memory_order_relaxed);
 	// 重建全部纹理：已存在的渲染目标按旧尺寸分配，必须删除后让下一次
 	// 绘制按新比例重新创建（与 LatteAsyncCommands 存档同步卸载同路径）
 	LatteTC_UnloadAllTextures();
@@ -1265,24 +1246,6 @@ bool LatteTexture_ApplyPendingInternalRenderScale()
 void LatteTexture_SetRTCreationHint(int hint)
 {
 	s_rtCreationHint = hint;
-}
-
-void LatteTexture_SetShadowRenderScale(float scale)
-{
-	s_pendingShadowRenderScale.store(std::clamp(scale, 0.2f, 1.0f), std::memory_order_relaxed);
-}
-
-void LatteTexture_SetAuxRenderScale(float scale)
-{
-	s_pendingAuxRenderScale.store(std::clamp(scale, 0.2f, 1.0f), std::memory_order_relaxed);
-}
-
-void LatteTexture_ResetRtScaleTracking()
-{
-	std::scoped_lock lock(s_scaledColorRTMutex);
-	s_scaledColorRTSizes.clear();
-	s_maxColorRTWidth.store(0, std::memory_order_relaxed);
-	s_maxColorRTHeight.store(0, std::memory_order_relaxed);
 }
 
 bool LatteTexture_GX2FormatHasStencil(bool isDepth, Latte::E_GX2SURFFMT format)
@@ -1385,75 +1348,23 @@ LatteTexture::LatteTexture(Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddre
 			}
 		}
 	}
-	// NesStation R3/R4: 渲染目标分类缩放 —— 仅作用于宏平铺的 2D 渲染目标
-	// （创建点由 RT hint 分类标记）；线性表面（CPU 共享/回读）与图形包规则
-	// 已命中的纹理保持原样。有效尺寸写入 overwriteInfo 后，Vulkan 分配、
-	// 视口/剪裁缩放、fragCoord 比例、跨尺寸拷贝均走 Cemu 既有图形包管线。
-	// R4 分类规则：
-	//  · 颜色目标：跟随全局渲染分辨率；辅助小目标（泛光/光照/模糊缓冲，
-	//    面积不足最大颜色目标 30%）再叠加光照质量档位；
-	//  · 主深度缓冲（创建点判定与活跃颜色缓冲同尺寸）：必须与颜色目标
-	//    同比例缩放（Vulkan 帧缓冲附件尺寸一致性要求）；
-	//  · 独立深度目标（阴影图/深度 prepass）：只跟随阴影质量档位 ——
-	//    修复全局降分辨率时阴影图被同步缩小导致深度自遮挡走样、比较
-	//    精度下降，表现为"阴影越来越黑"。阴影图保持原生分辨率后，全局
-	//    缩放不再影响阴影正确性；需进一步省电再单独降低阴影档位。
+	// NesStation R5: 纯分辨率缩放 —— 所有宏平铺 2D 渲染目标（颜色/深度/
+	// 阴影图）统一按全局比例创建，与官方 Cemu [TextureRedefine] 图形包完全
+	// 同语义。线性表面（CPU 共享/回读）与图形包规则已命中的纹理保持原样。
+	// 同一绘制 pass 绑定的全部附件同比例 → Vulkan 帧缓冲附件尺寸天然一致；
+	// 视口/剪裁/fragCoord/跨尺寸拷贝由 Cemu 既有管线按 pass 自洽联动。
+	// （R4 的按目标分类缩放已废除：其尺寸配对基准不一致 —— 深度解码 8/32
+	// 对齐 vs 颜色剪刀口优化 —— 几乎必然把主深度误判为独立阴影目标，
+	// "颜色缩放+深度原生"附件错配导致非 1x 分辨率阴影全黑。）
 	if (s_rtCreationHint != RT_HINT_NONE && !this->overwriteInfo.hasResolutionOverwrite
 		&& (dim == Latte::E_DIM::DIM_2D || dim == Latte::E_DIM::DIM_2D_ARRAY || dim == Latte::E_DIM::DIM_2D_MSAA)
 		&& Latte::TM_IsMacroTiled(tileMode))
 	{
-		float scale = 1.0f;
-		bool applyScale = false;
-		if (s_rtCreationHint == RT_HINT_SHADOW)
+		const float rtScale = s_internalRenderScale.load(std::memory_order_relaxed);
+		if (rtScale > 0.001f && (rtScale < 0.999f || rtScale > 1.001f))
 		{
-			// 独立深度目标（阴影图）：只跟随阴影质量档位
-			const float shadowScale = s_shadowRenderScale.load(std::memory_order_relaxed);
-			if (shadowScale < 0.999f)
-			{
-				scale = shadowScale;
-				applyScale = true;
-			}
-		}
-		else
-		{
-			const float rtScale = s_internalRenderScale.load(std::memory_order_relaxed);
-			if (rtScale > 0.001f && (rtScale < 0.999f || rtScale > 1.001f))
-			{
-				scale = rtScale;
-				applyScale = true;
-			}
-			if (s_rtCreationHint == RT_HINT_COLOR)
-			{
-				// 先更新最大颜色目标尺寸（本纹理若是新的最大者，其自身不算辅助目标），
-				// 再以面积占比判定：不足最大颜色目标 30% 视为泛光/光照等辅助小目标。
-				const uint32 maxW = std::max((uint32)s_maxColorRTWidth.load(std::memory_order_relaxed), width);
-				const uint32 maxH = std::max((uint32)s_maxColorRTHeight.load(std::memory_order_relaxed), height);
-				s_maxColorRTWidth.store((sint32)maxW, std::memory_order_relaxed);
-				s_maxColorRTHeight.store((sint32)maxH, std::memory_order_relaxed);
-				if ((uint64)width * (uint64)height * 10ull < (uint64)maxW * (uint64)maxH * 3ull)
-				{
-					const float auxScale = s_auxRenderScale.load(std::memory_order_relaxed);
-					if (auxScale < 0.999f)
-					{
-						scale *= auxScale;
-						applyScale = true;
-					}
-				}
-				// 登记已缩放颜色目标的原始尺寸（供深度创建点配对判定，
-				// 覆盖"深度先于颜色创建"与"深度在后续帧才创建"两种顺序）
-				if (applyScale)
-				{
-					std::scoped_lock lock(s_scaledColorRTMutex);
-					const auto key = std::make_pair((sint32)width, (sint32)height);
-					if (std::find(s_scaledColorRTSizes.begin(), s_scaledColorRTSizes.end(), key) == s_scaledColorRTSizes.end())
-						s_scaledColorRTSizes.emplace_back(key);
-				}
-			}
-		}
-		if (applyScale)
-		{
-			sint32 scaledWidth = std::max(1, (sint32)std::lround((float)width * scale));
-			sint32 scaledHeight = std::max(1, (sint32)std::lround((float)height * scale));
+			sint32 scaledWidth = std::max(1, (sint32)std::lround((float)width * rtScale));
+			sint32 scaledHeight = std::max(1, (sint32)std::lround((float)height * rtScale));
 			if (scaledWidth != (sint32)width || scaledHeight != (sint32)height)
 			{
 				this->overwriteInfo.hasResolutionOverwrite = true;

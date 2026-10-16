@@ -342,20 +342,13 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setOutputRenderScale([[maybe
 	LatteTexture_SetInternalRenderScale(scale);
 }
 
-// ★ NesStation R4: 阴影渲染质量（三档）—— 独立深度目标（阴影图/深度
-// prepass）按比例创建；主画面深度缓冲不受影响。1.0=原生 / 0.5 / 0.3
+// ★ NesStation R5: GamePad 悬浮画面更新频率（省电）—— 纯呈现侧节流
+// （R3 时间片机制参数化），不触碰游戏渲染管线。0=每帧(最流畅)，
+// 33≈30fps（省电），50=20fps（强省电）。被跳过的帧由合成器保持上一帧。
 extern "C" JNIEXPORT void JNICALL
-Java_info_cemu_cemu_nativeinterface_NativeEmulation_setShadowRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setPadPresentInterval([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint intervalMs)
 {
-	LatteTexture_SetShadowRenderScale(scale);
-}
-
-// ★ NesStation R4: 光照渲染质量（三档）—— 泛光/光照等辅助小目标按比例
-// 创建，多级模糊 pass 填充率按比例平方下降。1.0=原生 / 0.6 / 0.35
-extern "C" JNIEXPORT void JNICALL
-Java_info_cemu_cemu_nativeinterface_NativeEmulation_setAuxRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
-{
-	LatteTexture_SetAuxRenderScale(scale);
+	VulkanRenderer::SetPadPresentIntervalMs(intervalMs < 0 ? 0 : (int)intervalMs);
 }
 
 // ★ NesStation R4: 帧率限制（省电）—— 复用 LatteTiming 自定义 vsync 频率

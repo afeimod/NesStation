@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
@@ -215,6 +216,9 @@ public:
 	//   则本帧跳过（pad 至多 30fps）；叠加 pad 交换链非阻塞 acquire 后，
 	//   GPU 线程永不等待 pad，pad 与主屏帧步调完全解耦。
 	bool PadViewSkipPresent() override;
+	// NesStation R5: GamePad 悬浮画面呈现节流间隔（ms）。<=0 = 每帧呈现；
+	// 默认 33ms（约 30fps，R3 行为）。纯呈现侧省电，不触碰游戏渲染管线。
+	static void SetPadPresentIntervalMs(int intervalMs) { s_padPresentIntervalMs.store(intervalMs, std::memory_order_relaxed); }
 	bool IsPadWindowActive() override;
 
 	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
@@ -451,6 +455,7 @@ private:
 	//   呈现共用该标志，保证跳过帧不绘制也不呈现（合成器保持上一帧）。
 	bool m_padFrameActive{ false };
 	std::chrono::steady_clock::time_point m_padLastPresent{};
+	static std::atomic<int> s_padPresentIntervalMs; // NesStation R5: pad 呈现节流间隔（ms），<=0 每帧
 	bool IsSwapchainInfoValid(bool mainWindow) const;
 
 	VkRenderPass m_imguiRenderPass = VK_NULL_HANDLE;

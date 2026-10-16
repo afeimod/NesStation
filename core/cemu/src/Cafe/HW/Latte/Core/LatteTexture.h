@@ -363,22 +363,20 @@ void LatteTexture_UpdateTextureFromDynamicChanges(LatteTexture* texture);
 
 void LatteTexture_UpdateDataToLatest(LatteTexture* texture);
 
-// NesStation R3: 全局内部分辨率缩放 —— 渲染目标纹理按比例创建（等效自动
-// [TextureRedefine] 规则）：scale<1 真实降低游戏内部渲染分辨率（填充率/
-// 带宽按 scale^2 下降），scale>1 超采样；视口/剪裁/fragCoord/拷贝由
-// GetEffectiveSize 管线自动联动，最终输出画面大小不变。
+// NesStation R5: 纯分辨率缩放（"降低分辨率就单纯降低分辨率，不动渲染"）。
+// 所有渲染目标纹理（颜色/深度/阴影图）统一按同一比例创建 —— 与官方 Cemu
+// [TextureRedefine] 图形包完全同语义：scale<1 真实降低游戏内部渲染分辨率
+// （填充率/带宽按 scale^2 下降），scale>1 超采样；同一绘制 pass 的全部附件
+// 同比例 → Vulkan 帧缓冲附件天然一致；视口/剪裁/fragCoord/跨尺寸拷贝由
+// GetEffectiveSize 管线按 pass 自洽联动，最终输出画面大小不变。
 void LatteTexture_SetInternalRenderScale(float scale); // 任意线程：记录待生效比例
-void LatteTexture_SetShadowRenderScale(float scale);   // NesStation R4: 阴影图比例（独立深度目标，1.0=原生）
-void LatteTexture_SetAuxRenderScale(float scale);      // NesStation R4: 辅助小目标（泛光/光照）比例，1.0=原生
 bool LatteTexture_ApplyPendingInternalRenderScale();   // 仅 GPU 线程帧边界调用：生效 + 重建纹理缓存
-void LatteTexture_ResetRtScaleTracking();              // NesStation R4: 清空缩放追踪（换游戏/重建缓存时调用）
-// NesStation R4: 渲染目标缩放分类提示 —— 包住渲染目标纹理创建点（同线程内配对调用）。
-// 全局降分辨率不再波及阴影图（阴影发黑根因：阴影图被同步缩小后深度自遮挡
-// 走样/比较精度下降，表现为阴影越来越黑），主帧缓冲深度-颜色对保持同比例。
-#define RT_HINT_NONE       0 // 非渲染目标（普通纹理，不缩放）
-#define RT_HINT_COLOR      1 // 颜色渲染目标（全局比例；辅助小目标叠加光照档位）
-#define RT_HINT_DEPTH_MAIN 2 // 与活跃颜色缓冲配对的主深度缓冲（全局比例，附件尺寸一致性）
-#define RT_HINT_SHADOW     3 // 独立深度目标（阴影图/深度 prepass —— 只跟随阴影档位）
+// NesStation R5: 渲染目标提示 —— 包住渲染目标纹理创建点（同线程内配对调用）。
+// R4 的按尺寸分类（颜色/主深度/阴影图分档）已废除：颜色解码带剪刀口优化、
+// 深度解码固定 8/32 对齐，尺寸基准不一致导致主深度被误判为独立阴影目标，
+// "颜色缩放+深度原生"附件错配 —— 正是非 1x 分辨率阴影全黑的根因。
+#define RT_HINT_NONE 0 // 非渲染目标（普通纹理，不缩放）
+#define RT_HINT_RT   1 // 渲染目标（颜色/深度/阴影图一律跟随全局比例）
 void LatteTexture_SetRTCreationHint(int hint);
 // NesStation R4: 帧率限制 —— 自定义 vsync 频率（定义于 LatteTiming.cpp）。
 // 翻转锁步游戏按该频率节流，GPU/CPU 占用随帧率线性下降（省电利器）。

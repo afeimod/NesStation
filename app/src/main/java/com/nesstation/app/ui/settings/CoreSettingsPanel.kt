@@ -2235,23 +2235,15 @@ fun CoreSettingsPanel(
                                "0.3" to "0.3x (极致省电)"),
                         padLayout.cwRenderScale
                     ) { updateLayout(padLayout.copy {cwRenderScale = it}) }
-                    DropdownRow("阴影渲染",
-                        // ★ R4: 阴影图独立质量档 —— 独立深度目标（阴影图/深度
-                        //   prepass）按比例创建；主画面深度缓冲不受影响。全局降
-                        //   分辨率不再波及阴影（修复阴影发黑），需进一步省电再用。
-                        listOf("high" to "高 (默认·原生分辨率)",
-                               "mid" to "中 (0.5x·省电提速)",
-                               "low" to "低 (0.3x·极速省电)"),
-                        padLayout.cwShadowQuality
-                    ) { updateLayout(padLayout.copy {cwShadowQuality = it}) }
-                    DropdownRow("光照渲染",
-                        // ★ R4: 泛光/光照等辅助小目标独立质量档 —— 多级模糊
-                        //   pass 填充率按比例平方下降，全屏泛光游戏收益明显。
-                        listOf("high" to "高 (默认·原生分辨率)",
-                               "mid" to "中 (0.6x·省电提速)",
-                               "low" to "低 (0.35x·极速省电)"),
-                        padLayout.cwLightQuality
-                    ) { updateLayout(padLayout.copy {cwLightQuality = it}) }
+                    DropdownRow("GamePad 更新频率",
+                        // ★ R5: 纯呈现侧节流（不触碰游戏渲染管线）。悬浮 GamePad
+                        //   画面以较低频率刷新即可看清地图/物品栏，GPU/功耗显著
+                        //   下降；被跳过的帧由合成器保持上一帧画面。
+                        listOf("1" to "每帧 (最流畅·较耗电)",
+                               "2" to "每2帧 (默认·省电)",
+                               "3" to "每3帧 (强省电)"),
+                        padLayout.cwPadPresentRate
+                    ) { updateLayout(padLayout.copy {cwPadPresentRate = it}) }
                     DropdownRow("帧率限制",
                         // ★ R4: 省电利器 —— 锁步游戏按目标帧率节流，功耗随
                         //   帧率线性下降（30 帧 ≈ 一半 GPU/CPU 占用）。

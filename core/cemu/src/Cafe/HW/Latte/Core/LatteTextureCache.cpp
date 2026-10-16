@@ -423,9 +423,6 @@ std::vector<LatteTexture*> LatteTC_GetDeleteableTextures()
 
 void LatteTC_UnloadAllTextures()
 {
-	// NesStation R4: 纹理缓存整体重建/换游戏时，重置"已缩放颜色目标尺寸表"
-	// 与"最大颜色目标尺寸"追踪，避免跨游戏残留导致深度配对/辅助目标误判
-	LatteTexture_ResetRtScaleTracking();
 	std::vector<LatteTexture*> allTexturesCopy = LatteTexture::GetAllTextures();
 	for (auto& itr : allTexturesCopy)
 	{
