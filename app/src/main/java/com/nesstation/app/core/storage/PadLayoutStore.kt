@@ -888,10 +888,11 @@ class PadLayout {
     // 键名/取值对照上游 NativeSettings.kt（CemuEngine 以 "CemuEngine/<name>"
     // 门面键消费，直调 NativeSettings setter 热生效）：
     var cwGameSpeed: String = "1"           // "0".."4" (GameSpeed 0=0.5x 1=1x 2=2x 3=4x 4=8x，快进联动)
-    var cwRenderScale: String = "1"         // 渲染分辨率缩放："1.5" 1.5x 超采样 | "1" 1x(默认·原生) | "0.75"/"0.5"/"0.4"/"0.3" 降采样提速省电 (R3: 核心渲染目标纹理按比例创建 = 真实内部分辨率缩放，输出画面大小不变)
+    var cwRenderScale: String = "1"         // 渲染分辨率缩放："2" 2x 极致超采样 | "1.5" 1.5x 超采样 | "1" 1x(默认·原生) | "0.75"/"0.5"/"0.4"/"0.3" 降采样提速省电 (R3: 核心渲染目标纹理按比例创建 = 真实内部分辨率缩放，输出画面大小不变)
     // ★ R5: GamePad 悬浮画面更新频率（呈现侧节流省电）+ 帧率限制 —— 见核心设置页
     var cwPadPresentRate: String = "2"      // "1" 每帧(最流畅) | "2" 每2帧(默认·约30fps·省电) | "3" 每3帧(约20fps·强省电)
     var cwFrameLimit: String = "off"        // 帧率限制："off" 不限制(默认) | "60"/"45"/"30" 帧率上限（翻转锁步游戏节流省电）
+    var cwDisableShadows: String = "false"  // 取消阴影渲染："false" 正常阴影(默认) | "true" 阴影比较采样全部替换为受光（阴影消失·画面正常亮度，R7）
     var cwVsyncMode: String = "0"           // "0" 关 | "1" 双缓冲 | "2" 三缓冲 (VSyncMode)
     var cwAsyncShaderCompile: String = "true"   // 异步着色器编译（防卡顿，默认开）
     var cwAccurateBarriers: String = "false"    // 精确屏障（个别游戏修复用，性能开销大）
@@ -1805,6 +1806,7 @@ class PadLayout {
         cwRenderScale = another.cwRenderScale
         cwPadPresentRate = another.cwPadPresentRate
         cwFrameLimit = another.cwFrameLimit
+        cwDisableShadows = another.cwDisableShadows
         cwVsyncMode = another.cwVsyncMode
         cwAsyncShaderCompile = another.cwAsyncShaderCompile
         cwAccurateBarriers = another.cwAccurateBarriers
@@ -3126,11 +3128,14 @@ object PadLayoutStore {
             cwRenderScale = (p.getString("cw_render_scale", "1") ?: "1").let {
                 // ★ R4: 白名单补齐 R3 新增的 "1.5"/"0.4"/"0.3" —— 此前这三档
                 //   会在重启应用后被静默重置回 1x
-                if (it in listOf("1.5", "1", "0.75", "0.5", "0.4", "0.3")) it else "1" }
+                // ★ R7: 白名单补入 "2"（2x 极致超采样档，防重启被静默重置）
+                if (it in listOf("2", "1.5", "1", "0.75", "0.5", "0.4", "0.3")) it else "1" }
             cwPadPresentRate = (p.getString("cw_pad_present_rate", "2") ?: "2").let {
                 if (it in listOf("1", "2", "3")) it else "2" }
             cwFrameLimit = (p.getString("cw_frame_limit", "off") ?: "off").let {
                 if (it in listOf("off", "60", "45", "30")) it else "off" }
+            cwDisableShadows = (p.getString("cw_disable_shadows", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
             cwVsyncMode = (p.getString("cw_vsync_mode", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2")) it else "0" }
             cwAsyncShaderCompile = (p.getString("cw_async_shader_compile", "true") ?: "true").let {
@@ -3995,6 +4000,7 @@ object PadLayoutStore {
             putString("cw_render_scale", layout.cwRenderScale)
             putString("cw_pad_present_rate", layout.cwPadPresentRate)
             putString("cw_frame_limit", layout.cwFrameLimit)
+            putString("cw_disable_shadows", layout.cwDisableShadows)
             putString("cw_vsync_mode", layout.cwVsyncMode)
             putString("cw_async_shader_compile", layout.cwAsyncShaderCompile)
             putString("cw_accurate_barriers", layout.cwAccurateBarriers)

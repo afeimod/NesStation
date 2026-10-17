@@ -15,6 +15,29 @@
 #endif
 #include "util/helpers/helpers.h"
 
+#include <atomic>
+
+// ==================================================================
+// NesStation R7: 「取消阴影渲染」开关的实现基座。
+// true 时 LatteDecompilerEmitGLSL 对全部阴影比较采样（SAMPLE_C
+// 系列）直接输出常数 1.0（= 该像素完全受光），阴影消失
+// 但画面亮度正常（是“没有阴影”而不是“阴影变黑”）。
+// 开关只改变新编译的着色器源码，状态并入像素着色
+// 器 auxHash（LatteSHRC_CalcPSAuxHash），运行时缓存与磁盘
+// shader cache 自动按开关状态分流，切换后自动命中新变体。
+// ==================================================================
+static std::atomic<bool> s_shadowRenderingDisabled{ false };
+
+void LatteDecompiler_SetShadowRenderingDisabled(bool state)
+{
+        s_shadowRenderingDisabled.store(state, std::memory_order_relaxed);
+}
+
+bool LatteDecompiler_IsShadowRenderingDisabled()
+{
+        return s_shadowRenderingDisabled.load(std::memory_order_relaxed);
+}
+
 // parse instruction and if valid append it to instructionList
 bool LatteDecompiler_ParseCFInstruction(LatteDecompilerShaderContext* shaderContext, uint32 cfIndex, uint32 cfWord0, uint32 cfWord1, bool* endOfProgram, std::vector<LatteDecompilerCFInstruction>& instructionList)
 {

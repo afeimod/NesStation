@@ -219,14 +219,6 @@ public:
 	// NesStation R5: GamePad 悬浮画面呈现节流间隔（ms）。<=0 = 每帧呈现；
 	// 默认 33ms（约 30fps，R3 行为）。纯呈现侧省电，不触碰游戏渲染管线。
 	static void SetPadPresentIntervalMs(int intervalMs) { s_padPresentIntervalMs.store(intervalMs, std::memory_order_relaxed); }
-	// ★ NesStation R8: 呈现侧输出分辨率缩放（1.0 = 原生）。经 JNI
-	// NativeEmulation.setOutputRenderScale 设置，渲染线程逐帧读取。
-	// R8 语义：分辨率缩放从“内部渲染目标缩放”（R3~R7，破坏游戏光照/
-	// 阴影采样，非 1x 画面发黑）改为【纯呈现侧缩放】—— 游戏内部一切按
-	// 1x 原样渲染，仅在最终 backbuffer quad 阶段画进低分辨率离屏目标
-	// 再线性放大上屏。>1.0 档位一律 clamp 到 1.0。
-	static void SetOutputRenderScale(float scale);
-	static float GetOutputRenderScale();
 	bool IsPadWindowActive() override;
 
 	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
@@ -461,22 +453,6 @@ private:
 	// ★ NesStation R3: GamePad 悬浮画面呈现状态 —— DrawBackbufferQuad 非阻塞
 	//   acquire 成功后置位，SwapBuffers 呈现后清除；覆盖层（ImguiBegin）与
 	//   呈现共用该标志，保证跳过帧不绘制也不呈现（合成器保持上一帧）。
-	// ★ NesStation R8: 低分辨率离屏输出目标（主画布/悬浮 pad 各一个）
-	struct ScaledOutputTarget
-	{
-		VkImage image{};
-		VkImageMemAllocation* allocation{};
-		VkImageView view{};
-		VkFramebuffer framebuffer{};
-		VkRenderPass renderPass{};
-		VkExtent2D extent{};
-		VkFormat format{ VK_FORMAT_UNDEFINED };
-		float scale{ 0.0f };
-		bool valid{ false };
-	};
-	ScaledOutputTarget m_scaledOutput[2]{};
-	bool EnsureScaledOutputTarget(bool mainWindow, const VkExtent2D& fullExtent, VkFormat format, float scale, ScaledOutputTarget** targetOut);
-	void DestroyScaledOutputTarget(ScaledOutputTarget& target);
 	bool m_padFrameActive{ false };
 	std::chrono::steady_clock::time_point m_padLastPresent{};
 	static std::atomic<int> s_padPresentIntervalMs; // NesStation R5: pad 呈现节流间隔（ms），<=0 每帧

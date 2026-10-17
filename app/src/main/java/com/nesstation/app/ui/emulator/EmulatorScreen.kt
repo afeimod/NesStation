@@ -6022,6 +6022,9 @@ private fun applyCoreOptionsInner(
             // ★ R5 GamePad 悬浮画面更新频率（呈现侧节流省电）+ 帧率限制
             engine.setCoreOption("CemuEngine/padPresentRate", layout.cwPadPresentRate)
             engine.setCoreOption("CemuEngine/frameLimit", layout.cwFrameLimit)
+            // ★ R7 取消阴影渲染（阴影消失·画面正常亮度；非原生分辨率
+            //   阴影发黑时的开关）
+            engine.setCoreOption("CemuEngine/disableShadows", layout.cwDisableShadows)
             engine.setCoreOption("CemuEngine/vsyncMode", layout.cwVsyncMode)
             engine.setCoreOption("CemuEngine/asyncShaderCompile", layout.cwAsyncShaderCompile)
             engine.setCoreOption("CemuEngine/accurateBarriers", layout.cwAccurateBarriers)
@@ -15387,7 +15390,10 @@ private fun SettingsPanel(
                     //   GPU 填充率/带宽按 scale^2 变化，输出画面大小不变。
                     //   <1x 提速省电（0.3x 约降至 1/11 填充），1.5x 超采样更精细；
                     //   运行中切换即时热生效（重建纹理缓存），触摸映射不受影响。
-                    listOf("1.5" to "1.5x (超采样·更精细)",
+                    // ★ R7: 新增 2x 极致超采样档（填充率/带宽按 scale^2 变化，
+                    //   高配设备 4K 级精细度；渲染管线与其它档位同机制）
+                    listOf("2" to "2x (极致超采样·高配)",
+                           "1.5" to "1.5x (超采样·更精细)",
                            "1" to "1x (默认·原生)",
                            "0.75" to "0.75x (提速·省电)",
                            "0.5" to "0.5x (大幅提速)",
@@ -15413,6 +15419,13 @@ private fun SettingsPanel(
                            "30" to "30 帧 (强力省电)"),
                     padLayout.cwFrameLimit
                 ) { onLayoutChange(padLayout.copy {cwFrameLimit = it}) }
+                SwitchSetting("取消阴影渲染",
+                    // ★★★ R7: 关闭后全部阴影比较采样替换为“完全受光”
+                    //   （阴影消失、画面正常亮度，不是变黑）。
+                    //   非原生分辨率下阴影渲染异常（发黑）时打开；
+                    //   运行中切换热生效（短暂重编着色器）。
+                    "阴影消失·画面正常亮度（默认关）", padLayout.cwDisableShadows == "true"
+                ) { onLayoutChange(padLayout.copy {cwDisableShadows = if (it) "true" else "false"}) }
                 DropdownSetting("垂直同步",
                     listOf("0" to "关闭 (默认·低延迟)", "1" to "双缓冲", "2" to "三缓冲"),
                     padLayout.cwVsyncMode

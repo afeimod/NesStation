@@ -34,6 +34,11 @@ object NativeEmulation {
     //   （setPadPresentInterval：纯呈现侧节流省电，0=每帧 / 33≈30fps / 50=20fps）
     external fun setFrameLimit(fps: Int)
     external fun setPadPresentInterval(intervalMs: Int)
+
+    // ★★★ NesStation R7: 「取消阴影渲染」—— 着色器层把阴影比较
+    //   采样替换为“完全受光”常数，阴影消失、画面亮度正常
+    //   （不是变黑）。运行中切换会触发受影响着色器自动重编。
+    external fun setShadowRenderingDisabled(disabled: Boolean)
     @JvmStatic
     external fun initializeRenderer()
 

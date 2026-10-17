@@ -689,6 +689,15 @@ uint64 LatteSHRC_CalcPSAuxHash(LatteDecompilerShader* pixelShader, uint32* conte
 	}
 #endif
 
+	// NesStation R7: 「取消阴影渲染」开关改变像素着色器源码 ——
+	// 并入 auxHash，使运行时缓存与磁盘 shader cache 自动按开关
+	// 状态分流（切换后命中新变体重编，无需手动清缓存）。
+	if (LatteDecompiler_IsShadowRenderingDisabled())
+	{
+		auxHash = (auxHash << 3) | (auxHash >> 61);
+		auxHash += 0x5A5A5;
+	}
+
 	return auxHash;
 }
 

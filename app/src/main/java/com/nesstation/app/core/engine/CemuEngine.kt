@@ -75,6 +75,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     // ★ R5: GamePad 悬浮画面呈现节流间隔（ms）+ 帧率限制（见 setCoreOption）
     @Volatile private var _padPresentIntervalMs = 33
     @Volatile private var _frameLimit = 0
+
+    /** R7 取消阴影渲染（阴影比较采样→常数受光，画面正常亮度） */
+    @Volatile private var _shadowDisabled = false
     @Volatile private var lastErrorText = ""
 
     @Volatile private var surface: Surface? = null
@@ -335,6 +338,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
                     try { NativeEmulation.setPadPresentInterval(_padPresentIntervalMs) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
+                    try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                 } else {
                     // 无 Surface 启动（TV 后台等极端场景）：核心仍可跑，
@@ -397,6 +401,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setOutputRenderScale(_renderScale) } catch (_: Throwable) {}
                     try { NativeEmulation.setPadPresentInterval(_padPresentIntervalMs) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
+                    try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
                         try { NativeEmulation.resumeTitle() } catch (_: Throwable) {}
@@ -530,6 +535,19 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     if (newLimit != _frameLimit) {
                         _frameLimit = newLimit
                         try { NativeEmulation.setFrameLimit(newLimit) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R7 取消阴影渲染：着色器反编译层把全部阴影比较
+                //   采样（SAMPLE_C 系列）替换为“完全受光”常数（1.0）
+                //   —— 阴影消失、画面亮度正常（不是变黑）。非原生
+                //   分辨率下阴影相关渲染异常（发黑）时的替代画面，
+                //   也可用于纯性能场景。状态并入 auxHash，运行中
+                //   热切换（受影响着色器自动重编）。
+                "disableShadows" -> {
+                    val newState = value == "true" || value == "enabled"
+                    if (newState != _shadowDisabled) {
+                        _shadowDisabled = newState
+                        try { NativeEmulation.setShadowRenderingDisabled(newState) } catch (_: Throwable) {}
                     }
                 }
                 // ★ 音频设备开关/声道（TV / GamePad 独立）

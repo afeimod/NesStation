@@ -3,6 +3,7 @@
 #include "Cafe/CafeSystem.h"
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
@@ -339,11 +340,7 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setSurfaceSize([[maybe_unuse
 extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setOutputRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
 {
-	// ★ NesStation R8: 分辨率缩放改为纯呈现侧（VulkanRenderer 离屏目标）。
-	// 内部渲染目标缩放（R3~R7 的 LatteTexture_SetInternalRenderScale）会破坏
-	// 游戏光照/阴影采样（非 1x 画面发黑），彻底停用 —— 内部恒 1.0，游戏
-	// 内部渲染与 1x 完全一致，用户选择的档位仅影响最终上屏分辨率。
-	VulkanRenderer::SetOutputRenderScale(scale);
+	LatteTexture_SetInternalRenderScale(scale);
 }
 
 // ★ NesStation R5: GamePad 悬浮画面更新频率（省电）—— 纯呈现侧节流
@@ -364,6 +361,16 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setFrameLimit([[maybe_unused
 		LatteTiming_disableCustomVsyncFrequency();
 	else
 		LatteTiming_setCustomVsyncFrequency(fps);
+}
+
+// ★★★ NesStation R7: 「取消阴影渲染」—— 着色器反编译层把全部
+// 阴影比较采样（SAMPLE_C 系列）替换为常数 1.0（完全受光），
+// 阴影消失但画面亮度正常。状态进入像素着色器 auxHash，
+// 运行中切换自动重编受影响着色器（短暂卡顿属正常）。
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setShadowRenderingDisabled([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean disabled)
+{
+	LatteDecompiler_SetShadowRenderingDisabled(disabled == JNI_TRUE);
 }
 
 extern "C" [[maybe_unused]] JNIEXPORT void JNICALL

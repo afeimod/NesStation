@@ -2227,7 +2227,9 @@ fun CoreSettingsPanel(
                         //   （视口/剪裁/跨尺寸拷贝由 Cemu 图形包分辨率管线自动联动），
                         //   GPU 填充率/带宽按 scale^2 变化，输出画面大小不变。
                         //   <1x 提速省电，1.5x 超采样更精细；运行中切换即时热生效。
-                        listOf("1.5" to "1.5x (超采样·更精细)",
+                        // ★ R7: 新增 2x 极致超采样档
+                        listOf("2" to "2x (极致超采样·高配)",
+                               "1.5" to "1.5x (超采样·更精细)",
                                "1" to "1x (默认·原生)",
                                "0.75" to "0.75x (提速·省电)",
                                "0.5" to "0.5x (大幅提速)",
@@ -2280,6 +2282,13 @@ fun CoreSettingsPanel(
                         listOf("false" to "关闭 (默认·快)", "true" to "开启 (个别花屏游戏修复)"),
                         padLayout.cwAccurateBarriers
                     ) { updateLayout(padLayout.copy {cwAccurateBarriers = it}) }
+                    DropdownRow("取消阴影渲染",
+                        // ★★★ R7: 阴影比较采样全部替换为“完全受光”—— 阴影消失、
+                        //   画面正常亮度（不是变黑）。非原生分辨率阴影发黑的
+                        //   替代方案；运行中热切换（短暂重编着色器）。
+                        listOf("false" to "正常阴影 (默认)", "true" to "取消阴影渲染"),
+                        padLayout.cwDisableShadows
+                    ) { updateLayout(padLayout.copy {cwDisableShadows = it}) }
                     DropdownRow("核心 FPS 显示",
                         listOf("false" to "关闭 (默认)", "true" to "开启 (LatteOverlay)"),
                         padLayout.cwOverlayFPS

@@ -2321,6 +2321,24 @@ void _emitTEXSampleTextureCode(LatteDecompilerShaderContext* shaderContext, Latt
 			src->add(" = (");
 	}
 
+	// NesStation R7: 「取消阴影渲染」—— 阴影比较采样直接输出
+	// “完全受光”常数（1.0），阴影消失、画面亮度正常（不是
+	// 变黑）。拦截对象 = 全部深度比较取数（SAMPLE_C /
+	// SAMPLE_C_L / SAMPLE_C_LZ；顶点着色器的 SAMPLE_C_LZ 已在上方
+	// 归一为 SAMPLE_C）。硬件 shadow 采样返回 1.0 = 通过（该点在
+	// 光下）、0.0 = 在阴影中 —— 恒输出 1.0 即全场景不受阴影。
+	// 阴影图本身仍正常渲染，仅不再被消费，对其它渲染零影响。
+	if (LatteDecompiler_IsShadowRenderingDisabled() &&
+		(texOpcode == GPU7_TEX_INST_SAMPLE_C || texOpcode == GPU7_TEX_INST_SAMPLE_C_L || texOpcode == GPU7_TEX_INST_SAMPLE_C_LZ))
+	{
+		if (numWrittenElements == 1)
+			src->add("1.0");
+		else
+			src->addFmt("vec{}(1.0)", numWrittenElements);
+		src->add(");" _CRLF);
+		return;
+	}
+
 	bool unnormalizationHandled = false;
 	bool useTexelCoordinates = false;
 
