@@ -7,11 +7,10 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanFrameGen.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/SwapchainInfoVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
-#include "Common/log.h"
-#include "Common/precompiled.h"
+#include "Cemu/Logging/CemuLogging.h" // 本基座日志声明所在（上游原日志头在本基座已移除，勿沿用上游 include 路径）
 
 #include <glslang/Public/ShaderLang.h>
-#include <SPIRV/GlslangToSpv.h>
+#include <glslang/SPIRV/GlslangToSpv.h>
 
 #include <atomic>
 #include <array>
