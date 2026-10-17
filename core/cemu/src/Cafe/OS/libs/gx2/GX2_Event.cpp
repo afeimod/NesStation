@@ -10,9 +10,20 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "config/ActiveSettings.h"
 #include "util/helpers/ConcurrentQueue.h"
+#include <atomic>
 
 namespace GX2
 {
+
+// ★★★ NesStation R11: GX2DrawDone 快速模式（参考「风之杖HD 重编译版」
+//   drawdone_mode 实现）。默认关 = 严格等待（上游语义）；开启后只 flush
+//   命令不等待时间戳退休 —— 游戏逻辑线程不再被 DrawDone 阻塞，帧率更稳，
+//   代价是个别依赖 DrawDone 时序的游戏可能出现轻微数据不同步（实验性）。
+static std::atomic<bool> s_drawDoneSkipWait{ false };
+void GX2SetDrawDoneSkipWait(bool skip)
+{
+        s_drawDoneSkipWait.store(skip, std::memory_order_relaxed);
+}
 
 	SysAllocator<coreinit::OSThreadQueue> g_vsyncThreadQueue;
 	SysAllocator<coreinit::OSThreadQueue> g_flipThreadQueue;
@@ -235,6 +246,11 @@ namespace GX2
 		}
 		// flush pipeline
 		GX2Command_Flush(0x100, true);
+
+		// ★ NesStation R11: 快速模式 —— 只 flush 不等待（异步操作
+		//   同步命令照常提交，读回/遮挡查询正确性不受影响）
+		if (s_drawDoneSkipWait.load(std::memory_order_relaxed))
+			return true;
 
 		uint64 ts = GX2GetLastSubmittedTimeStamp();
 		return GX2WaitTimeStamp(ts);

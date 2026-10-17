@@ -39,6 +39,14 @@ object NativeEmulation {
     //   采样替换为“完全受光”常数，阴影消失、画面亮度正常
     //   （不是变黑）。运行中切换会触发受影响着色器自动重编。
     external fun setShadowRenderingDisabled(disabled: Boolean)
+
+    // ★★★ NesStation R11 性能四件套（参考「风之杖HD 重编译版」移植）：
+    //   CPU 核心调度（0 默认/1 大核优先/2 小核优先，运行中热生效）、
+    //   CPU 模式覆盖（-1 默认 Auto / 0 单核解释器 / 1 单核重编译 / 3 多核重编译，
+    //   重启游戏完全生效）、GX2DrawDone 快速模式（默认关，实验性）
+    external fun setCoreSchedulingPolicy(policy: Int)
+    external fun setCpuModeOverride(mode: Int)
+    external fun setDrawDoneSkipWait(skip: Boolean)
     @JvmStatic
     external fun initializeRenderer()
 

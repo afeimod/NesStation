@@ -15417,6 +15417,31 @@ private fun SettingsPanel(
                            "30" to "30 帧 (强力省电)"),
                     padLayout.cwFrameLimit
                 ) { onLayoutChange(padLayout.copy {cwFrameLimit = it}) }
+                DropdownSetting("CPU 核心调度",
+                    // ★★★ R11: 移植参考「风之杖HD 重编译版」CPU 核心调度 ——
+                    //   游戏模拟线程与 GPU 渲染线程按策略绑定 CPU 簇。
+                    //   大核优先渲染最快（发热更高），小核优先发热低更稳定省电。
+                    //   运行中切换热生效。
+                    listOf("0" to "默认 (不干预)",
+                           "1" to "大核优先 (最快·发热高)",
+                           "2" to "小核优先 (省电·稳定)"),
+                    padLayout.cwCoreSched
+                ) { onLayoutChange(padLayout.copy {cwCoreSched = it}) }
+                DropdownSetting("CPU 模式",
+                    // ★★★ R11: 核心调用重编译配置 —— 多核重编译 = 每核独立
+                    //   JIT 线程（最快），解释器最兼容但慢。切换后重启游戏生效。
+                    listOf("auto" to "默认 (自动·多核重编译)",
+                           "3" to "强制多核重编译",
+                           "1" to "单核重编译",
+                           "0" to "单核解释器 (最兼容)"),
+                    padLayout.cwCpuMode
+                ) { onLayoutChange(padLayout.copy {cwCpuMode = it}) }
+                SwitchSetting("GX2DrawDone 快速模式",
+                    // ★★★ R11: 移植参考实现 drawdone_mode —— 开启后
+                    //   GX2DrawDone 只 flush 不等待 GPU 时间戳退休，游戏逻辑
+                    //   线程不再被阻塞。实验性：个别依赖时序的游戏可能异常。
+                    "减少卡顿·实验性（默认关）", padLayout.cwDrawdoneFast == "true"
+                ) { onLayoutChange(padLayout.copy {cwDrawdoneFast = if (it) "true" else "false"}) }
                 SwitchSetting("取消阴影渲染",
                     // ★ R7/R10: 开启后全部阴影比较采样替换为“完全受光”
                     //   （阴影消失、画面正常亮度，不是变黑）。

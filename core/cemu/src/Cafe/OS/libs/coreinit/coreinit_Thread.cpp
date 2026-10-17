@@ -9,6 +9,7 @@
 #include "Cafe/HW/Espresso/Debugger/GDBStub.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
+#include "Cafe/nesstation/NesStationPerf.h"
 
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/ConcurrentQueue.h"
@@ -1650,6 +1651,9 @@ namespace coreinit
 			std::lock_guard schedulerThreadIdsLockGuard(g_schedulerThreadIdsLock);
 			g_schedulerThreadIds.emplace_back(tid);
 		}
+		// ★ NesStation R11: 调度线程进入 CPU 核心调度注册表，
+		//   并按当前策略（默认/大核优先/小核优先）立即绑核
+		NesStationPerf::RegisterAndApplySelf();
 #endif
 
 		t_schedulerFiber = Fiber::PrepareCurrentThread();
@@ -1710,6 +1714,7 @@ namespace coreinit
 		for (size_t i = 0; i < Espresso::CORE_COUNT; i++)
 			g_coreRunQueueThreadCount[i].reset();
 #if BOOST_OS_LINUX
+		NesStationPerf::ClearThreads(); // ★ R11: 调度线程注册表随关机清空
 		{
 			std::lock_guard schedulerThreadIdsLockGuard(g_schedulerThreadIdsLock);
 			g_schedulerThreadIds.clear();

@@ -2281,6 +2281,30 @@ fun CoreSettingsPanel(
                         listOf("false" to "关闭 (默认·快)", "true" to "开启 (个别花屏游戏修复)"),
                         padLayout.cwAccurateBarriers
                     ) { updateLayout(padLayout.copy {cwAccurateBarriers = it}) }
+                    DropdownRow("CPU 核心调度",
+                        // ★★★ R11: 移植参考「风之杖HD 重编译版」CPU 核心调度 ——
+                        //   游戏与渲染线程运行核心。大核优先：渲染最快，发热更高；
+                        //   小核优先：发热更低运行稳定。运行中切换热生效。
+                        listOf("0" to "默认 (不干预)",
+                               "1" to "大核优先 (最快·发热高)",
+                               "2" to "小核优先 (省电·稳定)"),
+                        padLayout.cwCoreSched
+                    ) { updateLayout(padLayout.copy {cwCoreSched = it}) }
+                    DropdownRow("CPU 模式",
+                        // ★★★ R11: 核心调用重编译配置。多核重编译最快，
+                        //   解释器最兼容。切换后重启游戏完全生效。
+                        listOf("auto" to "默认 (自动·多核重编译)",
+                               "3" to "强制多核重编译",
+                               "1" to "单核重编译",
+                               "0" to "单核解释器 (最兼容)"),
+                        padLayout.cwCpuMode
+                    ) { updateLayout(padLayout.copy {cwCpuMode = it}) }
+                    DropdownRow("GX2DrawDone 快速模式",
+                        // ★★★ R11: drawdone 快速路径 —— 只 flush 不等待，
+                        //   减少卡顿（实验性，默认关）。
+                        listOf("false" to "严格等待 (默认)", "true" to "快速模式 (实验)"),
+                        padLayout.cwDrawdoneFast
+                    ) { updateLayout(padLayout.copy {cwDrawdoneFast = it}) }
                     DropdownRow("取消阴影渲染",
                         // ★★★ R7: 阴影比较采样全部替换为“完全受光”—— 阴影消失、
                         //   画面正常亮度（不是变黑）。非原生分辨率阴影发黑的

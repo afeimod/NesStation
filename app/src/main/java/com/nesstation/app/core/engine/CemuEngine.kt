@@ -77,7 +77,13 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _frameLimit = 0
 
     /** R7 取消阴影渲染（阴影比较采样→常数受光，画面正常亮度） */
-    @Volatile private var _shadowDisabled = false
+
+    // ★ R11 CPU 核心调度：0 默认 / 1 大核优先 / 2 小核优先（省电）
+    @Volatile private var _coreSchedPolicy = 0
+    // ★ R11 CPU 模式：auto=不覆盖（Auto 推断·多核重编译）/ "3" 多核重编译 / "1" 单核重编译 / "0" 单核解释器
+    @Volatile private var _cpuMode = "auto"
+    // ★ R11 GX2DrawDone 快速模式（默认关 = 严格等待上游语义）
+    @Volatile private var _drawdoneFast = false
 
     /**
      * ★ R10 存/读档串行化锁 —— native 快速存档/读档会冻结全部模拟线程，
@@ -346,6 +352,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setPadPresentInterval(_padPresentIntervalMs) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
                     try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
+                    try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
+                    try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
+                    try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                 } else {
                     // 无 Surface 启动（TV 后台等极端场景）：核心仍可跑，
@@ -409,6 +418,9 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setPadPresentInterval(_padPresentIntervalMs) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameLimit(_frameLimit) } catch (_: Throwable) {}
                     try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
+                    try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
+                    try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
+                    try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
                         try { NativeEmulation.resumeTitle() } catch (_: Throwable) {}
@@ -555,6 +567,40 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     if (newState != _shadowDisabled) {
                         _shadowDisabled = newState
                         try { NativeEmulation.setShadowRenderingDisabled(newState) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R11 CPU 核心调度（参考「风之杖HD 重编译版」核心调度）：
+                //   3 个调度主机线程 + GPU 渲染线程按策略绑定大/小核簇，
+                //   运行中热生效（JNI 立即重绑全部已注册线程）。
+                "coreScheduling" -> {
+                    val newPolicy = value.toIntOrNull()?.coerceIn(0, 2) ?: 0
+                    if (newPolicy != _coreSchedPolicy) {
+                        _coreSchedPolicy = newPolicy
+                        try { NativeEmulation.setCoreSchedulingPolicy(newPolicy) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R11 CPU 模式（核心调用重编译配置）：多核重编译最快，
+                //   单核解释器最兼容。核心在启动期读取，切换后重启游戏完全生效。
+                "cpuMode" -> {
+                    val newMode = value.trim()
+                    if (newMode != _cpuMode) {
+                        _cpuMode = newMode
+                        val nativeMode = when (newMode) {
+                            "3" -> 3   // 多核重编译
+                            "1" -> 1   // 单核重编译
+                            "0" -> 0   // 单核解释器
+                            else -> -1 // auto（不覆盖，走 Auto 推断）
+                        }
+                        try { NativeEmulation.setCpuModeOverride(nativeMode) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R11 GX2DrawDone 快速模式：只 flush 不等待时间戳退休，
+                //   游戏逻辑线程不再被 DrawDone 阻塞（实验性，个别游戏可能数据不同步）。
+                "drawdoneFast" -> {
+                    val newState = value == "true" || value == "enabled"
+                    if (newState != _drawdoneFast) {
+                        _drawdoneFast = newState
+                        try { NativeEmulation.setDrawDoneSkipWait(newState) } catch (_: Throwable) {}
                     }
                 }
                 // ★ 音频设备开关/声道（TV / GamePad 独立）

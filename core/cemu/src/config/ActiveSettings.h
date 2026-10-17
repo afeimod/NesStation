@@ -102,6 +102,10 @@ public:
 
 	// cpu
 	[[nodiscard]] static CPUMode GetCPUMode();
+	// ★ NesStation R11: CPUMode 运行时覆盖（-1=不覆盖走 Auto 推断，
+	//   其余为 CPUMode 枚举值）。多核重编译/单核解释器等切换，
+	//   启动期读取 —— 切换后需重启游戏完全生效。
+	static void SetCPUModeOverride(int mode);
 	[[nodiscard]] static uint8 GetTimerShiftFactor();
 
 	static void SetTimerShiftFactor(uint8 shiftFactor);

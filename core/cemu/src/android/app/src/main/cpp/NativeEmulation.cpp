@@ -4,6 +4,7 @@
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
+#include "Cafe/nesstation/NesStationPerf.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
@@ -367,6 +368,40 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setFrameLimit([[maybe_unused
 // 阴影比较采样（SAMPLE_C 系列）替换为常数 1.0（完全受光），
 // 阴影消失但画面亮度正常。状态进入像素着色器 auxHash，
 // 运行中切换自动重编受影响着色器（短暂卡顿属正常）。
+// ★★★ NesStation R11 前置声明（定义在各自实现文件）
+namespace GX2
+{
+	void GX2SetDrawDoneSkipWait(bool skip);
+}
+
+// ★★★ NesStation R11: CPU 核心调度（默认0/大核优先1/小核优先2）。
+// 对全部已注册模拟线程（3 个调度主机线程 + GPU 渲染线程）立即重绑，
+// 运行中热生效；策略 0 = 解除绑定恢复全核。
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setCoreSchedulingPolicy([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint policy)
+{
+	int p = policy;
+	if (p < 0 || p > 2)
+		p = 0;
+	NesStationPerf::s_coreSchedPolicy.store(p, std::memory_order_relaxed);
+	NesStationPerf::ApplyPolicyToAll(p);
+}
+
+// ★★★ NesStation R11: CPUMode 运行时覆盖（-1=默认Auto推断 / 0=单核解释器 /
+// 1=单核重编译 / 3=多核重编译）。启动期读取，切换后重启游戏完全生效。
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setCpuModeOverride([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint mode)
+{
+	ActiveSettings::SetCPUModeOverride(mode < -1 ? -1 : (int)mode);
+}
+
+// ★★★ NesStation R11: GX2DrawDone 快速模式（默认关 = 严格等待上游语义）
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setDrawDoneSkipWait([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean skip)
+{
+	GX2::GX2SetDrawDoneSkipWait(skip == JNI_TRUE);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setShadowRenderingDisabled([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean disabled)
 {

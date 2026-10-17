@@ -18,6 +18,7 @@
 #include "config/ActiveSettings.h"
 
 #include "Cafe/CafeSystem.h"
+#include "Cafe/nesstation/NesStationPerf.h"
 
 LatteGPUState_t LatteGPUState = {};
 
@@ -115,6 +116,8 @@ void LatteThread_HandleOSScreen()
 int Latte_ThreadEntry()
 {
 	SetThreadName("LatteThread");
+	// ★ NesStation R11: GPU 渲染线程进入 CPU 核心调度注册表并按策略绑核
+	NesStationPerf::RegisterAndApplySelf();
 	sint32 w,h;
 	WindowSystem::GetWindowPhysSize(w,h);
 

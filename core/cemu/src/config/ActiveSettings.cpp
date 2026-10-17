@@ -64,8 +64,20 @@ bool ActiveSettings::DisplayDRCEnabled()
 	return g_current_game_profile->StartWithGamepadView();
 }
 
+// ★ NesStation R11: CPUMode 运行时覆盖（参考「风之杖HD 重编译版」
+// 核心调用重编译配置）—— 用户显式选择优先于 gameprofile/Auto 推断。
+#include <atomic>
+static std::atomic<int> s_cpuModeOverride{ -1 };
+void ActiveSettings::SetCPUModeOverride(int mode)
+{
+	s_cpuModeOverride.store(mode);
+}
+
 CPUMode ActiveSettings::GetCPUMode()
 {
+	int cpuModeOverride = s_cpuModeOverride.load(std::memory_order_relaxed);
+	if (cpuModeOverride >= 0)
+		return (CPUMode)cpuModeOverride;
 	auto mode = g_current_game_profile->GetCPUMode().value_or(CPUMode::Auto);
 
 	if (mode == CPUMode::Auto)
