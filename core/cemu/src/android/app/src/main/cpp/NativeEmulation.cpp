@@ -339,6 +339,8 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setSurfaceSize([[maybe_unuse
 // 内部渲染目标缩放（R3~R7 的 LatteTexture_SetInternalRenderScale）会破坏
 // 游戏光照/阴影采样（非 1x 画面发黑），彻底停用 —— 内部恒 1.0，游戏内部
 // 渲染与 1x 完全一致，用户选择的档位仅影响最终上屏分辨率。
+// ★ R13: >1x（1.5x/2x）不再钳制 —— 走与 <1x 对称的呈现侧超采样
+//   （最终 quad 画进更大离屏目标后缩小 blit 回全尺寸交换链）。
 extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setOutputRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
 {
@@ -415,6 +417,40 @@ extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setFrameGenEnabled([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enable)
 {
         VulkanFrameGen::SetEnabled(enable == JNI_TRUE);
+}
+
+// ★★★ NesStation R13: Lossless.dll 加载（PE 数据容器解析 + 资源校验）。
+// 返回 0 = 成功；2/3 = 解析/校验失败（GetFrameGenDllError 取原因）。
+extern "C" JNIEXPORT jint JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setFrameGenDll(JNIEnv* env, [[maybe_unused]] jclass clazz, jstring pathJava)
+{
+        const char* path = env->GetStringUTFChars(pathJava, nullptr);
+        std::string pathStr = path ? path : "";
+        if (path)
+                env->ReleaseStringUTFChars(pathJava, path);
+        return (jint)VulkanFrameGen::SetDllPath(pathStr);
+}
+
+// ★★★ NesStation R13: 最近一次 DLL 加载错误（空串 = 就绪）
+extern "C" JNIEXPORT jstring JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_getFrameGenDllError(JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+        std::string err = VulkanFrameGen::GetDllError();
+        return env->NewStringUTF(err.c_str());
+}
+
+// ★★★ NesStation R13: DLL 是否已就绪（UI 状态显示）
+extern "C" JNIEXPORT jboolean JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_isFrameGenDllReady([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+        return VulkanFrameGen::IsDllReady() ? JNI_TRUE : JNI_FALSE;
+}
+
+// ★★★ NesStation R13: 帧生成运行配置（倍率 2/3/4、光流比例 0.25..1.0、性能模式）
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setFrameGenConfig([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint multiplier, jfloat flowScale, jboolean performanceMode)
+{
+        VulkanFrameGen::SetConfig((int)multiplier, (float)flowScale, performanceMode == JNI_TRUE);
 }
 
 extern "C" JNIEXPORT void JNICALL

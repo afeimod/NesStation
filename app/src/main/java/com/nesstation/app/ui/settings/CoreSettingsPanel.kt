@@ -2223,12 +2223,13 @@ fun CoreSettingsPanel(
             GamePlatform.WIIU -> item {
                 SettingsSection("Wii U · 画面 / 性能") {
                     DropdownRow("渲染分辨率",
-                        // ★ R10: 分辨率缩放 = 纯呈现侧缩放（恢复 R8 已验证正确方案）。
-                        //   游戏内部恒按原生 1x 渲染（绝不发黑），档位仅改变最终
-                        //   上屏分辨率：<1x 输出降采样省电，>1x 一律按原生处理
-                        //   （内部超采样待参考核心方案后再开放）。热生效。
-                        listOf("2" to "2x (暂按原生渲染)",
-                               "1.5" to "1.5x (暂按原生渲染)",
+                        // ★ R13: >1x 恢复真实生效 —— 与 0.75x 同一条呈现侧缩放路径的
+                        //   超采样方向：最终画面（含所选缩放滤镜）画进"屏幕分辨率×倍率"
+                        //   的离屏目标后缩小回全尺寸上屏。高分屏上边缘更干净、
+                        //   摩尔纹更少；游戏内部渲染恒 1x 原生（光照/阴影零改动）。
+                        //   <1x 输出降采样省电。热生效。
+                        listOf("2" to "2x (超采样·画面增强)",
+                               "1.5" to "1.5x (超采样·画面增强)",
                                "1" to "1x (默认·原生)",
                                "0.75" to "0.75x (输出降采样·省电)",
                                "0.5" to "0.5x (输出降采样·大幅省电)",
@@ -2300,9 +2301,12 @@ fun CoreSettingsPanel(
                         padLayout.cwCpuMode
                     ) { updateLayout(padLayout.copy {cwCpuMode = it}) }
                     DropdownRow("GX2DrawDone 快速模式",
-                        // ★★★ R11: drawdone 快速路径 —— 只 flush 不等待，
-                        //   减少卡顿（实验性，默认关）。
-                        listOf("false" to "严格等待 (默认)", "true" to "快速模式 (实验)"),
+                        // ★★★ R11/R13: drawdone 快速路径（提速关键，默认开）。
+                        //   R13 增加有界滞后自适应等待：游戏线程至多领先 GPU
+                        //   若干次提交，超出即等一次排空 —— 既保留 CPU/GPU
+                        //   重叠提速，又彻底解决"总要开关一次帧数才稳定"的问题。
+                        listOf("true" to "快速模式 (默认·提速·帧率稳)",
+                               "false" to "严格等待 (兼容优先)"),
                         padLayout.cwDrawdoneFast
                     ) { updateLayout(padLayout.copy {cwDrawdoneFast = it}) }
                     DropdownRow("ADPF 动态性能提示",
@@ -2313,15 +2317,35 @@ fun CoreSettingsPanel(
                         listOf("true" to "开启 (默认·推荐)", "false" to "关闭"),
                         padLayout.cwAdpf
                     ) { updateLayout(padLayout.copy {cwAdpf = it}) }
-                    DropdownRow("帧生成 (实验)",
-                        // ★★★ R12: 移植参考 APK 的 LSFG 帧生成语义（自研简化版）——
-                        //   两个真实帧之间 GPU 光流插值一帧合成帧，30 帧游戏在
-                        //   60Hz 屏上获得逐帧连续观感（感知流畅度接近 60fps）。
-                        //   实验性：快速运动画面可能拖影/伪影；GPU 算力不足时
-                        //   反而变卡；垂直同步=关闭时自动不生效。运行中热切换。
-                        listOf("false" to "关闭 (默认)", "true" to "开启 (插帧·实验)"),
+                    DropdownRow("帧生成 (LSFG)",
+                        // ★★★ R12/R13: LSFG 3 帧生成（Lossless.dll 光流神经网络）——
+                        //   真实帧之间 GPU 插帧，30 帧游戏在 60Hz 屏上观感接近 60fps。
+                        //   需要 Lossless.dll（下方导入，或 APK assets 内置自动读取）。
+                        //   垂直同步=关闭时自动不生效。运行中热切换。
+                        listOf("false" to "关闭 (默认)", "true" to "开启 (LSFG 插帧)"),
                         padLayout.cwFrameGen
                     ) { updateLayout(padLayout.copy {cwFrameGen = it}) }
+                    DropdownRow("帧生成倍率",
+                        // ★★★ R13: 每两个真实帧间插入 倍率-1 帧。倍率越高越流畅
+                        //   但 GPU 负载越大（改后自动重建帧生成上下文）。
+                        listOf("2" to "2x (30→感知60·推荐)",
+                               "3" to "3x (30→感知90·需强 GPU)",
+                               "4" to "4x (30→感知120·高刷屏专用)"),
+                        padLayout.cwFrameGenMultiplier
+                    ) { updateLayout(padLayout.copy {cwFrameGenMultiplier = it}) }
+                    DropdownRow("帧生成光流比例",
+                        // ★★★ R13: LSFG 光流估计分辨率 —— 越低越快，越高越准。
+                        listOf("0.25" to "0.25 (极速)",
+                               "0.5" to "0.5 (平衡·默认)",
+                               "0.75" to "0.75 (高质量)",
+                               "1.0" to "1.0 (最高质量·最慢)"),
+                        padLayout.cwFrameGenFlowScale
+                    ) { updateLayout(padLayout.copy {cwFrameGenFlowScale = it}) }
+                    DropdownRow("帧生成质量",
+                        listOf("performance" to "性能 (默认·快)",
+                               "quality" to "质量 (慢·好)"),
+                        padLayout.cwFrameGenQuality
+                    ) { updateLayout(padLayout.copy {cwFrameGenQuality = it}) }
                     DropdownRow("取消阴影渲染",
                         // ★★★ R7: 阴影比较采样全部替换为“完全受光”—— 阴影消失、
                         //   画面正常亮度（不是变黑）。非原生分辨率阴影发黑的
@@ -2437,6 +2461,7 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {cwDimensionsToypad = it}) }
                 }
                 CemuDriverSection(padLayout, updateLayout)
+                LsfgDllSection(padLayout, updateLayout)
                 SettingsSection("Wii U · 说明") {
                     Text(
                         "Cemu-AZ 源码核心（core/cemu/ 经 :cemu-core 模块 vcpkg+CMake 编译，" +
@@ -2717,5 +2742,147 @@ private fun TextButtonRow(
         Text(sub,
             color = if (dark) Color(0xFF8899AA) else Color(0xFF667788),
             fontSize = 10.sp, lineHeight = 13.sp)
+    }
+}
+
+/**
+ * ★★★ R13: LSFG Lossless.dll 管理区（帧生成着色器容器导入）。
+ * - 「导入 DLL」：SAF 选择用户自备的 Lossless.dll → 拷贝到
+ *   <filesDir>/cemu/lsfg/Lossless.dll → 核心已加载时即时校验（PE 资源结构
+ *   + SPIR-V 魔数 + 必需资源齐全性）。
+ * - APK assets 内置：重打包把 Lossless.dll 放进 assets（cemu/lsfg/、
+ *   cemu/、lsfg/ 或根目录均可），应用启动时自动解包到同一位置 ——
+ *   无需用户任何操作。
+ * - 「移除 DLL」：删除文件并清空路径（帧生成自动禁用）。
+ */
+@Composable
+private fun LsfgDllSection(
+    padLayout: com.nesstation.app.core.storage.PadLayout,
+    updateLayout: (com.nesstation.app.core.storage.PadLayout) -> Unit
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var importing by remember { mutableStateOf(false) }
+    var statusText by remember { mutableStateOf<String?>(null) }
+    var refreshKey by remember { mutableStateOf(0) }
+
+    // DLL 落盘位置（用户导入与 assets 播种共用，导入即覆盖）
+    fun dllFile(): java.io.File {
+        val dir = java.io.File(ctx.filesDir, "cemu/lsfg")
+        if (!dir.exists()) dir.mkdirs()
+        return java.io.File(dir, "Lossless.dll")
+    }
+
+    // 状态刷新：文件存在性 + 核心校验结果（核心未加载时仅显示文件状态）
+    androidx.compose.runtime.LaunchedEffect(refreshKey) {
+        val f = dllFile()
+        val coreLoaded = try {
+            com.nesstation.app.core.jni.CemuNative.ensureLoaded()
+        } catch (_: Throwable) { false }
+        if (!f.isFile) {
+            statusText = if (padLayout.cwFrameGenDllPath.isNotBlank()) "已清空（原导入路径失效）" else null
+        } else if (coreLoaded) {
+            statusText = try {
+                when (info.cemu.cemu.nativeinterface.NativeEmulation.setFrameGenDll(f.absolutePath)) {
+                    0 -> "DLL 就绪并通过校验（${f.length() / 1024} KB）"
+                    else -> {
+                        val err = info.cemu.cemu.nativeinterface.NativeEmulation.getFrameGenDllError()
+                        "校验失败：$err"
+                    }
+                }
+            } catch (t: Throwable) { "核心未就绪（文件已就位，进游戏时自动校验）" }
+        } else {
+            statusText = "文件已就位（${f.length() / 1024} KB，进游戏时自动校验）"
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importing = true
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val f = dllFile()
+                    val tmp = java.io.File(f.parentFile, "Lossless.dll.tmp")
+                    ctx.contentResolver.openInputStream(uri)?.use { input ->
+                        tmp.outputStream().use { output -> input.copyTo(output) }
+                    } ?: return@withContext "读取所选文件失败"
+                    if (tmp.length() < 4096) {
+                        tmp.delete()
+                        return@withContext "文件过小（不是有效的 Lossless.dll）"
+                    }
+                    if (f.exists()) f.delete()
+                    if (!tmp.renameTo(f)) return@withContext "写入失败（存储空间不足？）"
+                    // 核心已加载时即时校验
+                    val coreLoaded = try {
+                        com.nesstation.app.core.jni.CemuNative.ensureLoaded()
+                    } catch (_: Throwable) { false }
+                    if (coreLoaded) {
+                        try {
+                            when (info.cemu.cemu.nativeinterface.NativeEmulation.setFrameGenDll(f.absolutePath)) {
+                                0 -> null // 成功（状态由 LaunchedEffect 刷新）
+                                else -> "导入完成但校验失败：" +
+                                    info.cemu.cemu.nativeinterface.NativeEmulation.getFrameGenDllError()
+                            }
+                        } catch (t: Throwable) { null }
+                    } else null
+                } catch (e: Exception) { "导入失败：${e.message}" }
+            }
+            importing = false
+            refreshKey++
+            updateLayout(padLayout.copy { cwFrameGenDllPath = dllFile().absolutePath })
+            result?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    SettingsSection("Wii U · 帧生成 DLL (Lossless.dll)") {
+        Text(
+            "LSFG 3 帧生成需要 Lossless.dll（Lossless Scaling 的着色器容器，" +
+            "仅作数据解析、不执行其中代码）。\n\n" +
+            "· 导入：点击下方按钮选择自备的 Lossless.dll；\n" +
+            "· 内置：把 Lossless.dll 放进 APK 的 assets（cemu/lsfg/ 或根目录），" +
+            "应用启动时自动读取；\n" +
+            "· 导入的 DLL 覆盖内置版本；移除后帧生成自动关闭。",
+            color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
+            fontSize = 10.sp, lineHeight = 15.sp)
+
+        TextButtonRow(
+            label = "导入 Lossless.dll",
+            sub = "从设备存储选择 DLL 文件（覆盖现有）",
+            enabled = !importing,
+            dark = false
+        ) {
+            importLauncher.launch(arrayOf("*/*"))
+        }
+
+        val f = dllFile()
+        if (f.isFile) {
+            TextButtonRow(
+                label = "移除 Lossless.dll",
+                sub = "删除已导入/内置的 DLL（帧生成将不可用）",
+                enabled = !importing,
+                dark = false
+            ) {
+                try { f.delete() } catch (_: Exception) {}
+                try {
+                    info.cemu.cemu.nativeinterface.NativeEmulation.setFrameGenDll("")
+                } catch (_: Throwable) {}
+                updateLayout(padLayout.copy { cwFrameGenDllPath = "" })
+                refreshKey++
+                Toast.makeText(ctx, "已移除 Lossless.dll", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        statusText?.let {
+            Text(it,
+                color = when {
+                    it.contains("就绪") -> Color(0xFF27AE60)
+                    it.contains("失败") || it.contains("清空") -> Color(0xFFB00020)
+                    else -> Color(0xFF667788)
+                },
+                fontSize = 10.sp, lineHeight = 14.sp,
+                modifier = Modifier.padding(start = 16.dp, bottom = 4.dp))
+        }
     }
 }

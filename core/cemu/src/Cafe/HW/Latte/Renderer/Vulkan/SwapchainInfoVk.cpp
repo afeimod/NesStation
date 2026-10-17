@@ -6,6 +6,7 @@
 #include "Cafe/HW/Latte/Core/LatteTiming.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanFrameGen.h"
 
 SwapchainInfoVk::SwapchainInfoVk(bool mainWindow, Vector2i size) : mainWindow(mainWindow), m_desiredExtent(size)
 {
@@ -64,6 +65,10 @@ void SwapchainInfoVk::Create()
 	// 节奏（合成器 60Hz 排空时仍有余量，避免连续跳帧）
 	uint32_t image_count = mainWindow ? std::max(2u, details.capabilities.minImageCount)
 		: std::max(3u, details.capabilities.minImageCount);
+	// NesStation R13: 帧生成启用时主画布附加 倍率 张图（插入帧 + 1 张余量，
+	//   同 lsfg-vk 语义 —— x2 时 acquire 不因图像耗尽而阻塞跳帧）
+	if (mainWindow)
+		image_count += VulkanFrameGen::GetSwapchainImagePadding();
 	if(details.capabilities.maxImageCount > 0)
 		image_count = std::min(image_count, details.capabilities.maxImageCount);
 	if(image_count < 2)

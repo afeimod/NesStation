@@ -981,6 +981,39 @@ class NesApp : Application() {
                         Log.w("NesApp", "Cemu bundled graphic packs install failed (non-fatal)", e)
                     }
                 }
+
+                // --- 3) Lossless.dll 播种（R13 LSFG 帧生成）---
+                // APK assets 内置的 Lossless.dll 自动解包到 <filesDir>/cemu/lsfg/，
+                // 用户在设置页导入的 DLL 同名覆盖此文件（导入即优先生效）。
+                // 支持的 assets 位置约定（任一即可）：
+                //   cemu/lsfg/Lossless.dll / cemu/Lossless.dll / lsfg/Lossless.dll / Lossless.dll
+                try {
+                    val lsfgDir = File(cemuDir, "lsfg")
+                    if (!lsfgDir.exists()) lsfgDir.mkdirs()
+                    val dllOut = File(lsfgDir, "Lossless.dll")
+                    if (!dllOut.isFile) {
+                        val candidates = listOf(
+                            "cemu/lsfg/Lossless.dll", "cemu/Lossless.dll",
+                            "lsfg/Lossless.dll", "Lossless.dll")
+                        for (assetPath in candidates) {
+                            try {
+                                assets.open(assetPath).use { input ->
+                                    val tmp = File(lsfgDir, "Lossless.dll.tmp")
+                                    tmp.outputStream().use { output -> input.copyTo(output) }
+                                    if (tmp.length() > 4096) {
+                                        tmp.renameTo(dllOut)
+                                        Log.i("NesApp", "LSFG Lossless.dll seeded from assets/$assetPath -> ${dllOut.absolutePath} (${dllOut.length()} bytes)")
+                                    } else {
+                                        tmp.delete()
+                                    }
+                                }
+                                break
+                            } catch (_: Exception) { /* 尝试下一个候选位置 */ }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("NesApp", "LSFG Lossless.dll seed failed (non-fatal)", e)
+                }
             } catch (e: Throwable) {
                 // 资源种子失败不阻塞应用启动（核心运行时仍会尝试读取）
                 Log.w("NesApp", "ensureCemuData failed (non-fatal)", e)

@@ -53,6 +53,15 @@ object NativeEmulation {
     //   默认开）+ 帧生成（呈现侧光流插帧，实验性，默认关）
     external fun setAdpfEnabled(enable: Boolean)
     external fun setFrameGenEnabled(enable: Boolean)
+
+    // ★★★ NesStation R13: LSFG 3 帧生成（Lossless.dll）—— DLL 管理与运行配置。
+    //   setFrameGenDll: 解析并校验 Lossless.dll（PE 数据容器），返回 0 = 成功；
+    //   getFrameGenDllError: 最近一次加载错误（空串 = 就绪）；
+    //   isFrameGenDllReady: DLL 是否就绪；setFrameGenConfig: 倍率/光流比例/性能模式。
+    external fun setFrameGenDll(path: String): Int
+    external fun getFrameGenDllError(): String
+    external fun isFrameGenDllReady(): Boolean
+    external fun setFrameGenConfig(multiplier: Int, flowScale: Float, performanceMode: Boolean)
     @JvmStatic
     external fun initializeRenderer()
 

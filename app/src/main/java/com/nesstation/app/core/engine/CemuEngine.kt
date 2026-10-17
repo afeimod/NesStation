@@ -83,12 +83,18 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _coreSchedPolicy = 0
     // ★ R11 CPU 模式：auto=不覆盖（Auto 推断·多核重编译）/ "3" 多核重编译 / "1" 单核重编译 / "0" 单核解释器
     @Volatile private var _cpuMode = "auto"
-    // ★ R11 GX2DrawDone 快速模式（默认关 = 严格等待上游语义）
-    @Volatile private var _drawdoneFast = false
+    // ★ R11/R13 GX2DrawDone 快速模式（提速关键，默认开 —— 核心侧配合
+    // 有界滞后自适应等待，帧率开机即稳定，无需手动开关一次）
+    @Volatile private var _drawdoneFast = true
     // ★ R12 ADPF 动态性能提示（默认开，API 31+ 生效；dlopen 绑定，老设备无感）
     @Volatile private var _adpfEnabled = true
     // ★ R12 帧生成（呈现侧光流插帧，实验性，默认关）
     @Volatile private var _frameGenEnabled = false
+    // ★ R13 LSFG 3（Lossless.dll）配置缓存
+    @Volatile private var _frameGenMultiplier = 2
+    @Volatile private var _frameGenFlowScale = 0.5f
+    @Volatile private var _frameGenPerf = true
+    @Volatile private var _frameGenDllPath: String? = null
 
     /**
      * ★ R10 存/读档串行化锁 —— native 快速存档/读档会冻结全部模拟线程，
@@ -361,6 +367,12 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
                     try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
                     try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
+                    // ★ R13: 帧生成 —— 先注入 DLL 与配置，再开开关（顺序关键）
+                    val dllPath = _frameGenDllPath ?: seededFrameGenDllPath().ifEmpty { null }
+                    if (dllPath != null) {
+                        try { NativeEmulation.setFrameGenDll(dllPath) } catch (_: Throwable) {}
+                    }
+                    try { NativeEmulation.setFrameGenConfig(_frameGenMultiplier, _frameGenFlowScale, _frameGenPerf) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameGenEnabled(_frameGenEnabled) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                 } else {
@@ -429,6 +441,12 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
                     try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
                     try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
+                    // ★ R13: 帧生成重挂恢复（DLL/配置/开关）
+                    val dllPath2 = _frameGenDllPath ?: seededFrameGenDllPath().ifEmpty { null }
+                    if (dllPath2 != null) {
+                        try { NativeEmulation.setFrameGenDll(dllPath2) } catch (_: Throwable) {}
+                    }
+                    try { NativeEmulation.setFrameGenConfig(_frameGenMultiplier, _frameGenFlowScale, _frameGenPerf) } catch (_: Throwable) {}
                     try { NativeEmulation.setFrameGenEnabled(_frameGenEnabled) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
@@ -622,15 +640,49 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                         try { NativeEmulation.setAdpfEnabled(newState) } catch (_: Throwable) {}
                     }
                 }
-                // ★★★ R12 帧生成（参考参考 APK 的 LSFG 帧生成语义，自研简化版）：
-                //   两个真实帧之间 GPU 光流插值一帧合成帧，30fps 游戏在 60Hz 屏上
-                //   获得逐帧连续观感。实验性：画面可能有伪影，GPU 算力不足时反而变卡。
-                //   垂直同步=关闭时自动不生效（无节拍基准）。运行中热切换。
+                // ★★★ R12 帧生成（R13 起为 LSFG 3.1 完整移植 —— Lossless.dll
+                //   数据容器 + 神经网络光流插帧）：两个真实帧之间 GPU 插值
+                //   合成帧，30fps 游戏在 60Hz 屏上获得逐帧连续观感。需要
+                //   Lossless.dll（设置页导入或 APK assets 内置）；垂直同步=关闭
+                //   时自动不生效（无节拍基准）。运行中热切换。
                 "frameGenEnabled" -> {
                     val newState = value == "true" || value == "enabled"
                     if (newState != _frameGenEnabled) {
                         _frameGenEnabled = newState
                         try { NativeEmulation.setFrameGenEnabled(newState) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R13 帧生成倍率（2/3/4）
+                "frameGenMultiplier" -> {
+                    val m = (value.toIntOrNull() ?: 2).coerceIn(2, 4)
+                    if (m != _frameGenMultiplier) {
+                        _frameGenMultiplier = m
+                        applyFrameGenConfig()
+                    }
+                }
+                // ★★★ R13 帧生成光流估计比例（0.25/0.5/0.75/1.0）
+                "frameGenFlowScale" -> {
+                    val f = (value.toFloatOrNull() ?: 0.5f).coerceIn(0.25f, 1f)
+                    if (f != _frameGenFlowScale) {
+                        _frameGenFlowScale = f
+                        applyFrameGenConfig()
+                    }
+                }
+                // ★★★ R13 帧生成质量变体（performance/quality）
+                "frameGenQuality" -> {
+                    val perf = value != "quality"
+                    if (perf != _frameGenPerf) {
+                        _frameGenPerf = perf
+                        applyFrameGenConfig()
+                    }
+                }
+                // ★★★ R13 Lossless.dll 路径（空 = 回退 assets 播种路径）
+                "frameGenDll" -> {
+                    var p = value.trim()
+                    if (p.isEmpty()) p = seededFrameGenDllPath()
+                    if (p != _frameGenDllPath) {
+                        _frameGenDllPath = p
+                        try { NativeEmulation.setFrameGenDll(p) } catch (_: Throwable) {}
                     }
                 }
                 // ★ 音频设备开关/声道（TV / GamePad 独立）
@@ -694,6 +746,26 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     // ------------------------------------------------------------------
     // 视频（直绘核心：尺寸/滤镜由核心内部管理）
     // ------------------------------------------------------------------
+
+    /**
+     * ★ R13: LSFG 帧生成配置下发（倍率/光流比例/质量变体 —— 任一变化时调用）。
+     */
+    private fun applyFrameGenConfig() {
+        try {
+            NativeEmulation.setFrameGenConfig(_frameGenMultiplier, _frameGenFlowScale, _frameGenPerf)
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * ★ R13: assets 内置 Lossless.dll 的播种路径（NesApp 启动时把
+     * assets/cemu/lsfg/Lossless.dll 复制到 <filesDir>/cemu/lsfg/）。
+     * 仅当用户未在设置页导入自己的 DLL 时作为回退使用。
+     */
+    private fun seededFrameGenDllPath(): String {
+        val ctx = appContext ?: return ""
+        val f = java.io.File(ctx.filesDir, "cemu/lsfg/Lossless.dll")
+        return if (f.isFile) f.absolutePath else ""
+    }
 
     /**
      * 渲染分辨率切换后立即下发到核心（LatteTexture 待生效原子值，GPU 线程

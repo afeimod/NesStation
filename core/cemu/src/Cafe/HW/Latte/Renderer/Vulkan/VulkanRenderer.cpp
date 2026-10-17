@@ -620,6 +620,9 @@ VulkanRenderer::VulkanRenderer() : Renderer(RendererAPI::Vulkan)
         // ★ NesStation R12: 帧生成设备能力检测（R8G8B8A8 storage/采样/传输特性）
         VulkanFrameGen::OnRendererInitialized(m_physicalDevice);
 
+        // ★ NesStation R13: 缓存设备 2D 图像尺寸上限（>1x 超采样离屏目标用）
+        CacheMaxImageDimension2D(m_physicalDevice);
+
         DetermineVendor();
         GetDeviceFeatures();
 
@@ -1773,14 +1776,17 @@ void VulkanRenderer::CreateCommandBuffers()
 std::atomic<int> VulkanRenderer::s_padPresentIntervalMs{ 33 };
 
 // ★ NesStation R8: 呈现侧输出分辨率缩放（1.0 = 原生）。见头文件注释。
+// ★ NesStation R13: 放开 >1x 钳制 —— 2x/1.5x 走与 0.75x 完全对称的呈现侧
+//   超采样路径（最终 quad 画进更大的离屏目标再缩小 blit 回全尺寸交换链），
+//   游戏内部渲染仍恒 1x 原生（不触碰光照/阴影管线，杜绝历史发黑问题）。
 static std::atomic<float> s_outputRenderScale{ 1.0f };
 
 void VulkanRenderer::SetOutputRenderScale(float scale)
 {
         if (scale < 0.25f)
                 scale = 0.25f;
-        if (scale > 1.0f)
-                scale = 1.0f;
+        if (scale > 3.0f)
+                scale = 3.0f;
         s_outputRenderScale.store(scale, std::memory_order_relaxed);
 }
 
@@ -1792,9 +1798,37 @@ float VulkanRenderer::GetOutputRenderScale()
 // ★ NesStation R8: 确保低分辨率离屏输出目标与（全尺寸 swapchain extent × scale）
 //   匹配，不匹配（首帧/切换分辨率/旋转/格式变化）时重建。重建是低频事件，
 //   采用与 RecreateSwapchain 相同的提交+等待空闲策略销毁旧资源。
+// ★ NesStation R13: 同一目标现在也承载 >1x 超采样方向（离屏目标比 swapchain
+//   更大）。设备 2D 图像尺寸上限（maxImageDimension2D）在渲染器初始化时缓存，
+//   超采样档位自动按上限收窄，避免超大目标创建失败。
+static std::atomic<uint32> s_maxImageDimension2D{ 4096 };
+
+void VulkanRenderer::CacheMaxImageDimension2D(VkPhysicalDevice physicalDevice)
+{
+        if (physicalDevice == VK_NULL_HANDLE)
+                return;
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &props);
+        if (props.limits.maxImageDimension2D > 0)
+                s_maxImageDimension2D.store(props.limits.maxImageDimension2D, std::memory_order_relaxed);
+}
+
 bool VulkanRenderer::EnsureScaledOutputTarget(bool mainWindow, const VkExtent2D& fullExtent, VkFormat format, float scale, ScaledOutputTarget** targetOut)
 {
         auto& target = m_scaledOutput[mainWindow ? 0 : 1];
+        // ★ R13: 超采样方向按设备上限收窄 scale，保证离屏目标可创建。
+        if (scale > 1.0f)
+        {
+                const uint32 maxDim = s_maxImageDimension2D.load(std::memory_order_relaxed);
+                float dimCap = scale;
+                if (fullExtent.width > 0)
+                        dimCap = std::min(dimCap, (float)maxDim / (float)fullExtent.width);
+                if (fullExtent.height > 0)
+                        dimCap = std::min(dimCap, (float)maxDim / (float)fullExtent.height);
+                if (dimCap < 1.0f)
+                        dimCap = 1.0f;
+                scale = dimCap;
+        }
         VkExtent2D scaledExtent;
         scaledExtent.width = std::max(1u, (uint32)((float)fullExtent.width * scale));
         scaledExtent.height = std::max(1u, (uint32)((float)fullExtent.height * scale));
@@ -3262,6 +3296,11 @@ bool VulkanRenderer::UpdateSwapchainProperties(bool mainWindow)
         if(chainInfo.m_vsyncState != configValue)
                 stateChanged = true;
 
+        // ★ NesStation R13: 帧生成配置变更（倍率/开关/DLL）→ 交换链图像数
+        //   padding 变化，请求重建
+        if (mainWindow && VulkanFrameGen::ConsumeSwapchainRecreateRequest())
+                stateChanged = true;
+
         int width, height;
         if (mainWindow)
                 WindowSystem::GetWindowPhysSize(width, height);
@@ -3350,6 +3389,19 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
                 }
         }
 
+        // ★ NesStation R12/R13: 帧生成 —— 在真实帧 present 之前生成并先于
+        //   它上屏（时序正确的关键：插值需要“当前真实帧”作为终点，合成帧
+        //   表示两个真实帧之间的时刻，必须先于终点帧显示）。全部失败路径
+        //   静默返回，真实帧呈现节奏不受影响。
+        //   当前帧 fence = m_commandBufferIndex 前一个槽位（SubmitCommandBuffer
+        //   已推进索引，fence 在下一帧复用前不会被 reset）。
+        if (mainWindow)
+        {
+                uint32 realFenceSlot = (m_commandBufferIndex + m_commandBuffers.size() - 1) % m_commandBuffers.size();
+                VulkanFrameGen::OnBeforeRealFramePresent(m_logicalDevice, m_graphicsQueue, m_presentQueue,
+                        chainInfo, m_cmdBufferFences[realFenceSlot]);
+        }
+
         VkResult result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
         if (result < 0 && result != VK_ERROR_OUT_OF_DATE_KHR
 #if BOOST_PLAT_ANDROID
@@ -3381,16 +3433,12 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
 
         chainInfo.hasDefinedSwapchainImage = false;
 
-        // ★ NesStation R12: 主画布真实帧已上屏 —— ADPF 帧耗时上报 + 帧生成
-        //   合成帧（实验性，默认关；全部失败路径静默回退，真实帧节奏不受影响）。
-        //   当前帧 fence = m_commandBufferIndex 前一个槽位（SubmitCommandBuffer
-        //   已推进索引，fence 在下一帧复用前不会被 reset）。
+        // ★ NesStation R12: 主画布真实帧已上屏 —— ADPF 帧耗时上报。
+        //   （帧生成已移至 present 之前的 OnBeforeRealFramePresent —— R13
+        //   时序正确性修复：合成帧必须先于终点真实帧上屏。）
         if (mainWindow)
         {
-                uint32 realFenceSlot = (m_commandBufferIndex + m_commandBuffers.size() - 1) % m_commandBuffers.size();
                 NesStationPerf::ReportFrameTick();
-                VulkanFrameGen::OnRealFramePresented(m_logicalDevice, m_graphicsQueue, m_presentQueue,
-                        chainInfo, m_cmdBufferFences[realFenceSlot]);
         }
 
         chainInfo.swapchainImageIndex = -1;
@@ -3552,8 +3600,12 @@ void VulkanRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutpu
         //   主画布的最终 quad 先画进低分辨率离屏目标（整帧 CLEAR），再线性放大 blit
         //   到全尺寸 swapchain —— 显示大小不变，画面分辨率降低。ensure 失败时
         //   回退下方全尺寸直绘路径。悬浮 pad 窗口本身很小，保持原生分辨率。
+        // ★ NesStation R13: >1x 走完全对称的超采样方向 —— 最终 quad（含所选
+        //   缩放滤镜着色器）画进"全尺寸 × scale"的更大离屏目标，再线性缩小
+        //   blit 回全尺寸 swapchain。非整数缩放的高分屏上由滤镜先行超采样
+        //   再降采样，边缘更干净、摩尔纹更少；游戏内部渲染管线零改动。
         const float outScale = GetOutputRenderScale();
-        if (!padView && outScale < 0.999f && chainInfo.m_actualExtent.width > 0 && chainInfo.m_actualExtent.height > 0)
+        if (!padView && (outScale < 0.999f || outScale > 1.001f) && chainInfo.m_actualExtent.width > 0 && chainInfo.m_actualExtent.height > 0)
         {
                 ScaledOutputTarget* scaledTarget = nullptr;
                 if (EnsureScaledOutputTarget(!padView, chainInfo.m_actualExtent, chainInfo.m_surfaceFormat.format, outScale, &scaledTarget))

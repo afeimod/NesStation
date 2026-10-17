@@ -2169,7 +2169,9 @@ fun EmulatorScreen(
                    //   恒为默认值）。现在纳入监听：改动即时经 setCoreOption
                    //   下发（热生效项立即应用；cpuMode 重启游戏完全生效）。
                    padLayout.cwCoreSched, padLayout.cwCpuMode,
-                   padLayout.cwDrawdoneFast, padLayout.cwAdpf, padLayout.cwFrameGen
+                   padLayout.cwDrawdoneFast, padLayout.cwAdpf, padLayout.cwFrameGen,
+                   padLayout.cwFrameGenMultiplier, padLayout.cwFrameGenFlowScale,
+                   padLayout.cwFrameGenQuality, padLayout.cwFrameGenDllPath
                    ) {
         applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         // Apply video filter (frontend post-processing, not a core option)
@@ -6087,6 +6089,13 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("CemuEngine/drawdoneFast", layout.cwDrawdoneFast)
             engine.setCoreOption("CemuEngine/adpfEnabled", layout.cwAdpf)
             engine.setCoreOption("CemuEngine/frameGenEnabled", layout.cwFrameGen)
+            // ★★★ R13: LSFG 3 帧生成配置（倍率/光流比例/质量变体）+ DLL 路径。
+            //   DLL 来源优先级：用户设置页导入（cwFrameGenDllPath）> APK assets
+            //   内置（NesApp 启动时播种到 <filesDir>/cemu/lsfg/Lossless.dll）。
+            engine.setCoreOption("CemuEngine/frameGenMultiplier", layout.cwFrameGenMultiplier)
+            engine.setCoreOption("CemuEngine/frameGenFlowScale", layout.cwFrameGenFlowScale)
+            engine.setCoreOption("CemuEngine/frameGenQuality", layout.cwFrameGenQuality)
+            engine.setCoreOption("CemuEngine/frameGenDll", layout.cwFrameGenDllPath)
         }
         GamePlatform.PSP -> {
             // PSP（PPSSPP 进程内引擎）—— applyCoreOptions 的通用 PadLayout
@@ -15451,10 +15460,11 @@ private fun SettingsPanel(
                     padLayout.cwCpuMode
                 ) { onLayoutChange(padLayout.copy {cwCpuMode = it}) }
                 SwitchSetting("GX2DrawDone 快速模式",
-                    // ★★★ R11: 移植参考实现 drawdone_mode —— 开启后
-                    //   GX2DrawDone 只 flush 不等待 GPU 时间戳退休，游戏逻辑
-                    //   线程不再被阻塞。实验性：个别依赖时序的游戏可能异常。
-                    "减少卡顿·实验性（默认关）", padLayout.cwDrawdoneFast == "true"
+                    // ★★★ R11/R13: drawdone 快速路径（提速关键，默认开）。
+                    //   R13 有界滞后自适应等待：游戏线程领先 GPU 超过阈值时
+                    //   自动等一次排空 —— 保留提速收益的同时帧率开机即稳定，
+                    //   无需再手动开关一次。
+                    "提速关键·帧率稳（默认开）", padLayout.cwDrawdoneFast == "true"
                 ) { onLayoutChange(padLayout.copy {cwDrawdoneFast = if (it) "true" else "false"}) }
                 SwitchSetting("ADPF 动态性能提示",
                     // ★★★ R12: 移植参考「风之杖HD 重编译版」的 Android 动态性能
@@ -15462,13 +15472,34 @@ private fun SettingsPanel(
                     //   温控/调度降频抖动。Android 12 (API 31+) 生效。
                     "帧率稳定性·系统级（默认开）", padLayout.cwAdpf == "true"
                 ) { onLayoutChange(padLayout.copy {cwAdpf = if (it) "true" else "false"}) }
-                SwitchSetting("帧生成 (实验)",
-                    // ★★★ R12: 移植参考 APK 的 LSFG 帧生成语义（自研简化版）——
-                    //   真实帧之间 GPU 光流插帧，30 帧游戏在 60Hz 屏上观感接近
-                    //   60fps。实验性：可能拖影；GPU 不足时更卡；
-                    //   垂直同步=关闭时自动不生效。
-                    "光流插帧·30帧感知60（默认关）", padLayout.cwFrameGen == "true"
+                SwitchSetting("帧生成 (LSFG)",
+                    // ★★★ R12/R13: LSFG 3 帧生成（Lossless.dll 光流神经网络）——
+                    //   真实帧之间 GPU 插帧，30 帧游戏在 60Hz 屏上观感接近
+                    //   60fps。需要 Lossless.dll（设置页导入或 APK assets 内置）。
+                    //   垂直同步=关闭时自动不生效；倍率/光流比例在设置页调。
+                    "光流神经网络插帧（默认关·需 DLL）", padLayout.cwFrameGen == "true"
                 ) { onLayoutChange(padLayout.copy {cwFrameGen = if (it) "true" else "false"}) }
+                DropdownSetting("帧生成倍率",
+                    // ★★★ R13: LSFG 倍率 —— 每两个真实帧间插入 倍率-1 帧。
+                    //   倍率越高越流畅但 GPU 负载越大（改后下一帧生效）。
+                    listOf("2" to "2x (30→感知60·推荐)",
+                           "3" to "3x (30→感知90·需强 GPU)",
+                           "4" to "4x (30→感知120·高刷屏专用)"),
+                    padLayout.cwFrameGenMultiplier
+                ) { onLayoutChange(padLayout.copy {cwFrameGenMultiplier = it}) }
+                DropdownSetting("帧生成光流比例",
+                    // ★★★ R13: LSFG 光流估计分辨率 —— 越低越快，越高越准。
+                    listOf("0.25" to "0.25 (极速)",
+                           "0.5" to "0.5 (平衡·默认)",
+                           "0.75" to "0.75 (高质量)",
+                           "1.0" to "1.0 (最高质量·最慢)"),
+                    padLayout.cwFrameGenFlowScale
+                ) { onLayoutChange(padLayout.copy {cwFrameGenFlowScale = it}) }
+                DropdownSetting("帧生成质量",
+                    listOf("performance" to "性能 (默认·快)",
+                           "quality" to "质量 (慢·好)"),
+                    padLayout.cwFrameGenQuality
+                ) { onLayoutChange(padLayout.copy {cwFrameGenQuality = it}) }
                 SwitchSetting("取消阴影渲染",
                     // ★ R7/R10: 开启后全部阴影比较采样替换为“完全受光”
                     //   （阴影消失、画面正常亮度，不是变黑）。

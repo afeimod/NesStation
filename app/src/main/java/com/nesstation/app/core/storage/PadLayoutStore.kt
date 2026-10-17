@@ -888,16 +888,20 @@ class PadLayout {
     // 键名/取值对照上游 NativeSettings.kt（CemuEngine 以 "CemuEngine/<name>"
     // 门面键消费，直调 NativeSettings setter 热生效）：
     var cwGameSpeed: String = "1"           // "0".."4" (GameSpeed 0=0.5x 1=1x 2=2x 3=4x 4=8x，快进联动)
-    var cwRenderScale: String = "1"         // 渲染分辨率缩放："2" 2x 极致超采样 | "1.5" 1.5x 超采样 | "1" 1x(默认·原生) | "0.75"/"0.5"/"0.4"/"0.3" 降采样提速省电 (R3: 核心渲染目标纹理按比例创建 = 真实内部分辨率缩放，输出画面大小不变)
+    var cwRenderScale: String = "1"         // 渲染分辨率缩放（纯呈现侧，R8/R13）："2" 2x 超采样 | "1.5" 1.5x 超采样 | "1" 1x(默认·原生) | "0.75"/"0.5"/"0.4"/"0.3" 输出降采样提速省电。>1x = 最终画面画进更大离屏目标后缩小上屏（游戏内部恒 1x，光照/阴影零改动）；<1x = 降采样省电
     // ★ R5: GamePad 悬浮画面更新频率（呈现侧节流省电）+ 帧率限制 —— 见核心设置页
     var cwPadPresentRate: String = "2"      // "1" 每帧(最流畅) | "2" 每2帧(默认·约30fps·省电) | "3" 每3帧(约20fps·强省电)
     var cwFrameLimit: String = "off"        // 帧率限制："off" 不限制(默认) | "60"/"45"/"30" 帧率上限（翻转锁步游戏节流省电）
     var cwDisableShadows: String = "false"  // 取消阴影渲染："false" 正常阴影(默认) | "true" 阴影比较采样全部替换为受光（阴影消失·画面正常亮度，R7）
     var cwCoreSched: String = "0"           // ★ R11 CPU 核心调度："0" 默认 | "1" 大核优先(最快·发热高) | "2" 小核优先(省电·稳定)
     var cwCpuMode: String = "auto"          // ★ R11 CPU 模式："auto" 默认(多核重编译) | "3" 多核重编译 | "1" 单核重编译 | "0" 单核解释器（重启生效）
-    var cwDrawdoneFast: String = "false"    // ★ R11 GX2DrawDone 快速模式："false" 严格等待(默认) | "true" 只 flush 不等待(实验性)
+    var cwDrawdoneFast: String = "true"     // ★ R11/R13 GX2DrawDone 快速模式（提速关键，默认开）："true" 快速模式(有界滞后自适应等待·帧率稳) | "false" 严格等待
     var cwAdpf: String = "true"             // ★ R12 ADPF 动态性能提示："true" 开(默认·API31+生效) | "false" 关
-    var cwFrameGen: String = "false"        // ★ R12 帧生成（实验性）："false" 关(默认) | "true" 光流插帧（30→感知60，GPU 负载↑）
+    var cwFrameGen: String = "false"        // ★ R12/R13 帧生成（LSFG 3·Lossless.dll）："false" 关(默认) | "true" 开（需 Lossless.dll，光流神经网络插帧）
+    var cwFrameGenMultiplier: String = "2"  // ★ R13 LSFG 帧生成倍率："2"/"3"/"4"（每两个真实帧间插入 倍率-1 帧）
+    var cwFrameGenFlowScale: String = "0.5" // ★ R13 LSFG 光流估计分辨率比例："0.25" 极速 | "0.5" 平衡(默认) | "0.75" 高质量 | "1.0" 最高质量
+    var cwFrameGenQuality: String = "performance" // ★ R13 LSFG 着色器变体："performance" 性能(默认·快) | "quality" 质量(慢·好)
+    var cwFrameGenDllPath: String = ""      // ★ R13 用户导入的 Lossless.dll 路径（空 = 用 assets 播种的 <filesDir>/cemu/lsfg/Lossless.dll）
     var cwVsyncMode: String = "0"           // "0" 关 | "1" 双缓冲 | "2" 三缓冲 (VSyncMode)
     var cwAsyncShaderCompile: String = "true"   // 异步着色器编译（防卡顿，默认开）
     var cwAccurateBarriers: String = "false"    // 精确屏障（个别游戏修复用，性能开销大）
@@ -1817,6 +1821,10 @@ class PadLayout {
         cwDrawdoneFast = another.cwDrawdoneFast
         cwAdpf = another.cwAdpf
         cwFrameGen = another.cwFrameGen
+        cwFrameGenMultiplier = another.cwFrameGenMultiplier
+        cwFrameGenFlowScale = another.cwFrameGenFlowScale
+        cwFrameGenQuality = another.cwFrameGenQuality
+        cwFrameGenDllPath = another.cwFrameGenDllPath
         cwVsyncMode = another.cwVsyncMode
         cwAsyncShaderCompile = another.cwAsyncShaderCompile
         cwAccurateBarriers = another.cwAccurateBarriers
@@ -3150,12 +3158,24 @@ object PadLayoutStore {
                 if (it in listOf("0", "1", "2")) it else "0" }
             cwCpuMode = (p.getString("cw_cpu_mode", "auto") ?: "auto").let {
                 if (it in listOf("auto", "3", "1", "0")) it else "auto" }
-            cwDrawdoneFast = (p.getString("cw_drawdone_fast", "false") ?: "false").let {
-                if (it in listOf("true", "false")) it else "false" }
+            cwDrawdoneFast = (p.getString("cw_drawdone_fast", "true") ?: "true").let {
+                // ★ R13: 默认改为开启（提速关键）。旧版默认 false 且全量落盘过 ——
+                //   用一次性迁移标记把老用户从未动过的 false 提升到新默认 true；
+                //   迁移后用户再手动改的值不再被覆盖。
+                val migrated = p.getBoolean("cw_drawdone_fast_v13", false)
+                val v = if (it in listOf("true", "false")) it else "true"
+                if (!migrated && v == "false") "true" else v }
             cwAdpf = (p.getString("cw_adpf", "true") ?: "true").let {
                 if (it in listOf("true", "false")) it else "true" }
             cwFrameGen = (p.getString("cw_frame_gen", "false") ?: "false").let {
                 if (it in listOf("true", "false")) it else "false" }
+            cwFrameGenMultiplier = (p.getString("cw_frame_gen_multiplier", "2") ?: "2").let {
+                if (it in listOf("2", "3", "4")) it else "2" }
+            cwFrameGenFlowScale = (p.getString("cw_frame_gen_flow_scale", "0.5") ?: "0.5").let {
+                if (it in listOf("0.25", "0.5", "0.75", "1.0")) it else "0.5" }
+            cwFrameGenQuality = (p.getString("cw_frame_gen_quality", "performance") ?: "performance").let {
+                if (it in listOf("performance", "quality")) it else "performance" }
+            cwFrameGenDllPath = p.getString("cw_frame_gen_dll_path", "") ?: ""
             cwVsyncMode = (p.getString("cw_vsync_mode", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2")) it else "0" }
             cwAsyncShaderCompile = (p.getString("cw_async_shader_compile", "true") ?: "true").let {
@@ -4024,8 +4044,14 @@ object PadLayoutStore {
             putString("cw_core_sched", layout.cwCoreSched)
             putString("cw_cpu_mode", layout.cwCpuMode)
             putString("cw_drawdone_fast", layout.cwDrawdoneFast)
+            // ★ R13: 一次性迁移标记（配合读取处的旧默认 false → 新默认 true 迁移）
+            putBoolean("cw_drawdone_fast_v13", true)
             putString("cw_adpf", layout.cwAdpf)
             putString("cw_frame_gen", layout.cwFrameGen)
+            putString("cw_frame_gen_multiplier", layout.cwFrameGenMultiplier)
+            putString("cw_frame_gen_flow_scale", layout.cwFrameGenFlowScale)
+            putString("cw_frame_gen_quality", layout.cwFrameGenQuality)
+            putString("cw_frame_gen_dll_path", layout.cwFrameGenDllPath)
             putString("cw_vsync_mode", layout.cwVsyncMode)
             putString("cw_async_shader_compile", layout.cwAsyncShaderCompile)
             putString("cw_accurate_barriers", layout.cwAccurateBarriers)

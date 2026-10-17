@@ -1,25 +1,31 @@
 #pragma once
-// ★★★ NesStation R12: 帧生成（FrameGen，实验性，默认关）
-//   参考「风之杖HD 重编译版」APK 的 LSFG 帧生成语义（WWHD_LSFG_* /
-//   gfx::request_frame_generation）的自研简化移植：
-//   游戏内部渲染节奏完全不变（仍按游戏自己的帧率出帧），仅在最终呈现侧
-//   于两个真实帧之间用 GPU compute 插入一帧合成帧：
-//     真实帧N(上屏) → 合成帧N+0.5(光流warp混合) → 真实帧N+1(上屏) → ...
-//   30fps 游戏在 60Hz 屏上获得逐帧连续的观感（感知流畅度接近 60fps）。
-//   铁律约束：只动最终上屏管线（与 R8 呈现侧缩放同一条链路），绝不触碰
+// ★★★ NesStation R12/R13: 帧生成（FrameGen，LSFG 3.1 · Lossless.dll，默认关）
+//   R12 初版为自研简化光流（tile 匹配）；R13 依照参考「风之杖HD 重编译版」
+//   的实现形态（runtime/src/vk/lsfg.cpp，WWHD_LSFG_*）与开源 lsfg-vk 项目的
+//   逆向接口，完整移植 LSFG 3.1 神经网络光流帧生成：
+//     - Lossless.dll 作为【数据容器】解析（PE RCDATA 资源内的 SPIR-V
+//       compute 着色器 + 网络结构），不在设备上执行任何 PE 代码；
+//     - 26 个着色器：mipmaps / generate（字节码修补出 SDR 变体）/
+//       alpha0-3 / beta0-4 / gamma0-4 / delta0-4 / epsilon0-4；
+//     - 7 级特征金字塔（预 pass 光流估计）+ 逐生成帧主 pass 合成；
+//     - UBO{timestamp,iteration,...} + PushConstants{specialFlag,subiteration}；
+//     - 帧序与 lsfg-vk 一致：真实帧 present 前生成并先于真实帧上屏，
+//       时间戳 (i+1)/(total+1) —— 时序正确无 judder。
+//   交付形态：
+//     - SetDllPath：用户经设置页「导入 DLL」按钮（SAF）选定的
+//       Lossless.dll 路径；APK assets 内置的 DLL 由前端解包到
+//       <filesDir>/cemu/lsfg/Lossless.dll 后同样经此路径注入。
+//     - SetConfig：倍率(2/3/4) / 光流比例(0.25..1.0) / 性能-质量变体。
+//   铁律约束（与 R8 呈现侧缩放同源）：只动最终上屏管线，绝不触碰
 //   游戏内部渲染目标/光照/阴影采样。
-//   技术形态：
-//     - 光流估计：1/4 分辨率 tile 匹配（16x16 tile ±6 搜索，粗+细两级）
-//     - 帧合成：前后帧沿光流各 warp 半步线性混合
-//     - 呈现：独立 acquire/present 序列（不干扰主交换链状态机），
-//       配合 FIFO 垂直同步自然形成 60Hz 节拍
 //   安全策略：
 //     - 默认关闭；仅垂直同步 != 关闭 时生效（Immediate 无节拍基准）
-//     - 设备不支持（compute / R8G8B8A8 storage / 格式）自动禁用
-//     - 连续失败 5 次自动停用，真实帧呈现永不因本模块受阻
-//     - 合成帧不绘制 ImGui 覆盖层（UI 只在真实帧，避免 UI 拖影）
+//     - DLL 缺失/校验失败自动禁用（真实帧呈现不受影响）
+//     - 连续失败 5 次本轮会话自动停用
+//     - 需要交换链附加图像（倍率数），配置变更自动请求交换链重建
 #include <vulkan/vulkan_core.h>
 #include <cstdint>
+#include <string>
 
 struct SwapchainInfoVk;
 
@@ -28,14 +34,34 @@ namespace VulkanFrameGen
         bool IsEnabled();
         void SetEnabled(bool enable);
 
-        // 真实帧已提交 present 之后调用（GPU/Latte 线程，主画布 only）。
-        // realFrameFence：真实帧 command buffer 的 fence（此时已 signaled，
-        // 本函数 host 等待它确保拷贝源有效）。
-        // 内部流程：等待同步 → 独立 acquire → 录制(拷贝当前帧+光流+合成+blit)
-        // → 提交 → present 合成帧。任何失败静默返回（真实帧节奏不受影响）。
-        void OnRealFramePresented(VkDevice device, VkQueue graphicsQueue, VkQueue presentQueue,
-                SwapchainInfoVk& chainInfo, VkFence realFrameFence);
+        // ---- DLL 管理（JNI 线程调用；内部解析+校验，失败置错误状态） ----
+        // 返回 0 = 成功；非 0 = 失败（GetDllError 取原因）。
+        int SetDllPath(const std::string& path);
+        // 最近一次 DLL 加载错误（空串 = 无错误/已就绪）
+        std::string GetDllError();
+        // DLL 是否已成功加载并通过校验（UI 状态显示用）
+        bool IsDllReady();
 
-        // 扩展检测（renderer 初始化后调用一次；不支持时即便开启也无效果）
+        // ---- 运行配置（JNI 线程调用，热生效：下一帧起按新配置重建上下文） ----
+        // multiplier: 2/3/4；flowScale: 0.25..1.0；performanceMode: 性能变体
+        void SetConfig(int multiplier, float flowScale, bool performanceMode);
+
+        // ---- 交换链配合（SwapchainInfoVk / VulkanRenderer 调用） ----
+        // 帧生成启用时主画布交换链需要的附加图像数（= 倍率，含 1 张余量）
+        uint32_t GetSwapchainImagePadding();
+        // 配置变更后请求交换链重建（GPU 线程在 present 路径消费）
+        bool ConsumeSwapchainRecreateRequest();
+
+        // ---- 帧路径钩子（GPU/Latte 线程） ----
+        // 扩展检测（renderer 初始化后调用一次）
         void OnRendererInitialized(VkPhysicalDevice physicalDevice);
+        // 主画布真实帧 present 之前调用（时序正确的关键：生成帧需引用
+        // "当前即将上屏的真实帧"作为插值终点，并先于它上屏）。
+        // realFrameFence：真实帧 command buffer 的 fence（此时已 signaled，
+        // 本函数 host 等待它确保拷贝源内容完整）。
+        // 内部流程：等待上一轮 fence → 拷贝真实帧进源图像 ping-pong 层 →
+        // 提交（预pass+逐生成帧主pass+输出 blit）→ 逐帧 present 合成帧。
+        // 任何失败静默返回（真实帧呈现节奏不受影响）。
+        void OnBeforeRealFramePresent(VkDevice device, VkQueue graphicsQueue, VkQueue presentQueue,
+                SwapchainInfoVk& chainInfo, VkFence realFrameFence);
 }
