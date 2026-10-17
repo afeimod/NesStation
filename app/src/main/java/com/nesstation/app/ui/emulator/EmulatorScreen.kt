@@ -15385,20 +15385,18 @@ private fun SettingsPanel(
 
                 Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("渲染分辨率",
-                    // ★ R3: 真实内部分辨率缩放 —— 游戏渲染目标纹理按比例创建
-                    //   （视口/剪裁/跨尺寸拷贝由 Cemu 图形包分辨率管线自动联动），
-                    //   GPU 填充率/带宽按 scale^2 变化，输出画面大小不变。
-                    //   <1x 提速省电（0.3x 约降至 1/11 填充），1.5x 超采样更精细；
-                    //   运行中切换即时热生效（重建纹理缓存），触摸映射不受影响。
-                    // ★ R7: 新增 2x 极致超采样档（填充率/带宽按 scale^2 变化，
-                    //   高配设备 4K 级精细度；渲染管线与其它档位同机制）
-                    listOf("2" to "2x (极致超采样·高配)",
-                           "1.5" to "1.5x (超采样·更精细)",
+                    // ★ R10: 分辨率缩放 = 纯呈现侧缩放（恢复 R8 已验证正确方案）。
+                    //   游戏内部恒按原生 1x 渲染（绝不发黑），档位仅改变最终
+                    //   上屏分辨率：<1x 输出降采样省电，>1x 一律按原生处理
+                    //   （内部超采样需核心支持，待参考核心方案后再开放）。
+                    //   运行中切换即时热生效，触摸映射不受影响。
+                    listOf("2" to "2x (暂按原生渲染)",
+                           "1.5" to "1.5x (暂按原生渲染)",
                            "1" to "1x (默认·原生)",
-                           "0.75" to "0.75x (提速·省电)",
-                           "0.5" to "0.5x (大幅提速)",
-                           "0.4" to "0.4x (极速·低功耗)",
-                           "0.3" to "0.3x (极致省电)"),
+                           "0.75" to "0.75x (输出降采样·省电)",
+                           "0.5" to "0.5x (输出降采样·大幅省电)",
+                           "0.4" to "0.4x (输出降采样·极速档)",
+                           "0.3" to "0.3x (输出降采样·极致省电)"),
                     padLayout.cwRenderScale
                 ) { onLayoutChange(padLayout.copy {cwRenderScale = it}) }
                 DropdownSetting("GamePad 更新频率",
@@ -15420,9 +15418,9 @@ private fun SettingsPanel(
                     padLayout.cwFrameLimit
                 ) { onLayoutChange(padLayout.copy {cwFrameLimit = it}) }
                 SwitchSetting("取消阴影渲染",
-                    // ★★★ R7: 关闭后全部阴影比较采样替换为“完全受光”
+                    // ★ R7/R10: 开启后全部阴影比较采样替换为“完全受光”
                     //   （阴影消失、画面正常亮度，不是变黑）。
-                    //   非原生分辨率下阴影渲染异常（发黑）时打开；
+                    //   个别游戏阴影异常或需要额外性能时可打开；
                     //   运行中切换热生效（短暂重编着色器）。
                     "阴影消失·画面正常亮度（默认关）", padLayout.cwDisableShadows == "true"
                 ) { onLayoutChange(padLayout.copy {cwDisableShadows = if (it) "true" else "false"}) }

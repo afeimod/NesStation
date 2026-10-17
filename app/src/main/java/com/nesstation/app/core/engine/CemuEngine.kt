@@ -78,6 +78,13 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     /** R7 取消阴影渲染（阴影比较采样→常数受光，画面正常亮度） */
     @Volatile private var _shadowDisabled = false
+
+    /**
+     * ★ R10 存/读档串行化锁 —— native 快速存档/读档会冻结全部模拟线程，
+     * 并发进入（如退出时自动存档 + 手动读档、双入口同时触发）会竞态崩溃
+     * （读档偶发闪退的高概率来源）。全部 native QuickSave 调用统一串行。
+     */
+    private val stateOpLock = Any()
     @Volatile private var lastErrorText = ""
 
     @Volatile private var surface: Surface? = null
@@ -942,7 +949,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
         if (!isLoaded) return false
         return try {
             val nSlot = nativeSlotFor(slot)
-            val r = NativeQuickSave.quickSaveSlot(nSlot)
+            // ★ R10: 与读档/快捷存档互斥（防并发冻结竞态）
+            val r = synchronized(stateOpLock) { NativeQuickSave.quickSaveSlot(nSlot) }
             when (r) {
                 NativeQuickSave.RESULT_OK, NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE -> {
                     // dst 标记文件（UI 槽位列表/时间戳展示用；核心槽位在
@@ -978,7 +986,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
             // ★ 上游语义：默认 flags=0（不用 legacy 回退）。恢复失败如实报错，
             //   由上层提供“安全模式”重试，而不是静默关游戏换存档数据。
             val nSlot = nativeSlotFor(slot)
-            val r = NativeQuickSave.quickRestoreSlot(nSlot, 0)
+            // ★ R10: 与存档/其它读档互斥（防并发冻结竞态 → 偶发闪退）
+            val r = synchronized(stateOpLock) { NativeQuickSave.quickRestoreSlot(nSlot, 0) }
             when (r) {
                 NativeQuickSave.RESULT_OK_RESTORED_IN_PLACE -> true
                 NativeQuickSave.RESULT_OK -> {
@@ -1013,7 +1022,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
      * @return NativeQuickSave.RESULT_* 结果码
      */
     fun quickSaveSlotRaw(nativeSlot: Int): Int = try {
-        NativeQuickSave.quickSaveSlot(nativeSlot)
+        // ★ R10: 串行化（见 stateOpLock 注释）
+        synchronized(stateOpLock) { NativeQuickSave.quickSaveSlot(nativeSlot) }
     } catch (t: Throwable) {
         android.util.Log.w("CemuEngine", "quickSaveSlotRaw($nativeSlot)", t)
         NativeQuickSave.RESULT_ERROR_IO
@@ -1024,7 +1034,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
      * 安全模式重试时传 RESTORE_FLAG_ALLOW_LEGACY）。⚠ 阻塞，IO 线程执行。
      */
     fun quickRestoreSlotRaw(nativeSlot: Int, flags: Int): Int = try {
-        NativeQuickSave.quickRestoreSlot(nativeSlot, flags)
+        // ★ R10: 串行化（见 stateOpLock 注释）
+        synchronized(stateOpLock) { NativeQuickSave.quickRestoreSlot(nativeSlot, flags) }
     } catch (t: Throwable) {
         android.util.Log.w("CemuEngine", "quickRestoreSlotRaw($nativeSlot)", t)
         NativeQuickSave.RESULT_ERROR_IO

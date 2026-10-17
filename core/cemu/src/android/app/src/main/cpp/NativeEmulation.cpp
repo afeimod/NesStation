@@ -333,14 +333,14 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setSurfaceSize([[maybe_unuse
 	}
 }
 
-// ★ NesStation R3: 全局内部分辨率缩放（0.25..3.0）—— 渲染目标纹理按比例
-// 创建（真实降低/提升游戏内部渲染分辨率，填充率按 scale^2 变化），视口/
-// 剪裁/拷贝由 Cemu 图形包分辨率管线自动联动，输出画面大小不变。任意线程
-// 记录待生效值，GPU 线程在帧边界应用并重建纹理缓存（运行中热生效）。
+// ★ NesStation R10: 分辨率缩放 = 纯呈现侧缩放（恢复 R8 已验证正确的语义）。
+// 内部渲染目标缩放（R3~R7 的 LatteTexture_SetInternalRenderScale）会破坏
+// 游戏光照/阴影采样（非 1x 画面发黑），彻底停用 —— 内部恒 1.0，游戏内部
+// 渲染与 1x 完全一致，用户选择的档位仅影响最终上屏分辨率。
 extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setOutputRenderScale([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jfloat scale)
 {
-	LatteTexture_SetInternalRenderScale(scale);
+	VulkanRenderer::SetOutputRenderScale(scale);
 }
 
 // ★ NesStation R5: GamePad 悬浮画面更新频率（省电）—— 纯呈现侧节流
