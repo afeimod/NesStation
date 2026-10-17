@@ -122,6 +122,7 @@ VKFUNC_DEVICE(vkBeginCommandBuffer);
 VKFUNC_DEVICE(vkResetCommandBuffer);
 VKFUNC_DEVICE(vkEndCommandBuffer);
 VKFUNC_DEVICE(vkQueueSubmit);
+	VKFUNC_DEVICE(vkQueueWaitIdle); // NesStation R12 FrameGen
 
 // pipeline
 VKFUNC_DEVICE(vkCreatePipelineCache);
@@ -131,6 +132,7 @@ VKFUNC_DEVICE(vkDestroyPipelineCache);
 VKFUNC_DEVICE(vkCreatePipelineLayout);
 VKFUNC_DEVICE(vkDestroyPipelineLayout);
 VKFUNC_DEVICE(vkCreateGraphicsPipelines);
+	VKFUNC_DEVICE(vkCreateComputePipelines); // NesStation R12 FrameGen
 VKFUNC_DEVICE(vkDestroyPipeline);
 VKFUNC_DEVICE(vkCmdBindPipeline);
 
@@ -186,6 +188,7 @@ VKFUNC_DEVICE(vkCmdClearDepthStencilImage);
 VKFUNC_DEVICE(vkCmdCopyBuffer);
 VKFUNC_DEVICE(vkCmdCopyImage);
 VKFUNC_DEVICE(vkCmdBlitImage);
+	VKFUNC_DEVICE(vkCmdDispatch); // NesStation R12 FrameGen
 VKFUNC_DEVICE(vkCmdPushConstants);
 VKFUNC_DEVICE(vkCmdSetBlendConstants);
 VKFUNC_DEVICE(vkCmdSetDepthBias);

@@ -18,6 +18,11 @@
 
 namespace VulkanFrameGen
 {
+        // 前置声明（定义在本文件后段；同 namespace 早段函数需先声明后使用）
+        static void RecordImageBarrier(VkCommandBuffer cmd, VkImage image,
+                VkImageLayout oldLayout, VkImageLayout newLayout,
+                VkAccessFlags srcAccess, VkAccessFlags dstAccess,
+                VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage);
         // ================= 状态 =================
         static std::atomic<bool> s_enabled{ false };
         static std::atomic<bool> s_deviceChecked{ false };
@@ -715,10 +720,10 @@ void main()
                         return;
                 if (!EnsureResources(device, s_physDev, graphicsQueue, chainInfo))
                         return;
-                if (chainInfo.m_swapchainImageIndex == (uint32)-1)
+                if (chainInfo.swapchainImageIndex == (uint32)-1)
                         return; // 主路径本帧未呈现
 
-                VkImage realImage = chainInfo.m_swapchainImages[chainInfo.m_swapchainImageIndex];
+                VkImage realImage = chainInfo.m_swapchainImages[chainInfo.swapchainImageIndex];
 
                 // 等待上一合成帧与真实帧完成（host fence 等待，有限超时防死锁）
                 VkFence prevFence = s_fences[s_ringIndex ^ 1];
