@@ -77,6 +77,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _frameLimit = 0
 
     /** R7 取消阴影渲染（阴影比较采样→常数受光，画面正常亮度） */
+    @Volatile private var _shadowDisabled = false
 
     // ★ R11 CPU 核心调度：0 默认 / 1 大核优先 / 2 小核优先（省电）
     @Volatile private var _coreSchedPolicy = 0
@@ -84,6 +85,10 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _cpuMode = "auto"
     // ★ R11 GX2DrawDone 快速模式（默认关 = 严格等待上游语义）
     @Volatile private var _drawdoneFast = false
+    // ★ R12 ADPF 动态性能提示（默认开，API 31+ 生效；dlopen 绑定，老设备无感）
+    @Volatile private var _adpfEnabled = true
+    // ★ R12 帧生成（呈现侧光流插帧，实验性，默认关）
+    @Volatile private var _frameGenEnabled = false
 
     /**
      * ★ R10 存/读档串行化锁 —— native 快速存档/读档会冻结全部模拟线程，
@@ -355,6 +360,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
                     try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
+                    try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
+                    try { NativeEmulation.setFrameGenEnabled(_frameGenEnabled) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                 } else {
                     // 无 Surface 启动（TV 后台等极端场景）：核心仍可跑，
@@ -421,6 +428,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
                     try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
+                    try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
+                    try { NativeEmulation.setFrameGenEnabled(_frameGenEnabled) } catch (_: Throwable) {}
                     NativeEmulation.initializeSurface(true)
                     if (_paused && !userRequestedStop) {
                         try { NativeEmulation.resumeTitle() } catch (_: Throwable) {}
@@ -601,6 +610,27 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     if (newState != _drawdoneFast) {
                         _drawdoneFast = newState
                         try { NativeEmulation.setDrawDoneSkipWait(newState) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R12 ADPF 动态性能提示（参考「风之杖HD 重编译版」ADPF 语义）：
+                //   游戏运行期间向系统调度器上报帧工作时长，抑制温控/调度降频抖动。
+                //   API 31+ 生效，老设备静默无感。运行中热切换。
+                "adpfEnabled" -> {
+                    val newState = value == "true" || value == "enabled"
+                    if (newState != _adpfEnabled) {
+                        _adpfEnabled = newState
+                        try { NativeEmulation.setAdpfEnabled(newState) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R12 帧生成（参考参考 APK 的 LSFG 帧生成语义，自研简化版）：
+                //   两个真实帧之间 GPU 光流插值一帧合成帧，30fps 游戏在 60Hz 屏上
+                //   获得逐帧连续观感。实验性：画面可能有伪影，GPU 算力不足时反而变卡。
+                //   垂直同步=关闭时自动不生效（无节拍基准）。运行中热切换。
+                "frameGenEnabled" -> {
+                    val newState = value == "true" || value == "enabled"
+                    if (newState != _frameGenEnabled) {
+                        _frameGenEnabled = newState
+                        try { NativeEmulation.setFrameGenEnabled(newState) } catch (_: Throwable) {}
                     }
                 }
                 // ★ 音频设备开关/声道（TV / GamePad 独立）

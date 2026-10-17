@@ -47,6 +47,12 @@ object NativeEmulation {
     external fun setCoreSchedulingPolicy(policy: Int)
     external fun setCpuModeOverride(mode: Int)
     external fun setDrawDoneSkipWait(skip: Boolean)
+
+    // ★★★ NesStation R12 性能增强（参考同款 APK 深度逆向移植）：
+    //   ADPF 动态性能提示（Android Dynamic Performance Framework，API 31+ 生效，
+    //   默认开）+ 帧生成（呈现侧光流插帧，实验性，默认关）
+    external fun setAdpfEnabled(enable: Boolean)
+    external fun setFrameGenEnabled(enable: Boolean)
     @JvmStatic
     external fun initializeRenderer()
 

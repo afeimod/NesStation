@@ -896,6 +896,8 @@ class PadLayout {
     var cwCoreSched: String = "0"           // ★ R11 CPU 核心调度："0" 默认 | "1" 大核优先(最快·发热高) | "2" 小核优先(省电·稳定)
     var cwCpuMode: String = "auto"          // ★ R11 CPU 模式："auto" 默认(多核重编译) | "3" 多核重编译 | "1" 单核重编译 | "0" 单核解释器（重启生效）
     var cwDrawdoneFast: String = "false"    // ★ R11 GX2DrawDone 快速模式："false" 严格等待(默认) | "true" 只 flush 不等待(实验性)
+    var cwAdpf: String = "true"             // ★ R12 ADPF 动态性能提示："true" 开(默认·API31+生效) | "false" 关
+    var cwFrameGen: String = "false"        // ★ R12 帧生成（实验性）："false" 关(默认) | "true" 光流插帧（30→感知60，GPU 负载↑）
     var cwVsyncMode: String = "0"           // "0" 关 | "1" 双缓冲 | "2" 三缓冲 (VSyncMode)
     var cwAsyncShaderCompile: String = "true"   // 异步着色器编译（防卡顿，默认开）
     var cwAccurateBarriers: String = "false"    // 精确屏障（个别游戏修复用，性能开销大）
@@ -1813,6 +1815,8 @@ class PadLayout {
         cwCoreSched = another.cwCoreSched
         cwCpuMode = another.cwCpuMode
         cwDrawdoneFast = another.cwDrawdoneFast
+        cwAdpf = another.cwAdpf
+        cwFrameGen = another.cwFrameGen
         cwVsyncMode = another.cwVsyncMode
         cwAsyncShaderCompile = another.cwAsyncShaderCompile
         cwAccurateBarriers = another.cwAccurateBarriers
@@ -3148,6 +3152,10 @@ object PadLayoutStore {
                 if (it in listOf("auto", "3", "1", "0")) it else "auto" }
             cwDrawdoneFast = (p.getString("cw_drawdone_fast", "false") ?: "false").let {
                 if (it in listOf("true", "false")) it else "false" }
+            cwAdpf = (p.getString("cw_adpf", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            cwFrameGen = (p.getString("cw_frame_gen", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
             cwVsyncMode = (p.getString("cw_vsync_mode", "0") ?: "0").let {
                 if (it in listOf("0", "1", "2")) it else "0" }
             cwAsyncShaderCompile = (p.getString("cw_async_shader_compile", "true") ?: "true").let {
@@ -4016,6 +4024,8 @@ object PadLayoutStore {
             putString("cw_core_sched", layout.cwCoreSched)
             putString("cw_cpu_mode", layout.cwCpuMode)
             putString("cw_drawdone_fast", layout.cwDrawdoneFast)
+            putString("cw_adpf", layout.cwAdpf)
+            putString("cw_frame_gen", layout.cwFrameGen)
             putString("cw_vsync_mode", layout.cwVsyncMode)
             putString("cw_async_shader_compile", layout.cwAsyncShaderCompile)
             putString("cw_accurate_barriers", layout.cwAccurateBarriers)

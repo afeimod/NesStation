@@ -2163,7 +2163,13 @@ fun EmulatorScreen(
                    padLayout.cwNetworkService, padLayout.cwSkylanderPortal,
                    padLayout.cwInfinityBase, padLayout.cwDimensionsToypad,
                    padLayout.cwGamePadView, padLayout.cwPadOverlayOpacity,
-                   padLayout.cwDriverPath
+                   padLayout.cwDriverPath,
+                   // ★ R12 补全（含 R11 遗留修复）：性能四件套 + R12 双项此前
+                   //   完全缺失触发键与映射 —— UI 里改了永远不下发（引擎缓存
+                   //   恒为默认值）。现在纳入监听：改动即时经 setCoreOption
+                   //   下发（热生效项立即应用；cpuMode 重启游戏完全生效）。
+                   padLayout.cwCoreSched, padLayout.cwCpuMode,
+                   padLayout.cwDrawdoneFast, padLayout.cwAdpf, padLayout.cwFrameGen
                    ) {
         applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         // Apply video filter (frontend post-processing, not a core option)
@@ -6073,6 +6079,14 @@ private fun applyCoreOptionsInner(
             //   PadLayout 是唯一可靠持久层，此处重放保证选择真正生效
             //   （渲染器初始化时 adrenotools 读取）。仅在值变化时落盘。
             engine.setCoreOption("CemuEngine/customDriverPath", layout.cwDriverPath)
+            // ★★★ R12 补全（含 R11 遗留修复）：R11 性能四件套三项与 R12 双项
+            //   此前未接入 applyCoreOptions —— UI 改了不下发，引擎恒用默认值。
+            //   现在补齐端到端链（CemuEngine.setCoreOption 分支已就绪）：
+            engine.setCoreOption("CemuEngine/coreScheduling", layout.cwCoreSched)
+            engine.setCoreOption("CemuEngine/cpuMode", layout.cwCpuMode)
+            engine.setCoreOption("CemuEngine/drawdoneFast", layout.cwDrawdoneFast)
+            engine.setCoreOption("CemuEngine/adpfEnabled", layout.cwAdpf)
+            engine.setCoreOption("CemuEngine/frameGenEnabled", layout.cwFrameGen)
         }
         GamePlatform.PSP -> {
             // PSP（PPSSPP 进程内引擎）—— applyCoreOptions 的通用 PadLayout
@@ -15442,6 +15456,19 @@ private fun SettingsPanel(
                     //   线程不再被阻塞。实验性：个别依赖时序的游戏可能异常。
                     "减少卡顿·实验性（默认关）", padLayout.cwDrawdoneFast == "true"
                 ) { onLayoutChange(padLayout.copy {cwDrawdoneFast = if (it) "true" else "false"}) }
+                SwitchSetting("ADPF 动态性能提示",
+                    // ★★★ R12: 移植参考「风之杖HD 重编译版」的 Android 动态性能
+                    //   框架语义 —— 运行期间向系统调度器上报帧工作时长，抑制
+                    //   温控/调度降频抖动。Android 12 (API 31+) 生效。
+                    "帧率稳定性·系统级（默认开）", padLayout.cwAdpf == "true"
+                ) { onLayoutChange(padLayout.copy {cwAdpf = if (it) "true" else "false"}) }
+                SwitchSetting("帧生成 (实验)",
+                    // ★★★ R12: 移植参考 APK 的 LSFG 帧生成语义（自研简化版）——
+                    //   真实帧之间 GPU 光流插帧，30 帧游戏在 60Hz 屏上观感接近
+                    //   60fps。实验性：可能拖影；GPU 不足时更卡；
+                    //   垂直同步=关闭时自动不生效。
+                    "光流插帧·30帧感知60（默认关）", padLayout.cwFrameGen == "true"
+                ) { onLayoutChange(padLayout.copy {cwFrameGen = if (it) "true" else "false"}) }
                 SwitchSetting("取消阴影渲染",
                     // ★ R7/R10: 开启后全部阴影比较采样替换为“完全受光”
                     //   （阴影消失、画面正常亮度，不是变黑）。

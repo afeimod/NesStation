@@ -2305,6 +2305,23 @@ fun CoreSettingsPanel(
                         listOf("false" to "严格等待 (默认)", "true" to "快速模式 (实验)"),
                         padLayout.cwDrawdoneFast
                     ) { updateLayout(padLayout.copy {cwDrawdoneFast = it}) }
+                    DropdownRow("ADPF 动态性能提示",
+                        // ★★★ R12: 移植参考「风之杖HD 重编译版」的 Android 动态性能
+                        //   框架语义 —— 游戏运行期间持续向系统调度器上报帧工作时长，
+                        //   抑制温控/调度降频抖动（帧率稳定性的系统级手段）。
+                        //   Android 12 (API 31+) 生效，老系统静默无感。运行中热切换。
+                        listOf("true" to "开启 (默认·推荐)", "false" to "关闭"),
+                        padLayout.cwAdpf
+                    ) { updateLayout(padLayout.copy {cwAdpf = it}) }
+                    DropdownRow("帧生成 (实验)",
+                        // ★★★ R12: 移植参考 APK 的 LSFG 帧生成语义（自研简化版）——
+                        //   两个真实帧之间 GPU 光流插值一帧合成帧，30 帧游戏在
+                        //   60Hz 屏上获得逐帧连续观感（感知流畅度接近 60fps）。
+                        //   实验性：快速运动画面可能拖影/伪影；GPU 算力不足时
+                        //   反而变卡；垂直同步=关闭时自动不生效。运行中热切换。
+                        listOf("false" to "关闭 (默认)", "true" to "开启 (插帧·实验)"),
+                        padLayout.cwFrameGen
+                    ) { updateLayout(padLayout.copy {cwFrameGen = it}) }
                     DropdownRow("取消阴影渲染",
                         // ★★★ R7: 阴影比较采样全部替换为“完全受光”—— 阴影消失、
                         //   画面正常亮度（不是变黑）。非原生分辨率阴影发黑的
