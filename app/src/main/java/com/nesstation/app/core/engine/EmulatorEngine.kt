@@ -277,6 +277,12 @@ interface EmulatorEngine {
             // 相同入口），在 EmulatorScreen 统一路径内运行 —— 历史注：
             // 此前的独立 PpssppActivity 方案（独立进程）已废弃。
             GamePlatform.PSP    -> PspEngine.get()
+            // Switch -> EdenEngine（Eden 源码核心：core/eden/ 完整源码树经
+            // :eden-core 模块 CPM+CMake 源码编译产出 libyuzu-android.so，
+            // JNI 契约 vendored 于 org.yuzu.yuzu_emu 原包名）。仅 arm64-v8a +
+            // API28+；其余环境运行时 probeAvailability() 报告"核心不可用"，
+            // 不崩溃。
+            GamePlatform.NSWITCH -> EdenEngine.get()
         }
     }
 }

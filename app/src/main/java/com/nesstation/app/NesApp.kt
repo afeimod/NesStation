@@ -151,6 +151,18 @@ class NesApp : Application() {
                 engine.probeAvailability()
             }
         }
+        tryInit("EdenEngine")          {
+            // ★★ Switch（Eden 源码核心）：:eden-core 模块源码编译产出
+            //   libyuzu-android.so（CPM + CMake，非预编译 so；集成方式与
+            //   :cemu-core 完全一致）。启动时探测可用性（arm64-v8a +
+            //   API28+），库缺失/环境不满足时 UI 报告“核心不可用”，不崩溃。
+            //   -PskipEdenCore=true 构建的包在此处自然探测失败，其余平台
+            //   不受影响。
+            com.nesstation.app.core.engine.EdenEngine.get().also { engine ->
+                engine.appContext = this
+                engine.probeAvailability()
+            }
+        }
         tryInit("PspEngine")           {
             // PPSSPP PSP core —— 进程内 libretro 模式（与 DC/PSX 同构）：
             // libpspcore.so 运行时加载预编译 libppsspp_libretro_android.so

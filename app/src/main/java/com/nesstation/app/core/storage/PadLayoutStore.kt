@@ -958,6 +958,37 @@ class PadLayout {
     var cwDimensionsToypad: String = "false"// Dimensions Toypad 模拟
     var cwDriverPath: String = ""          // 自定义 Vulkan 驱动目录（空 = 系统驱动）
 
+    // === SWITCH（Eden）核心选项（ed*）—— "EdenEngine/<name>" 门面键 →
+    //     EdenEngine.setCoreOption → NativeConfig（键名/取值对照上游
+    //     common/settings.h 序列化键，默认值对齐上游 __ANDROID__ 分支）===
+    var edResolution: String = "3"        // 0..12（ResolutionSetup 序数：0=0.25x 1=0.5x 2=0.75x 3=1x默认 4=1.25x 5=1.5x 6=2x 7=3x 8=4x 9=5x 10=6x 11=7x 12=8x）
+    var edGpuAccuracy: String = "0"       // 0=低(快·Android 默认) 1=高(准确)
+    var edCpuAccuracy: String = "0"       // 0=自动(默认) 1=精确 2=不安全(快) 3=偏执(慢) 4=调试
+    var edCpuBackend: String = "1"        // 0=Dynarmic 1=NCE（arm64 原生执行·默认，改后重启游戏生效）
+    var edAnisotropy: String = "1"        // 0=自动 1=默认(Android) 2=2x 3=4x 4=8x 5=16x
+    var edScalingFilter: String = "0"     // 0..16（ScalingFilter 序数：0=最近邻(默认) 1=双线性 2=双三次 6=FSR ...）
+    var edAntiAliasing: String = "0"      // 0=关(默认) 1=FXAA 2=SMAA
+    var edAspectRatio: String = "0"       // 0=16:9(默认) 1=4:3 2=21:9 3=16:10 4=拉伸
+    var edFramePacing: String = "0"       // 0=自动(默认) 1=30帧 2=60帧 3=90帧 4=120帧
+    var edGpuFence: String = "0"          // 0=默认 1=立即 2=均衡 3=精确
+    var edNvdec: String = "1"             // 0=关 1=CPU(默认) 2=GPU
+    var edAstc: String = "1"              // 0=CPU 1=GPU(默认) 2=CPU异步
+    var edVramUsage: String = "0"         // 0=保守(默认) 1=激进
+    var edVsync: String = "2"             // 0=Immediate 1=Mailbox 2=FIFO(默认) 3=FIFO宽松（VSyncMode 序数）
+    var edAsyncShaders: String = "true"   // 异步着色器（防卡顿；上游代码默认 false，Android 帧率优先开）
+    var edDiskShaderCache: String = "true"// 磁盘着色器缓存（防二次卡顿）
+    var edAsyncGpu: String = "true"       // 异步 GPU 模拟（上游默认 true）
+    var edReactiveFlush: String = "false" // 反应式回写（上游 Android 默认 false）
+    var edForceMaxClock: String = "false"// GPU 最大频率锁（发热换性能）
+    var edDmaAccuracy: String = "0"       // 0=默认(默认) 1=不安全 2=安全
+    var edMemoryLayout: String = "0"      // 0=4GB(默认) 1=6GB 2=8GB 3=10GB 4=12GB
+    var edDocked: String = "0"            // 0=掌机(默认·Android) 1=底座（影响分辨率/性能档）
+    var edLanguage: String = "1"          // 0=日 1=美英(默认) 2=法 3=德 4=意 5=西 6=中文 7=韩 8=荷 9=葡 10=俄 15=简中 16=繁中
+    var edRegion: String = "1"            // 0=日 1=美(默认) 2=欧 3=澳 4=中 5=韩 6=台
+    var edGameSpeed: String = "1"         // 0=0.5x 1=1x(默认) 2=2x 3=4x 4=8x（快进联动）
+    var edAudioVolume: String = "100"     // 0..100
+    var edAudioMuted: String = "false"    // 静音
+
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
         fun normalizePs2ResMulti(raw: String?): String = when (raw?.trim()) {
@@ -1218,6 +1249,8 @@ class PadLayout {
     //   （A=✕、B=○、X=△、Y=□、L/R）。字段独立存储，互不串扰。
     var comboButtonsWiiU: String = ""    // Wii U combo list (JSON)
     var comboButtonsPsp: String = ""     // PSP combo list (JSON)
+    var comboButtonsSwitch: String = ""  // Switch（Eden）combo list (JSON) —— 位布局直通
+                                           //   EdenEngine.setPad1（A/B/X/Y/L/R/ZL/ZR/+/−/十字/摇杆按下）
 
     // === PCE button visibility toggles (which on-screen buttons are shown) ===
     // PCE uses the shared SNES/Arcade/MD layout slots (D-pad, I/II, RUN,
@@ -1258,6 +1291,8 @@ class PadLayout {
     var hiddenButtonsPsp: String = ""     // PSP hidden button keys（★ v5 补全：此前 PSP 无显隐存储，
                                            //   显隐对话框对 PSP 只有即时存/读档两项，运行时
                                            //   isButtonHidden 恒 false —— 摇杆常驻不隐藏，与 DC 同型）
+    var hiddenButtonsSwitch: String = ""  // Switch（Eden）hidden button keys（双摇杆常驻不隐藏，
+                                           //   与 Wii U 同型；游戏区触摸直通窗口触摸）
 
     // === Input mode (joystick vs D-pad) ===
     // "dpad" = cross-shaped digital D-pad (default); "analog" = circular
@@ -1901,6 +1936,7 @@ class PadLayout {
         n3dsBtnSelectP = another.n3dsBtnSelectP
         hiddenButtonsN3ds = another.hiddenButtonsN3ds
         hiddenButtonsWiiu = another.hiddenButtonsWiiu
+        hiddenButtonsSwitch = another.hiddenButtonsSwitch
         ngcLStick = another.ngcLStick
         ngcLStickP = another.ngcLStickP
         ngcRStick = another.ngcRStick
@@ -2033,6 +2069,8 @@ class PadLayout {
         // ★ PSP 显隐持久化（v5 补全）：copyFrom 必须带上 hiddenButtonsPsp，
         //   否则所有 PadLayout.copy{} 都会把它重置为空（同 DC 当年的 bug）。
         hiddenButtonsPsp = another.hiddenButtonsPsp
+        comboButtonsSwitch = another.comboButtonsSwitch
+        hiddenButtonsSwitch = another.hiddenButtonsSwitch
         inputMode = another.inputMode
         homeBackgroundUri = another.homeBackgroundUri
         homeBackgroundIsVideo = another.homeBackgroundIsVideo
@@ -3259,6 +3297,61 @@ object PadLayoutStore {
             cwDimensionsToypad = (p.getString("cw_dimensions_toypad", "false") ?: "false").let {
                 if (it in listOf("true", "false")) it else "false" }
             cwDriverPath = p.getString("cw_driver_path", "") ?: ""
+            // === SWITCH (Eden) options ===
+            edResolution = (p.getString("ed_resolution", "3") ?: "3").let {
+                if (it.toIntOrNull() in 0..12) it else "3" }
+            edGpuAccuracy = (p.getString("ed_gpu_accuracy", "0") ?: "0").let {
+                if (it in listOf("0", "1")) it else "0" }
+            edCpuAccuracy = (p.getString("ed_cpu_accuracy", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2", "3", "4")) it else "0" }
+            edCpuBackend = (p.getString("ed_cpu_backend", "1") ?: "1").let {
+                if (it in listOf("0", "1")) it else "1" }
+            edAnisotropy = (p.getString("ed_anisotropy", "1") ?: "1").let {
+                if (it.toIntOrNull() in 0..5) it else "1" }
+            edScalingFilter = (p.getString("ed_scaling_filter", "0") ?: "0").let {
+                if (it.toIntOrNull() in 0..16) it else "0" }
+            edAntiAliasing = (p.getString("ed_anti_aliasing", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2")) it else "0" }
+            edAspectRatio = (p.getString("ed_aspect_ratio", "0") ?: "0").let {
+                if (it.toIntOrNull() in 0..4) it else "0" }
+            edFramePacing = (p.getString("ed_frame_pacing", "0") ?: "0").let {
+                if (it.toIntOrNull() in 0..4) it else "0" }
+            edGpuFence = (p.getString("ed_gpu_fence", "0") ?: "0").let {
+                if (it.toIntOrNull() in 0..3) it else "0" }
+            edNvdec = (p.getString("ed_nvdec", "1") ?: "1").let {
+                if (it in listOf("0", "1", "2")) it else "1" }
+            edAstc = (p.getString("ed_astc", "1") ?: "1").let {
+                if (it in listOf("0", "1", "2")) it else "1" }
+            edVramUsage = (p.getString("ed_vram_usage", "0") ?: "0").let {
+                if (it in listOf("0", "1")) it else "0" }
+            edVsync = (p.getString("ed_vsync", "2") ?: "2").let {
+                if (it.toIntOrNull() in 0..3) it else "2" }
+            edAsyncShaders = (p.getString("ed_async_shaders", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            edDiskShaderCache = (p.getString("ed_disk_shader_cache", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            edAsyncGpu = (p.getString("ed_async_gpu", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            edReactiveFlush = (p.getString("ed_reactive_flush", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            edForceMaxClock = (p.getString("ed_force_max_clock", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            edDmaAccuracy = (p.getString("ed_dma_accuracy", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2")) it else "0" }
+            edMemoryLayout = (p.getString("ed_memory_layout", "0") ?: "0").let {
+                if (it.toIntOrNull() in 0..4) it else "0" }
+            edDocked = (p.getString("ed_docked", "0") ?: "0").let {
+                if (it in listOf("0", "1")) it else "0" }
+            edLanguage = (p.getString("ed_language", "1") ?: "1").let {
+                if (it.toIntOrNull() in 0..19) it else "1" }
+            edRegion = (p.getString("ed_region", "1") ?: "1").let {
+                if (it.toIntOrNull() in 0..6) it else "1" }
+            edGameSpeed = (p.getString("ed_game_speed", "1") ?: "1").let {
+                if (it in listOf("0", "1", "2", "3", "4")) it else "1" }
+            edAudioVolume = (p.getString("ed_audio_volume", "100") ?: "100").let {
+                it.toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "100" }
+            edAudioMuted = (p.getString("ed_audio_muted", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
             ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
             ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
             ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
@@ -3347,6 +3440,7 @@ object PadLayoutStore {
             wiiuBtnR3P = loadBtn(p, "wiiu_p_btn_r3", ButtonLayout(x = 0.70f, y = 0.88f, sizeDp = 34))
             hiddenButtonsDc = p.getString("hidden_buttons_dc", "") ?: ""
             hiddenButtonsPsp = p.getString("hidden_buttons_psp", "") ?: ""
+            hiddenButtonsSwitch = p.getString("hidden_buttons_switch", "") ?: ""
             // === Arcade extras ===
             btnL2 = loadBtn(p, "btn_l2", ButtonLayout(x = 0.08f, y = 0.32f, sizeDp = 48))
             btnR2 = loadBtn(p, "btn_r2", ButtonLayout(x = 0.92f, y = 0.32f, sizeDp = 48))
@@ -3369,6 +3463,7 @@ object PadLayoutStore {
             comboButtonsDc = p.getString("combo_buttons_dc", "") ?: ""
             comboButtonsWiiU = p.getString("combo_buttons_wiiu", "") ?: ""
             comboButtonsPsp = p.getString("combo_buttons_psp", "") ?: ""
+            comboButtonsSwitch = p.getString("combo_buttons_switch", "") ?: ""
             // PCE button visibility toggles
             pceShowDpad = p.getBoolean("pce_show_dpad", true)
             pceShowA = p.getBoolean("pce_show_a", true)
@@ -4105,6 +4200,34 @@ object PadLayoutStore {
             putString("cw_infinity_base", layout.cwInfinityBase)
             putString("cw_dimensions_toypad", layout.cwDimensionsToypad)
             putString("cw_driver_path", layout.cwDriverPath)
+            // === SWITCH (Eden) options ===
+            putString("ed_resolution", layout.edResolution)
+            putString("ed_gpu_accuracy", layout.edGpuAccuracy)
+            putString("ed_cpu_accuracy", layout.edCpuAccuracy)
+            putString("ed_cpu_backend", layout.edCpuBackend)
+            putString("ed_anisotropy", layout.edAnisotropy)
+            putString("ed_scaling_filter", layout.edScalingFilter)
+            putString("ed_anti_aliasing", layout.edAntiAliasing)
+            putString("ed_aspect_ratio", layout.edAspectRatio)
+            putString("ed_frame_pacing", layout.edFramePacing)
+            putString("ed_gpu_fence", layout.edGpuFence)
+            putString("ed_nvdec", layout.edNvdec)
+            putString("ed_astc", layout.edAstc)
+            putString("ed_vram_usage", layout.edVramUsage)
+            putString("ed_vsync", layout.edVsync)
+            putString("ed_async_shaders", layout.edAsyncShaders)
+            putString("ed_disk_shader_cache", layout.edDiskShaderCache)
+            putString("ed_async_gpu", layout.edAsyncGpu)
+            putString("ed_reactive_flush", layout.edReactiveFlush)
+            putString("ed_force_max_clock", layout.edForceMaxClock)
+            putString("ed_dma_accuracy", layout.edDmaAccuracy)
+            putString("ed_memory_layout", layout.edMemoryLayout)
+            putString("ed_docked", layout.edDocked)
+            putString("ed_language", layout.edLanguage)
+            putString("ed_region", layout.edRegion)
+            putString("ed_game_speed", layout.edGameSpeed)
+            putString("ed_audio_volume", layout.edAudioVolume)
+            putString("ed_audio_muted", layout.edAudioMuted)
             saveBtn("ngc_lstick", layout.ngcLStick)
             saveBtn("ngc_p_lstick", layout.ngcLStickP)
             saveBtn("ngc_rstick", layout.ngcRStick)
@@ -4193,6 +4316,7 @@ object PadLayoutStore {
             saveBtn("wiiu_p_btn_r3", layout.wiiuBtnR3P)
             putString("hidden_buttons_dc", layout.hiddenButtonsDc)
             putString("hidden_buttons_psp", layout.hiddenButtonsPsp)
+            putString("hidden_buttons_switch", layout.hiddenButtonsSwitch)
             // === Arcade extras ===
             saveBtn("btn_l2", layout.btnL2)
             saveBtn("btn_r2", layout.btnR2)
@@ -4215,6 +4339,7 @@ object PadLayoutStore {
             putString("combo_buttons_dc", layout.comboButtonsDc)
             putString("combo_buttons_wiiu", layout.comboButtonsWiiU)
             putString("combo_buttons_psp", layout.comboButtonsPsp)
+            putString("combo_buttons_switch", layout.comboButtonsSwitch)
             // PCE button visibility toggles
             putBoolean("pce_show_dpad", layout.pceShowDpad)
             putBoolean("pce_show_a", layout.pceShowA)
@@ -4283,6 +4408,8 @@ object PadLayoutStore {
             GamePlatform.NGCWII -> isHiddenInList(layout.hiddenButtonsNgcWii, key)
             // ★ Wii U（Cemu）：专属键显隐（wiiu_* / 通用键名）
             GamePlatform.WIIU -> isHiddenInList(layout.hiddenButtonsWiiu, key)
+            // ★ Switch（Eden）：专属键显隐（与 Wii U 同型）
+            GamePlatform.NSWITCH -> isHiddenInList(layout.hiddenButtonsSwitch, key)
             GamePlatform.DC -> isHiddenInList(layout.hiddenButtonsDc, key)
             // ★ PSP（v5 补全）：此前落到 else -> false，显隐开关对 PSP 完全无效
             GamePlatform.PSP -> isHiddenInList(layout.hiddenButtonsPsp, key)
@@ -4326,6 +4453,8 @@ object PadLayoutStore {
             GamePlatform.NGCWII -> layout.copy {hiddenButtonsNgcWii = updateHiddenList(layout.hiddenButtonsNgcWii, key, hidden)}
             // ★ Wii U（Cemu）：显隐写回专属列表
             GamePlatform.WIIU -> layout.copy {hiddenButtonsWiiu = updateHiddenList(layout.hiddenButtonsWiiu, key, hidden)}
+            // ★ Switch（Eden）：显隐写回专属列表
+            GamePlatform.NSWITCH -> layout.copy {hiddenButtonsSwitch = updateHiddenList(layout.hiddenButtonsSwitch, key, hidden)}
             GamePlatform.DC -> layout.copy {hiddenButtonsDc = updateHiddenList(layout.hiddenButtonsDc, key, hidden)}
             // ★ PSP（v5 补全）：显隐写回专属列表（旧实现落到 else -> layout，写入被静默丢弃）
             GamePlatform.PSP -> layout.copy {hiddenButtonsPsp = updateHiddenList(layout.hiddenButtonsPsp, key, hidden)}
@@ -4500,6 +4629,19 @@ object PadLayoutStore {
                 "l3" to "左摇杆按下", "r3" to "右摇杆按下",
                 "wiiu_tv" to "TV/手柄画面切换",
                 "wiiu_mic" to "麦克风",
+                "start" to "+键", "select" to "−键",
+                "home" to "HOME"
+                // 左/右摇杆常驻，不参与显隐
+            )
+            GamePlatform.NSWITCH -> listOf(
+                // Switch（Eden）：Pro 手柄全套；双摇杆为常驻模拟控件
+                //（不参与显隐）；游戏区触摸直通窗口触摸（掌机形态）。
+                "dpad" to "十字键", "a" to "A键", "b" to "B键",
+                "x" to "X键", "y" to "Y键",
+                "l" to "L键", "r" to "R键",
+                "zl" to "ZL键", "zr" to "ZR键",
+                "l3" to "左摇杆按下", "r3" to "右摇杆按下",
+                "capture" to "截屏/采集",
                 "start" to "+键", "select" to "−键",
                 "home" to "HOME"
                 // 左/右摇杆常驻，不参与显隐

@@ -176,6 +176,10 @@ val ROM_EXTENSIONS = listOf(
     // .pbp/.elf 在 PSP 平台页导入时按 PSP 解析（见 PlatformDetector 的
     // PSP hint 消歧），.iso/.chd 沿用 CD 镜像通道由平台页消歧。
     "cso", "elf",
+    // ★★ Switch（Eden）原生格式 —— 与 GamePlatform.fromExtension 的
+    //   NSWITCH 映记及 PlatformDetector.AUTO_TRUSTED_EXTENSIONS 保持一致
+    //   （xci 卡带镜像 / nsp 数字版安装包 / nca 内容档案 / nro homebrew）。
+    "xci", "nsp", "nca", "nro",
     // Arcade (FBNeo) — archives only; the filename IS the driver name
     "zip", "7z", "gz"
 )
@@ -1387,7 +1391,8 @@ fun LibraryScreen(
                     GamePlatform.PS2,
                     GamePlatform.JAVA,
                     GamePlatform.DC,
-                    GamePlatform.PSP
+                    GamePlatform.PSP,
+                    GamePlatform.NSWITCH
                 )) { platform ->
                     FilterChip(
                         text = platform.displayName,
@@ -2420,6 +2425,7 @@ private fun FsdPlatformBadge(platform: GamePlatform, modifier: Modifier = Modifi
         GamePlatform.NGCWII -> "NWC"
         GamePlatform.PSP    -> "PSP"
         GamePlatform.WIIU   -> "WiiU"
+        GamePlatform.NSWITCH -> "NS"
     }
     Box(
         modifier = modifier

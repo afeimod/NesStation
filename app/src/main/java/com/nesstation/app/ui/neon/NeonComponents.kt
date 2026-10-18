@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.VideogameAsset
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Gamepad
@@ -94,6 +95,8 @@ fun neonPlatformIcon(p: GamePlatform): ImageVector = when (p) {
     GamePlatform.PSP -> Icons.Rounded.SmartDisplay
     // ★ Wii U（Cemu-AZ 源码核心）：TV + GamePad 双屏形态 → 大屏游戏图标
     GamePlatform.WIIU -> Icons.Rounded.Devices
+    // ★ Switch（Eden 源码核心）：掌机/底座混合形态
+    GamePlatform.NSWITCH -> Icons.Rounded.VideogameAsset
 }
 
 /** 手柄按键提示胶囊（底部提示栏单元）：圆形字母 + 说明文字。 */

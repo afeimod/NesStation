@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -2480,6 +2481,192 @@ fun CoreSettingsPanel(
             }
         }
 
+        // ★★ Switch（Eden 源码核心）：ed* 设置字段 → "EdenEngine/<name>" 门面键
+        //   → EdenEngine.setCoreOption 直调 NativeConfig（上游 settings.h 序列化键）
+        //   热生效；密钥（assets 自动识别 / 手动选择）、固件安装、自定义 GPU
+        //   驱动管理为独立分区。
+        GamePlatform.NSWITCH -> item {
+            SettingsSection("Switch · 密钥与固件") {
+                EdenKeysFirmwareSection()
+            }
+            SettingsSection("Switch · 画面 / 性能") {
+                DropdownRow("渲染分辨率",
+                    // ResolutionSetup 序数（上游 ENUM 顺序）：3=1x 默认。
+                    // >3 提升内部渲染分辨率（GPU 填充率按平方增长），
+                    // <3 降分辨率提速省电。
+                    listOf("0" to "0.25x (省电·模糊)",
+                           "1" to "0.5x (省电)",
+                           "2" to "0.75x (省电)",
+                           "3" to "1x (默认·原生 720p)",
+                           "4" to "1.25x",
+                           "5" to "1.5x",
+                           "6" to "2x (清晰·耗电)",
+                           "7" to "3x (高分屏)",
+                           "8" to "4x (平板/电视)",
+                           "9" to "5x", "10" to "6x", "11" to "7x", "12" to "8x (极限)"),
+                    padLayout.edResolution
+                ) { updateLayout(padLayout.copy {edResolution = it}) }
+                DropdownRow("GPU 精度",
+                    listOf("0" to "低 (快·默认)", "1" to "高 (准确·慢)"),
+                    padLayout.edGpuAccuracy
+                ) { updateLayout(padLayout.copy {edGpuAccuracy = it}) }
+                DropdownRow("CPU 精度",
+                    listOf("0" to "自动 (默认)", "1" to "精确 (慢·兼容)",
+                           "2" to "不安全 (快·个别游戏异常)",
+                           "3" to "偏执 (最慢·调试用)"),
+                    padLayout.edCpuAccuracy
+                ) { updateLayout(padLayout.copy {edCpuAccuracy = it}) }
+                DropdownRow("CPU 后端",
+                    // NCE = ARM 原生代码执行（性能最佳，arm64 专属）；
+                    // Dynarmic = JIT 重编译（兼容性兜底）。
+                    listOf("1" to "NCE 原生执行 (默认·最快)",
+                           "0" to "Dynarmic 重编译 (兼容优先)"),
+                    padLayout.edCpuBackend
+                ) { updateLayout(padLayout.copy {edCpuBackend = it}) }
+                DropdownRow("各向异性过滤",
+                    listOf("0" to "自动 (跟随游戏)", "1" to "默认",
+                           "2" to "2x", "3" to "4x", "4" to "8x", "5" to "16x"),
+                    padLayout.edAnisotropy
+                ) { updateLayout(padLayout.copy {edAnisotropy = it}) }
+                DropdownRow("缩放滤镜",
+                    listOf("0" to "最近邻 (默认·锐利)", "1" to "双线性",
+                           "2" to "双三次", "3" to "高斯", "4" to "Lanczos",
+                           "5" to "ScaleForce", "6" to "FSR (推荐)",
+                           "7" to "Area", "8" to "ZeroTangent", "9" to "BSpline",
+                           "10" to "Mitchell", "11" to "Spline", "12" to "Mmpx",
+                           "13" to "SGSR", "14" to "SGSR Edge"),
+                    padLayout.edScalingFilter
+                ) { updateLayout(padLayout.copy {edScalingFilter = it}) }
+                DropdownRow("抗锯齿",
+                    listOf("0" to "关闭 (默认·快)", "1" to "FXAA", "2" to "SMAA"),
+                    padLayout.edAntiAliasing
+                ) { updateLayout(padLayout.copy {edAntiAliasing = it}) }
+                DropdownRow("画面比例",
+                    listOf("0" to "16:9 (默认)", "1" to "4:3", "2" to "21:9",
+                           "3" to "16:10", "4" to "拉伸全屏"),
+                    padLayout.edAspectRatio
+                ) { updateLayout(padLayout.copy {edAspectRatio = it}) }
+                DropdownRow("垂直同步",
+                    // VSyncMode 序数：0=Immediate 低延迟、1=Mailbox 兼容低撕裂、
+                    // 2=FIFO 稳定（默认）、3=FIFO 宽松。
+                    listOf("0" to "关闭 (最低延迟·可能撕裂)",
+                           "1" to "邮箱 (低延迟·防撕裂)",
+                           "2" to "FIFO (默认·最稳)",
+                           "3" to "FIFO 宽松 (省电)"),
+                    padLayout.edVsync
+                ) { updateLayout(padLayout.copy {edVsync = it}) }
+                DropdownRow("帧生成步调",
+                    listOf("0" to "自动 (默认)", "1" to "锁定 30",
+                           "2" to "锁定 60", "3" to "锁定 90", "4" to "锁定 120"),
+                    padLayout.edFramePacing
+                ) { updateLayout(padLayout.copy {edFramePacing = it}) }
+                DropdownRow("GPU 栅栏行为",
+                    listOf("0" to "默认 (默认)", "1" to "立即 (快·偶发闪烁)",
+                           "2" to "均衡", "3" to "精确 (慢·稳)"),
+                    padLayout.edGpuFence
+                ) { updateLayout(padLayout.copy {edGpuFence = it}) }
+                DropdownRow("NVDEC 视频解码",
+                    listOf("0" to "关闭", "1" to "CPU (默认·兼容)",
+                           "2" to "GPU (视频解码硬解)"),
+                    padLayout.edNvdec
+                ) { updateLayout(padLayout.copy {edNvdec = it}) }
+                DropdownRow("ASTC 纹理解码",
+                    listOf("0" to "CPU (慢·最兼容)", "1" to "GPU (默认·快)",
+                           "2" to "CPU 异步 (平衡)"),
+                    padLayout.edAstc
+                ) { updateLayout(padLayout.copy {edAstc = it}) }
+                DropdownRow("显存使用模式",
+                    listOf("0" to "保守 (默认)", "1" to "激进 (大显存设备)"),
+                    padLayout.edVramUsage
+                ) { updateLayout(padLayout.copy {edVramUsage = it}) }
+                DropdownRow("异步着色器编译",
+                    // 上游代码默认 false；Android 上开启可显著减少
+                    // 首次游玩卡顿（代价：新着色器短暂缺几何）。
+                    listOf("true" to "开启 (默认·防卡顿)", "false" to "关闭"),
+                    padLayout.edAsyncShaders
+                ) { updateLayout(padLayout.copy {edAsyncShaders = it}) }
+                DropdownRow("磁盘着色器缓存",
+                    listOf("true" to "开启 (默认·二次游玩不卡)", "false" to "关闭"),
+                    padLayout.edDiskShaderCache
+                ) { updateLayout(padLayout.copy {edDiskShaderCache = it}) }
+                DropdownRow("异步 GPU 模拟",
+                    listOf("true" to "开启 (默认·快)", "false" to "关闭 (慢·兼容)"),
+                    padLayout.edAsyncGpu
+                ) { updateLayout(padLayout.copy {edAsyncGpu = it}) }
+                DropdownRow("反应式回写",
+                    listOf("false" to "关闭 (默认·快)", "true" to "开启 (慢·个别游戏修复)"),
+                    padLayout.edReactiveFlush
+                ) { updateLayout(padLayout.copy {edReactiveFlush = it}) }
+                DropdownRow("GPU 最大频率锁",
+                    listOf("false" to "关闭 (默认)", "true" to "锁定最大频率 (发热换性能)"),
+                    padLayout.edForceMaxClock
+                ) { updateLayout(padLayout.copy {edForceMaxClock = it}) }
+                DropdownRow("DMA 精度",
+                    listOf("0" to "默认 (默认)", "1" to "不安全 (快)", "2" to "安全 (慢)"),
+                    padLayout.edDmaAccuracy
+                ) { updateLayout(padLayout.copy {edDmaAccuracy = it}) }
+                DropdownRow("内存布局",
+                    // 个别大型模组游戏需要 >4GB 内存布局。
+                    listOf("0" to "4GB (默认)", "1" to "6GB", "2" to "8GB",
+                           "3" to "10GB", "4" to "12GB"),
+                    padLayout.edMemoryLayout
+                ) { updateLayout(padLayout.copy {edMemoryLayout = it}) }
+            }
+            SettingsSection("Switch · 系统") {
+                DropdownRow("主机模式",
+                    // 掌机 = 720p 性能档（默认·Android），底座 = 高性能档
+                    //（部分游戏帧率更高，发热更大）。
+                    listOf("0" to "掌机 (默认·Android)", "1" to "底座 (高性能·发热)"),
+                    padLayout.edDocked
+                ) { updateLayout(padLayout.copy {edDocked = it}) }
+                DropdownRow("主机语言",
+                    // Language 枚举序数（节选常用项；6=汉、15=简中、16=繁中）。
+                    listOf("1" to "英语 (默认)", "0" to "日语", "6" to "中文",
+                           "15" to "简体中文", "16" to "繁体中文",
+                           "2" to "法语", "3" to "德语", "4" to "意大利语",
+                           "5" to "西班牙语", "7" to "韩语", "8" to "荷兰语",
+                           "9" to "葡萄牙语", "10" to "俄语"),
+                    padLayout.edLanguage
+                ) { updateLayout(padLayout.copy {edLanguage = it}) }
+                DropdownRow("主机区域",
+                    listOf("1" to "美国 (默认)", "0" to "日本", "2" to "欧洲",
+                           "3" to "澳大利亚", "4" to "中国", "5" to "韩国", "6" to "台湾"),
+                    padLayout.edRegion
+                ) { updateLayout(padLayout.copy {edRegion = it}) }
+                DropdownRow("游戏速度",
+                    listOf("1" to "1x (正常·默认)", "0" to "0.5x (慢动作)",
+                           "2" to "2x", "3" to "4x", "4" to "8x (快进联动)"),
+                    padLayout.edGameSpeed
+                ) { updateLayout(padLayout.copy {edGameSpeed = it}) }
+            }
+            SettingsSection("Switch · 音频") {
+                DropdownRow("音量",
+                    listOf("0" to "0%", "20" to "20%", "40" to "40%", "60" to "60%",
+                           "80" to "80%", "100" to "100% (默认)"),
+                    padLayout.edAudioVolume
+                ) { updateLayout(padLayout.copy {edAudioVolume = it}) }
+                DropdownRow("静音",
+                    listOf("false" to "关闭 (默认)", "true" to "开启 (静音)"),
+                    padLayout.edAudioMuted
+                ) { updateLayout(padLayout.copy {edAudioMuted = it}) }
+            }
+            EdenDriverSection(padLayout, updateLayout)
+            SettingsSection("Switch · 说明") {
+                Text(
+                    "Eden 源码核心（core/eden/ 经 :eden-core 模块 CPM+CMake 编译，" +
+                        "非预编译 so），仅支持 arm64-v8a + Android 9(API 28)+，Vulkan 1.1 渲染。" +
+                        "\n\n密钥：把 prod.keys/title.keys 放进 APK assets/eden/keys/ 可自动识别" +
+                        "（无需玩家操作），或在上方手动选择文件；固件在上方安装（官方固件 zip，" +
+                        "含系统字体 —— 部分游戏与中文显示需要）。“ +
+                        "\n\n虚拟按键：Pro 手柄全套（双摇杆 + ABXY + L/R/ZL/ZR + +/−/HOME + 截屏/采集），" +
+                        "游戏区触摸直通窗口触摸（掌机形态 = Switch 触摸屏）；均可在 触控 → 布局编辑器 里调位置/大小/显隐。" +
+                        "\n\n存档走游戏内存档（NAND，<filesDir>/eden/nand/）；核心无即时存档。" +
+                        "驱动管理见上方分区（自定义驱动经 adrenotools 加载，切换后重启游戏生效）。",
+                    color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
+                    fontSize = 10.sp, lineHeight = 15.sp)
+            }
+        }
+
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在
         // PadLayout.overlayThemeJson，见 OverlayTheme.kt） ===
         item { OverlayThemeSection(platform, padLayout, updateLayout) }
@@ -2884,5 +3071,307 @@ private fun LsfgDllSection(
                 fontSize = 10.sp, lineHeight = 14.sp,
                 modifier = Modifier.padding(start = 16.dp, bottom = 4.dp))
         }
+    }
+}
+
+// ===========================================================================
+// ★★ Switch（Eden）密钥与固件管理 ★★
+//   · 密钥：assets 自动识别（构建者放 assets/eden/keys/，引擎启动时复制到
+//     <filesDir>/eden/keys/，无玩家操作）或玩家手动选择（SAF 按钮）；
+//     状态实时显示（areKeysPresent）。
+//   · 固件：SAF 选官方固件 zip → 解包校验全 .nca →
+//     <filesDir>/eden/nand/system/Contents/registered/ → initializeSystem(true)。
+// ===========================================================================
+@Composable
+fun EdenKeysFirmwareSection(dark: Boolean = false) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val engine = remember { com.nesstation.app.core.engine.EdenEngine.get() }
+    var keysPresent by remember { mutableStateOf<Boolean?>(null) }
+    var fwAvailable by remember { mutableStateOf(false) }
+    var fwVersion by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(-1) }
+
+    fun refresh() {
+        if (!com.nesstation.app.core.jni.EdenNative.ensureLoaded()) return
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try { engine.coreInitOnce() } catch (_: Throwable) {}
+                try {
+                    keysPresent = engine.let {
+                        if (com.nesstation.app.core.jni.EdenNative.loaded)
+                            org.yuzu.yuzu_emu.NativeLibrary.areKeysPresent()
+                        else null
+                    }
+                } catch (_: Throwable) {}
+                try { fwAvailable = org.yuzu.yuzu_emu.NativeLibrary.isFirmwareAvailable() } catch (_: Throwable) {}
+                try { fwVersion = org.yuzu.yuzu_emu.NativeLibrary.firmwareVersion() ?: "" } catch (_: Throwable) {}
+            }
+        }
+    }
+    LaunchedEffect(Unit) { refresh() }
+
+    val dimColor = if (dark) Color(0xFF8899AA)
+        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
+        else Color(0xFF4A5568)
+
+    if (!com.nesstation.app.core.jni.EdenNative.ensureLoaded()) {
+        Text("Eden 核心未加载（需要 arm64-v8a + Android 9+），密钥/固件管理不可用。",
+            color = Color(0xFFB00020), fontSize = 11.sp, lineHeight = 15.sp)
+        return
+    }
+
+    // ---- 密钥状态 + 手动加载 ----
+    Text(
+        if (keysPresent == true) "密钥：已安装（加密游戏可运行）"
+        else if (keysPresent == null) "密钥：核心初始化中…"
+        else "密钥：未安装（加密游戏无法启动/解密）",
+        color = when (keysPresent) {
+            true -> Color(0xFF27AE60); null -> dimColor; else -> Color(0xFFB00020)
+        },
+        fontSize = 11.sp, lineHeight = 15.sp)
+    Text(
+        "来源二选一：构建者把 prod.keys / title.keys 放进 APK assets/eden/keys/（自动识别）；" +
+            "或点击下方按钮手动选择 .keys 文件。",
+        color = dimColor, fontSize = 10.sp, lineHeight = 14.sp)
+
+    val keyLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val err = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                engine.installKeysFromUri(ctx, uri)
+            }
+            busy = false
+            refresh()
+            Toast.makeText(
+                ctx,
+                err ?: "密钥安装成功（${if (keysPresent == true) "已生效" else "待校验"}）",
+                if (err == null) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    TextButtonRow(
+        label = "选择密钥文件（prod.keys / title.keys）",
+        sub = "SAF 选择 .keys 文件 → 复制到 <filesDir>/eden/keys/ 并即时重载",
+        enabled = !busy,
+        dark = dark
+    ) { keyLauncher.launch(arrayOf("*/*")) }
+
+    // ---- 固件状态 + 安装/卸载 ----
+    Text(
+        if (fwAvailable) "固件：已安装${if (fwVersion.isNotBlank()) "（$fwVersion）" else ""}"
+        else "固件：未安装（部分游戏与系统字体需要）",
+        color = if (fwAvailable) Color(0xFF27AE60) else Color(0xFF667788),
+        fontSize = 11.sp, lineHeight = 15.sp)
+
+    val fwLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true; progress = 0
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val err = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                engine.installFirmwareFromUri(ctx, uri) { p ->
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { progress = p }
+                    false
+                }
+            }
+            busy = false; progress = -1
+            refresh()
+            Toast.makeText(
+                ctx, err ?: "固件安装成功（重启游戏生效）",
+                if (err == null) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    TextButtonRow(
+        label = "安装固件（官方固件 zip）",
+        sub = "解包校验 .nca → <filesDir>/eden/nand/system/Contents/registered/",
+        enabled = !busy,
+        dark = dark
+    ) { fwLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*")) }
+
+    if (busy && progress >= 0) {
+        Text("固件安装中… $progress%", color = dimColor, fontSize = 10.sp)
+    }
+
+    if (fwAvailable) {
+        TextButtonRow(
+            label = "卸载固件",
+            sub = "清空 registered/ 并重载系统（重启游戏生效）",
+            enabled = !busy,
+            dark = dark
+        ) {
+            busy = true
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                val err = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    engine.uninstallFirmware()
+                }
+                busy = false
+                refresh()
+                Toast.makeText(ctx, err ?: "固件已卸载", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// ★★ Switch（Eden）自定义 GPU 驱动管理 —— 上游 GpuDriverHelper 同构 ★★
+//   · 安装：SAF 选 zip → 校验 meta.json（name/libraryName/minApi）
+//     → 解包 <filesDir>/eden/gpu_driver/（adrenotools 即时加载）
+//   · 切换：系统驱动（清空解包目录）/ 已导入 zip 重装
+//   · 删除：移除归档（启用中的解包不受影响，禁用走系统驱动）
+// ===========================================================================
+@Composable
+fun EdenDriverSection(
+    padLayout: PadLayout,
+    updateLayout: (PadLayout) -> Unit,
+    dark: Boolean = false
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val engine = remember { com.nesstation.app.core.engine.EdenEngine.get() }
+    var installed by remember { mutableStateOf<List<Pair<String, org.yuzu.yuzu_emu.utils.GpuDriverMetadata>>>(emptyList()) }
+    var activeName by remember { mutableStateOf<String?>(null) }
+    var driverSupported by remember { mutableStateOf(false) }
+    var installing by remember { mutableStateOf(false) }
+    var refreshKey by remember { mutableStateOf(0) }
+    var infoLine by remember { mutableStateOf("") }
+
+    LaunchedEffect(installing, refreshKey) {
+        if (!com.nesstation.app.core.jni.EdenNative.ensureLoaded()) return@LaunchedEffect
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try { engine.coreInitOnce() } catch (_: Throwable) {}
+            try {
+                installed = org.yuzu.yuzu_emu.utils.GpuDriverHelper.getDrivers()
+                activeName = org.yuzu.yuzu_emu.utils.GpuDriverHelper
+                    .installedCustomDriverData.name
+                driverSupported = try {
+                    org.yuzu.yuzu_emu.utils.GpuDriverHelper.supportsCustomDriverLoading()
+                } catch (_: Throwable) { false }
+                infoLine = "当前驱动：${engine.currentGpuDriver()}\n" +
+                    engine.vulkanInfo() + "\nCPU 后端：" + engine.cpuBackend()
+            } catch (_: Throwable) {}
+        }
+    }
+
+    SettingsSection("Switch · 驱动管理（Vulkan）") {
+        if (!com.nesstation.app.core.jni.EdenNative.ensureLoaded()) {
+            Text("Eden 核心未加载（需要 arm64-v8a + Android 9+），驱动管理不可用。",
+                color = Color(0xFFB00020), fontSize = 11.sp, lineHeight = 15.sp)
+            return@SettingsSection
+        }
+
+        val dimColor = if (dark) Color(0xFF8899AA)
+            else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
+            else Color(0xFF4A5568)
+
+        if (infoLine.isNotBlank()) {
+            Text(infoLine, color = dimColor, fontSize = 10.sp, lineHeight = 15.sp)
+        }
+        Text(
+            "自定义驱动经 adrenotools 在核心初始化时加载 —— 切换后重启游戏生效。" +
+                "驱动 zip 需含 meta.json（name/library/minApi）与对应 .so。" +
+                (if (!driverSupported) "\n当前设备不支持加载自定义驱动（非 Adreno/无 KGSL）。" else ""),
+            color = dimColor, fontSize = 10.sp, lineHeight = 15.sp)
+
+        // 系统驱动（默认）
+        val systemSelected = activeName == null
+        TextButtonRow(
+            label = "系统驱动${if (systemSelected) " ✓" else ""}",
+            sub = "使用设备自带 Vulkan 驱动（默认）",
+            enabled = !installing,
+            dark = dark
+        ) {
+            installing = true
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    org.yuzu.yuzu_emu.utils.GpuDriverHelper.installDefaultDriver(
+                        ctx, ctx.applicationInfo.nativeLibraryDir
+                    )
+                }
+                installing = false; refreshKey++
+                Toast.makeText(ctx, "已切回系统驱动（重启游戏生效）", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // 已导入驱动 zip 列表（点击=重装启用）
+        for ((path, meta) in installed) {
+            val isSel = activeName == meta.name
+            TextButtonRow(
+                label = "${meta.name ?: "未知"}${if (isSel) " ✓" else ""}",
+                sub = "v${meta.version ?: "?"} · ${meta.vendor ?: "?"} · API ${meta.minApi}+",
+                enabled = !installing,
+                dark = dark
+            ) {
+                installing = true
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                    val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        org.yuzu.yuzu_emu.utils.GpuDriverHelper.installCustomDriver(
+                            ctx, ctx.applicationInfo.nativeLibraryDir, android.net.Uri.fromFile(java.io.File(path))
+                        ) == org.yuzu.yuzu_emu.utils.GpuDriverHelper.InstallResult.INSTALLED
+                    }
+                    installing = false; refreshKey++
+                    Toast.makeText(
+                        ctx,
+                        if (ok) "驱动已启用（重启游戏生效）" else "启用失败（meta.json/库文件不完整）",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            if (isSel) {
+                Text("当前启用（重启游戏后生效）",
+                    color = Color(0xFF27AE60), fontSize = 10.sp,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 4.dp))
+            }
+            TextButtonRow(
+                label = "删除「${meta.name ?: path}」",
+                sub = "移除驱动 zip 归档",
+                enabled = !installing,
+                dark = dark
+            ) {
+                installing = true
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        org.yuzu.yuzu_emu.utils.GpuDriverHelper.deleteDriver(path)
+                    }
+                    installing = false; refreshKey++
+                    Toast.makeText(ctx, "已删除驱动归档", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        // 从 zip 导入
+        val driverLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            installing = true
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                val res = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    org.yuzu.yuzu_emu.utils.GpuDriverHelper.installCustomDriver(
+                        ctx, ctx.applicationInfo.nativeLibraryDir, uri
+                    )
+                }
+                installing = false; refreshKey++
+                val msg = when (res) {
+                    org.yuzu.yuzu_emu.utils.GpuDriverHelper.InstallResult.INSTALLED ->
+                        "驱动安装成功：${org.yuzu.yuzu_emu.utils.GpuDriverHelper.installedCustomDriverData.name ?: ""}"
+                    org.yuzu.yuzu_emu.utils.GpuDriverHelper.InstallResult.INVALID_ZIP ->
+                        "安装失败（zip 缺 meta.json / 库文件不完整）"
+                    org.yuzu.yuzu_emu.utils.GpuDriverHelper.InstallResult.MIN_API ->
+                        "安装失败（驱动要求的 Android 版本高于当前系统）"
+                }
+                Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+        TextButtonRow(
+            label = "从 zip 导入驱动",
+            sub = "Adreno 系自定义驱动（Turnip/Mesa 等，zip 含 meta.json）",
+            enabled = !installing,
+            dark = dark
+        ) { driverLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*")) }
     }
 }

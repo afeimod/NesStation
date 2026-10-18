@@ -41,6 +41,12 @@ import androidx.compose.ui.graphics.Color
  *          libppsspp_libretro_android.so（标准 retro_* API，与 DC/PSX 相同入口），
  *          统一走 EmulatorScreen 全链路；PPSSPP 自带触控层/原生菜单（L2 调出，
  *          即时存档/金手指/adhoc 全保留）；配置位于 <externalFilesDir>/PSP）
+ * NSWITCH = Nintendo Switch（Eden 核心 —— yuzu 系社区延续分支，完整源码树
+ *          移植在 core/eden/，经 :eden-core 模块 CPM+CMake 源码编译产出
+ *          libyuzu-android.so，集成方式与 Cemu-AZ/:cemu-core 完全一致；
+ *          JNI 契约 vendored 于 org.yuzu.yuzu_emu（原包名），推模型引擎
+ *          EdenEngine，Vulkan 直绘 + keys（assets 自动识别/手动导入）+ 固件
+ *          安装 + 自定义 GPU 驱动管理 + 游戏内软键盘（含中文输入））
  */
 enum class GamePlatform(val displayName: String) {
     NES("NES"),
@@ -59,7 +65,8 @@ enum class GamePlatform(val displayName: String) {
     N3DS("3DS"),
     NGCWII("NGC/Wii"),
     WIIU("Wii U"),
-    PSP("PSP");
+    PSP("PSP"),
+    NSWITCH("Switch");
 
     companion object {
         /**
@@ -127,6 +134,8 @@ enum class GamePlatform(val displayName: String) {
                 "wiiu", "wiiued", "cemu", "cemuu" -> WIIU
                 // Sony PlayStation Portable (PPSSPP)
                 "psp", "ppsspp", "playstationportable", "psportable" -> PSP
+                // Nintendo Switch (Eden)
+                "switch", "nswitch", "ns", "eden", "yuzu" -> NSWITCH
                 // J2ME
                 "java", "j2me", "midlet" -> JAVA
                 // 兜底：未识别的字符串保持 NES 行为不变（旧 API 兼容）
@@ -225,6 +234,10 @@ enum class GamePlatform(val displayName: String) {
                 // 归属不变 —— Wii 频道 wad 更常见，Wii U wad 罕见且用户可用
                 // 平台页导入消歧。)
                 "wud", "wux", "wua", "wuhb", "rpx" -> WIIU
+                // Nintendo Switch（Eden）—— .xci 卡带镜像、.nsp 数字版安装包，
+                // .nca 内容档案（固件/更新片段），.nro homebrew。与上游
+                // Game.extensions 对齐；.zip/.7z 压缩包由导入流程解包后重新判定。
+                "xci", "nsp", "nca", "nro" -> NSWITCH
                 "jar", "jad" -> JAVA
                 // .zip is intentionally NOT mapped — see detectPlatformFromUri
                 // for the disambiguation logic.

@@ -123,6 +123,11 @@ object PlatformDetector {
         "wud" to GamePlatform.WIIU, "wux" to GamePlatform.WIIU,
         "wua" to GamePlatform.WIIU, "wuhb" to GamePlatform.WIIU,
         "rpx" to GamePlatform.WIIU,
+        // Nintendo Switch（xci 卡带镜像/nsp 数字版安装包/nca 内容档案/
+        // nro homebrew 均为 Switch 专属格式，日常文件不撞名；与上游
+        // Game.extensions 对齐）
+        "xci" to GamePlatform.NSWITCH, "nsp" to GamePlatform.NSWITCH,
+        "nca" to GamePlatform.NSWITCH, "nro" to GamePlatform.NSWITCH,
         // SEGA Dreamcast / NAOMI（.gdi/.cdi 为 DC 专属格式，日常文件不撞名）
         "gdi" to GamePlatform.DC, "cdi" to GamePlatform.DC,
         // Sony PSP（.cso 为 PSP 专属压缩 ISO 格式，日常文件不撞名；
@@ -425,6 +430,9 @@ object PlatformDetector {
                 if (ngcwiiHints.any { lowerPath.contains(it) }) return GamePlatform.NGCWII
                 val pspHints = listOf("psp", "ppsspp", "playstationportable", "/psp/")
                 if (pspHints.any { lowerPath.contains(it) }) return GamePlatform.PSP
+                // ★ Switch：与 Wii U 同策略（专属关键字 + 别名）
+                val switchHints = listOf("nswitch", "nintendo switch", "yuzu", "eden", "/switch/")
+                if (switchHints.any { lowerPath.contains(it) }) return GamePlatform.NSWITCH
                 // DC 专属关键字放最后（"dc" 过短，避免误伤其它路径）
                 val dcHints = listOf("dreamcast", "naomi", "atomiswave", "flycast", "/dc/")
                 if (dcHints.any { lowerPath.contains(it) }) return GamePlatform.DC
@@ -439,6 +447,7 @@ object PlatformDetector {
                 GamePlatform.NGCWII -> GamePlatform.NGCWII
                 GamePlatform.PSP -> GamePlatform.PSP
                 GamePlatform.WIIU -> GamePlatform.WIIU
+                GamePlatform.NSWITCH -> GamePlatform.NSWITCH
                 else -> GamePlatform.MD
             }
         }

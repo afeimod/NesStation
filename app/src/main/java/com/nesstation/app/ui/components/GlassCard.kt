@@ -272,6 +272,7 @@ private fun PlatformBadge(platform: GamePlatform, modifier: Modifier = Modifier)
         GamePlatform.NGCWII -> "NWC" to Color(0xFF6A1B9A)   // purple — NGC/WII   // blue — Dreamcast/NAOMI (Flycast)
         GamePlatform.PSP    -> "PSP"  to Color(0xFF0070C0)   // blue — PlayStation Portable
         GamePlatform.WIIU   -> "WiiU" to Color(0xFF0091EA)   // light blue — Wii U (Cemu-AZ)
+        GamePlatform.NSWITCH -> "NS"  to Color(0xFFE60012)   // red — Switch (Eden)
     }
     Box(
         modifier = modifier

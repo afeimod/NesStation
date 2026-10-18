@@ -494,6 +494,9 @@ fun NeonSettingsScreen(
                                 //   （子页 CoreSettingsPanel 本身有 PSP 分区，但列表没有
                                 //   入口 → “neon的ui核心设置缺少psp的”）。
                                 NeonSettingsRow("PSP", "PPSSPP 核心 · 分辨率/JIT/纹理放大/摇杆/联机", showArrow = true) { selectedCore = GamePlatform.PSP }
+                                // ★★ Switch（Eden）：密钥（assets 自动识别/手动选择）/
+                                //   固件安装 / 自定义 GPU 驱动 / 画面性能 / 主机模式。
+                                NeonSettingsRow("Switch", "Eden 源码核心 · 密钥/固件/驱动管理/画面性能/主机模式", showArrow = true) { selectedCore = GamePlatform.NSWITCH }
                             }
                             selectedCategory == "about" -> NeonSettingsSection("关于") {
                                 NeonSettingsRow("版本", "3.9") { }

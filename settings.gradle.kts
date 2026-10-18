@@ -30,3 +30,11 @@ include(":dexlib")
 if (!(providers.gradleProperty("skipCemuCore").getOrElse("false").toBoolean())) {
     include(":cemu-core")
 }
+// ★★ Switch（Eden 源码核心）模块：默认启用，-PskipEdenCore=true 可跳过 ★★
+//   该模块把 eden-emulator/eden 的完整源码树（core/eden/）经 CPM + CMake
+//   从源码编译为 libyuzu-android.so 并入主 APK（集成方式与 :cemu-core
+//   完全一致）。跳过时 app 自动解除依赖，运行时 EdenEngine 探测到库缺失
+//   会报告"核心不可用"，其余平台不受影响。
+if (!(providers.gradleProperty("skipEdenCore").getOrElse("false").toBoolean())) {
+    include(":eden-core")
+}

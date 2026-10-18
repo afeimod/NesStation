@@ -368,6 +368,9 @@ private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction>
         // ★ Wii U（Cemu-AZ 源码核心）：id 对应 EmulatorScreen 的 wiiu_* 表，
         // 位→VPAD 事件由 CemuEngine.setPad1 翻译。
         GamePlatform.WIIU   -> WIIU_ACTIONS.map { it.copy(id = it.id + suffix) }
+        // ★ Switch（Eden 源码核心）：Pro 手柄与 SNES 同 12 键布局（十字 +
+        // 4 面 + 4 肩），L2/R2→ZL/ZR 由 actionToBits 的 NSWITCH 分支翻译。
+        GamePlatform.NSWITCH -> SNES_ACTIONS.map { it.copy(id = it.id + suffix) }
     }
 }
 

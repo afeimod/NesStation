@@ -483,6 +483,28 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("wiiu_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("wiiu_home", KeyEvent.KEYCODE_BUTTON_MODE)
         )
+        // Switch（Eden）—— Pro 手柄语义：L1/R1→L/R，L2/R2→ZL/ZR，
+        // L3/R3=摇杆按下，START=+，SELECT=−，MODE=HOME；截屏/采集为虚拟键
+        // 专属（引擎内 BTN_EDEN_CAPTURE=bit26 复用）。
+        GamePlatform.NSWITCH -> listOf(
+            KeyActionInternal("switch_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("switch_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("switch_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("switch_right", KeyEvent.KEYCODE_DPAD_RIGHT),
+            KeyActionInternal("switch_a", KeyEvent.KEYCODE_BUTTON_A),
+            KeyActionInternal("switch_b", KeyEvent.KEYCODE_BUTTON_B),
+            KeyActionInternal("switch_x", KeyEvent.KEYCODE_BUTTON_X),
+            KeyActionInternal("switch_y", KeyEvent.KEYCODE_BUTTON_Y),
+            KeyActionInternal("switch_l", KeyEvent.KEYCODE_BUTTON_L1),
+            KeyActionInternal("switch_r", KeyEvent.KEYCODE_BUTTON_R1),
+            KeyActionInternal("switch_zl", KeyEvent.KEYCODE_BUTTON_L2),
+            KeyActionInternal("switch_zr", KeyEvent.KEYCODE_BUTTON_R2),
+            KeyActionInternal("switch_stickl", KeyEvent.KEYCODE_BUTTON_THUMBL),
+            KeyActionInternal("switch_stickr", KeyEvent.KEYCODE_BUTTON_THUMBR),
+            KeyActionInternal("switch_plus", KeyEvent.KEYCODE_BUTTON_START),
+            KeyActionInternal("switch_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
+            KeyActionInternal("switch_home", KeyEvent.KEYCODE_BUTTON_MODE)
+        )
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
         // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
         GamePlatform.DC -> emptyList()
@@ -550,6 +572,18 @@ private fun actionToBits(action: KeyActionInternal, platform: GamePlatform): Int
     // 摇杆按下位（L3/R3，引擎映射 VPAD STICKL/STICKR）、其余走默认位布局
     //（引擎 CemuEngine.setPad1 原生理解项目位布局，直透传不转换）。
     if (platform == GamePlatform.WIIU) {
+        return when (action.defaultKeyCode) {
+            KeyEvent.KEYCODE_BUTTON_L2     -> BTN_ZL
+            KeyEvent.KEYCODE_BUTTON_R2     -> BTN_ZR
+            KeyEvent.KEYCODE_BUTTON_THUMBL -> BTN_L3
+            KeyEvent.KEYCODE_BUTTON_THUMBR -> BTN_R3
+            else -> 0
+        }.takeIf { it != 0 }
+            ?: defaultActionToBits(action, lBit, rBit)
+    }
+    // Switch（Eden）：与 Wii U 同模式（L2/R2→ZL/ZR、摇杆按下→L3/R3），
+    // 引擎 EdenEngine.setPad1 原生理解项目位布局，直透传不转换。
+    if (platform == GamePlatform.NSWITCH) {
         return when (action.defaultKeyCode) {
             KeyEvent.KEYCODE_BUTTON_L2     -> BTN_ZL
             KeyEvent.KEYCODE_BUTTON_R2     -> BTN_ZR
@@ -1604,6 +1638,15 @@ fun EmulatorScreen(
                 mainHandler.post { errorMsg = msg }
             }
         }
+        // ★ Switch（Eden）同模式：核心启动失败（缺密钥/缺固件/ROM 损坏）
+        //   或运行中自行退出时，把原因呈现成错误对话框而非永久黑屏。
+        if (platform == GamePlatform.NSWITCH) {
+            val edenEngine = engine as? com.nesstation.app.core.engine.EdenEngine
+            val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+            edenEngine?.onPrematureExit = { msg ->
+                mainHandler.post { errorMsg = msg }
+            }
+        }
     }
 
     // ★ 3DS 黑屏修复（启动看门狗）：核心"活着但永远不出帧"时（boot 卡死、
@@ -1712,6 +1755,7 @@ fun EmulatorScreen(
         GamePlatform.DOS, GamePlatform.JAVA, GamePlatform.GB, GamePlatform.GBA,
         GamePlatform.N3DS, GamePlatform.NGCWII -> 1
         GamePlatform.WIIU -> 1 // Wii U：单 GamePad（VPAD0）输入
+        GamePlatform.NSWITCH -> 1 // Switch：单 Pro/掌机手柄（P1 专用）
         else -> 2
     }
 
@@ -2508,6 +2552,9 @@ fun EmulatorScreen(
             // graphicPacks / controllerProfiles 均在其中，data/ 由 NesApp
             // ensureCemuData 种子）。
             GamePlatform.WIIU -> java.io.File(context.filesDir, "cemu").apply { mkdirs() }.absolutePath
+            // Eden（Switch）：systemDir 即 Eden 用户目录（keys/nand/sdmc/
+            // gpu_driver* 均在其中；NAND 存档随 nand/ 走）。
+            GamePlatform.NSWITCH -> java.io.File(context.filesDir, "eden").apply { mkdirs() }.absolutePath
             else                -> context.filesDir.absolutePath
         }
         val filesDir = systemDir  // pass the platform-specific system dir to the core
@@ -2655,7 +2702,7 @@ fun EmulatorScreen(
         //   "游戏文件不存在"。resolveNativeRomFile 统一还原真实路径，
         //   两类文件都直接命中下方 romFile.exists() 直读分支。
         val romFile = if (platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII ||
-                         platform == GamePlatform.WIIU) {
+                         platform == GamePlatform.WIIU || platform == GamePlatform.NSWITCH) {
             resolveNativeRomFile(romPath) ?: java.io.File(romPath)
         } else {
             java.io.File(romPath)
@@ -2725,7 +2772,7 @@ fun EmulatorScreen(
             // 目录再加载；救援也失败则给出明确可操作的错误提示，绝不再黑屏。
             var effectiveRom = romFile
             if (platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII ||
-                platform == GamePlatform.WIIU) {
+                platform == GamePlatform.WIIU || platform == GamePlatform.NSWITCH) {
                 val directlyReadable = withContext(Dispatchers.IO) { probeDirectlyReadable(romFile) }
                 if (!directlyReadable) {
                     android.util.Log.w("EmulatorScreen",
@@ -3049,6 +3096,9 @@ fun EmulatorScreen(
                         platform == GamePlatform.N3DS -> "n3ds_${saveName}"
                         platform == GamePlatform.NGCWII -> "ngcwii_${saveName}"
                         platform == GamePlatform.WIIU -> "wiiu_${saveName}"
+                        // Switch（Eden）：.xci/.nsp 镜像体量大，同样按游戏 ID
+                        // 建独立临时文件，避免共享 temp_rom 互相覆盖
+                        platform == GamePlatform.NSWITCH -> "switch_${saveName}"
                         else -> "temp_rom"
                     }
                     val ext = when {
@@ -3125,6 +3175,7 @@ fun EmulatorScreen(
                         platform == GamePlatform.N3DS -> ".3ds"
                         platform == GamePlatform.NGCWII -> ".gcm"
                         platform == GamePlatform.WIIU -> ".wud"
+                        platform == GamePlatform.NSWITCH -> ".nsp"
                         else -> ".nes"
                     }
                     // For arcade, tempFileName already includes the extension
@@ -3195,7 +3246,8 @@ fun EmulatorScreen(
         //   用户改动某个设置后才被应用。加载成功后重放一次，保证每次
         //   启动都真正下发（此时 initializeEmulation 已完成，
         //   settings.xml 文件名已就绪，驱动选择还能顺带落盘保存）。
-        if (loaded && (platform == GamePlatform.JAVA || platform == GamePlatform.WIIU)) {
+        if (loaded && (platform == GamePlatform.JAVA || platform == GamePlatform.WIIU ||
+                       platform == GamePlatform.NSWITCH)) {
             applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         }
     }
@@ -3366,6 +3418,14 @@ fun EmulatorScreen(
             //   收到后关闭键盘，C++ 侧回调 hide() 收起弹窗。
             if (platform == GamePlatform.WIIU) {
                 CemuTextInputDialog()
+            }
+            // ★★ Switch（Eden）游戏内文本输入弹窗（SWKBD applet）：游戏请求
+            //   键盘输入时核心经 SoftwareKeyboard 契约回调置位 pending，此处
+            //   渲染输入框；完成 → complete() 送回结果（Normal 模式唤醒阻塞的
+            //   executeNormal / Inline 模式提交键码）。Android IME 原生支持
+            //   中文输入 —— Switch 游戏内命名等文本输入可直接用拼音。
+            if (platform == GamePlatform.NSWITCH) {
+                EdenTextInputDialog()
             }
 
             // === 联机对战状态条（顶部居中） ===
@@ -3757,6 +3817,30 @@ fun EmulatorScreen(
                                 }
                             }
                         }
+                        // ★★ Switch（Eden）：游戏区触摸 → 窗口触摸（归一化后
+                        //   喂核心；掌机形态 = Switch 触摸屏，底座形态核心自行
+                        //   忽略，与上游行为一致）。
+                        platform == GamePlatform.NSWITCH -> {
+                            { rootPos, action ->
+                                val edenEngine = engine as? com.nesstation.app.core.engine.EdenCoreEngine
+                                if (edenEngine != null) {
+                                    val vw = gameViewSize.width.coerceAtLeast(1)
+                                    val vh = gameViewSize.height.coerceAtLeast(1)
+                                    val lx = rootPos.x - gameViewPosInRoot.x
+                                    val ly = rootPos.y - gameViewPosInRoot.y
+                                    val inside = lx >= 0 && ly >= 0 && lx < vw && ly < vh
+                                    when (action) {
+                                        android.view.MotionEvent.ACTION_UP,
+                                        android.view.MotionEvent.ACTION_CANCEL ->
+                                            edenEngine.setTouchInput(0f, 0f, false)
+                                        android.view.MotionEvent.ACTION_DOWN ->
+                                            if (inside) edenEngine.setTouchInput(lx, ly, true)
+                                        android.view.MotionEvent.ACTION_MOVE ->
+                                            if (inside) edenEngine.setTouchMoved(lx, ly)
+                                    }
+                                }
+                            }
+                        }
                         platform == GamePlatform.NDS -> {
                         { rootPos, action ->
                             val ndsEngine = engine as? com.nesstation.app.core.engine.NdsCoreEngine
@@ -3879,6 +3963,14 @@ fun EmulatorScreen(
                         platform == GamePlatform.WIIU -> {
                             { lx: Float, ly: Float, rx: Float, ry: Float ->
                                 (engine as? com.nesstation.app.core.engine.CemuCoreEngine)
+                                    ?.setAnalogAxes(lx, ly, rx, ry)
+                            }
+                        }
+                        // ★★ Switch（Eden）：左/右摇杆（VirtualGamepad 模拟轴，
+                        //   归一化 -1..1，屏幕坐标约定上=负，与上游同口径）。
+                        platform == GamePlatform.NSWITCH -> {
+                            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                                (engine as? com.nesstation.app.core.engine.EdenCoreEngine)
                                     ?.setAnalogAxes(lx, ly, rx, ry)
                             }
                         }
@@ -6106,6 +6198,39 @@ private fun applyCoreOptionsInner(
             // PspEngine.loadRom 前整表灌入）：主设置页"核心设置 → PSP"分区 +
             // 游戏内暂停设置面板 PSP 分支。分支仅用于 when 穷举。
         }
+        GamePlatform.NSWITCH -> {
+            // ★★ Switch（Eden 源码核心）：ed* 设置字段 → "EdenEngine/<name>"
+            //   门面键 → EdenEngine.setCoreOption 直调 NativeConfig 热生效
+            //   （键名/取值对照上游 common/settings.h 序列化键，见
+            //   EdenEngine.applyEdenOption）。
+            engine.setCoreOption("EdenEngine/resolution", layout.edResolution)
+            engine.setCoreOption("EdenEngine/gpuAccuracy", layout.edGpuAccuracy)
+            engine.setCoreOption("EdenEngine/cpuAccuracy", layout.edCpuAccuracy)
+            engine.setCoreOption("EdenEngine/cpuBackend", layout.edCpuBackend)
+            engine.setCoreOption("EdenEngine/anisotropy", layout.edAnisotropy)
+            engine.setCoreOption("EdenEngine/scalingFilter", layout.edScalingFilter)
+            engine.setCoreOption("EdenEngine/antiAliasing", layout.edAntiAliasing)
+            engine.setCoreOption("EdenEngine/aspectRatio", layout.edAspectRatio)
+            engine.setCoreOption("EdenEngine/framePacing", layout.edFramePacing)
+            engine.setCoreOption("EdenEngine/gpuFence", layout.edGpuFence)
+            engine.setCoreOption("EdenEngine/nvdec", layout.edNvdec)
+            engine.setCoreOption("EdenEngine/astc", layout.edAstc)
+            engine.setCoreOption("EdenEngine/vramUsage", layout.edVramUsage)
+            engine.setCoreOption("EdenEngine/vsync", layout.edVsync)
+            engine.setCoreOption("EdenEngine/asyncShaders", layout.edAsyncShaders)
+            engine.setCoreOption("EdenEngine/diskShaderCache", layout.edDiskShaderCache)
+            engine.setCoreOption("EdenEngine/asyncGpu", layout.edAsyncGpu)
+            engine.setCoreOption("EdenEngine/reactiveFlush", layout.edReactiveFlush)
+            engine.setCoreOption("EdenEngine/forceMaxClock", layout.edForceMaxClock)
+            engine.setCoreOption("EdenEngine/dmaAccuracy", layout.edDmaAccuracy)
+            engine.setCoreOption("EdenEngine/memoryLayout", layout.edMemoryLayout)
+            engine.setCoreOption("EdenEngine/docked", layout.edDocked)
+            engine.setCoreOption("EdenEngine/language", layout.edLanguage)
+            engine.setCoreOption("EdenEngine/region", layout.edRegion)
+            engine.setCoreOption("EdenEngine/gameSpeed", layout.edGameSpeed)
+            engine.setCoreOption("EdenEngine/audioVolume", layout.edAudioVolume)
+            engine.setCoreOption("EdenEngine/audioMuted", layout.edAudioMuted)
+        }
     }
 }
 
@@ -7376,6 +7501,9 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
         //   L/R），经 routePadBits 的 ps2ToLibretroLayout 转换后进核心，
         //   存入独立字段 comboButtonsPsp。
         GamePlatform.PSP    -> padLayout.comboButtonsPsp
+        // ★ Switch（Eden）组合键：位布局直通 EdenEngine.setPad1（A/B/X/Y/
+        //   L/R/ZL/ZR/+/−/十字/摇杆按下），存入独立字段 comboButtonsSwitch。
+        GamePlatform.NSWITCH -> padLayout.comboButtonsSwitch
     }
     if (json.isBlank()) return emptyList()
     return try {
@@ -17014,8 +17142,9 @@ private fun CemuSlotCard(
  *
  * 游戏请求键盘输入时（swkbd），核心经 NativeSwkbd 回调置位 StateFlow
  * （makeVisible(initialText, maxLength)），此处渲染输入框：
- *  · 文本变化 → SwkbdState.updateText（过滤非法字符 + 截断到 maxLength）
- *    → native onTextChanged（差分退格/补字键码注入游戏）；
+ *  · 文本变化 → SwkbdState.updateText（R15 起仅过滤控制字符，保留全部
+ *    可见 Unicode —— 中文/日文/韩文/Emoji 经 Android IME 原生输入）
+ *    → native onTextChanged（码点级差分退格/补字注入游戏）；
  *  · Done（按钮或键盘动作）→ onFinishedInputEdit（回车键码）→ 游戏收起
  *    键盘 → C++ 回调 hide() → StateFlow 清空 → 弹窗消失。
  */
@@ -17038,8 +17167,9 @@ private fun CemuTextInputDialog() {
                 androidx.compose.material3.OutlinedTextField(
                     value = swkbdStateData.text,
                     onValueChange = { NativeSwkbd.SwkbdState.updateText(it) },
-                    placeholder = { Text("请输入文本") },
+                    placeholder = { Text("请输入文本（支持中文）") },
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Text,
                         imeAction = androidx.compose.ui.text.input.ImeAction.Done
                     ),
                     keyboardActions = androidx.compose.foundation.text.KeyboardActions(
@@ -17058,7 +17188,7 @@ private fun CemuTextInputDialog() {
                     }
                 )
                 Text(
-                    "完成输入后点击「完成」送回游戏",
+                    "支持中文/英文输入（拼音、手写等均由系统输入法提供）· 完成后点击「完成」送回游戏",
                     fontSize = 10.sp, color = Color(0xFF8899AA),
                     modifier = Modifier.padding(top = 6.dp)
                 )
@@ -17193,4 +17323,105 @@ private fun CemuPadOverlayView(
                 }
             )
         }
+}
+
+
+/**
+ * ★★ Switch（Eden）游戏文本输入弹窗 —— 上游 SoftwareKeyboard applet 前端移植 ★★
+ *
+ * 游戏请求键盘输入时（swkbd applet），核心经
+ * org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard 契约回调置位 pending
+ * StateFlow（executeNormal 阻塞等待 / executeInline 即时提交），此处渲染输入框：
+ *  · 文本框由 Compose TextField 原生处理 —— Android IME（拼音/手写/语音等
+ *    中文输入法）直接可用，无任何字符过滤（与 Wii U R15 修复同哲学）；
+ *  · 「完成」→ SoftwareKeyboard.complete(Ok, text)：Normal 模式唤醒阻塞的
+ *    executeNormal 把结果送回 C++；Inline 模式经 submitInlineKeyboardText/
+ *    Input 提交（含回车键码）；
+ *  · 游戏侧收起键盘（applet 完成）后 pending 不再置位，弹窗自然消失。
+ */
+@Composable
+private fun EdenTextInputDialog() {
+    val pendingCfg = org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard.pending
+        .collectAsState().value ?: return
+    var text by remember(pendingCfg) {
+        mutableStateOf(pendingCfg.initial_text ?: "")
+    }
+    val maxLen = pendingCfg.max_text_length.coerceAtLeast(0)
+    val minLen = pendingCfg.min_text_length.coerceAtLeast(0)
+
+    fun submit() {
+        if (text.length < minLen) return
+        org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard.complete(
+            org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard.SwkbdResult.Ok, text
+        )
+    }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = {
+            // 游戏请求的键盘 —— 点外视作取消（比 Wii U 宽松：Switch applet
+            // 支持取消语义，SwkbdResult.Cancel）
+            org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard.complete(
+                org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard.SwkbdResult.Cancel, ""
+            )
+        },
+        title = { Text(pendingCfg.header_text?.takeIf { it.isNotBlank() } ?: "输入文本") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = text,
+                    onValueChange = {
+                        text = if (maxLen > 0) it.take(maxLen) else it
+                    },
+                    placeholder = { Text(pendingCfg.guide_text?.takeIf { it.isNotBlank() } ?: "请输入文本（支持中文）") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Text,
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onDone = { submit() }
+                    ),
+                    singleLine = true,
+                    supportingText = {
+                        if (maxLen > 0) {
+                            Text(
+                                text = "${text.length} / $maxLen",
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+                )
+                if (pendingCfg.sub_text?.isNotBlank() == true) {
+                    Text(
+                        pendingCfg.sub_text!!,
+                        fontSize = 10.sp, color = Color(0xFF8899AA),
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                Text(
+                    "支持中文/英文输入（拼音、手写等由系统输入法提供）· 完成后点「${pendingCfg.ok_text?.takeIf { it.isNotBlank() } ?: "完成"}」送回游戏",
+                    fontSize = 10.sp, color = Color(0xFF8899AA),
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                enabled = text.length >= minLen,
+                onClick = { submit() }
+            ) { Text(pendingCfg.ok_text?.takeIf { it.isNotBlank() } ?: "完成") }
+        },
+        dismissButton = {
+            if (!pendingCfg.disable_cancel_button) {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard.complete(
+                            org.yuzu.yuzu_emu.applets.keyboard.SoftwareKeyboard.SwkbdResult.Cancel, ""
+                        )
+                    }
+                ) { Text("取消") }
+            }
+        }
+    )
 }

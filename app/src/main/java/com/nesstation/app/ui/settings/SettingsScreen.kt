@@ -320,6 +320,9 @@ fun SettingsScreen(
                             //   —— 与 Neon 设置页同批修复。
                             SettingsRow("Wii U", "Cemu-AZ 源码核心 · 垂直同步/滤镜/音频/主机语言/游戏速度", trailing = { Arrow() }) { selectedCore = GamePlatform.WIIU }
                             SettingsRow("PSP", "PPSSPP 核心 · 后端/分辨率/纹理/CPU/联机 + 独立设置入口", trailing = { Arrow() }) { selectedCore = GamePlatform.PSP }
+                            // ★★ Switch（Eden 源码核心）：密钥/固件/驱动管理 +
+                            //   画面性能全套（ed* 门面键 → NativeConfig）。
+                            SettingsRow("Switch", "Eden 源码核心 · 密钥/固件/驱动管理/画面性能/主机模式", trailing = { Arrow() }) { selectedCore = GamePlatform.NSWITCH }
                         }
                     }
 

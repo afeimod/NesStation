@@ -301,6 +301,14 @@ dependencies {
         implementation(project(":cemu-core"))
     }
 
+    // ★★ Switch（Eden 源码核心）：libyuzu-android.so 由 :eden-core 从
+    //   core/eden/ 源码（CPM + CMake）编译产出并入 APK（集成方式与
+    //   :cemu-core 完全一致）。模块可用 -PskipEdenCore=true 整体移除
+    //   （此处自动解除依赖）。
+    if (findProject(":eden-core") != null) {
+        implementation(project(":eden-core"))
+    }
+
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)

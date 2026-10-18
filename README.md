@@ -5,7 +5,7 @@
 
 一个为 Android 手机与 Android TV 打造的高质感多平台复古游戏模拟器。
 
-支持 **14 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)** / **3DS** / **NGC & Wii** / **Wii U**，通过
+支持 **15 大平台**：NES / SFC / GB / GBA / **NDS** / PCE / DOS / Arcade / MD / Java ME / **DC (Dreamcast)** / **3DS** / **NGC & Wii** / **Wii U** / **Switch**，通过
 统一的 Compose UI 与一致的游戏内菜单体验，让你在 TV 大屏和手机小屏上都能
 畅玩从 8-bit 到街机再到 128-bit 的所有经典游戏。
 
@@ -23,6 +23,7 @@
 | **3DS**        | **Azahar / AzaharPlus 核心**（独立模拟器形态，集成方式与激烈一致） | `.3ds` `.cci` `.cxi` `.cia` | 加密游戏需 `aes_keys.txt`（放 `filesDir/azahar/`）；部分游戏需系统档案 |
 | **NGC / Wii**  | **Ishiiruka 核心**（Dolphin 优化分支，独立模拟器形态，集成方式与激烈一致） | `.gcm` `.rvz` `.wbfs` `.gcz` `.ciso` `.nkit` `.wad` `.dol` `.elf` | GC/Wii 大部分游戏免 BIOS（DSP LLE 需 DSP ROM）；字体/Sys 数据可选放入 `filesDir/ishiiruka/sys/` |
 | **Wii U**      | **Cemu-AZ 核心**（Cemu 2.x Android 移植 + 修改版，**源码级集成**：core/cemu/ 源码树经 :cemu-core 模块 vcpkg+CMake 编译，非预编译 so） | `.wud` `.wux` `.wua` `.wuhb` `.rpx`（`.iso`/`.elf` 平台页消歧） | 免 BIOS（WUD 解密需 otp.bin 放 `filesDir/cemu/`）；仅 arm64-v8a + Android 11+；Vulkan 1.1 |
+| **Switch**     | **Eden 核心**（yuzu 系社区延续分支，**源码级集成**：core/eden/ 源码树经 :eden-core 模块 CPM+CMake 编译，非预编译 so；集成方式与 Cemu-AZ/:cemu-core 完全一致） | `.xci` `.nsp` `.nca` `.nro` | 加密游戏需 `prod.keys`/`title.keys`（构建者放 `assets/eden/keys/` 自动识别，或设置页手动选择）；固件 zip 在设置页安装（部分游戏/系统字体需要）；仅 arm64-v8a + Android 9+；Vulkan 1.1 |
 | **Java ME**    | J2ME-Loader       | `.jar` `.jad`                 | 否 |
 | **DC / Dreamcast** | **Flycast 独立核心**（NAOMI / AtomisWave） | `.gdi` `.cdi` `.chd` `.cue` `.lst` `.zip` | 光盘游戏需要 `dc_boot.bin` + `dc_flash.bin`（NAOMI zip 自带 BIOS 无需） |
 
@@ -199,6 +200,44 @@ release 构建的 keep 规则见 `app/proguard-rules.pro`（JNI 按名绑定，�
   （加载器）＋ `org/dolphinemu/ishiiruka/`（vendored JNI 契约）
 - **核心库提取**：`./scripts/fetch_azahar_ishiruka_libs.sh --apk3ds <AzaharPlus.apk>`
   `./scripts/fetch_azahar_ishiruka_libs.sh --apkngcwii <Ishiruka.apk>`
+
+### **Switch（Eden 核心 — yuzu 系社区延续分支）**
+- Eden 以 **源码级集成** 接入（与 Wii U / Cemu-AZ 的 :cemu-core 完全同构）：
+  完整源码树随包分发（`core/eden/`，mirror 仓库的 855 处 `[[maybe_unused]]`
+  反爬损坏已修复），经 `:eden-core` 模块 CPM + CMake 从源码编译产出
+  `libyuzu-android.so`（上游 JNI 库名），vendored 原包名 JNI 契约
+  （`org.yuzu.yuzu_emu.*`），运行时可用性探测（arm64-v8a + Android 9+）
+- **密钥（prod.keys / title.keys）**：
+  - 构建者把密钥放进 `app/src/main/assets/eden/keys/` → 启动时自动识别安装
+    （assets 通道，无需玩家操作）；
+  - 或玩家在 设置 → 核心设置 → Switch → 密钥与固件 里点「选择密钥文件」
+    手动导入（SAF 文件选择按钮）
+- **固件安装**：设置页「安装固件」选官方固件 zip（进度显示）→ 解包校验
+  `.nca` → 落 `filesDir/eden/nand/system/Contents/registered/` → 热重载系统
+  （部分游戏与系统字体需要；一键卸载）
+- **自定义 GPU 驱动管理**（Adreno/Turnip 系）：SAF 导入驱动 zip（meta.json
+  校验）→ 系统驱动 / 已装驱动切换 / 删除，经 adrenotools 加载，切换后重启
+  游戏生效（与 Cemu 驱动管理同款体验）
+- **设置（主界面 + 游戏内菜单均可调，全量 25+ 项）**：渲染分辨率 0.25x–8x、
+  GPU/CPU 精度、CPU 后端（NCE 原生执行 / Dynarmic）、各向异性过滤、缩放
+  滤镜 15 种、抗锯齿（FXAA/SMAA）、画面比例、垂直同步四档、帧步调、GPU
+  栅栏、NVDEC / ASTC 硬解、显存模式、异步着色器、磁盘着色器缓存、异步
+  GPU、反应式回写、最大频率锁、DMA 精度、内存布局、主机模式（掌机/底座）、
+  主机语言（含简繁中文）、区域、游戏速度（0.5x–8x 快进联动）、音量 ——
+  全部热生效（NativeConfig 门面键直写核心设置）
+- **游戏内文本输入**（swkbd applet，命名等场景）：StateFlow 驱动弹窗，
+  Android IME 原生支持 **中文输入**（拼音/手写）；游戏区触摸直通窗口触摸
+  （掌机形态 = Switch 触摸屏）
+- 存档走游戏内存档（NAND `filesDir/eden/nand/`）；核心无即时存档（进入
+  游戏时会明确提示）
+- ROM：`.xci/.nsp/.nca/.nro`；加密内容需密钥，固件提供系统字体与部分
+  游戏依赖
+- 集成实现：`core/engine/EdenEngine.kt`（引擎）＋ `core/jni/EdenNative.kt`
+  （加载器）＋ `org/yuzu/yuzu_emu/`（vendored JNI 契约）＋ `eden-core/`
+  （Gradle 原生构建模块）＋ `core/eden/`（源码树）
+- 首次构建：CPM 需联网编译 FFmpeg/OpenSSL 等依赖（约 25–45 分钟，之后有
+  二进制缓存）；SDK 需 NDK 28.2.13676358 + CMake 3.31.6；临时不需要
+  Switch 核心时 `-PskipEdenCore=true`
 
 ---
 

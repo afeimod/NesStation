@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Devices
+import androidx.compose.material.icons.rounded.VideogameAsset
 import androidx.compose.material.icons.rounded.LocalPlay
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Gamepad
@@ -89,6 +90,7 @@ private fun platformIcon(p: GamePlatform) = when (p) {
     GamePlatform.NGCWII -> Icons.Rounded.Tv              // NGC/Wii 电视主机
     GamePlatform.PSP    -> Icons.Rounded.SmartDisplay    // PSP 宽屏掌机
     GamePlatform.WIIU   -> Icons.Rounded.Devices         // Wii U TV+GamePad 双设备形态（Cemu-AZ）
+    GamePlatform.NSWITCH -> Icons.Rounded.VideogameAsset  // Switch 掌机/底座混合形态（Eden）
 }
 
 /** 解析磁贴自定义图标 JSON（{ tileKey → iconPath }），损坏时返回空 map。 */

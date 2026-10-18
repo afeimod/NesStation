@@ -298,9 +298,32 @@ void GX2SetDrawDoneSkipWait(bool skip)
                         for (int i = 0; i < 4; i++)
                                 s_lagRing[i] = s_lagRing[i + 1];
                         s_lagRing[4] = submitted;
-                        if (target != 0 && submitted > target)
-                                GX2WaitTimeStamp(target);
-                        else if (target > submitted)
+                        // ★★★ NesStation R15: 空槽回退（修"开局/读图偶尔掉帧"）。
+                        //   滞后环尚未填满（每次游戏启动后的前 5 次调用）与时间戳
+                        //   回卷清环后的 5 次调用里，target==0 → 原实现【完全不
+                        //   等待】：游戏线程无界领跑（读盘界面等 DrawDone 紧密循
+                        //   环的场景最严重，单帧可积压数百 KB 命令），环填满后
+                        //   突然切换到全额等待 —— 观感即偶发掉帧/节奏突变。
+                        //   回退到环内【最旧非零】快照：无界领跑从第 1 次调用起
+                        //   即被有界化（首调用等自身提交 = 等效严格等待，仅一
+                        //   次、无害），第 2 次起滞后深度恒 ≤ 已调用数，环填满
+                        //   后自动收敛回 lag 档语义（行为与已跑 5+ 个 DrawDone
+                        //   的稳态完全一致）。
+                        uint64 waitTarget = target;
+                        if (waitTarget == 0)
+                        {
+                                for (int i = 0; i < 5; i++)
+                                {
+                                        if (s_lagRing[i] != 0)
+                                        {
+                                                waitTarget = s_lagRing[i];
+                                                break;
+                                        }
+                                }
+                        }
+                        if (waitTarget != 0 && submitted > waitTarget)
+                                GX2WaitTimeStamp(waitTarget);
+                        else if (waitTarget > submitted)
                         {
                                 // 时间戳回卷（存档回滚/重开游戏 marker 清零）：
                                 // 清环防旧值卡住等待
