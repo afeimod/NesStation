@@ -51,6 +51,9 @@ namespace VulkanFrameGen
         uint32_t GetSwapchainImagePadding();
         // 配置变更后请求交换链重建（GPU 线程在 present 路径消费）
         bool ConsumeSwapchainRecreateRequest();
+        // ★ R14：帧生成激活（启用+设备支持+DLL 就绪）时是否需要强制 FIFO 节拍。
+        //   呈现侧参数：ChoosePresentMode / AcquireNextSwapchainImage 参考。
+        bool PreferFifoCadence();
 
         // ---- 帧路径钩子（GPU/Latte 线程） ----
         // 扩展检测（renderer 初始化后调用一次）

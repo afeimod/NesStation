@@ -104,6 +104,14 @@ namespace TCL
 	void TCLWaitForRBSpace(uint32be numU32s)
 	{
 		uint32 writeIndex = tclRingBufferA_writeIndex.load(std::memory_order::relaxed);
+		// NesStation R14: progressive backoff spin (mirrors the reference APK's spin
+		// throttling). R13 analysis confirmed: in DrawDone fast mode the game thread
+		// runs ahead of the GPU, and once the ring fills up a pure _mm_pause() loop
+		// burns a whole big core -> heat -> thermal throttling -> lower fps in a
+		// feedback loop (one of the perceived "stops working after a while" causes).
+		// Three stages: tight spin (fastest response) -> yield (medium) -> 50us sleep
+		// (long waits save power; the GPU consumer thread keeps draining the ring).
+		uint64 spin = 0;
 		while (true)
 		{
 			uint32 readIndex = tclRingBufferA_readIndex.load(std::memory_order::acquire);
@@ -112,7 +120,13 @@ namespace TCL
 				distance = TCL_RING_BUFFER_SIZE;
 			if (distance >= numU32s + 1) // assume distance minus one, because we are never allowed to completely wrap around
 				break;
-			_mm_pause();
+			++spin;
+			if (spin < 64)
+				_mm_pause();
+			else if (spin < 2048)
+				std::this_thread::yield();
+			else
+				std::this_thread::sleep_for(std::chrono::microseconds(50));
 		}
 	}
 

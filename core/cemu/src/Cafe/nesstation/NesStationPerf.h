@@ -32,6 +32,7 @@
 namespace NesStationPerf
 {
         inline std::atomic<int> s_coreSchedPolicy{ 0 };
+        inline std::atomic<uint32_t> s_adpfTidVersion{ 0 }; // R14：线程列表版本号（+1 = ADPF 会话线程集需刷新；声明前置供 RegisterAndApplySelf 使用）
 
         inline std::mutex s_tidLock;
         inline std::vector<pid_t> s_registeredTids;
@@ -155,17 +156,46 @@ namespace NesStationPerf
         inline void RegisterAndApplySelf()
         {
                 pid_t tid = gettid();
-                RegisterThread(tid);
+                bool added = false;
+                {
+                        std::lock_guard<std::mutex> _l(s_tidLock);
+                        for (pid_t existing : s_registeredTids)
+                                if (existing == tid)
+                                {
+                                        ApplyPolicyToThread(tid, s_coreSchedPolicy.load(std::memory_order_relaxed));
+                                        return; // 重复注册防御（线程退出后 tid 复用的极端场景）
+                                }
+                        s_registeredTids.push_back(tid);
+                        added = true;
+                }
+                // ★ R14：新线程加入 → ADPF 会话线程集需刷新（下一帧 ReportFrameTick
+                //   里用 setThreads 原地更新或重建会话）
+                if (added)
+                        s_adpfTidVersion.fetch_add(1, std::memory_order_relaxed);
                 ApplyPolicyToThread(tid, s_coreSchedPolicy.load(std::memory_order_relaxed));
         }
 
         // ================= R12 ADPF 动态性能提示 =================
         // dlopen libandroid.so 运行时绑定（API 31+ 才导出这些符号）
+        //
+        // ★★★ R14 稳定性重写（对应用户反馈"启动后过一会就失效，要重新
+        //   开关一次"）：Android 的 AHintSession 会被系统制杀（应用退
+        //   后台/屏幕关闭后返回、调度器策略重置、上报持续起限等），
+        //   R12 版上报失败后无任何恢复 —— 会话死了就永久失效，手动开关
+        //   一次才能重建。R14 修复：
+        //     ① reportActualWorkDuration 返回非 0 → 立即重建会话；
+        //     ② 连续重建失败 3 次后退避 10s 再试（防死循环烧 CPU）；
+        //     ③ 关闭/重建前先 closeSession（修复会话泄漏）；
+        //     ④ 新线程注册后刷新线程列表（API 33+ 用 setThreads 原地
+        //        更新，旧设备重建会话 —— 同参考 APK 的做法）。
         inline std::atomic<bool> s_adpfEnabled{ true };
         inline std::atomic<bool> s_adpfInitTried{ false };
         inline std::atomic<bool> s_adpfAvailable{ false };
         inline void* s_adpfManager = nullptr;   // AHintManager*
-        inline void* s_adpfSession = nullptr;   // AHintSession*（仅 GPU 线程访问，无需原子）
+        inline void* s_adpfSession = nullptr;   // AHintSession*（受 s_adpfSessionLock 保护）
+        inline int s_adpfRebuildFailStreak = 0; // 仅 GPU 线程
+        inline std::chrono::steady_clock::time_point s_adpfRetryAfter{}; // 退避截止（仅 GPU 线程）
+        inline std::mutex s_adpfSessionLock;                   // 会话生命周期锁（JNI 关闭 vs GPU 上报）
 
         // APerformanceHint C API 函数指针（<android/performance_hint.h> 语义）
         using FnGetManager = void* (*)();
@@ -173,11 +203,13 @@ namespace NesStationPerf
         using FnUpdateTarget = int (*)(void* session, int64_t targetNanos);
         using FnReportActual = int (*)(void* session, int64_t actualDurationNanos);
         using FnCloseSession = void (*)(void* session);
+        using FnSetThreads = int (*)(void* session, const int32_t* tids, size_t size); // API 33+
         inline FnGetManager s_fnGetManager = nullptr;
         inline FnCreateSession s_fnCreateSession = nullptr;
         inline FnUpdateTarget s_fnUpdateTarget = nullptr;
         inline FnReportActual s_fnReportActual = nullptr;
         inline FnCloseSession s_fnCloseSession = nullptr;
+        inline FnSetThreads s_fnSetThreads = nullptr;
 
         inline void AdpfInitOnce()
         {
@@ -192,12 +224,22 @@ namespace NesStationPerf
                 s_fnUpdateTarget = (FnUpdateTarget)dlsym(h, "APerformanceHint_updateTargetWorkDuration");
                 s_fnReportActual = (FnReportActual)dlsym(h, "APerformanceHint_reportActualWorkDuration");
                 s_fnCloseSession = (FnCloseSession)dlsym(h, "APerformanceHint_closeSession");
+                s_fnSetThreads = (FnSetThreads)dlsym(h, "APerformanceHint_setThreads"); // API 33+，可缺
                 if (!s_fnGetManager || !s_fnCreateSession || !s_fnUpdateTarget || !s_fnReportActual)
                         return;
                 s_adpfManager = s_fnGetManager();
                 if (!s_adpfManager)
                         return;
                 s_adpfAvailable.store(true, std::memory_order_relaxed);
+        }
+
+        // 关闭并置空当前会话（持锁；重建前先调它防泄漏/防并发上报）
+        inline void AdpfCloseSession()
+        {
+                std::lock_guard<std::mutex> _l(s_adpfSessionLock);
+                if (s_adpfSession && s_fnCloseSession)
+                        s_fnCloseSession(s_adpfSession);
+                s_adpfSession = nullptr;
         }
 
         // 线程注册表快照（会话创建用；GPU 线程调用）
@@ -207,7 +249,8 @@ namespace NesStationPerf
                         return;
                 if (!s_adpfAvailable.load(std::memory_order_relaxed))
                         return;
-                if (s_adpfSession)
+                // 退避期（连续重建失败后）：时间未到不试
+                if (s_adpfRebuildFailStreak >= 3 && std::chrono::steady_clock::now() < s_adpfRetryAfter)
                         return;
                 std::vector<pid_t> tids;
                 {
@@ -216,10 +259,40 @@ namespace NesStationPerf
                 }
                 if (tids.size() < 2)
                         return; // 调度线程组未就绪，等下一帧
-                std::vector<int32_t> tids32(tids.begin(), tids.end());
-                void* session = s_fnCreateSession(s_adpfManager, tids32.data(), tids32.size(), 16'666'666LL);
-                if (session)
-                        s_adpfSession = session;
+                // 会话仍在且线程集无变化：无需重建
+                if (s_adpfSession && s_adpfTidVersion.load(std::memory_order_relaxed) == 0)
+                        return;
+                // 线程集变化且支持 setThreads：原地更新，免重建（持锁防与上报并发）
+                if (s_adpfSession && s_fnSetThreads)
+                {
+                        std::vector<int32_t> tids32(tids.begin(), tids.end());
+                        if (s_fnSetThreads(s_adpfSession, tids32.data(), tids32.size()) == 0)
+                        {
+                                s_adpfTidVersion.store(0, std::memory_order_relaxed);
+                                return;
+                        }
+                        // setThreads 失败（会话已死）：走到下面重建
+                }
+                {
+                        std::lock_guard<std::mutex> _l(s_adpfSessionLock);
+                        if (s_adpfSession && s_fnCloseSession)
+                                s_fnCloseSession(s_adpfSession);
+                        s_adpfSession = nullptr;
+                        std::vector<int32_t> tids32(tids.begin(), tids.end());
+                        void* session = s_fnCreateSession(s_adpfManager, tids32.data(), tids32.size(), 16'666'666LL);
+                        if (session)
+                        {
+                                s_adpfSession = session;
+                                s_adpfTidVersion.store(0, std::memory_order_relaxed);
+                                s_adpfRebuildFailStreak = 0;
+                        }
+                        else
+                        {
+                                // 重建失败：计入退避（3 连败后歇 10s）
+                                if (++s_adpfRebuildFailStreak >= 3)
+                                        s_adpfRetryAfter = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                        }
+                }
         }
 
         // GPU 线程每帧调用（主画布 present 后）；内部节流（ADPF 建议 ≥1ms 间隔）
@@ -229,9 +302,6 @@ namespace NesStationPerf
                         return;
                 if (!s_adpfSession)
                         AdpfEnsureSession();
-                void* session = s_adpfSession;
-                if (!session)
-                        return;
                 static std::chrono::steady_clock::time_point s_lastTick{};
                 static bool s_lastValid = false;
                 auto now = std::chrono::steady_clock::now();
@@ -245,7 +315,23 @@ namespace NesStationPerf
                 s_lastTick = now;
                 if (ns <= 500'000LL)
                         return; // 间隔过短（重复 present 等）跳过
-                s_fnReportActual(session, ns);
+                // ★ R14：上报失败 = 会话已被系统制杀 → 立即重建（下一帧生效）。
+                //   这是"过一会就失效"的直接修复：会话死亡自动恢复，无需手动开关。
+                //   持锁上报防与 JNI 侧关闭并发（use-after-free）。
+                {
+                        std::lock_guard<std::mutex> _l(s_adpfSessionLock);
+                        if (s_adpfSession && s_fnReportActual(s_adpfSession, ns) != 0)
+                        {
+                                if (s_fnCloseSession)
+                                        s_fnCloseSession(s_adpfSession);
+                                s_adpfSession = nullptr;
+                        }
+                }
+                if (!s_adpfSession)
+                {
+                        s_adpfRebuildFailStreak = 0; // 死亡重建不计入退避
+                        AdpfEnsureSession();
+                }
         }
 
         inline void SetAdpfEnabled(bool enable)
@@ -254,7 +340,12 @@ namespace NesStationPerf
                 if (enable)
                 {
                         AdpfInitOnce();
-                        s_adpfSession = nullptr; // 下一帧重建会话
+                        AdpfCloseSession(); // 下一帧重建会话（先关旧防泄漏）
+                        s_adpfRebuildFailStreak = 0;
+                }
+                else
+                {
+                        AdpfCloseSession(); // 关闭时释放会话（修复泄漏）
                 }
         }
 }

@@ -83,9 +83,12 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _coreSchedPolicy = 0
     // ★ R11 CPU 模式：auto=不覆盖（Auto 推断·多核重编译）/ "3" 多核重编译 / "1" 单核重编译 / "0" 单核解释器
     @Volatile private var _cpuMode = "auto"
-    // ★ R11/R13 GX2DrawDone 快速模式（提速关键，默认开 —— 核心侧配合
-    // 有界滞后自适应等待，帧率开机即稳定，无需手动开关一次）
+    // ★ R11/R13 旧字段（R14 起映射进 _drawdoneMode）
     @Volatile private var _drawdoneFast = true
+    // ★ R14 GX2DrawDone 三档模式：0 严格等待 / 1 滞后等待(one-behind·默认) / 2 纯跳过
+    @Volatile private var _drawdoneMode = 1
+    // ★ R14 滞后等待的滞后深度（1..4，默认 1）
+    @Volatile private var _drawdoneLag = 1
     // ★ R12 ADPF 动态性能提示（默认开，API 31+ 生效；dlopen 绑定，老设备无感）
     @Volatile private var _adpfEnabled = true
     // ★ R12 帧生成（呈现侧光流插帧，实验性，默认关）
@@ -365,7 +368,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
                     try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
-                    try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
+                    try { NativeEmulation.setDrawDoneMode(_drawdoneMode, _drawdoneLag) } catch (_: Throwable) {}
                     try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
                     // ★ R13: 帧生成 —— 先注入 DLL 与配置，再开开关（顺序关键）
                     val dllPath = _frameGenDllPath ?: seededFrameGenDllPath().ifEmpty { null }
@@ -439,7 +442,7 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
                     try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
-                    try { NativeEmulation.setDrawDoneSkipWait(_drawdoneFast) } catch (_: Throwable) {}
+                    try { NativeEmulation.setDrawDoneMode(_drawdoneMode, _drawdoneLag) } catch (_: Throwable) {}
                     try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
                     // ★ R13: 帧生成重挂恢复（DLL/配置/开关）
                     val dllPath2 = _frameGenDllPath ?: seededFrameGenDllPath().ifEmpty { null }
@@ -624,10 +627,32 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 // ★★★ R11 GX2DrawDone 快速模式：只 flush 不等待时间戳退休，
                 //   游戏逻辑线程不再被 DrawDone 阻塞（实验性，个别游戏可能数据不同步）。
                 "drawdoneFast" -> {
+                    // R14：旧布尔 key 映射到三档模式（true→1 滞后等待 / false→0 严格）
                     val newState = value == "true" || value == "enabled"
+                    val newMode = if (newState) 1 else 0
                     if (newState != _drawdoneFast) {
                         _drawdoneFast = newState
-                        try { NativeEmulation.setDrawDoneSkipWait(newState) } catch (_: Throwable) {}
+                        _drawdoneMode = newMode
+                        try { NativeEmulation.setDrawDoneMode(newMode, _drawdoneLag) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R14 GX2DrawDone 三档模式（同参考 APK set_drawdone_mode）：
+                //   "0" 严格等待（最兼容） | "1" 滞后等待 one-behind（默认·帧率稳提速）
+                //   | "2" 纯跳过（最快·安全阀保底）。运行中热切换。
+                "drawdoneMode" -> {
+                    val m = (value.toIntOrNull() ?: 1).coerceIn(0, 2)
+                    if (m != _drawdoneMode) {
+                        _drawdoneMode = m
+                        try { NativeEmulation.setDrawDoneMode(m, _drawdoneLag) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R14 滞后等待的滞后深度（1..4）：越大 CPU/GPU 重叠越多、
+                //   输入延迟越高。默认 1（= 参考项目 one-behind 档）。
+                "drawdoneLag" -> {
+                    val l = (value.toIntOrNull() ?: 1).coerceIn(1, 4)
+                    if (l != _drawdoneLag) {
+                        _drawdoneLag = l
+                        try { NativeEmulation.setDrawDoneMode(_drawdoneMode, l) } catch (_: Throwable) {}
                     }
                 }
                 // ★★★ R12 ADPF 动态性能提示（参考「风之杖HD 重编译版」ADPF 语义）：
@@ -643,8 +668,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 // ★★★ R12 帧生成（R13 起为 LSFG 3.1 完整移植 —— Lossless.dll
                 //   数据容器 + 神经网络光流插帧）：两个真实帧之间 GPU 插值
                 //   合成帧，30fps 游戏在 60Hz 屏上获得逐帧连续观感。需要
-                //   Lossless.dll（设置页导入或 APK assets 内置）；垂直同步=关闭
-                //   时自动不生效（无节拍基准）。运行中热切换。
+                //   Lossless.dll（设置页导入或 APK assets 内置）；R14 起垂直
+                //   同步=关闭时自动升级 FIFO 节拍（呈现侧）。运行中热切换。
                 "frameGenEnabled" -> {
                     val newState = value == "true" || value == "enabled"
                     if (newState != _frameGenEnabled) {

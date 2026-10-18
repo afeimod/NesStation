@@ -895,7 +895,9 @@ class PadLayout {
     var cwDisableShadows: String = "false"  // 取消阴影渲染："false" 正常阴影(默认) | "true" 阴影比较采样全部替换为受光（阴影消失·画面正常亮度，R7）
     var cwCoreSched: String = "0"           // ★ R11 CPU 核心调度："0" 默认 | "1" 大核优先(最快·发热高) | "2" 小核优先(省电·稳定)
     var cwCpuMode: String = "auto"          // ★ R11 CPU 模式："auto" 默认(多核重编译) | "3" 多核重编译 | "1" 单核重编译 | "0" 单核解释器（重启生效）
-    var cwDrawdoneFast: String = "true"     // ★ R11/R13 GX2DrawDone 快速模式（提速关键，默认开）："true" 快速模式(有界滞后自适应等待·帧率稳) | "false" 严格等待
+    var cwDrawdoneFast: String = "true"     // ★ R11/R13 旧字段（保留兼容，读时映射到 mode）
+    var cwDrawdoneMode: String = "1"        // ★ R14 GX2DrawDone 模式："0" 严格等待(最兼容) | "1" 滞后等待(默认·帧率稳提速) | "2" 纯跳过(最快)
+    var cwDrawdoneLag: String = "1"         // ★ R14 滞后等待的滞后深度："1".."4"（默认1；越大重叠越多·输入延迟越高）
     var cwAdpf: String = "true"             // ★ R12 ADPF 动态性能提示："true" 开(默认·API31+生效) | "false" 关
     var cwFrameGen: String = "false"        // ★ R12/R13 帧生成（LSFG 3·Lossless.dll）："false" 关(默认) | "true" 开（需 Lossless.dll，光流神经网络插帧）
     var cwFrameGenMultiplier: String = "2"  // ★ R13 LSFG 帧生成倍率："2"/"3"/"4"（每两个真实帧间插入 倍率-1 帧）
@@ -1819,6 +1821,8 @@ class PadLayout {
         cwCoreSched = another.cwCoreSched
         cwCpuMode = another.cwCpuMode
         cwDrawdoneFast = another.cwDrawdoneFast
+        cwDrawdoneMode = another.cwDrawdoneMode
+        cwDrawdoneLag = another.cwDrawdoneLag
         cwAdpf = another.cwAdpf
         cwFrameGen = another.cwFrameGen
         cwFrameGenMultiplier = another.cwFrameGenMultiplier
@@ -3165,6 +3169,13 @@ object PadLayoutStore {
                 val migrated = p.getBoolean("cw_drawdone_fast_v13", false)
                 val v = if (it in listOf("true", "false")) it else "true"
                 if (!migrated && v == "false") "true" else v }
+            cwDrawdoneMode = (p.getString("cw_drawdone_mode", "") ?: "").let {
+                // ★ R14: 三档模式。首启无存档值时从旧 bool 字段映射：
+                //   true→1(滞后等待) / false→0(严格)；R13 迁移标记已保证旧值语义。
+                if (it in listOf("0", "1", "2")) it
+                else if (cwDrawdoneFast == "false") "0" else "1" }
+            cwDrawdoneLag = (p.getString("cw_drawdone_lag", "1") ?: "1").let {
+                if (it in listOf("1", "2", "3", "4")) it else "1" }
             cwAdpf = (p.getString("cw_adpf", "true") ?: "true").let {
                 if (it in listOf("true", "false")) it else "true" }
             cwFrameGen = (p.getString("cw_frame_gen", "false") ?: "false").let {
@@ -4046,6 +4057,8 @@ object PadLayoutStore {
             putString("cw_drawdone_fast", layout.cwDrawdoneFast)
             // ★ R13: 一次性迁移标记（配合读取处的旧默认 false → 新默认 true 迁移）
             putBoolean("cw_drawdone_fast_v13", true)
+            putString("cw_drawdone_mode", layout.cwDrawdoneMode)
+            putString("cw_drawdone_lag", layout.cwDrawdoneLag)
             putString("cw_adpf", layout.cwAdpf)
             putString("cw_frame_gen", layout.cwFrameGen)
             putString("cw_frame_gen_multiplier", layout.cwFrameGenMultiplier)

@@ -375,6 +375,7 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setFrameLimit([[maybe_unused
 namespace GX2
 {
         void GX2SetDrawDoneSkipWait(bool skip);
+        void GX2SetDrawDoneMode(int mode, int lag); // R14：三档模式 + 滞后深度
 }
 
 // ★★★ NesStation R11: CPU 核心调度（默认0/大核优先1/小核优先2）。
@@ -399,10 +400,23 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setCpuModeOverride([[maybe_u
 }
 
 // ★★★ NesStation R11: GX2DrawDone 快速模式（默认关 = 严格等待上游语义）
+//   R14 起建议改用 setDrawDoneMode（三档可调）；本接口保留兼容。
 extern "C" JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeEmulation_setDrawDoneSkipWait([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean skip)
 {
         GX2::GX2SetDrawDoneSkipWait(skip == JNI_TRUE);
+}
+
+// ★★★ NesStation R14: GX2DrawDone 三档模式 + 滞后深度（同参考 APK
+//   set_drawdone_mode 语义）：
+//     mode 0 = 严格等待（"for the render thread"，上游语义，最兼容）
+//     mode 1 = 滞后等待（"one GX2DrawDone behind"，默认；帧率稳提速）
+//     mode 2 = 纯跳过（"never"，最快；极端场景安全阀保底）
+//   lag = 档 1 的滞后深度 1..4（越大重叠越多、输入延迟越高，默认 1）
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setDrawDoneMode([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint mode, jint lag)
+{
+        GX2::GX2SetDrawDoneMode(mode, lag);
 }
 
 // ★★★ NesStation R12: ADPF 动态性能提示开关（默认开；API 31+ 生效）

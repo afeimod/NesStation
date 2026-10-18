@@ -16,13 +16,42 @@ namespace GX2
 {
 
 // ★★★ NesStation R11: GX2DrawDone 快速模式（参考「风之杖HD 重编译版」
-//   drawdone_mode 实现）。默认关 = 严格等待（上游语义）；开启后只 flush
-//   命令不等待时间戳退休 —— 游戏逻辑线程不再被 DrawDone 阻塞，帧率更稳，
-//   代价是个别依赖 DrawDone 时序的游戏可能出现轻微数据不同步（实验性）。
-static std::atomic<bool> s_drawDoneSkipWait{ false };
+//   drawdone_mode 实现）。
+//
+// ★★★ NesStation R14 重写（对应用户反馈"启动后过一会就失效，要重新开关
+//   一次"）：R13 的固定阈值（submitted-retired > 8 就全排空）有两个缺陷：
+//   ① 阈值按 retire-marker 计数，而每帧 marker 数随场景波动（忙碌场景
+//   一帧可产生十几个），慢性超限后每次 DrawDone 都退化为全排空 —— 提速
+//   收益消失（"失效"）；② 排空目标是 submitted（排到零），把 CPU/GPU
+//   重叠也清了。
+//   参考项目（反汇编确认 set_drawdone_mode）的默认档是
+//   "one GX2DrawDone behind"：每次 DrawDone 等待的是【上一次 DrawDone
+//   时已提交】的时间戳 —— 无论中间发生了多少次 flush/marker，游戏线程
+//   恒定领先 GPU 恰好一个 DrawDone 周期，队列深度自平衡、开机即稳。
+//   三档语义（同参考项目 set_drawdone_mode）:
+//     0 = 严格等待（"for the render thread"，上游语义）
+//     1 = 滞后等待（"one GX2DrawDone behind"，默认；滞后深度 1..4 可调，
+//         深度越大 CPU/GPU 重叠越多、输入延迟越高）
+//     2 = 纯跳过（"never"；附安全阀防队列无界增长）
+static std::atomic<int> s_drawDoneMode{ 1 };   // 默认：滞后等待（提速开）
+static std::atomic<int> s_drawDoneLag{ 1 };    // 档1的滞后深度（1..4）
+
+void GX2SetDrawDoneMode(int mode, int lag)
+{
+        if (mode < 0 || mode > 2)
+                mode = 1;
+        if (lag < 1)
+                lag = 1;
+        if (lag > 4)
+                lag = 4;
+        s_drawDoneMode.store(mode, std::memory_order_relaxed);
+        s_drawDoneLag.store(lag, std::memory_order_relaxed);
+}
+
+// 兼容旧接口（bool 快速开关）：true = 档1（滞后等待），false = 档0（严格）
 void GX2SetDrawDoneSkipWait(bool skip)
 {
-        s_drawDoneSkipWait.store(skip, std::memory_order_relaxed);
+        s_drawDoneMode.store(skip ? 1 : 0, std::memory_order_relaxed);
 }
 
         SysAllocator<coreinit::OSThreadQueue> g_vsyncThreadQueue;
@@ -247,31 +276,54 @@ void GX2SetDrawDoneSkipWait(bool skip)
                 // flush pipeline
                 GX2Command_Flush(0x100, true);
 
-                // ★★★ NesStation R11: 快速模式 —— 异步操作同步命令照常提交，
-                //   读回/遮挡查询正确性不受影响。
-                // ★★★ NesStation R13 稳定性修复（对应"游戏总要开关一次才稳帧"
-                //   的用户反馈）：纯跳过等待会让游戏线程无限跑在 GPU 前面 ——
-                //   TCL 环形缓冲（仅 4096 U32）填满后 TCLWaitForRBSpace 进入
-                //   忙等（烧满一个核、不泵 vsync 事件），命令池深度随编译风暴
-                //   持续增长，帧节奏变成"突发-阻塞"交替（帧率表不稳定波动）。
-                //   用户手动"关→开"之所以能稳定，是因为关的那一次
-                //   GX2WaitTimeStamp 完整排空了积压。
-                //   现在把该语义自动化（参考"风之杖HD 重编译版"的
-                //   "one GX2DrawDone behind" 有界滞后思想）：
-                //     - 已提交 - 已退休 <= kMaxOutstanding：保持零等待（纯提速）
-                //     - 超出阈值：执行一次真实时间戳等待，排空管线到阈值内
-                //   既保留 CPU/GPU 重叠的提速收益，又把队列深度/输入延迟
-                //   永久限制在 ~2 帧内，开机即稳定，无需任何手动开关。
-                if (s_drawDoneSkipWait.load(std::memory_order_relaxed))
+                // ★★★ NesStation R14: 三档模式（同参考项目）
+                const int mode = s_drawDoneMode.load(std::memory_order_relaxed);
+                if (mode == 1)
                 {
-                        constexpr uint64 kMaxOutstanding = 8; // ≈2 帧提交量（每帧 2~4 次 ring 提交）
-                        uint64 submitted = GX2GetLastSubmittedTimeStamp();
-                        uint64 retired = GX2GetRetiredTimeStamp();
-                        if (submitted > retired && (submitted - retired) > kMaxOutstanding)
-                                GX2WaitTimeStamp(submitted);
+                        // "one GX2DrawDone behind"（滞后深度可调 1..4）：
+                        // 等待 lag 次 DrawDone 之前已提交的时间戳。滞后环里
+                        // 存的是【当次 DrawDone 读到的 lastSubmissionTime】
+                        // 快照（含此前全部 flush 的 marker），因此无论两帧
+                        // 之间产生多少次提交，队列深度恒定有界于 lag 个
+                        // DrawDone 周期的提交量 —— 不随场景复杂度漂移。
+                        static uint64 s_lagRing[5] = { 0, 0, 0, 0, 0 };
+                        const uint64 submitted = GX2GetLastSubmittedTimeStamp();
+                        int lag = s_drawDoneLag.load(std::memory_order_relaxed);
+                        if (lag < 1)
+                                lag = 1;
+                        if (lag > 4)
+                                lag = 4;
+                        const uint64 target = s_lagRing[5 - lag]; // lag 次调用前的快照（ring[4]=上一次，ring[1]=4 次前）
+                        // 环左移一格，尾部写入当次快照
+                        for (int i = 0; i < 4; i++)
+                                s_lagRing[i] = s_lagRing[i + 1];
+                        s_lagRing[4] = submitted;
+                        if (target != 0 && submitted > target)
+                                GX2WaitTimeStamp(target);
+                        else if (target > submitted)
+                        {
+                                // 时间戳回卷（存档回滚/重开游戏 marker 清零）：
+                                // 清环防旧值卡住等待
+                                for (auto& v : s_lagRing)
+                                        v = 0;
+                        }
                         return true;
                 }
-
+                if (mode == 2)
+                {
+                        // "never"：纯跳过。命令池/ring 背压天然限流游戏线程，
+                        // 但为防极端场景（读屏/循环无 flip）队列无界增长烧
+                        // 满内存，保留大幅安全阀：积压超过 96 个 marker 时
+                        // 部分排空到 48（不清零，保留重叠收益）。
+                        constexpr uint64 kValveBacklog = 96;
+                        constexpr uint64 kValveFloor = 48;
+                        const uint64 submitted = GX2GetLastSubmittedTimeStamp();
+                        const uint64 retired = GX2GetRetiredTimeStamp();
+                        if (submitted > retired && (submitted - retired) > kValveBacklog)
+                                GX2WaitTimeStamp(submitted - kValveFloor);
+                        return true;
+                }
+                // mode 0：严格等待（上游语义）
                 uint64 ts = GX2GetLastSubmittedTimeStamp();
                 return GX2WaitTimeStamp(ts);
         }

@@ -394,7 +394,13 @@ VkExtent2D SwapchainInfoVk::ChooseSwapExtent(const VkSurfaceCapabilitiesKHR& cap
 VkPresentModeKHR SwapchainInfoVk::ChoosePresentMode(const std::vector<VkPresentModeKHR>& modes)
 {
 	m_maxQueued = 0;
-	const auto vsyncState = (VSync)GetConfig().vsync.GetValue();
+	auto vsyncState = (VSync)GetConfig().vsync.GetValue();
+	// NesStation R14: frame generation active + vsync off -> force FIFO cadence.
+	// Interpolated frames are meaningless without a vsync-paced base; upgrading
+	// the present mode (present-side only, game rendering untouched) makes frame
+	// generation work for users who keep vsync disabled (the app default).
+	if (vsyncState == VSync::Immediate && VulkanFrameGen::PreferFifoCadence())
+		vsyncState = VSync::FIFO;
 	if (vsyncState == VSync::MAILBOX)
 	{
 		if (std::find(modes.cbegin(), modes.cend(), VK_PRESENT_MODE_MAILBOX_KHR) != modes.cend())

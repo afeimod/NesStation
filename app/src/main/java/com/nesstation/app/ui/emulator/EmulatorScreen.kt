@@ -6087,6 +6087,8 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("CemuEngine/coreScheduling", layout.cwCoreSched)
             engine.setCoreOption("CemuEngine/cpuMode", layout.cwCpuMode)
             engine.setCoreOption("CemuEngine/drawdoneFast", layout.cwDrawdoneFast)
+            engine.setCoreOption("CemuEngine/drawdoneMode", layout.cwDrawdoneMode)
+            engine.setCoreOption("CemuEngine/drawdoneLag", layout.cwDrawdoneLag)
             engine.setCoreOption("CemuEngine/adpfEnabled", layout.cwAdpf)
             engine.setCoreOption("CemuEngine/frameGenEnabled", layout.cwFrameGen)
             // ★★★ R13: LSFG 3 帧生成配置（倍率/光流比例/质量变体）+ DLL 路径。
@@ -15459,13 +15461,31 @@ private fun SettingsPanel(
                            "0" to "单核解释器 (最兼容)"),
                     padLayout.cwCpuMode
                 ) { onLayoutChange(padLayout.copy {cwCpuMode = it}) }
-                SwitchSetting("GX2DrawDone 快速模式",
-                    // ★★★ R11/R13: drawdone 快速路径（提速关键，默认开）。
-                    //   R13 有界滞后自适应等待：游戏线程领先 GPU 超过阈值时
-                    //   自动等一次排空 —— 保留提速收益的同时帧率开机即稳定，
-                    //   无需再手动开关一次。
-                    "提速关键·帧率稳（默认开）", padLayout.cwDrawdoneFast == "true"
-                ) { onLayoutChange(padLayout.copy {cwDrawdoneFast = if (it) "true" else "false"}) }
+                DropdownSetting("GX2DrawDone 模式",
+                    // ★★★ R14: 三档模式（反汇编参考「风之杖HD 重编译版」
+                    //   set_drawdone_mode 的 0/1/2 语义移植）：
+                    //   0 = 严格等待（"for the render thread"，最兼容）
+                    //   1 = 滞后等待（"one GX2DrawDone behind"，默认 —— 等
+                    //       上一次 DrawDone 的时间戳，队列深度自平衡，
+                    //       修复"过一会就失效要重新开关"的问题）
+                    //   2 = 纯跳过（"never"，最快；安全阀防队列无界增长）
+                    listOf("1" to "滞后等待 (默认·帧率稳提速)",
+                           "0" to "严格等待 (最兼容)",
+                           "2" to "纯跳过 (最快·实验)"),
+                    padLayout.cwDrawdoneMode
+                ) { onLayoutChange(padLayout.copy {
+                    cwDrawdoneMode = it
+                    cwDrawdoneFast = if (it == "0") "false" else "true" }) }
+                DropdownSetting("滞后等待深度",
+                    // ★★★ R14: 滞后等待（模式1）的深度 1..4 —— 等待 N 次
+                    //   DrawDone 之前的时间戳。越大 CPU/GPU 重叠越多（高负载
+                    //   场景更顺），输入延迟同步增大。默认 1 = 参考项目同款。
+                    listOf("1" to "1 档 (默认·输入延迟最低)",
+                           "2" to "2 档 (高负载更顺)",
+                           "3" to "3 档 (重叠更多)",
+                           "4" to "4 档 (极限重叠·延迟最高)"),
+                    padLayout.cwDrawdoneLag
+                ) { onLayoutChange(padLayout.copy { cwDrawdoneLag = it }) }
                 SwitchSetting("ADPF 动态性能提示",
                     // ★★★ R12: 移植参考「风之杖HD 重编译版」的 Android 动态性能
                     //   框架语义 —— 运行期间向系统调度器上报帧工作时长，抑制
@@ -15476,7 +15496,8 @@ private fun SettingsPanel(
                     // ★★★ R12/R13: LSFG 3 帧生成（Lossless.dll 光流神经网络）——
                     //   真实帧之间 GPU 插帧，30 帧游戏在 60Hz 屏上观感接近
                     //   60fps。需要 Lossless.dll（设置页导入或 APK assets 内置）。
-                    //   垂直同步=关闭时自动不生效；倍率/光流比例在设置页调。
+                    //   R14：垂直同步=关闭时自动改用 FIFO 节拍（无需手动开
+                    //   垂直同步）；倍率/光流比例在设置页调。
                     "光流神经网络插帧（默认关·需 DLL）", padLayout.cwFrameGen == "true"
                 ) { onLayoutChange(padLayout.copy {cwFrameGen = if (it) "true" else "false"}) }
                 DropdownSetting("帧生成倍率",

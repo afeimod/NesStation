@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -35,6 +36,7 @@ namespace VulkanFrameGen
         static std::atomic<bool> s_deviceChecked{ false };
         static std::atomic<bool> s_deviceSupported{ false };
         static std::atomic<int> s_failStreak{ 0 };
+        static std::atomic<uint64_t> s_retryNotBeforeMs{ 0 };      // R14：连败冷却截止（ms，steady 时钟）
         static std::atomic<int> s_multiplier{ 2 };
         static std::atomic<float> s_flowScale{ 0.5f };
         static std::atomic<bool> s_perfMode{ true };
@@ -1714,6 +1716,22 @@ namespace VulkanFrameGen
         }
 
         // ================= 帧路径钩子 =================
+        // ★ R14：帧生成激活时强制主画布用 FIFO 节拍（用户反馈"帧生成无作用"的
+        //   主根因：项目/APP 默认 vsync=关闭(Immediate)，而 R13 版在 Immediate
+        //   下直接静默返回 —— 用户不开垂直同步就永远不生效）。Immediate 背靠背
+        //   提交无节拍基准，插帧没有意义；改为激活时自动升级为 FIFO（呈现侧
+        //   交换链参数，不碰游戏渲染），关闭帧生成后恢复用户设置。
+        //   SwapchainInfoVk::ChoosePresentMode / VulkanRenderer::AcquireNextSwapchainImage
+        //   同步参考本函数。
+        bool PreferFifoCadence()
+        {
+                if (!s_enabled.load(std::memory_order_relaxed))
+                        return false;
+                if (!s_deviceSupported.load(std::memory_order_relaxed))
+                        return false;
+                return IsDllReady();
+        }
+
         void OnBeforeRealFramePresent(VkDevice device, VkQueue graphicsQueue, VkQueue presentQueue,
                 SwapchainInfoVk& chainInfo, VkFence realFrameFence)
         {
@@ -1721,11 +1739,24 @@ namespace VulkanFrameGen
                         return;
                 if (!s_deviceSupported.load(std::memory_order_relaxed))
                         return;
+                // ★ R14：连败冷却 —— 5 连败后不再永久死亡，冷却 3s 自动重试
+                //   （R13 版启动期 swapchain 尚无 padding 时 acquire 超时 5 次
+                //   就永久失效，用户只能手动开关恢复）。
                 if (s_failStreak.load(std::memory_order_relaxed) >= 5)
-                        return;
-                // 仅垂直同步开启时有稳定节拍基准（Immediate 背靠背提交无意义）
-                if (chainInfo.m_vsyncState == SwapchainInfoVk::VSync::Immediate)
-                        return;
+                {
+                        auto now = std::chrono::steady_clock::now();
+                        uint64_t nowMs = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                        uint64_t notBefore = s_retryNotBeforeMs.load(std::memory_order_relaxed);
+                        if (notBefore == 0)
+                        {
+                                // 首达 5 连败：设定冷却截止
+                                s_retryNotBeforeMs.store(nowMs + 3000, std::memory_order_relaxed);
+                                return;
+                        }
+                        if (nowMs < notBefore)
+                                return;
+                        s_failStreak.store(0, std::memory_order_relaxed); // 冷却结束：重试
+                }
                 if (chainInfo.m_actualExtent.width == 0 || chainInfo.m_actualExtent.height == 0)
                         return;
                 if (chainInfo.swapchainImageIndex == (uint32_t)-1)
@@ -2023,7 +2054,10 @@ namespace VulkanFrameGen
                         s_configDirty.store(true, std::memory_order_relaxed);
                         s_swapchainRecreateRequest.store(1, std::memory_order_relaxed);
                         if (enable)
+                        {
                                 s_failStreak.store(0, std::memory_order_relaxed);
+                                s_retryNotBeforeMs.store(0, std::memory_order_relaxed); // R14：重开时清冷却
+                        }
                 }
         }
 
@@ -2066,6 +2100,11 @@ namespace VulkanFrameGen
                 s_dllError.clear();
                 s_configDirty.store(true, std::memory_order_relaxed);
                 s_failStreak.store(0, std::memory_order_relaxed);
+                // ★ R14：DLL 就绪 → 请求交换链重建（补齐 padding 图像数）。
+                //   R13 缺失此步：启动顺序 DLL→配置→开关全走默认值（SetConfig
+                //   比较无变化不触发重建），交换链仍是 padding=0 的旧链 →
+                //   acquire 额外图像超时 → 5 连败 → 帧生成永久静默。
+                s_swapchainRecreateRequest.store(1, std::memory_order_relaxed);
                 cemuLog_log(LogType::Force, "[FG] Lossless.dll 加载成功: {}（{} 个 SPIR-V 资源）", path, s_dllResources->shaders.size());
                 return 0;
         }

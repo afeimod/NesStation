@@ -3292,7 +3292,12 @@ bool VulkanRenderer::UpdateSwapchainProperties(bool mainWindow)
         auto& chainInfo = GetChainInfo(mainWindow);
         bool stateChanged = chainInfo.m_shouldRecreate;
 
-        const auto configValue =  (VSync)GetConfig().vsync.GetValue();
+        auto configValue =  (VSync)GetConfig().vsync.GetValue();
+        // NesStation R14: frame generation active + vsync off -> report FIFO to the
+        // frame-gen gate (matches SwapchainInfoVk::ChoosePresentMode, which upgrades
+        // the actual present mode to FIFO in the same situation).
+        if (mainWindow && configValue == VSync::Immediate && VulkanFrameGen::PreferFifoCadence())
+                configValue = VSync::FIFO;
         if(chainInfo.m_vsyncState != configValue)
                 stateChanged = true;
 

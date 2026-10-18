@@ -48,6 +48,12 @@ object NativeEmulation {
     external fun setCpuModeOverride(mode: Int)
     external fun setDrawDoneSkipWait(skip: Boolean)
 
+    // ★★★ NesStation R14: GX2DrawDone 三档模式 + 滞后深度（同参考 APK
+    //   set_drawdone_mode 语义）。mode: 0=严格等待(最兼容) / 1=滞后等待
+    //   (one-behind·默认·帧率稳提速) / 2=纯跳过(最快·安全阀保底)；
+    //   lag: 档1的滞后深度 1..4（默认1；越大 CPU/GPU 重叠越多、输入延迟越高）
+    external fun setDrawDoneMode(mode: Int, lag: Int)
+
     // ★★★ NesStation R12 性能增强（参考同款 APK 深度逆向移植）：
     //   ADPF 动态性能提示（Android Dynamic Performance Framework，API 31+ 生效，
     //   默认开）+ 帧生成（呈现侧光流插帧，实验性，默认关）
