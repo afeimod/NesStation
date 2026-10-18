@@ -140,6 +140,7 @@ import com.nesstation.app.ui.swf.ScreenPositionEditor
 import com.nesstation.app.ui.fsd.FsdImaging
 import com.nesstation.app.ui.settings.KeyMapStore
 import com.nesstation.app.ui.settings.CemuDriverSection
+import com.nesstation.app.ui.settings.EdenDriverSection
 import android.view.KeyEvent
 import android.view.View
 import info.cemu.cemu.nativeinterface.NativeQuickSave
@@ -2215,7 +2216,26 @@ fun EmulatorScreen(
                    padLayout.cwCoreSched, padLayout.cwCpuMode,
                    padLayout.cwDrawdoneFast, padLayout.cwAdpf, padLayout.cwFrameGen,
                    padLayout.cwFrameGenMultiplier, padLayout.cwFrameGenFlowScale,
-                   padLayout.cwFrameGenQuality, padLayout.cwFrameGenDllPath
+                   padLayout.cwFrameGenQuality, padLayout.cwFrameGenDllPath,
+                   // Switch（Eden）ed* 全表 —— 与 cw* 同理：游戏内（含主面板）
+                   //   改动经 applyCoreOptions 重放 → EdenEngine.setCoreOption
+                   //   → NativeConfig 热生效（cpuBackend/docked 等重启游戏项
+                   //   在下次进游戏时生效）；此前完全缺失触发键 = 游戏内改了
+                   //   永不下发。
+                   padLayout.edResolution, padLayout.edGpuAccuracy,
+                   padLayout.edCpuAccuracy, padLayout.edCpuBackend,
+                   padLayout.edAnisotropy, padLayout.edScalingFilter,
+                   padLayout.edAntiAliasing, padLayout.edAspectRatio,
+                   padLayout.edFramePacing, padLayout.edGpuFence,
+                   padLayout.edNvdec, padLayout.edAstc,
+                   padLayout.edVramUsage, padLayout.edVsync,
+                   padLayout.edAsyncShaders, padLayout.edDiskShaderCache,
+                   padLayout.edAsyncGpu, padLayout.edReactiveFlush,
+                   padLayout.edForceMaxClock, padLayout.edDmaAccuracy,
+                   padLayout.edMemoryLayout, padLayout.edDocked,
+                   padLayout.edLanguage, padLayout.edRegion,
+                   padLayout.edGameSpeed, padLayout.edAudioVolume,
+                   padLayout.edAudioMuted
                    ) {
         applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         // Apply video filter (frontend post-processing, not a core option)
@@ -15798,6 +15818,156 @@ private fun SettingsPanel(
                 Text("改动即时热应用。TV/手柄画面切换用虚拟 TV 键；悬浮 GamePad 小窗可直接触摸。" +
                     "画面与 GamePad 小窗的自由布局：核心设置 → 画面缩放 → 自定义（双屏编辑器，" +
                     "拖 4 角调大小、拖内部移位置、可切换屏幕）；非自定义模式下用上方「悬浮画面」滑条与角落。",
+                    color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
+                Spacer(Modifier.size(6.dp))
+            }
+
+            GamePlatform.NSWITCH -> {
+                Text("Switch (Eden) 核心选项（游戏内即时生效）", color = Color(0xFFFFD66B), fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                Spacer(Modifier.size(6.dp))
+
+                Text("画面 / 性能", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("渲染分辨率",
+                    // ResolutionSetup 序数（上游 ENUM 顺序）：3=1x 默认。
+                    // >3 提升内部渲染分辨率（GPU 填充率按平方增长），
+                    // <3 降分辨率提速省电。改后下一帧生效。
+                    listOf("0" to "0.25x (省电·模糊)",
+                           "1" to "0.5x (省电)",
+                           "2" to "0.75x (省电)",
+                           "3" to "1x (默认·原生 720p)",
+                           "4" to "1.25x", "5" to "1.5x",
+                           "6" to "2x (清晰·耗电)", "7" to "3x (高分屏)",
+                           "8" to "4x (平板/电视)"),
+                    padLayout.edResolution
+                ) { onLayoutChange(padLayout.copy {edResolution = it}) }
+                DropdownSetting("GPU 精度",
+                    listOf("0" to "低 (快·默认)", "1" to "高 (准确·慢)"),
+                    padLayout.edGpuAccuracy
+                ) { onLayoutChange(padLayout.copy {edGpuAccuracy = it}) }
+                DropdownSetting("CPU 精度",
+                    listOf("0" to "自动 (默认)", "1" to "精确 (慢·兼容)",
+                           "2" to "不安全 (快·个别游戏异常)",
+                           "3" to "偏执 (最慢·调试用)"),
+                    padLayout.edCpuAccuracy
+                ) { onLayoutChange(padLayout.copy {edCpuAccuracy = it}) }
+                DropdownSetting("CPU 后端",
+                    // NCE = ARM 原生代码执行（性能最佳，arm64 专属）；
+                    // 切换后重启游戏生效。
+                    listOf("1" to "NCE 原生执行 (默认·最快)",
+                           "0" to "Dynarmic 重编译 (兼容优先)"),
+                    padLayout.edCpuBackend
+                ) { onLayoutChange(padLayout.copy {edCpuBackend = it}) }
+                DropdownSetting("各向异性过滤",
+                    listOf("0" to "自动 (跟随游戏)", "1" to "默认",
+                           "2" to "2x", "3" to "4x", "4" to "8x", "5" to "16x"),
+                    padLayout.edAnisotropy
+                ) { onLayoutChange(padLayout.copy {edAnisotropy = it}) }
+                DropdownSetting("缩放滤镜",
+                    listOf("0" to "最近邻 (默认·锐利)", "1" to "双线性",
+                           "2" to "双三次", "3" to "高斯", "4" to "Lanczos",
+                           "5" to "ScaleForce", "6" to "FSR (推荐)",
+                           "13" to "SGSR (骁龙专用)", "14" to "SGSR Edge"),
+                    padLayout.edScalingFilter
+                ) { onLayoutChange(padLayout.copy {edScalingFilter = it}) }
+                DropdownSetting("抗锯齿",
+                    listOf("0" to "关闭 (默认·快)", "1" to "FXAA", "2" to "SMAA"),
+                    padLayout.edAntiAliasing
+                ) { onLayoutChange(padLayout.copy {edAntiAliasing = it}) }
+                DropdownSetting("画面比例",
+                    listOf("0" to "16:9 (默认)", "1" to "4:3", "2" to "21:9",
+                           "3" to "16:10", "4" to "拉伸全屏"),
+                    padLayout.edAspectRatio
+                ) { onLayoutChange(padLayout.copy {edAspectRatio = it}) }
+                DropdownSetting("垂直同步",
+                    // VSyncMode 序数：0=Immediate 低延迟、1=Mailbox 兼容低撕裂、
+                    // 2=FIFO 稳定（默认）、3=FIFO 宽松。
+                    listOf("0" to "关闭 (最低延迟·可能撕裂)",
+                           "1" to "邮箱 (低延迟·防撕裂)",
+                           "2" to "FIFO (默认·最稳)",
+                           "3" to "FIFO 宽松 (省电)"),
+                    padLayout.edVsync
+                ) { onLayoutChange(padLayout.copy {edVsync = it}) }
+                DropdownSetting("帧生成步调",
+                    listOf("0" to "自动 (默认)", "1" to "锁定 30",
+                           "2" to "锁定 60", "3" to "锁定 90", "4" to "锁定 120"),
+                    padLayout.edFramePacing
+                ) { onLayoutChange(padLayout.copy {edFramePacing = it}) }
+                DropdownSetting("GPU 栅栏行为",
+                    listOf("0" to "默认", "1" to "立即 (快)",
+                           "2" to "均衡", "3" to "精确 (慢·兼容)"),
+                    padLayout.edGpuFence
+                ) { onLayoutChange(padLayout.copy {edGpuFence = it}) }
+                DropdownSetting("NVDEC 视频解码",
+                    listOf("0" to "关闭", "1" to "CPU (默认·兼容)", "2" to "GPU (视频硬解)"),
+                    padLayout.edNvdec
+                ) { onLayoutChange(padLayout.copy {edNvdec = it}) }
+                DropdownSetting("ASTC 纹理解码",
+                    listOf("0" to "CPU", "1" to "GPU (默认)", "2" to "CPU 异步"),
+                    padLayout.edAstc
+                ) { onLayoutChange(padLayout.copy {edAstc = it}) }
+                DropdownSetting("显存占用模式",
+                    listOf("0" to "保守 (默认)", "1" to "激进 (大游戏提速)"),
+                    padLayout.edVramUsage
+                ) { onLayoutChange(padLayout.copy {edVramUsage = it}) }
+                SwitchSetting("异步着色器编译",
+                    // 首遇新着色器不卡顿（编译期间用简单图形占位）；关 =
+                    // 首遇卡顿但无占位闪烁。默认开。
+                    "防卡顿（默认开）", padLayout.edAsyncShaders == "true"
+                ) { onLayoutChange(padLayout.copy {edAsyncShaders = if (it) "true" else "false"}) }
+                SwitchSetting("着色器磁盘缓存",
+                    "二次进游戏不再卡着色器（默认开）", padLayout.edDiskShaderCache == "true"
+                ) { onLayoutChange(padLayout.copy {edDiskShaderCache = if (it) "true" else "false"}) }
+                SwitchSetting("异步 GPU 模拟",
+                    "帧率更稳（默认开）", padLayout.edAsyncGpu == "true"
+                ) { onLayoutChange(padLayout.copy {edAsyncGpu = if (it) "true" else "false"}) }
+                SwitchSetting("GPU 最大频率锁",
+                    "发热换性能（默认关）", padLayout.edForceMaxClock == "true"
+                ) { onLayoutChange(padLayout.copy {edForceMaxClock = if (it) "true" else "false"}) }
+
+                Spacer(Modifier.size(8.dp))
+                Text("系统", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("运行形态",
+                    // 掌机 = 720p 性能档；底座 = 更高分辨率/性能档。
+                    // 切换后对后续帧生效（部分游戏需重启）。
+                    listOf("0" to "掌机 (默认·手机)", "1" to "底座 (性能·高分辨率)"),
+                    padLayout.edDocked
+                ) { onLayoutChange(padLayout.copy {edDocked = it}) }
+                DropdownSetting("游戏速度",
+                    listOf("0" to "0.5x (慢动作)", "1" to "1x (正常)", "2" to "2x",
+                           "3" to "4x", "4" to "8x (快进·与快进按钮联动)"),
+                    padLayout.edGameSpeed
+                ) { onLayoutChange(padLayout.copy {edGameSpeed = it}) }
+                DropdownSetting("主机语言",
+                    listOf("0" to "日语", "1" to "英语 (默认)", "2" to "法语", "3" to "德语",
+                           "4" to "意大利语", "5" to "西班牙语", "6" to "中文",
+                           "7" to "韩语", "8" to "荷兰语", "9" to "葡萄牙语",
+                           "10" to "俄语", "15" to "简体中文", "16" to "繁体中文"),
+                    padLayout.edLanguage
+                ) { onLayoutChange(padLayout.copy {edLanguage = it}) }
+
+                Spacer(Modifier.size(8.dp))
+                Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
+                DropdownSetting("音量",
+                    (0..100 step 10).map { v -> v.toString() to "$v%" + if (v == 100) " (默认)" else "" },
+                    padLayout.edAudioVolume
+                ) { onLayoutChange(padLayout.copy {edAudioVolume = it}) }
+                SwitchSetting("静音", "", padLayout.edAudioMuted == "true"
+                ) { onLayoutChange(padLayout.copy {edAudioMuted = if (it) "true" else "false"}) }
+
+                Spacer(Modifier.size(8.dp))
+                Text("驱动（Vulkan）", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // 自定义 Adreno 驱动（adrenotools）：安装/切换/删除；切换后
+                // 重启游戏生效。
+                EdenDriverSection(
+                    padLayout = padLayout,
+                    updateLayout = onLayoutChange,
+                    dark = true
+                )
+
+                Spacer(Modifier.size(2.dp))
+                Text("改动即时热应用（CPU 后端/运行形态重启游戏完全生效）。" +
+                    "密钥/固件管理在主设置页；存档走游戏内 NAND；核心无即时存档。",
                     color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                 Spacer(Modifier.size(6.dp))
             }

@@ -1055,6 +1055,30 @@ function(AddCIPackage)
         list(GET sha512sum_status 0 sha512sum_error)
 
         if(sha512sum_error)
+            # [NesStation patch] 离线/受限网络回退：.sha512sum 下载失败时，
+            # 若本地 CPM 缓存已预置该 CI 产物（校验过 .cpm_patch_key 有效），
+            # 直接使用缓存（fetch_package 对有效缓存本就不会重新下载，
+            # HASH 仅在真正下载时才校验，故此处占位哈希不会被用到）。
+            string(TOLOWER ${ARTIFACT_PACKAGE} ARTIFACT_PACKAGE_LOWER)
+            set(NES_CI_CACHE_DIR
+                "${CPM_SOURCE_CACHE}/${ARTIFACT_PACKAGE_LOWER}/${ARTIFACT_VERSION}-${pkgname}")
+            if (EXISTS "${NES_CI_CACHE_DIR}/.cpm_patch_key")
+                message(STATUS "[CPMUtil] ${ARTIFACT_NAME}: sha512sum 不可达"
+                    "（离线/受限网络），使用本地预置缓存 ${NES_CI_CACHE_DIR}")
+                AddPackage(
+                    NAME ${ARTIFACT_PACKAGE}
+                    REPO ${ARTIFACT_REPO}
+                    VERSION ${ARTIFACT_VERSION}
+                    ARTIFACT ${ARTIFACT}
+                    CUSTOM_KEY "${ARTIFACT_VERSION}-${pkgname}"
+                    HASH 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+                    FORCE_BUNDLED_PACKAGE ON
+                    ${EXTRA_ARGS})
+                set(${ARTIFACT_PACKAGE}_ADDED TRUE PARENT_SCOPE)
+                Propagate(${ARTIFACT_PACKAGE}_SOURCE_DIR)
+                Propagate(CMAKE_PREFIX_PATH)
+                return()
+            endif()
             message(FATAL_ERROR "[CPMUtil] Failed to download sha512sum "
                 "for ${ARTIFACT_NAME} from ${sha512sum_url}")
         endif()

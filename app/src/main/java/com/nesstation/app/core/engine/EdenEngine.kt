@@ -4,7 +4,27 @@ import android.content.Context
 import android.net.Uri
 import android.view.Surface
 import com.nesstation.app.core.jni.EdenNative
+import com.nesstation.app.ui.emulator.BTN_A
+import com.nesstation.app.ui.emulator.BTN_B
+import com.nesstation.app.ui.emulator.BTN_DOWN
+import com.nesstation.app.ui.emulator.BTN_HOME
+import com.nesstation.app.ui.emulator.BTN_IR_FAR
+import com.nesstation.app.ui.emulator.BTN_IR_NEAR
+import com.nesstation.app.ui.emulator.BTN_L3
+import com.nesstation.app.ui.emulator.BTN_L_SNES
+import com.nesstation.app.ui.emulator.BTN_LEFT
+import com.nesstation.app.ui.emulator.BTN_R3
+import com.nesstation.app.ui.emulator.BTN_RIGHT
+import com.nesstation.app.ui.emulator.BTN_R_SNES
+import com.nesstation.app.ui.emulator.BTN_SELECT
+import com.nesstation.app.ui.emulator.BTN_START
+import com.nesstation.app.ui.emulator.BTN_UP
+import com.nesstation.app.ui.emulator.BTN_X
+import com.nesstation.app.ui.emulator.BTN_Y
+import com.nesstation.app.ui.emulator.BTN_ZL
+import com.nesstation.app.ui.emulator.BTN_ZR
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.yuzu.yuzu_emu.NativeLibrary
 import org.yuzu.yuzu_emu.disk_shader_cache.DiskShaderCacheProgress
@@ -104,10 +124,12 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     @Volatile private var coreInitialized = false
 
     /** keys 状态流（设置页显示）：null = 探测中/未加载。 */
-    val keysState = MutableStateFlow<KeysState?>(null).asStateFlow()
+    private val _keysState = MutableStateFlow<KeysState?>(null)
+    val keysState: StateFlow<KeysState?> = _keysState.asStateFlow()
 
     /** 固件状态流（设置页显示）。 */
-    val firmwareState = MutableStateFlow<FirmwareState?>(null).asStateFlow()
+    private val _firmwareState = MutableStateFlow<FirmwareState?>(null)
+    val firmwareState: StateFlow<FirmwareState?> = _firmwareState.asStateFlow()
 
     data class KeysState(val present: Boolean, val source: String)
     data class FirmwareState(val available: Boolean, val version: String)
@@ -244,7 +266,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         if (!EdenNative.loaded) return
         try {
             val present = NativeLibrary.areKeysPresent()
-            keysState.value = KeysState(present, if (present) sourceHint else "缺失")
+            _keysState.value = KeysState(present, if (present) sourceHint else "缺失")
         } catch (_: Throwable) {
         }
     }
@@ -252,7 +274,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     fun refreshFirmwareState() {
         if (!EdenNative.loaded) return
         try {
-            firmwareState.value = FirmwareState(
+            _firmwareState.value = FirmwareState(
                 NativeLibrary.isFirmwareAvailable(),
                 NativeLibrary.firmwareVersion() ?: ""
             )

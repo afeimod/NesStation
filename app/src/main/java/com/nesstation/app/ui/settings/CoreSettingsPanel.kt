@@ -2479,13 +2479,12 @@ fun CoreSettingsPanel(
                         fontSize = 10.sp, lineHeight = 15.sp)
                 }
             }
-        }
 
         // ★★ Switch（Eden 源码核心）：ed* 设置字段 → "EdenEngine/<name>" 门面键
         //   → EdenEngine.setCoreOption 直调 NativeConfig（上游 settings.h 序列化键）
         //   热生效；密钥（assets 自动识别 / 手动选择）、固件安装、自定义 GPU
         //   驱动管理为独立分区。
-        GamePlatform.NSWITCH -> item {
+            GamePlatform.NSWITCH -> item {
             SettingsSection("Switch · 密钥与固件") {
                 EdenKeysFirmwareSection()
             }
@@ -2657,7 +2656,7 @@ fun CoreSettingsPanel(
                         "非预编译 so），仅支持 arm64-v8a + Android 9(API 28)+，Vulkan 1.1 渲染。" +
                         "\n\n密钥：把 prod.keys/title.keys 放进 APK assets/eden/keys/ 可自动识别" +
                         "（无需玩家操作），或在上方手动选择文件；固件在上方安装（官方固件 zip，" +
-                        "含系统字体 —— 部分游戏与中文显示需要）。“ +
+                        "含系统字体 —— 部分游戏与中文显示需要）。" +
                         "\n\n虚拟按键：Pro 手柄全套（双摇杆 + ABXY + L/R/ZL/ZR + +/−/HOME + 截屏/采集），" +
                         "游戏区触摸直通窗口触摸（掌机形态 = Switch 触摸屏）；均可在 触控 → 布局编辑器 里调位置/大小/显隐。" +
                         "\n\n存档走游戏内存档（NAND，<filesDir>/eden/nand/）；核心无即时存档。" +
@@ -2666,6 +2665,7 @@ fun CoreSettingsPanel(
                     fontSize = 10.sp, lineHeight = 15.sp)
             }
         }
+        } // when (platform)
 
         // === 遮罩 / 按钮主题（所有核心统一入口，配置按核心独立存储在
         // PadLayout.overlayThemeJson，见 OverlayTheme.kt） ===
@@ -3175,7 +3175,9 @@ fun EdenKeysFirmwareSection(dark: Boolean = false) {
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
             val err = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 engine.installFirmwareFromUri(ctx, uri) { p ->
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { progress = p }
+                    // 进度回调发生在 IO 线程的非挂起 lambda 里 ——
+                    // 用 Handler 投递到主线程（withContext 是挂起函数，此处不可用）
+                    android.os.Handler(android.os.Looper.getMainLooper()).post { progress = p }
                     false
                 }
             }

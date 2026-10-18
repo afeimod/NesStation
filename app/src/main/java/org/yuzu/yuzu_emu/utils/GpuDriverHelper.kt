@@ -243,16 +243,20 @@ object GpuDriverHelper {
     }
 
     // ---- 内部小工具（不依赖上游 FileUtil）----
-    private fun copyUri(destDir: String, uri: Uri): File? = try {
-        val cr = ContextHolder.resolver ?: return null
-        val name = queryDisplayName(cr, uri)
-            ?: uri.lastPathSegment?.substringAfterLast('/') ?: "driver.zip"
-        val dst = File(destDir, name)
-        cr.openInputStream(uri)?.use { input ->
-            dst.outputStream().use { output -> input.copyTo(output) }
-        } ?: return null
-        if (dst.length() == 0L) { dst.delete(); null } else dst
-    } catch (e: Exception) { null }
+    // 注意：块体写法 —— 表达式函数体（= try {...}）里不允许 return，
+    // 上游 Android 工程用 FileUtil 工具类规避，这里直接用块体。
+    private fun copyUri(destDir: String, uri: Uri): File? {
+        return try {
+            val cr = ContextHolder.resolver ?: return null
+            val name = queryDisplayName(cr, uri)
+                ?: uri.lastPathSegment?.substringAfterLast('/') ?: "driver.zip"
+            val dst = File(destDir, name)
+            cr.openInputStream(uri)?.use { input ->
+                dst.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            if (dst.length() == 0L) { dst.delete(); null } else dst
+        } catch (e: Exception) { null }
+    }
 
     private fun queryDisplayName(
         resolver: android.content.ContentResolver,

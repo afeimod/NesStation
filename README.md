@@ -235,9 +235,15 @@ release 构建的 keep 规则见 `app/proguard-rules.pro`（JNI 按名绑定，�
 - 集成实现：`core/engine/EdenEngine.kt`（引擎）＋ `core/jni/EdenNative.kt`
   （加载器）＋ `org/yuzu/yuzu_emu/`（vendored JNI 契约）＋ `eden-core/`
   （Gradle 原生构建模块）＋ `core/eden/`（源码树）
-- 首次构建：CPM 需联网编译 FFmpeg/OpenSSL 等依赖（约 25–45 分钟，之后有
-  二进制缓存）；SDK 需 NDK 28.2.13676358 + CMake 3.31.6；临时不需要
-  Switch 核心时 `-PskipEdenCore=true`
+- 首次构建：**无需安装 Vulkan SDK / glslang-tools / VS** —— `:eden-core`
+  模块自带 glslangValidator 供给链（三平台预编译随包分发，优先直接使用；
+  不可用时自动源码构建、再回退系统 PATH，详见 `eden-core/build.gradle.kts`
+  文件头注释）。CPM 首次配置会从 GitHub(codeload) 联网拉取其余依赖源码
+  并编译（约 25–45 分钟，之后有缓存）；`core/eden/.cache/cpm/` 随包预置
+  了 boost / tzdb / FFmpeg / OpenSSL / SDL3 / sirit 六个关键依赖（覆盖
+  GitHub release 资产与自托管源，受限网络不再卡死）。SDK 需 NDK
+  28.2.13676358 + CMake 3.31.6（`sdkmanager "ndk;28.2.13676358"
+  "cmake;3.31.6"`）；临时不需要 Switch 核心时 `-PskipEdenCore=true`
 
 ---
 

@@ -4,11 +4,13 @@
 
     <!-- cemu-core（Wii U）库模块的 minSdk=30（对齐上游 Cemu-AZ：其原生代码使用
          API 26+ 的 libc 符号，如 cpu_features.cpp 的 __system_property_read_callback），
-         高于主工程的 minSdk=24。此标记让清单合并器跳过对 cemu-core 的 minSdk 冲突
-         检查；低版本设备上由 CemuEngine.probeAvailability() 在运行时守护——
+         eden-core（Switch）库模块的 minSdk=28（上游 mainline flavor 为 33，此处取
+         yuzu 系长期支持下限），均高于主工程的 minSdk=24。此标记让清单合并器跳过
+         对这两个库模块的 minSdk 冲突检查；低版本设备上由
+         CemuEngine/EdenEngine.probeAvailability() 在运行时守护——
          System.loadLibrary 抛 UnsatisfiedLinkError 时报告"核心不可用"，不崩溃。
-         （-PskipCemuCore=true 跳过该模块时，本属性无害地闲置。） -->
-    <uses-sdk tools:overrideLibrary="com.nesstation.cemu" />
+         （-PskipCemuCore/-PskipEdenCore=true 跳过对应模块时，多余项无害闲置。） -->
+    <uses-sdk tools:overrideLibrary="com.nesstation.cemu, com.nesstation.eden" />
 
     <!-- Network permission -->
     <uses-permission android:name="android.permission.INTERNET" />
