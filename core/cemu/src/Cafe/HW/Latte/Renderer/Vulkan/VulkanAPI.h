@@ -90,6 +90,7 @@ VKFUNC_INSTANCE(vkGetPhysicalDeviceProperties);
 VKFUNC_INSTANCE(vkGetPhysicalDeviceProperties2);
 VKFUNC_INSTANCE(vkGetPhysicalDeviceFeatures2);
 VKFUNC_INSTANCE(vkGetPhysicalDeviceFormatProperties);
+VKFUNC_INSTANCE(vkGetPhysicalDeviceImageFormatProperties); // NesStation R13 FrameGen（core 1.0，兼容仅支持 Vulkan 1.0 的老设备驱动）
 
 // semaphore
 VKFUNC_DEVICE(vkCreateSemaphore);
@@ -189,6 +190,7 @@ VKFUNC_DEVICE(vkCmdCopyBuffer);
 VKFUNC_DEVICE(vkCmdCopyImage);
 VKFUNC_DEVICE(vkCmdBlitImage);
 	VKFUNC_DEVICE(vkCmdDispatch); // NesStation R12 FrameGen
+	VKFUNC_DEVICE(vkCmdUpdateBuffer); // NesStation R13 FrameGen（UBO 时间戳热更新）
 VKFUNC_DEVICE(vkCmdPushConstants);
 VKFUNC_DEVICE(vkCmdSetBlendConstants);
 VKFUNC_DEVICE(vkCmdSetDepthBias);

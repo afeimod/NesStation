@@ -1909,11 +1909,11 @@ namespace VulkanFrameGen
                                 bb.buffer = ctx->ubo;
                                 bb.offset = 0;
                                 bb.size = 4;
-                                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &bb, 0, nullptr, 0, nullptr);
+                                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &bb, 0, nullptr);
                                 vkCmdUpdateBuffer(cmd, ctx->ubo, 0, 4, &ts);
                                 bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                                 bb.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-                                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &bb, 0, nullptr, 0, nullptr);
+                                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &bb, 0, nullptr);
                         }
                         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, ctx->pipeLayout, 0, 1, &ctx->descSet, 0, nullptr);
                         ctx->RecordSegment(cmd, firstSplitStage, ctx->stages.size());
@@ -2133,15 +2133,9 @@ namespace VulkanFrameGen
                                 hasCompute = true;
                                 break;
                         }
-                VkPhysicalDeviceImageFormatInfo2 ifi{};
-                ifi.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
-                ifi.format = VK_FORMAT_R8_UNORM;
-                ifi.type = VK_IMAGE_TYPE_2D;
-                ifi.tiling = VK_IMAGE_TILING_OPTIMAL;
-                ifi.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-                VkImageFormatProperties2 ifp{};
-                ifp.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
-                bool r8Storage = vkGetPhysicalDeviceImageFormatProperties2(physicalDevice, &ifi, &ifp) == VK_SUCCESS;
+                VkImageFormatProperties ifp{};
+                bool r8Storage = vkGetPhysicalDeviceImageFormatProperties(physicalDevice, VK_FORMAT_R8_UNORM,
+                        VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ifp) == VK_SUCCESS;
                 s_deviceSupported.store(hasCompute && r8Storage, std::memory_order_relaxed);
                 if (!s_deviceSupported.load(std::memory_order_relaxed))
                         cemuLog_log(LogType::Force, "[FG] 设备能力不足（compute={} r8storage={}），帧生成不可用", hasCompute, r8Storage);
