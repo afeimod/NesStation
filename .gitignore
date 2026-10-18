@@ -19,6 +19,11 @@ gradle-app.setting
 *.iws
 *.ipr
 out/
+# Eden 源码树中 audio_core/out/ 是真实源码目录（非 IDE 构建输出），
+# 必须放行纳入跟踪，否则干净 clone/CI 会报
+# "Cannot find source file: out/audio_out.cpp"
+!core/eden/src/audio_core/out/
+!core/eden/src/audio_core/out/**
 
 # Android
 captures/
