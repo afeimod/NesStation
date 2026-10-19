@@ -688,6 +688,16 @@ public class HIDDeviceManager {
     private native void HIDDeviceReleaseCallback();
 
     native void HIDDeviceConnected(int deviceID, String identifier, int vendorId, int productId, String serial_number, int release_number, String manufacturer_string, String product_string, int interface_number, int interface_class, int interface_subclass, int interface_protocol, boolean bBluetooth);
+
+    // ==== SDL 3.4.x（eden / libyuzu-android.so）JNI 契约：末尾多一个 reportID ====
+    // eden 的 libyuzu-android.so（内嵌 SDL 3.4.x，cpmfile.json 锁定
+    // 3.4.14-147a8ee32d）在 JNI_OnLoad 里对本类 RegisterNatives 时使用
+    // 带 int reportID 尾参的描述符 "...IIIIZI)V"；PS2 核心（libemucore_4k.so，
+    // SDL 3.5.0）注册的是上面 13 参版本（"...IIIIZ)V"，SDL 3.5.0 移除了
+    // reportID）。两个原生重载描述符不同，各自被所属核心的 RegisterNatives
+    // 绑定，互不影响；缺少本声明时 eden 的 System.loadLibrary 会在注册
+    // HIDDeviceManager 表时抛 NoSuchMethodError 并 abort。
+    native void HIDDeviceConnected(int deviceID, String identifier, int vendorId, int productId, String serial_number, int release_number, String manufacturer_string, String product_string, int interface_number, int interface_class, int interface_subclass, int interface_protocol, boolean bBluetooth, int reportID);
     native void HIDDeviceOpenPending(int deviceID);
     native void HIDDeviceOpenResult(int deviceID, boolean opened);
     native void HIDDeviceDisconnected(int deviceID);

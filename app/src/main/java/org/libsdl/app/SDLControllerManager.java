@@ -41,6 +41,33 @@ public class SDLControllerManager
     static native void onNativeHat(int device_id, int hat_id,
                                           int x, int y);
 
+    // ==== SDL 3.4.x（eden / libyuzu-android.so）JNI 契约 ====
+    // NesStation 同时集成两个内嵌不同 SDL3 版本的核心，共享本 Java 包：
+    //   · eden（libyuzu-android.so，SDL 3.4.x，cpmfile.json 锁定
+    //     3.4.14-147a8ee32d）在 JNI_OnLoad 里对本类 RegisterNatives，
+    //     依赖下面这组【名字 + 参数描述符】；
+    //   · PS2 核心（libemucore_4k.so，SDL 3.5.0）仍使用上面的 2 参数
+    //     版本（SDL 3.5.0 移除了 scancode 尾参并调整了 joystick/sensor
+    //     契约，见上游 147a8ee32d 之后的变更）。
+    // Java 原生方法按（名字, 描述符）重载并存；RegisterNatives 也按描述符
+    // 分别绑定，两组声明互不冲突：eden 绑定并使用本组，PS2 核心绑定并
+    // 使用上一组。两个核心的输入/音频都在各自 native 层闭环，不会从
+    // Java 侧调用这些方法，绑定互不干扰。缺少本组任一声明时，eden 的
+    // System.loadLibrary("yuzu-android") 即抛 NoSuchMethodError 并 abort：
+    //   java.lang.NoSuchMethodError: no static or non-static method
+    //     "Lorg/libsdl/app/SDLControllerManager;.onNativePadDown(III)Z"
+    static public native boolean onNativePadDown(int device_id, int keycode, int scancode);
+    static public native boolean onNativePadUp(int device_id, int keycode, int scancode);
+    static native void onNativeJoySensor(int device_id, int sensor_type,
+                                          long sensor_timestamp,
+                                          float x, float y, float z);
+    static native void nativeAddJoystick(int device_id, String name, String desc,
+                                                int vendor_id, int product_id,
+                                                int button_mask,
+                                                int naxes, int axis_mask, int nhats,
+                                                boolean can_rumble, boolean has_rgb_led,
+                                                boolean has_accelerometer, boolean has_gyroscope);
+
     protected static SDLJoystickHandler mJoystickHandler;
     protected static SDLHapticHandler mHapticHandler;
 
