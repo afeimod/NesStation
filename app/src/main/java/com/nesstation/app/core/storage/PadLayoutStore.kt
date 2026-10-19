@@ -988,6 +988,35 @@ class PadLayout {
     var edGameSpeed: String = "1"         // 0=0.5x 1=1x(默认) 2=2x 3=4x 4=8x（快进联动）
     var edAudioVolume: String = "100"     // 0..100
     var edAudioMuted: String = "false"    // 静音
+    // === SWITCH (Eden) v4 补全：上游 settings.h 暴露但此前缺失的性能/音频/体感项 ===
+    var edMotion: String = "true"          // 体感（陀螺仪）开关：设备传感器 → VirtualGamepad 六轴（上游 EmulationActivity 常开）
+    var edOutputEngine: String = "2"       // "output_engine" AudioEngine 序数：0=Auto 2=SDL3(Android 默认) 3=Null（1=Cubeb 未编入 Android 构建）
+    var edCpuClock: String = "0"           // "fast_cpu_time" CpuClock：0=标准 1=Boost 2=超频
+    var edGpuClock: String = "1"           // "fast_gpu_time" GpuClock：0=标准 1=Boost(上游 Android 默认) 2=超频
+    var edSyncCoreSpeed: String = "false"  // "sync_core_speed" 核心速度同步
+    var edSpeedLimitOn: String = "true"   // "use_speed_limit" 限速开关（关闭=不限速全速跑）
+    var edSpeedLimit: String = "100"      // "speed_limit" 0..9999（%）
+    var edFsrSharpening: String = "0"      // "fsr_sharpening_slider" 0..200（%），缩放滤镜=FSR 时生效
+    var edAstcRecompression: String = "0" // "astc_recompression" 0=不压缩 1=BC1 2=BC3（省显存换画质）
+    var edSampleShading: String = "0"     // "sample_shading_fraction" 0..100（%）采样着色（额外抗锯齿）
+    var edFrameGen: String = "false"       // "frame_gen" 插帧（实验；需较强 GPU）
+    var edFrameGenTarget: String = "0"    // "frame_gen_target_rate" 0=自动 或 60/90/120
+    var edPatchOldQcom: String = "false"  // "patch_old_qcom_drivers" 旧高通驱动 BCn 兼容补丁（特定老驱动花屏修复）
+
+    // === SWITCH (Eden) v4：专属虚拟按键布局（双摇杆 + ZL/ZR + HOME + 截屏） ===
+    // 横屏默认：左下摇杆 / 右下摇杆，ZL/ZR 肩位上部左右，HOME/截屏顶中。
+    var switchLStick: ButtonLayout = ButtonLayout(x = 0.12f, y = 0.56f, sizeDp = 118)
+    var switchLStickP: ButtonLayout = ButtonLayout(x = 0.17f, y = 0.66f, sizeDp = 104)
+    var switchRStick: ButtonLayout = ButtonLayout(x = 0.88f, y = 0.56f, sizeDp = 118)
+    var switchRStickP: ButtonLayout = ButtonLayout(x = 0.83f, y = 0.66f, sizeDp = 104)
+    var switchBtnZL: ButtonLayout = ButtonLayout(x = 0.16f, y = 0.34f, sizeDp = 62)
+    var switchBtnZLP: ButtonLayout = ButtonLayout(x = 0.16f, y = 0.32f, sizeDp = 56)
+    var switchBtnZR: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.34f, sizeDp = 62)
+    var switchBtnZRP: ButtonLayout = ButtonLayout(x = 0.84f, y = 0.32f, sizeDp = 56)
+    var switchBtnHome: ButtonLayout = ButtonLayout(x = 0.42f, y = 0.045f, sizeDp = 54)
+    var switchBtnHomeP: ButtonLayout = ButtonLayout(x = 0.42f, y = 0.045f, sizeDp = 48)
+    var switchBtnCapture: ButtonLayout = ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 54)
+    var switchBtnCaptureP: ButtonLayout = ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 48)
 
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
@@ -2071,6 +2100,64 @@ class PadLayout {
         hiddenButtonsPsp = another.hiddenButtonsPsp
         comboButtonsSwitch = another.comboButtonsSwitch
         hiddenButtonsSwitch = another.hiddenButtonsSwitch
+        // ★★★ v4 修复（“设置这个另外回默认”根因）：旧 copyFrom 完全缺失全部
+        //   27 个 ed* 字段 —— 每一次 padLayout.copy{ edX = v } 都会把其它 26
+        //   个 Switch 设置重置为默认值（用户改 A 设置，B/C/D…全部回默认，
+        //   且随后被 applyCoreOptions 整表重放下发覆盖核心配置）。此处逐个
+        //   补全，使 copy{} 恢复“仅改目标字段、其余保持原值”的语义。
+        edResolution = another.edResolution
+        edGpuAccuracy = another.edGpuAccuracy
+        edCpuAccuracy = another.edCpuAccuracy
+        edCpuBackend = another.edCpuBackend
+        edAnisotropy = another.edAnisotropy
+        edScalingFilter = another.edScalingFilter
+        edAntiAliasing = another.edAntiAliasing
+        edAspectRatio = another.edAspectRatio
+        edFramePacing = another.edFramePacing
+        edGpuFence = another.edGpuFence
+        edNvdec = another.edNvdec
+        edAstc = another.edAstc
+        edVramUsage = another.edVramUsage
+        edVsync = another.edVsync
+        edAsyncShaders = another.edAsyncShaders
+        edDiskShaderCache = another.edDiskShaderCache
+        edAsyncGpu = another.edAsyncGpu
+        edReactiveFlush = another.edReactiveFlush
+        edForceMaxClock = another.edForceMaxClock
+        edDmaAccuracy = another.edDmaAccuracy
+        edMemoryLayout = another.edMemoryLayout
+        edDocked = another.edDocked
+        edLanguage = another.edLanguage
+        edRegion = another.edRegion
+        edGameSpeed = another.edGameSpeed
+        edAudioVolume = another.edAudioVolume
+        edAudioMuted = another.edAudioMuted
+        // v4 新增设置与专属虚拟按键布局
+        edMotion = another.edMotion
+        edOutputEngine = another.edOutputEngine
+        edCpuClock = another.edCpuClock
+        edGpuClock = another.edGpuClock
+        edSyncCoreSpeed = another.edSyncCoreSpeed
+        edSpeedLimitOn = another.edSpeedLimitOn
+        edSpeedLimit = another.edSpeedLimit
+        edFsrSharpening = another.edFsrSharpening
+        edAstcRecompression = another.edAstcRecompression
+        edSampleShading = another.edSampleShading
+        edFrameGen = another.edFrameGen
+        edFrameGenTarget = another.edFrameGenTarget
+        edPatchOldQcom = another.edPatchOldQcom
+        switchLStick = another.switchLStick
+        switchLStickP = another.switchLStickP
+        switchRStick = another.switchRStick
+        switchRStickP = another.switchRStickP
+        switchBtnZL = another.switchBtnZL
+        switchBtnZLP = another.switchBtnZLP
+        switchBtnZR = another.switchBtnZR
+        switchBtnZRP = another.switchBtnZRP
+        switchBtnHome = another.switchBtnHome
+        switchBtnHomeP = another.switchBtnHomeP
+        switchBtnCapture = another.switchBtnCapture
+        switchBtnCaptureP = another.switchBtnCaptureP
         inputMode = another.inputMode
         homeBackgroundUri = another.homeBackgroundUri
         homeBackgroundIsVideo = another.homeBackgroundIsVideo
@@ -3352,6 +3439,57 @@ object PadLayoutStore {
                 it.toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "100" }
             edAudioMuted = (p.getString("ed_audio_muted", "false") ?: "false").let {
                 if (it in listOf("true", "false")) it else "false" }
+            // === v4 新增：Switch 性能/音频/体感项（默认值与声明一致） ===
+            edMotion = (p.getString("ed_motion", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            edOutputEngine = (p.getString("ed_output_engine", "2") ?: "2").let {
+                if (it in listOf("0", "2", "3")) it else "2" }
+            edCpuClock = (p.getString("ed_cpu_clock", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2")) it else "0" }
+            edGpuClock = (p.getString("ed_gpu_clock", "1") ?: "1").let {
+                if (it in listOf("0", "1", "2")) it else "1" }
+            edSyncCoreSpeed = (p.getString("ed_sync_core_speed", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            edSpeedLimitOn = (p.getString("ed_speed_limit_on", "true") ?: "true").let {
+                if (it in listOf("true", "false")) it else "true" }
+            edSpeedLimit = (p.getString("ed_speed_limit", "100") ?: "100").let {
+                it.toIntOrNull()?.coerceIn(0, 9999)?.toString() ?: "100" }
+            edFsrSharpening = (p.getString("ed_fsr_sharpening", "0") ?: "0").let {
+                it.toIntOrNull()?.coerceIn(0, 200)?.toString() ?: "0" }
+            edAstcRecompression = (p.getString("ed_astc_recompression", "0") ?: "0").let {
+                if (it in listOf("0", "1", "2")) it else "0" }
+            edSampleShading = (p.getString("ed_sample_shading", "0") ?: "0").let {
+                it.toIntOrNull()?.coerceIn(0, 100)?.toString() ?: "0" }
+            edFrameGen = (p.getString("ed_frame_gen", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            edFrameGenTarget = (p.getString("ed_frame_gen_target", "0") ?: "0").let {
+                if (it in listOf("0", "60", "90", "120")) it else "0" }
+            edPatchOldQcom = (p.getString("ed_patch_old_qcom", "false") ?: "false").let {
+                if (it in listOf("true", "false")) it else "false" }
+            switchLStick = loadBtn(p, "switch_lstick",
+                ButtonLayout(x = 0.12f, y = 0.56f, sizeDp = 118))
+            switchLStickP = loadBtn(p, "switch_p_lstick",
+                ButtonLayout(x = 0.17f, y = 0.66f, sizeDp = 104))
+            switchRStick = loadBtn(p, "switch_rstick",
+                ButtonLayout(x = 0.88f, y = 0.56f, sizeDp = 118))
+            switchRStickP = loadBtn(p, "switch_p_rstick",
+                ButtonLayout(x = 0.83f, y = 0.66f, sizeDp = 104))
+            switchBtnZL = loadBtn(p, "switch_btn_zl",
+                ButtonLayout(x = 0.16f, y = 0.34f, sizeDp = 62))
+            switchBtnZLP = loadBtn(p, "switch_p_btn_zl",
+                ButtonLayout(x = 0.16f, y = 0.32f, sizeDp = 56))
+            switchBtnZR = loadBtn(p, "switch_btn_zr",
+                ButtonLayout(x = 0.84f, y = 0.34f, sizeDp = 62))
+            switchBtnZRP = loadBtn(p, "switch_p_btn_zr",
+                ButtonLayout(x = 0.84f, y = 0.32f, sizeDp = 56))
+            switchBtnHome = loadBtn(p, "switch_btn_home",
+                ButtonLayout(x = 0.42f, y = 0.045f, sizeDp = 54))
+            switchBtnHomeP = loadBtn(p, "switch_p_btn_home",
+                ButtonLayout(x = 0.42f, y = 0.045f, sizeDp = 48))
+            switchBtnCapture = loadBtn(p, "switch_btn_capture",
+                ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 54))
+            switchBtnCaptureP = loadBtn(p, "switch_p_btn_capture",
+                ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 48))
             ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
             ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
             ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
@@ -4228,6 +4366,32 @@ object PadLayoutStore {
             putString("ed_game_speed", layout.edGameSpeed)
             putString("ed_audio_volume", layout.edAudioVolume)
             putString("ed_audio_muted", layout.edAudioMuted)
+            // === v4 新增：Switch 性能/音频/体感项 ===
+            putString("ed_motion", layout.edMotion)
+            putString("ed_output_engine", layout.edOutputEngine)
+            putString("ed_cpu_clock", layout.edCpuClock)
+            putString("ed_gpu_clock", layout.edGpuClock)
+            putString("ed_sync_core_speed", layout.edSyncCoreSpeed)
+            putString("ed_speed_limit_on", layout.edSpeedLimitOn)
+            putString("ed_speed_limit", layout.edSpeedLimit)
+            putString("ed_fsr_sharpening", layout.edFsrSharpening)
+            putString("ed_astc_recompression", layout.edAstcRecompression)
+            putString("ed_sample_shading", layout.edSampleShading)
+            putString("ed_frame_gen", layout.edFrameGen)
+            putString("ed_frame_gen_target", layout.edFrameGenTarget)
+            putString("ed_patch_old_qcom", layout.edPatchOldQcom)
+            saveBtn("switch_lstick", layout.switchLStick)
+            saveBtn("switch_p_lstick", layout.switchLStickP)
+            saveBtn("switch_rstick", layout.switchRStick)
+            saveBtn("switch_p_rstick", layout.switchRStickP)
+            saveBtn("switch_btn_zl", layout.switchBtnZL)
+            saveBtn("switch_p_btn_zl", layout.switchBtnZLP)
+            saveBtn("switch_btn_zr", layout.switchBtnZR)
+            saveBtn("switch_p_btn_zr", layout.switchBtnZRP)
+            saveBtn("switch_btn_home", layout.switchBtnHome)
+            saveBtn("switch_p_btn_home", layout.switchBtnHomeP)
+            saveBtn("switch_btn_capture", layout.switchBtnCapture)
+            saveBtn("switch_p_btn_capture", layout.switchBtnCaptureP)
             saveBtn("ngc_lstick", layout.ngcLStick)
             saveBtn("ngc_p_lstick", layout.ngcLStickP)
             saveBtn("ngc_rstick", layout.ngcRStick)

@@ -2600,6 +2600,64 @@ fun CoreSettingsPanel(
                     listOf("false" to "关闭 (默认)", "true" to "锁定最大频率 (发热换性能)"),
                     padLayout.edForceMaxClock
                 ) { updateLayout(padLayout.copy {edForceMaxClock = it}) }
+                // ===== v4 补全：上游 settings.h 暴露的性能项（此前无入口） =====
+                DropdownRow("CPU 时钟",
+                    // "fast_cpu_time" CpuClock：0=Normal 1=Boost 2=Overclock
+                    listOf("0" to "标准 (默认·不发热)", "1" to "Boost (提速)",
+                           "2" to "超频 (最快·发热·部分游戏异常)"),
+                    padLayout.edCpuClock
+                ) { updateLayout(padLayout.copy {edCpuClock = it}) }
+                DropdownRow("GPU 时钟",
+                    // "fast_gpu_time" GpuClock：上游 Android 默认 Boost
+                    listOf("0" to "标准 (省电)", "1" to "Boost (默认)",
+                           "2" to "超频 (最快·发热)"),
+                    padLayout.edGpuClock
+                ) { updateLayout(padLayout.copy {edGpuClock = it}) }
+                DropdownRow("速度限制开关",
+                    listOf("true" to "开启 (默认)", "false" to "关闭 (全速运行·音画可能偏快)"),
+                    padLayout.edSpeedLimitOn
+                ) { updateLayout(padLayout.copy {edSpeedLimitOn = it}) }
+                DropdownRow("速度限制",
+                    listOf("100" to "100% (默认)", "50" to "50%", "75" to "75%",
+                           "150" to "150%", "200" to "200%", "300" to "300%", "9999" to "不限速"),
+                    padLayout.edSpeedLimit
+                ) { updateLayout(padLayout.copy {edSpeedLimit = it}) }
+                DropdownRow("核心速度同步",
+                    listOf("false" to "关闭 (默认·快)", "true" to "开启 (同步各核心速度)"),
+                    padLayout.edSyncCoreSpeed
+                ) { updateLayout(padLayout.copy {edSyncCoreSpeed = it}) }
+                DropdownRow("FSR 锐化",
+                    // "fsr_sharpening_slider" 0..200%，缩放滤镜=FSR 时生效
+                    listOf("0" to "0% (默认)", "25" to "25%", "50" to "50%",
+                           "75" to "75%", "100" to "100%", "150" to "150%", "200" to "200%"),
+                    padLayout.edFsrSharpening
+                ) { updateLayout(padLayout.copy {edFsrSharpening = it}) }
+                DropdownRow("ASTC 重压缩",
+                    // "astc_recompression"：省显存换画质（大显存设备保持不压缩）
+                    listOf("0" to "不压缩 (默认·画质最好)", "1" to "BC1 (省一半显存)",
+                           "2" to "BC3 (省显存)"),
+                    padLayout.edAstcRecompression
+                ) { updateLayout(padLayout.copy {edAstcRecompression = it}) }
+                DropdownRow("采样着色",
+                    // "sample_shading_fraction" 0..100%：额外抗锯齿（GTA/极潜龙类爬纹改善）
+                    listOf("0" to "关闭 (默认)", "25" to "25%", "50" to "50%", "100" to "100%"),
+                    padLayout.edSampleShading
+                ) { updateLayout(padLayout.copy {edSampleShading = it}) }
+                DropdownRow("插帧 (实验)",
+                    // "frame_gen"：需要较强 GPU；中端机建议锁定 60 后开
+                    listOf("false" to "关闭 (默认)", "true" to "开启"),
+                    padLayout.edFrameGen
+                ) { updateLayout(padLayout.copy {edFrameGen = it}) }
+                DropdownRow("插帧目标帧率",
+                    // "frame_gen_target_rate"：0=自动
+                    listOf("0" to "自动 (默认)", "60" to "60", "90" to "90", "120" to "120"),
+                    padLayout.edFrameGenTarget
+                ) { updateLayout(padLayout.copy {edFrameGenTarget = it}) }
+                DropdownRow("旧高通驱动补丁",
+                    // "patch_old_qcom_drivers"：老 Adreno 驱动纹理花屏修复
+                    listOf("false" to "关闭 (默认)", "true" to "开启 (旧驱动花屏时试)"),
+                    padLayout.edPatchOldQcom
+                ) { updateLayout(padLayout.copy {edPatchOldQcom = it}) }
                 DropdownRow("DMA 精度",
                     listOf("0" to "默认 (默认)", "1" to "不安全 (快)", "2" to "安全 (慢)"),
                     padLayout.edDmaAccuracy
@@ -2615,6 +2673,9 @@ fun CoreSettingsPanel(
                 DropdownRow("主机模式",
                     // 掌机 = 720p 性能档（默认·Android），底座 = 高性能档
                     //（部分游戏帧率更高，发热更大）。
+                    // ★ v4 修复：旧版 "1".toBoolean() 恒为 false，选底座实际写入
+                    //   掌机（永远开不了底座）；现已修正为显式比较，选择即生效
+                    //   （运行形态属运行中可切换项，重启游戏完全生效）。
                     listOf("0" to "掌机 (默认·Android)", "1" to "底座 (高性能·发热)"),
                     padLayout.edDocked
                 ) { updateLayout(padLayout.copy {edDocked = it}) }
@@ -2632,6 +2693,13 @@ fun CoreSettingsPanel(
                            "3" to "澳大利亚", "4" to "中国", "5" to "韩国", "6" to "台湾"),
                     padLayout.edRegion
                 ) { updateLayout(padLayout.copy {edRegion = it}) }
+                // ★★ v4：体感（陀螺仪）—— 设备传感器直通 Switch 六轴
+                //   （上游 EmulationActivity 同款数据流；无陀螺仪设备自动跳过）
+                DropdownRow("体感 (陀螺仪)",
+                    listOf("true" to "开启 (默认·赛车/体感瞄准)",
+                           "false" to "关闭"),
+                    padLayout.edMotion
+                ) { updateLayout(padLayout.copy {edMotion = it}) }
                 DropdownRow("游戏速度",
                     listOf("1" to "1x (正常·默认)", "0" to "0.5x (慢动作)",
                            "2" to "2x", "3" to "4x", "4" to "8x (快进联动)"),
@@ -2644,6 +2712,12 @@ fun CoreSettingsPanel(
                            "80" to "80%", "100" to "100% (默认)"),
                     padLayout.edAudioVolume
                 ) { updateLayout(padLayout.copy {edAudioVolume = it}) }
+                // ★★ v4：音频引擎（"output_engine"，上游音频页同款入口）——
+                //   无声/破音时可切换引擎重试（Android 构建未编 Cubeb）
+                DropdownRow("音频引擎",
+                    listOf("2" to "SDL3 (默认·推荐)", "0" to "自动", "3" to "Null (无声·调试)"),
+                    padLayout.edOutputEngine
+                ) { updateLayout(padLayout.copy {edOutputEngine = it}) }
                 DropdownRow("静音",
                     listOf("false" to "关闭 (默认)", "true" to "开启 (静音)"),
                     padLayout.edAudioMuted
@@ -2657,8 +2731,10 @@ fun CoreSettingsPanel(
                         "\n\n密钥：把 prod.keys/title.keys 放进 APK assets/eden/keys/ 可自动识别" +
                         "（无需玩家操作），或在上方手动选择文件；固件在上方安装（官方固件 zip，" +
                         "含系统字体 —— 部分游戏与中文显示需要）。" +
-                        "\n\n虚拟按键：Pro 手柄全套（双摇杆 + ABXY + L/R/ZL/ZR + +/−/HOME + 截屏/采集），" +
-                        "游戏区触摸直通窗口触摸（掌机形态 = Switch 触摸屏）；均可在 触控 → 布局编辑器 里调位置/大小/显隐。" +
+                        "\n\n虚拟按键：Pro 手柄全套已补齐（双摇杆 + ABXY + L/R/ZL/ZR + +/−/HOME + 截屏 + L3/R3 摇杆按下），" +
+                        "游戏区触摸直通窗口触摸（掌机形态 = Switch 触摸屏）；体感（陀螺仪）默认开（赛车/体感瞄准），" +
+                        "组合键支持 A/B/X/Y/L/R/ZL/ZR/L3/R3/HOME/截屏/方向键任意 2-4 键组合；" +
+                        "均可在 触控 → 布局编辑器 里调位置/大小/显隐。" +
                         "\n\n存档走游戏内存档（NAND，<filesDir>/eden/nand/）；核心无即时存档。" +
                         "驱动管理见上方分区（自定义驱动经 adrenotools 加载，切换后重启游戏生效）。",
                     color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),

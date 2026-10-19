@@ -2262,7 +2262,14 @@ fun EmulatorScreen(
                    padLayout.edMemoryLayout, padLayout.edDocked,
                    padLayout.edLanguage, padLayout.edRegion,
                    padLayout.edGameSpeed, padLayout.edAudioVolume,
-                   padLayout.edAudioMuted
+                   padLayout.edAudioMuted,
+                   padLayout.edMotion, padLayout.edOutputEngine,
+                   padLayout.edCpuClock, padLayout.edGpuClock,
+                   padLayout.edSyncCoreSpeed, padLayout.edSpeedLimitOn,
+                   padLayout.edSpeedLimit, padLayout.edFsrSharpening,
+                   padLayout.edAstcRecompression, padLayout.edSampleShading,
+                   padLayout.edFrameGen, padLayout.edFrameGenTarget,
+                   padLayout.edPatchOldQcom
                    ) {
         applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         // Apply video filter (frontend post-processing, not a core option)
@@ -2418,6 +2425,27 @@ fun EmulatorScreen(
                 val zeroState = com.nesstation.app.core.engine.WiiMotionSensors.MotionState()
                 (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
                     ?.setWiiMotion(zeroState)
+            }
+        }
+    }
+
+    // ★★ v4：Switch（Eden）体感（陀螺仪）桥 —— 上游 EmulationActivity 的
+    //   startMotionSensorListener/onSensorChanged 同款数据流（加速度计归一
+    //   1G、陀螺仪 /6 校准、横屏轴向互换），经 EdenEngine →
+    //   NativeInput.onDeviceMotionEvent → VirtualGamepad 六轴进核心。
+    //   设置开关：核心设置 → Switch → 体感（edMotion，默认开，无陀螺仪的
+    //   设备自动静默跳过）。
+    androidx.compose.runtime.DisposableEffect(
+        platform, padLayout.edMotion, game
+    ) {
+        if (platform == GamePlatform.NSWITCH && padLayout.edMotion == "true") {
+            (engine as? com.nesstation.app.core.engine.EdenEngine)
+                ?.setMotionSensorEnabled(context, true)
+        }
+        onDispose {
+            if (platform == GamePlatform.NSWITCH) {
+                (engine as? com.nesstation.app.core.engine.EdenEngine)
+                    ?.setMotionSensorEnabled(context, false)
             }
         }
     }
@@ -2629,6 +2657,20 @@ fun EmulatorScreen(
             romAdjSaveNotice = resolved.notice
         }
         val savesDirPath = romAdjSaveDirPath ?: savesDir.absolutePath
+
+        // ★★ v4：Switch（Eden）预初始化 + 设置先行 —— 对齐上游 EmulationFragment
+        //   的“读取/下发配置在前、NativeLibrary.run 在后”时序。旧版把整表设置
+        //   重放放在 loadRom 之后，恰好撞进 System::Load 的执行窗口（并发写
+        //   配置 + applySettings 竞态 = “大多数游戏进不去”的时序根因）。
+        //   现在：先 coreInitOnce（幂等）→ applyCoreOptions（写入
+        //   Settings::values + 落盘；applySettings 被 isRunning 门控自动跳过）
+        //   → loadRom → run 读取刚写入的配置启动。
+        if (platform == GamePlatform.NSWITCH) {
+            (engine as? com.nesstation.app.core.engine.EdenEngine)?.let { eden ->
+                withContext(Dispatchers.IO) { eden.coreInitOnce() }
+                applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
+            }
+        }
 
         // Tell the native core to use this stable name for the save file.
         // Must be called BEFORE loadRom() so the name is in effect when
@@ -3295,8 +3337,11 @@ fun EmulatorScreen(
         //   用户改动某个设置后才被应用。加载成功后重放一次，保证每次
         //   启动都真正下发（此时 initializeEmulation 已完成，
         //   settings.xml 文件名已就绪，驱动选择还能顺带落盘保存）。
-        if (loaded && (platform == GamePlatform.JAVA || platform == GamePlatform.WIIU ||
-                       platform == GamePlatform.NSWITCH)) {
+        if (loaded && (platform == GamePlatform.JAVA || platform == GamePlatform.WIIU)) {
+            // ★★ v4：NSWITCH 已从重放条件移除 —— 其整表设置改为 loadRom 前先行
+            //   下发（见上方 “Switch（Eden）预初始化”块），避免在 System::Load
+            //   窗口内并发写配置（启动期竞态根因；EdenEngine 的 applySettings
+            //   另有 isRunning 双保险）。
             applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
         }
     }
@@ -6321,6 +6366,20 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("EdenEngine/gameSpeed", layout.edGameSpeed)
             engine.setCoreOption("EdenEngine/audioVolume", layout.edAudioVolume)
             engine.setCoreOption("EdenEngine/audioMuted", layout.edAudioMuted)
+            // ★★ v4 补全：性能 / 音频引擎 / 体感（此前 UI 无入口、也不下发）
+            engine.setCoreOption("EdenEngine/motion", layout.edMotion)
+            engine.setCoreOption("EdenEngine/outputEngine", layout.edOutputEngine)
+            engine.setCoreOption("EdenEngine/cpuClock", layout.edCpuClock)
+            engine.setCoreOption("EdenEngine/gpuClock", layout.edGpuClock)
+            engine.setCoreOption("EdenEngine/syncCoreSpeed", layout.edSyncCoreSpeed)
+            engine.setCoreOption("EdenEngine/speedLimitOn", layout.edSpeedLimitOn)
+            engine.setCoreOption("EdenEngine/speedLimit", layout.edSpeedLimit)
+            engine.setCoreOption("EdenEngine/fsrSharpening", layout.edFsrSharpening)
+            engine.setCoreOption("EdenEngine/astcRecompression", layout.edAstcRecompression)
+            engine.setCoreOption("EdenEngine/sampleShading", layout.edSampleShading)
+            engine.setCoreOption("EdenEngine/frameGen", layout.edFrameGen)
+            engine.setCoreOption("EdenEngine/frameGenTarget", layout.edFrameGenTarget)
+            engine.setCoreOption("EdenEngine/patchOldQcom", layout.edPatchOldQcom)
         }
     }
 }
@@ -7790,6 +7849,11 @@ fun OnScreenController(
     // ★ Wii U（Cemu）：GamePad 专属全套布局（双摇杆 + ABXY + L/R/ZL/ZR +
     //   ⧉/−/HOME + TV 切换 + MIC + 摇杆按下），与 3DS/NGC-WII 同为独立布局平台。
     val isWiiU = platform == GamePlatform.WIIU
+    // ★★ v4 补全：Switch（Eden）—— Pro 手柄全套（双摇杆 + ABXY + L/R/ZL/ZR
+    //   + +/−/HOME + 截屏 + 摇杆按下）。旧实现 showLR/showXY/showL2R2/
+    //   showL3R3 白名单全部漏掉 NSWITCH，Switch 落入 NES 默认布局，
+    //   屏幕上只有十字键 + A/B（用户反馈“只有fc的方向键ab等”的根因）。
+    val isSwitch = platform == GamePlatform.NSWITCH
     // NGC/WII：当前生效控制模式（"ngc" / "wii"）—— 决定哪套摇杆参与命中
     //
     // ★ 按控制器显示虚拟按键（修复"选择哪个控制器显示哪个控制虚拟按键"）：
@@ -7842,14 +7906,18 @@ fun OnScreenController(
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
                  platform == GamePlatform.DC || platform == GamePlatform.PSP ||
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII ||
-                 platform == GamePlatform.WIIU
+                 platform == GamePlatform.WIIU ||
+                 // ★★ v4：Switch 同为 12 键布局（L/R 肩键）
+                 platform == GamePlatform.NSWITCH
     val showXY = platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
                  platform == GamePlatform.DC || platform == GamePlatform.PSP ||
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII ||
-                 platform == GamePlatform.WIIU
+                 platform == GamePlatform.WIIU ||
+                 // ★★ v4：Switch 面键 ABXY 菱形（引擎位布局 BTN_X/BTN_Y 直透）
+                 platform == GamePlatform.NSWITCH
     val showL2R2 = (platform == GamePlatform.ARCADE && padLayout.arcadeShowL2R2) ||
                    platform == GamePlatform.PCE ||
                    platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
@@ -7861,14 +7929,25 @@ fun OnScreenController(
     // PS2 专属：L3/R3（摇杆按下）小按钮，可在显隐对话框里关闭
     // ★ NGC/WII：L3/R3 = 前倾/后倾体感按钮（需求：“前后可以用按钮
     //   L3，R3作为后期自定义”），wii 模式下显示。Wii U：L3/R3 = 摇杆按下。
-    val showL3Btn = (isPs2 || (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic) || isWiiU) &&
+    // ★★ v4：Switch（Eden）L3/R3 = 左/右摇杆按下（BTN_L3/BTN_R3 直透
+    //   EdenEngine.setPlayerPad 的 VirtualButton 4/5）。
+    val showL3Btn = (isPs2 || (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic) || isWiiU ||
+                    isSwitch) &&
                     !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
-    val showR3Btn = (isPs2 || (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic) || isWiiU) &&
+    val showR3Btn = (isPs2 || (isNgcWii && ngcWiiWiiSet && !ngcWiiClassic) || isWiiU ||
+                    isSwitch) &&
                     !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
     // ★ Wii U 专属键可见性（TV 切换 / 麦克风 / HOME）
     val showWiiuTvBtn = isWiiU && !PadLayoutStore.isButtonHidden(padLayout, platform, "wiiu_tv")
     val showWiiuMicBtn = isWiiU && !PadLayoutStore.isButtonHidden(padLayout, platform, "wiiu_mic")
     val showWiiuHomeBtn = isWiiU && !PadLayoutStore.isButtonHidden(padLayout, platform, "home")
+    // ★★ v4：Switch（Eden）专属键可见性（ZL/ZR / HOME / 截屏）—— 与
+    //   PadLayoutStore.getAvailableButtons(NSWITCH) 的键位一一对应
+    //   （zl/zr/home/capture），“显隐按键”对话框无需任何改动即可生效。
+    val showSwitchZlBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
+    val showSwitchZrBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "zr")
+    val showSwitchHomeBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "home")
+    val showSwitchCaptureBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "capture")
 
     // === Per-button visibility for ALL platforms ===
     // Each platform can independently hide/show individual buttons via the
@@ -8024,7 +8103,6 @@ fun OnScreenController(
     // 3DS ZL/ZR；NGC/WII Z；Wii 专属按键（A/B/1/2/+/−/HOME/C/Z/IR−/IR+）
     val n3dsBtnZL = if (isPortrait) padLayout.n3dsBtnZLP else padLayout.n3dsBtnZL
     val n3dsBtnZR = if (isPortrait) padLayout.n3dsBtnZRP else padLayout.n3dsBtnZR
-    val ngcBtnZ = if (isPortrait) padLayout.ngcBtnZP else padLayout.ngcBtnZ
     val wiiBtnA = if (isPortrait) padLayout.wiiBtnAP else padLayout.wiiBtnA
     val wiiBtnB = if (isPortrait) padLayout.wiiBtnBP else padLayout.wiiBtnB
     val wiiBtn1 = if (isPortrait) padLayout.wiiBtn1P else padLayout.wiiBtn1
@@ -8046,6 +8124,14 @@ fun OnScreenController(
     val wiiuBtnTV = if (isPortrait) padLayout.wiiuBtnTVP else padLayout.wiiuBtnTV
     val wiiuBtnMic = if (isPortrait) padLayout.wiiuBtnMicP else padLayout.wiiuBtnMic
     val wiiuBtnHome = if (isPortrait) padLayout.wiiuBtnHomeP else padLayout.wiiuBtnHome
+    // ★★ v4：Switch（Eden）专属布局（双摇杆 + ZL/ZR + HOME + 截屏；
+    //   ABXY/L/R/十字键/+/−/摇杆按下复用通用槽位，与 wiiu 同模式存取）
+    val switchLStick = if (isPortrait) padLayout.switchLStickP else padLayout.switchLStick
+    val switchRStick = if (isPortrait) padLayout.switchRStickP else padLayout.switchRStick
+    val switchBtnZL = if (isPortrait) padLayout.switchBtnZLP else padLayout.switchBtnZL
+    val switchBtnZR = if (isPortrait) padLayout.switchBtnZRP else padLayout.switchBtnZR
+    val switchBtnHome = if (isPortrait) padLayout.switchBtnHomeP else padLayout.switchBtnHome
+    val switchBtnCapture = if (isPortrait) padLayout.switchBtnCaptureP else padLayout.switchBtnCapture
     // NGC/WII 专属显隐旗标（GC 键用 ngc_* 键，Wii 键用 wii_* 键）
     // ★ 每个旗标叠加"当前控制器组合"门控：旧实现只要不隐藏就渲染，
     // 导致 GC + Wii 全部按键同时出现。
@@ -8242,11 +8328,13 @@ fun OnScreenController(
                                  else if (isNgcWii && ngcWiiGcSet) btnRect(ngcLStick, 1.3f, 1.3f)
                                  else if (isNgcWii && (ngcWiiNunchuk || ngcWiiClassic)) btnRect(wiiLStick, 1.3f, 1.3f)
                                  else if (isWiiU) btnRect(wiiuLStick, 1.3f, 1.3f)
+                                 else if (isSwitch) btnRect(switchLStick, 1.3f, 1.3f)
                                  else null
                 val rStickRect = if (isPs2) btnRect(ps2RStick, 1.3f, 1.3f)
                                  else if (is3ds) btnRect(n3dsRStick, 1.3f, 1.3f)
                                  else if (isNgcWii && (ngcWiiGcSet || ngcWiiClassic)) btnRect(ngcRStick, 1.3f, 1.3f)
                                  else if (isWiiU) btnRect(wiiuRStick, 1.3f, 1.3f)
+                                 else if (isSwitch) btnRect(switchRStick, 1.3f, 1.3f)
                                  else null
                 // 3DS ZL/ZR 命中区（肩键形放宽）；Wii U 用同位（wiiu 专属坐标）
                 val zlRect = if (showZlBtn) btnRect(if (isWiiU) wiiuBtnZL else n3dsBtnZL, 1.6f, 0.9f) else null
@@ -8255,6 +8343,14 @@ fun OnScreenController(
                 val wiiuTvRect = if (showWiiuTvBtn) btnRect(wiiuBtnTV, 1.4f, 1.4f) else null
                 val wiiuMicRect = if (showWiiuMicBtn) btnRect(wiiuBtnMic) else null
                 val wiiuHomeRect = if (showWiiuHomeBtn) btnRect(wiiuBtnHome, 1.6f, 0.8f) else null
+                // ★★ v4：Switch（Eden）专属命中区（ZL/ZR / HOME / 截屏）。
+                //   HOME 复用 BtnType.HOME（→BTN_HOME 位）；截屏复用
+                //   BtnType.IR_NEAR（→BTN_IR_NEAR 位，EdenEngine.setPlayerPad
+                //   中即 Switch CAPTURE 键）；ZL/ZR 复用 BtnType.ZL/ZR。
+                val switchZlRect = if (showSwitchZlBtn) btnRect(switchBtnZL, 1.6f, 0.9f) else null
+                val switchZrRect = if (showSwitchZrBtn) btnRect(switchBtnZR, 1.6f, 0.9f) else null
+                val switchHomeRect = if (showSwitchHomeBtn) btnRect(switchBtnHome, 1.6f, 0.8f) else null
+                val switchCaptureRect = if (showSwitchCaptureBtn) btnRect(switchBtnCapture, 1.6f, 0.8f) else null
                 // NGC/WII：GC Z + Wii 专属按键命中区
                 val zRect = if (showNgcZ) btnRect(ngcBtnZ) else null
                 val wiiARect = if (showWiiA) btnRect(wiiBtnA) else null
@@ -8393,6 +8489,11 @@ fun OnScreenController(
                         wiiuTvRect?.contains(pos) == true -> BtnType.WIIU_TV
                         wiiuMicRect?.contains(pos) == true -> BtnType.WIIU_MIC
                         wiiuHomeRect?.contains(pos) == true -> BtnType.WIIU_HOME
+                        // ★★ v4：Switch（Eden）专属按键：ZL/ZR / HOME / 截屏
+                        switchZlRect?.contains(pos) == true -> BtnType.ZL
+                        switchZrRect?.contains(pos) == true -> BtnType.ZR
+                        switchHomeRect?.contains(pos) == true -> BtnType.HOME
+                        switchCaptureRect?.contains(pos) == true -> BtnType.IR_NEAR
                         else -> null
                     }
                     if (btnType == null) {
@@ -8808,6 +8909,8 @@ fun OnScreenController(
             PillButtonCanvas(
                 if (platform == GamePlatform.PCE) "RUN"
                 else if (platform == GamePlatform.WIIU) "+"
+                // ★★ v4：Switch 主机键同款标签
+                else if (platform == GamePlatform.NSWITCH) "+"
                 else "START", btnStart, surfaceSize, opacity, visualState and BTN_START != 0,
                 normalColor = themeButtonColor(overlayTheme, "start", Color(0xFF2A3040)),
                 pressedColor = themePressedButtonColor(overlayTheme, "start"),
@@ -8819,7 +8922,9 @@ fun OnScreenController(
         if (showSelectBtn && !isNgcWii) {
             val (selectImg, selectImgPressed) = rememberThemeButtonImages(overlayTheme, "select")
             PillButtonCanvas(
-                if (platform == GamePlatform.WIIU) "−" else "SELECT", btnSelect, surfaceSize, opacity, visualState and BTN_SELECT != 0,
+                if (platform == GamePlatform.WIIU) "−"
+                else if (platform == GamePlatform.NSWITCH) "−"
+                else "SELECT", btnSelect, surfaceSize, opacity, visualState and BTN_SELECT != 0,
                 normalColor = themeButtonColor(overlayTheme, "select", Color(0xFF2A3040)),
                 pressedColor = themePressedButtonColor(overlayTheme, "select"),
                 image = selectImg,
@@ -9151,6 +9256,89 @@ fun OnScreenController(
                 thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
                 image = pspStickImg, pressedImage = pspStickImgPressed
             )
+        }
+        // ★★ v4：Switch（Eden）专属 —— Pro 手柄全套补齐（双摇杆 + ZL/ZR +
+        //   HOME + 截屏 + 摇杆按下）。ABXY/L/R/+/−/十字键走上方通用渲染
+        //   （showLR/showXY 白名单已含 NSWITCH）。摇杆输出经 onAnalogAxes →
+        //   EdenCoreEngine.setAnalogAxes（VirtualGamepad 模拟轴）。
+        if (isSwitch) {
+            val (slsImg, slsImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+            val (srsImg, srsImgPressed) = rememberThemeButtonImages(overlayTheme, "r3")
+            AnalogStickCanvas(
+                layout = switchLStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = lStickDirs, thumbX = lStickTX, thumbY = lStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
+                image = slsImg, pressedImage = slsImgPressed
+            )
+            AnalogStickCanvas(
+                layout = switchRStick, surfaceSize = surfaceSize, opacity = opacity,
+                pressedDirs = 0,   // 右摇杆箭头不做数字高亮（轴专用）
+                thumbX = rStickTX, thumbY = rStickTY,
+                thumbColor = themeButtonColor(overlayTheme, "r3", Color(0xFFFFD66B)),
+                thumbPressedColor = themePressedButtonColor(overlayTheme, "r3") ?: Color(0xFFFFE57F),
+                image = srsImg, pressedImage = srsImgPressed
+            )
+            if (showSwitchZlBtn) {
+                val (zlImg, zlImgPressed) = rememberThemeButtonImages(overlayTheme, "zl")
+                PillButtonCanvas(
+                    "ZL", switchBtnZL, surfaceSize, opacity, visualState and BTN_ZL != 0,
+                    normalColor = themeButtonColor(overlayTheme, "zl", Color(0xFF2A3040)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "zl"),
+                    image = zlImg,
+                    pressedImage = zlImgPressed
+                )
+            }
+            if (showSwitchZrBtn) {
+                val (zrImg, zrImgPressed) = rememberThemeButtonImages(overlayTheme, "zr")
+                PillButtonCanvas(
+                    "ZR", switchBtnZR, surfaceSize, opacity, visualState and BTN_ZR != 0,
+                    normalColor = themeButtonColor(overlayTheme, "zr", Color(0xFF2A3040)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "zr"),
+                    image = zrImg,
+                    pressedImage = zrImgPressed
+                )
+            }
+            if (showSwitchHomeBtn) {
+                val (shImg, shImgPressed) = rememberThemeButtonImages(overlayTheme, "home")
+                PillButtonCanvas(
+                    "HOME", switchBtnHome, surfaceSize, opacity, visualState and BTN_HOME != 0,
+                    normalColor = themeButtonColor(overlayTheme, "home", Color(0xFF2A3040)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "home"),
+                    image = shImg,
+                    pressedImage = shImgPressed
+                )
+            }
+            if (showSwitchCaptureBtn) {
+                val (scImg, scImgPressed) = rememberThemeButtonImages(overlayTheme, "capture")
+                PillButtonCanvas(
+                    "截屏", switchBtnCapture, surfaceSize, opacity,
+                    visualState and BTN_IR_NEAR != 0,
+                    normalColor = themeButtonColor(overlayTheme, "capture", Color(0xFF2A3040)),
+                    pressedColor = themePressedButtonColor(overlayTheme, "capture"),
+                    image = scImg,
+                    pressedImage = scImgPressed
+                )
+            }
+            // 摇杆按下（L3/R3 → VirtualButton 4/5）
+            if (showL3Btn) {
+                val (l3Img, l3ImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+                ActionButtonCanvas(
+                    "L3", Color(0xFF95A5A6), btnL3, surfaceSize, opacity, visualState and BTN_L3 != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "l3"),
+                    image = l3Img,
+                    pressedImage = l3ImgPressed
+                )
+            }
+            if (showR3Btn) {
+                val (r3Img, r3ImgPressed) = rememberThemeButtonImages(overlayTheme, "r3")
+                ActionButtonCanvas(
+                    "R3", Color(0xFF95A5A6), btnR3, surfaceSize, opacity, visualState and BTN_R3 != 0,
+                    pressedColor = themePressedButtonColor(overlayTheme, "r3"),
+                    image = r3Img,
+                    pressedImage = r3ImgPressed
+                )
+            }
         }
         // NGC/WII 专属：按控制器组合渲染 —— GC Z + 主/C 摇杆（仅 GC 模式）；
         // Wii 全套按键 + 双节棍摇杆（仅 wii 模式，再按扩展手柄细分）。
@@ -11369,13 +11557,17 @@ private fun PadLayoutEditor(
     // ★★ PSP 同步补入（v5 修复"psp布局编辑还是fc的ab十字键"）：否则编辑器
     //   只渲染十字键+A/B+START/SELECT，✕○□△/L/R 拖不到、改不了尺寸。
     // ★★ Wii U（Cemu）同步补入：GamePad 全套键（ABXY/L/R/+/−）可拖动编辑。
+    // ★★ v4：Switch（Eden）同步补入：Pro 手柄全套（ABXY/L/R/+/−/摇杆/
+    //   ZL/ZR/HOME/截屏）可拖动编辑 —— 旧白名单漏 NSWITCH，编辑器里只有
+    //   FC 布局可拖。
     val showLR = platform == GamePlatform.GBA || platform == GamePlatform.SFC ||
                  platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
                  platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
                  platform == GamePlatform.DC || platform == GamePlatform.PSP ||
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII ||
-                 platform == GamePlatform.WIIU
+                 platform == GamePlatform.WIIU ||
+                 platform == GamePlatform.NSWITCH
     // JAVA（J2ME）手柄模式的虚拟按键同样带 X/Y 两个键（X=右软键，Y=*键），
     // 布局编辑器必须允许拖动它们 —— 旧版没包含 JAVA，编辑器里缺少 X/Y。
     val showXY = platform == GamePlatform.SFC || platform == GamePlatform.JAVA ||
@@ -11384,7 +11576,8 @@ private fun PadLayoutEditor(
                  platform == GamePlatform.PSX || platform == GamePlatform.PS2 ||
                  platform == GamePlatform.DC || platform == GamePlatform.PSP ||
                  platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII ||
-                 platform == GamePlatform.WIIU
+                 platform == GamePlatform.WIIU ||
+                 platform == GamePlatform.NSWITCH
     // L2/R2 editable in edit mode for Arcade (when enabled) and PCE (turbo toggle)
     // ★ NGC/WII（wii 模式）：L2/R2 = 左倾/右倾体感按钮可编辑（需在
     //   ngcWiiWiiSet/ngcWiiClassic 之后计算，见下方声明）
@@ -11396,6 +11589,12 @@ private fun PadLayoutEditor(
     val isNgcWii = platform == GamePlatform.NGCWII
     // ★ Wii U（Cemu）：GamePad 专属布局同样参与编辑（与 OnScreenController 同源）
     val isWiiU = platform == GamePlatform.WIIU
+    // ★★ v4：Switch（Eden）专属布局参与编辑（与 OnScreenController 同源）
+    val isSwitch = platform == GamePlatform.NSWITCH
+    val showSwitchZlBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
+    val showSwitchZrBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "zr")
+    val showSwitchHomeBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "home")
+    val showSwitchCaptureBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "capture")
     // 3DS / NGC-WII 专属键的可编辑开关（与 OnScreenController 一致）
     // 3DS ZL/ZR 可编辑开关（NGC/WII 键组门控见下方独立块；Wii U 同用 ZL/ZR 位）
     val showZlBtn = (is3ds || isWiiU) && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
@@ -11413,9 +11612,9 @@ private fun PadLayoutEditor(
     //   wii 模式（非经典手柄）下 L2/R2=左/右倾、L3/R3=前/后倾可拖动编辑。
     val editorShowWiiTilt = isNgcWii && ngcWiiWiiSet && !ngcWiiClassic
     val showL2R2Final = showL2R2 || editorShowWiiTilt
-    val showL3Btn = (isPs2 || editorShowWiiTilt) &&
+    val showL3Btn = (isPs2 || editorShowWiiTilt || isSwitch) &&
                     !PadLayoutStore.isButtonHidden(padLayout, platform, "l3")
-    val showR3Btn = (isPs2 || editorShowWiiTilt) &&
+    val showR3Btn = (isPs2 || editorShowWiiTilt || isSwitch) &&
                     !PadLayoutStore.isButtonHidden(padLayout, platform, "r3")
     // ★ 横持不再隐藏 L/R/HOME/IR 进深（与运行时同源，体感需求）
     val ngcWiiShowGenericLR = isNgcWii && (ngcWiiGcSet || ngcWiiWiiSet)
@@ -11587,6 +11786,13 @@ private fun PadLayoutEditor(
     val wiiuBtnTV = if (isPortrait) padLayout.wiiuBtnTVP else padLayout.wiiuBtnTV
     val wiiuBtnMic = if (isPortrait) padLayout.wiiuBtnMicP else padLayout.wiiuBtnMic
     val wiiuBtnHome = if (isPortrait) padLayout.wiiuBtnHomeP else padLayout.wiiuBtnHome
+    // ★★ v4：Switch（Eden）专属布局（编辑器内同 OnScreenController 一套）
+    val switchLStick = if (isPortrait) padLayout.switchLStickP else padLayout.switchLStick
+    val switchRStick = if (isPortrait) padLayout.switchRStickP else padLayout.switchRStick
+    val switchBtnZL = if (isPortrait) padLayout.switchBtnZLP else padLayout.switchBtnZL
+    val switchBtnZR = if (isPortrait) padLayout.switchBtnZRP else padLayout.switchBtnZR
+    val switchBtnHome = if (isPortrait) padLayout.switchBtnHomeP else padLayout.switchBtnHome
+    val switchBtnCapture = if (isPortrait) padLayout.switchBtnCaptureP else padLayout.switchBtnCapture
     // 即时存档 / 即时读档按钮（所有核心通用，编辑器内可拖动 + 调尺寸）
     val btnQuickSave = if (isPortrait) padLayout.btnQuickSaveP else padLayout.btnQuickSave
     val btnQuickLoad = if (isPortrait) padLayout.btnQuickLoadP else padLayout.btnQuickLoad
@@ -11666,10 +11872,13 @@ private fun PadLayoutEditor(
             BtnType.L3 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL3P = newLayout} else padLayout.copy {this.ps2BtnL3 = newLayout})
                           else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnL3P = newLayout} else padLayout.copy {this.wiiuBtnL3 = newLayout})
                           else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnL3P = newLayout} else padLayout.copy {this.btnL3 = newLayout})
+                          // ★ v4：Switch 摇杆按下用通用 btnL3/btnR3 槽位
+                          else if (isSwitch) (if (isPortrait) padLayout.copy {this.btnL3P = newLayout} else padLayout.copy {this.btnL3 = newLayout})
                           else if (isPortrait) padLayout.copy {this.ps2BtnL3P = newLayout} else padLayout.copy {this.ps2BtnL3 = newLayout}
             BtnType.R3 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout})
                           else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnR3P = newLayout} else padLayout.copy {this.wiiuBtnR3 = newLayout})
                           else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnR3P = newLayout} else padLayout.copy {this.btnR3 = newLayout})
+                          else if (isSwitch) (if (isPortrait) padLayout.copy {this.btnR3P = newLayout} else padLayout.copy {this.btnR3 = newLayout})
                           else if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout}
             BtnType.LSTICK -> when {
                 isPs2 -> if (isPortrait) padLayout.copy {this.ps2LStickP = newLayout} else padLayout.copy {this.ps2LStick = newLayout}
@@ -11678,6 +11887,7 @@ private fun PadLayoutEditor(
                 platform == GamePlatform.PSP -> if (isPortrait) padLayout.copy {this.pspLStickP = newLayout} else padLayout.copy {this.pspLStick = newLayout}
                 isNgcWii -> if (isPortrait) padLayout.copy {this.ngcLStickP = newLayout} else padLayout.copy {this.ngcLStick = newLayout}
                 isWiiU -> if (isPortrait) padLayout.copy {this.wiiuLStickP = newLayout} else padLayout.copy {this.wiiuLStick = newLayout}
+                isSwitch -> if (isPortrait) padLayout.copy {this.switchLStickP = newLayout} else padLayout.copy {this.switchLStick = newLayout}
                 else -> padLayout
             }
             BtnType.RSTICK -> when {
@@ -11685,16 +11895,21 @@ private fun PadLayoutEditor(
                 is3ds -> if (isPortrait) padLayout.copy {this.n3dsRStickP = newLayout} else padLayout.copy {this.n3dsRStick = newLayout}
                 isNgcWii -> if (isPortrait) padLayout.copy {this.ngcRStickP = newLayout} else padLayout.copy {this.ngcRStick = newLayout}
                 isWiiU -> if (isPortrait) padLayout.copy {this.wiiuRStickP = newLayout} else padLayout.copy {this.wiiuRStick = newLayout}
+                isSwitch -> if (isPortrait) padLayout.copy {this.switchRStickP = newLayout} else padLayout.copy {this.switchRStick = newLayout}
                 else -> padLayout
             }
-            // 3DS ZL/ZR（Wii U 用 wiiu 专属字段）
-            BtnType.ZL -> if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnZLP = newLayout} else padLayout.copy {this.wiiuBtnZL = newLayout})
+            // 3DS ZL/ZR（Wii U 用 wiiu 专属字段；Switch 用 switch 专属字段）
+            BtnType.ZL -> if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnZLP = newLayout} else padLayout.copy {this.switchBtnZL = newLayout})
+                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnZLP = newLayout} else padLayout.copy {this.wiiuBtnZL = newLayout})
                           else if (isPortrait) padLayout.copy {this.n3dsBtnZLP = newLayout} else padLayout.copy {this.n3dsBtnZL = newLayout}
-            BtnType.ZR -> if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnZRP = newLayout} else padLayout.copy {this.wiiuBtnZR = newLayout})
+            BtnType.ZR -> if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnZRP = newLayout} else padLayout.copy {this.switchBtnZR = newLayout})
+                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnZRP = newLayout} else padLayout.copy {this.wiiuBtnZR = newLayout})
                           else if (isPortrait) padLayout.copy {this.n3dsBtnZRP = newLayout} else padLayout.copy {this.n3dsBtnZR = newLayout}
             // NGC/WII：GC Z + Wii 全套
             BtnType.Z -> if (isPortrait) padLayout.copy {this.ngcBtnZP = newLayout} else padLayout.copy {this.ngcBtnZ = newLayout}
-            BtnType.HOME -> if (isPortrait) padLayout.copy {this.wiiBtnHomeP = newLayout} else padLayout.copy {this.wiiBtnHome = newLayout}
+            // ★ v4：Switch HOME 复用 BtnType.HOME，但写 switchBtnHome 槽位
+            BtnType.HOME -> if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnHomeP = newLayout} else padLayout.copy {this.switchBtnHome = newLayout})
+                          else if (isPortrait) padLayout.copy {this.wiiBtnHomeP = newLayout} else padLayout.copy {this.wiiBtnHome = newLayout}
             // ★★ Wii 编辑器选中/缩放根治（用户反馈"方向键和摇杆无法选中改变
             //   大小"）：新增 4 个 Wii 专属 BtnType，updateBtn/尺寸滑条/编辑器
             //   预览三处全部读写 wii* 字段 —— 旧实现 wiiDpad 选中后复用
@@ -11711,7 +11926,8 @@ private fun PadLayoutEditor(
             BtnType.WII_MINUS -> if (isPortrait) padLayout.copy {this.wiiBtnMinusP = newLayout} else padLayout.copy {this.wiiBtnMinus = newLayout}
             BtnType.WII_C -> if (isPortrait) padLayout.copy {this.wiiBtnCP = newLayout} else padLayout.copy {this.wiiBtnC = newLayout}
             BtnType.WII_Z -> if (isPortrait) padLayout.copy {this.wiiBtnZP = newLayout} else padLayout.copy {this.wiiBtnZ = newLayout}
-            BtnType.IR_NEAR -> if (isPortrait) padLayout.copy {this.wiiBtnIrNearP = newLayout} else padLayout.copy {this.wiiBtnIrNear = newLayout}
+            BtnType.IR_NEAR -> if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnCaptureP = newLayout} else padLayout.copy {this.switchBtnCapture = newLayout})
+                               else if (isPortrait) padLayout.copy {this.wiiBtnIrNearP = newLayout} else padLayout.copy {this.wiiBtnIrNear = newLayout}
             BtnType.IR_FAR -> if (isPortrait) padLayout.copy {this.wiiBtnIrFarP = newLayout} else padLayout.copy {this.wiiBtnIrFar = newLayout}
             // ★ Wii U（Cemu）专属键写回（TV 切换 / 麦克风 / HOME）
             BtnType.WIIU_TV -> if (isPortrait) padLayout.copy {this.wiiuBtnTVP = newLayout} else padLayout.copy {this.wiiuBtnTV = newLayout}
@@ -12214,6 +12430,55 @@ private fun PadLayoutEditor(
                             updateBtn(BtnType.WIIU_HOME, wiiuBtnHome.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
                         }, onSelect = { selectedBtn = BtnType.WIIU_HOME })
                 }
+                // ★★ v4：Switch（Eden）专属可编辑键 —— ZL/ZR / HOME / 截屏 /
+                //   双摇杆 / L3/R3（ABXY/L/R/+/− 走通用编辑控件，槽位映射
+                //   在 updateBtn 的 NSWITCH 分支里指到 switch* 字段）。
+                if (isSwitch && showSwitchZlBtn) {
+                    EditablePillBtn("ZL", switchBtnZL, surfaceSize, selectedBtn == BtnType.ZL,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.ZL, switchBtnZL.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.ZL })
+                }
+                if (isSwitch && showSwitchZrBtn) {
+                    EditablePillBtn("ZR", switchBtnZR, surfaceSize, selectedBtn == BtnType.ZR,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.ZR, switchBtnZR.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.ZR })
+                }
+                if (isSwitch && showSwitchHomeBtn) {
+                    EditablePillBtn("HOME", switchBtnHome, surfaceSize, selectedBtn == BtnType.HOME,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.HOME, switchBtnHome.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.HOME })
+                }
+                if (isSwitch && showSwitchCaptureBtn) {
+                    EditablePillBtn("截屏", switchBtnCapture, surfaceSize, selectedBtn == BtnType.IR_NEAR,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.IR_NEAR, switchBtnCapture.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.IR_NEAR })
+                }
+                if (isSwitch && showL3Btn) {
+                    EditableRoundBtn("L3", Color(0xFF95A5A6), btnL3, surfaceSize, selectedBtn == BtnType.L3,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.L3, btnL3.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.L3 })
+                }
+                if (isSwitch && showR3Btn) {
+                    EditableRoundBtn("R3", Color(0xFF95A5A6), btnR3, surfaceSize, selectedBtn == BtnType.R3,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.R3, btnR3.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.R3 })
+                }
+                if (isSwitch) {
+                    EditableRoundBtn("左摇杆", Color(0xFFFFD66B), switchLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.LSTICK, switchLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.LSTICK })
+                    EditableRoundBtn("右摇杆", Color(0xFFFFD66B), switchRStick, surfaceSize, selectedBtn == BtnType.RSTICK,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.RSTICK, switchRStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.RSTICK })
+                }
                 // ★ 门控同运行时：双节棍摇杆仅双节棍/经典手柄组合出现
                 //   （经典手柄模式下它是经典左摇杆）—— ngc 模式绝不渲染
                 //   （旧实现无条件出现 = "NGC 编辑器多了个双节棍摇杆"）。
@@ -12295,6 +12560,11 @@ private fun PadLayoutEditor(
                             // ★ Wii U / PSP 组合键补齐：独立字段持久化
                             GamePlatform.WIIU -> padLayout.copy {comboButtonsWiiU = json}
                             GamePlatform.PSP -> padLayout.copy {comboButtonsPsp = json}
+                        GamePlatform.NSWITCH -> padLayout.copy {comboButtonsSwitch = json}
+                            GamePlatform.NSWITCH -> padLayout.copy {comboButtonsSwitch = json}
+                            // ★★ v4：Switch 组合键此前落在 else -> padLayout（无操作），
+                            //   导致 Switch 添加/删除/拖动组合键完全不生效
+                            GamePlatform.NSWITCH -> padLayout.copy {comboButtonsSwitch = json}
                             else -> padLayout
                         }
                         onLayoutChange(newLayout)
@@ -12662,6 +12932,7 @@ private fun PadLayoutEditor(
                                 // ★ Wii U / PSP 组合键补齐：独立字段持久化
                                 GamePlatform.WIIU -> padLayout.copy {comboButtonsWiiU = json}
                                 GamePlatform.PSP -> padLayout.copy {comboButtonsPsp = json}
+                                GamePlatform.NSWITCH -> padLayout.copy {comboButtonsSwitch = json}
                                 else -> padLayout
                             }
                             onLayoutChange(newLayout)
@@ -12747,6 +13018,11 @@ private fun PadLayoutEditor(
                         "r2" -> BtnType.R2
                         "l3" -> BtnType.L3
                         "r3" -> BtnType.R3
+                        // ★ v4：Switch/N3DS/WIIU 的 ZL/ZR/HOME/截屏显隐联动
+                        "zl" -> BtnType.ZL
+                        "zr" -> BtnType.ZR
+                        "home" -> if (platform == GamePlatform.NSWITCH) BtnType.HOME else BtnType.WIIU_HOME
+                        "capture" -> BtnType.IR_NEAR
                         else -> null
                     }
                     if (hiddenBtn != null && selectedBtn == hiddenBtn) {
@@ -12875,7 +13151,8 @@ private fun ComboButtonPickerDialog(
         if (platform == GamePlatform.SFC || platform == GamePlatform.MD ||
             platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
             platform == GamePlatform.PSX || platform == GamePlatform.DC ||
-            platform == GamePlatform.WIIU || platform == GamePlatform.PSP) {
+            platform == GamePlatform.WIIU || platform == GamePlatform.PSP ||
+            platform == GamePlatform.NSWITCH) {
             list.add(ButtonOption("X", BTN_X))
             list.add(ButtonOption("Y", BTN_Y))
         } else if (platform == GamePlatform.ARCADE) {
@@ -12887,7 +13164,8 @@ private fun ComboButtonPickerDialog(
             platform == GamePlatform.ARCADE || platform == GamePlatform.MD ||
             platform == GamePlatform.PCE || platform == GamePlatform.NDS ||
             platform == GamePlatform.PSX || platform == GamePlatform.DC ||
-            platform == GamePlatform.WIIU || platform == GamePlatform.PSP) {
+            platform == GamePlatform.WIIU || platform == GamePlatform.PSP ||
+            platform == GamePlatform.NSWITCH) {
             list.add(ButtonOption("L", lBit))
             list.add(ButtonOption("R", rBit))
         }
@@ -12901,6 +13179,16 @@ private fun ComboButtonPickerDialog(
         if (platform == GamePlatform.WIIU) {
             list.add(ButtonOption("ZL", BTN_ZL))
             list.add(ButtonOption("ZR", BTN_ZR))
+        }
+        // ★★ v4：Switch（Eden）专属 —— ZL/ZR + 摇杆按下 L3/R3 + HOME/截屏
+        //   （位布局直通 EdenEngine.setPad1，均可进组合键）
+        if (platform == GamePlatform.NSWITCH) {
+            list.add(ButtonOption("ZL", BTN_ZL))
+            list.add(ButtonOption("ZR", BTN_ZR))
+            list.add(ButtonOption("L3", BTN_L3))
+            list.add(ButtonOption("R3", BTN_R3))
+            list.add(ButtonOption("HOME", BTN_HOME))
+            list.add(ButtonOption("截屏", BTN_IR_NEAR))
         }
         // ★ 方向键组合（所有平台通用）：用于"↓+A 滑铲"、"↑+B 上挑"等组合
         list.add(ButtonOption("↑", BTN_UP))
@@ -15995,6 +16283,35 @@ private fun SettingsPanel(
                 SwitchSetting("GPU 最大频率锁",
                     "发热换性能（默认关）", padLayout.edForceMaxClock == "true"
                 ) { onLayoutChange(padLayout.copy {edForceMaxClock = if (it) "true" else "false"}) }
+                // ★★ v4：补齐性能项（上游 settings.h 暴露、此前无入口）
+                DropdownSetting("CPU 时钟",
+                    listOf("0" to "标准 (默认)", "1" to "Boost", "2" to "超频 (发热·极帧率)"),
+                    padLayout.edCpuClock
+                ) { onLayoutChange(padLayout.copy {edCpuClock = it}) }
+                DropdownSetting("GPU 时钟",
+                    listOf("0" to "标准", "1" to "Boost (默认)", "2" to "超频 (发热)"),
+                    padLayout.edGpuClock
+                ) { onLayoutChange(padLayout.copy {edGpuClock = it}) }
+                DropdownSetting("速度限制",
+                    listOf("100" to "100% (默认)", "50" to "50%", "75" to "75%",
+                           "150" to "150%", "200" to "200%", "300" to "300%", "9999" to "不限速"),
+                    padLayout.edSpeedLimit
+                ) { onLayoutChange(padLayout.copy {edSpeedLimit = it}) }
+                DropdownSetting("FSR 锐化",
+                    // 缩放滤镜 = FSR (6) 时生效；0..200%
+                    listOf("0" to "0% (默认)", "25" to "25%", "50" to "50%",
+                           "75" to "75%", "100" to "100%", "150" to "150%", "200" to "200%"),
+                    padLayout.edFsrSharpening
+                ) { onLayoutChange(padLayout.copy {edFsrSharpening = it}) }
+                SwitchSetting("插帧 (实验)",
+                    "帧生成 — 中端机先试 60 锁帧；异常就关", padLayout.edFrameGen == "true"
+                ) { onLayoutChange(padLayout.copy {edFrameGen = if (it) "true" else "false"}) }
+                if (padLayout.edFrameGen == "true") {
+                    DropdownSetting("插帧目标帧率",
+                        listOf("0" to "自动 (默认)", "60" to "60", "90" to "90", "120" to "120"),
+                        padLayout.edFrameGenTarget
+                    ) { onLayoutChange(padLayout.copy {edFrameGenTarget = it}) }
+                }
 
                 Spacer(Modifier.size(8.dp))
                 Text("系统", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -16016,6 +16333,11 @@ private fun SettingsPanel(
                            "10" to "俄语", "15" to "简体中文", "16" to "繁体中文"),
                     padLayout.edLanguage
                 ) { onLayoutChange(padLayout.copy {edLanguage = it}) }
+                // ★★ v4：体感（陀螺仪）桥开关 —— 设备传感器直通 Switch 六轴
+                SwitchSetting("体感 (陀螺仪)",
+                    "转动手机 = 转动 Joy-Con（赛车/体感瞄准类游戏）",
+                    padLayout.edMotion == "true"
+                ) { onLayoutChange(padLayout.copy {edMotion = if (it) "true" else "false"}) }
 
                 Spacer(Modifier.size(8.dp))
                 Text("音频", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -16023,6 +16345,11 @@ private fun SettingsPanel(
                     (0..100 step 10).map { v -> v.toString() to "$v%" + if (v == 100) " (默认)" else "" },
                     padLayout.edAudioVolume
                 ) { onLayoutChange(padLayout.copy {edAudioVolume = it}) }
+                // ★★ v4：音频引擎（"output_engine"）—— 无声/破音时可切换
+                DropdownSetting("音频引擎",
+                    listOf("2" to "SDL3 (默认·推荐)", "0" to "自动", "3" to "Null (无声·调试)"),
+                    padLayout.edOutputEngine
+                ) { onLayoutChange(padLayout.copy {edOutputEngine = it}) }
                 SwitchSetting("静音", "", padLayout.edAudioMuted == "true"
                 ) { onLayoutChange(padLayout.copy {edAudioMuted = if (it) "true" else "false"}) }
 

@@ -1,6 +1,10 @@
 package com.nesstation.app.core.engine
 
 import android.content.Context
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.net.Uri
 import android.view.Surface
 import com.nesstation.app.core.jni.EdenNative
@@ -52,7 +56,8 @@ import kotlin.concurrent.thread
  *     至模拟结束；错误经 NativeLibrary.host 回调上抛）；
  *  2. 暂停/恢复走 pauseEmulation/unpauseEmulation；快进/游戏速度走
  *     setTurboSpeedLimit / setSlowSpeedLimit / setStandardSpeedLimit；
- *  3. 音频由核心内部输出（oboe/cubeb，推模型核心约定）；
+ *  3. 音频由核心内部输出（SDL3 sink，Android 默认 openslES → AAudio
+ *     回退；引擎音量经 NativeConfig "volume"（u8 0..200，UI 0..100%））；
  *  4. 渲染为 Vulkan 直绘主画布（1280x720 内部分辨率）。
  *
  * 输入（[EdenCoreEngine]，NesStation 统一位布局 → Switch）：
@@ -454,6 +459,108 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     }
 
     // ------------------------------------------------------------------
+    // 体感（陀螺仪）桥接 —— 上游 EmulationActivity.startMotionSensorListener
+    // + onSensorChanged 同款算法：加速度计归一到 1G，陀螺仪 /6 校准，
+    // 横屏 90°/270° 轴向互换；仅游戏运行中送数（native 侧 IsRunning 双保险）。
+    // ------------------------------------------------------------------
+
+    private var motionSensorManager: SensorManager? = null
+    private var motionListener: SensorEventListener? = null
+    private val motionAccel = FloatArray(3)
+    private val motionGyro = FloatArray(3)
+    private var motionTimestamp: Long = 0L
+    @Volatile private var motionFlipOrientation = false
+
+    /**
+     * 开关体感传感器桥（设置面板“体感”开关 → setCoreOption("EdenEngine/motion")）。
+     * enabled=false 时注销监听；重复调用安全（幂等）。
+     */
+    fun setMotionSensorEnabled(ctx: Context?, enabled: Boolean) {
+        // 已注销再关 / 已注册再开 —— 直接返回，避免重复注册监听器
+        if (!enabled) {
+            stopMotionSensorBridge()
+            return
+        }
+        val c = ctx ?: appContext ?: return
+        if (motionListener != null) return
+        val sm = c.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return
+        val gyroSensor = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE) ?: run {
+            android.util.Log.w("EdenEngine", "体感：设备无陀螺仪，不启用传感器桥")
+            return
+        }
+        val accelSensor = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+        motionAccel.fill(0f)
+        motionGyro.fill(0f)
+        motionTimestamp = 0L
+        val l = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent) {
+                try {
+                    // 与上游同口径：暂停/未运行时不送数
+                    if (!running.get() || _paused) return
+                    val rotation = c.getSystemService(Context.WINDOW_SERVICE)
+                        ?.let { (it as? android.view.WindowManager)?.defaultDisplay?.rotation }
+                        ?: android.view.Surface.ROTATION_0
+                    if (rotation == android.view.Surface.ROTATION_90) motionFlipOrientation = true
+                    if (rotation == android.view.Surface.ROTATION_270) motionFlipOrientation = false
+                    when (event.sensor.type) {
+                        Sensor.TYPE_ACCELEROMETER -> {
+                            if (motionFlipOrientation) {
+                                motionAccel[0] = event.values[1] / SensorManager.GRAVITY_EARTH
+                                motionAccel[1] = -event.values[0] / SensorManager.GRAVITY_EARTH
+                            } else {
+                                motionAccel[0] = -event.values[1] / SensorManager.GRAVITY_EARTH
+                                motionAccel[1] = event.values[0] / SensorManager.GRAVITY_EARTH
+                            }
+                            motionAccel[2] = -event.values[2] / SensorManager.GRAVITY_EARTH
+                        }
+                        Sensor.TYPE_GYROSCOPE -> {
+                            // 上游同款：传感器值约偏 6 倍，除 6 校准
+                            if (motionFlipOrientation) {
+                                motionGyro[0] = -event.values[1] / 6.0f
+                                motionGyro[1] = event.values[0] / 6.0f
+                            } else {
+                                motionGyro[0] = event.values[1] / 6.0f
+                                motionGyro[1] = -event.values[0] / 6.0f
+                            }
+                            motionGyro[2] = event.values[2] / 6.0f
+                        }
+                        else -> return
+                    }
+                    // 上游同口径：仅在加速度计事件上送数
+                    if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+                    val deltaTimestamp = if (motionTimestamp == 0L) 0L
+                                         else (event.timestamp - motionTimestamp) / 1000
+                    motionTimestamp = event.timestamp
+                    NativeInput.onDeviceMotionEvent(
+                        0, deltaTimestamp,
+                        motionGyro[0], motionGyro[1], motionGyro[2],
+                        motionAccel[0], motionAccel[1], motionAccel[2]
+                    )
+                } catch (_: Throwable) {
+                }
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+        }
+        try {
+            sm.registerListener(l, gyroSensor, SensorManager.SENSOR_DELAY_GAME)
+            sm.registerListener(l, accelSensor, SensorManager.SENSOR_DELAY_GAME)
+            motionSensorManager = sm
+            motionListener = l
+            android.util.Log.i("EdenEngine", "体感传感器桥已启用（陀螺仪+加速度计）")
+        } catch (t: Throwable) {
+            android.util.Log.w("EdenEngine", "体感传感器注册失败", t)
+        }
+    }
+
+    private fun stopMotionSensorBridge() {
+        val l = motionListener ?: return
+        try { motionSensorManager?.unregisterListener(l) } catch (_: Throwable) {}
+        motionListener = null
+        motionSensorManager = null
+    }
+
+    // ------------------------------------------------------------------
     // ROM 加载（推模型：记录路径 + 初始化，真正启动在 Surface 就绪后）
     // ------------------------------------------------------------------
 
@@ -519,8 +626,15 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         pendingBoot = false
         emuThread = thread(name = "eden-emu", isDaemon = true) {
             try {
-                // 运行时可调项热应用
-                try { NativeLibrary.applySettings() } catch (_: Throwable) {}
+                // ★★ v4 修复（“大多数游戏进不去 / 启动期状态损坏”根因之一）：
+                //   删掉这里的 NativeLibrary.applySettings() —— 上游 Eden 的
+                //   启动链【从不】在 run 前调它（上游全仓库无一处 applySettings
+                //   调用）。旧代码会在 System::Load 尚未开始时先来一发
+                //   HIDCore::ReloadInputDevices() + System::ApplySettings()，
+                //   与紧随其后的 InitializeEmulation 内部同一批调用交叉执行，
+                //   输入设备/时间服务被并发重载 —— 竞态胜负决定游戏能否进去。
+                //   核心在 InitializeEmulation 内部会自己调 ApplySettings（
+                //   native.cpp 已含），此处只需静默交给核心。
 
                 // 主画布 surface（上游 surfaceChanged 在 run 之前）
                 val s = surface
@@ -551,13 +665,19 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     // ------------------------------------------------------------------
 
     override fun exitEmulationActivity(result: Int) {
-        // run() 返回非 Success —— Core::SystemResultStatus 枚举值
+        // ★ v4 修正：对齐 Core::SystemResultStatus 真实枚举（旧映射 1/2 写反）。
+        //   Success=0, 1=ErrorNotInitialized, 2=ErrorGetLoader,
+        //   3=ErrorSystemFiles, 4=ErrorSharedFont, 5=ErrorVideoCore,
+        //   6=ErrorUnknown，7+ = ErrorLoader 基数 + 具体 Loader 错误。
         val reason = when (result) {
-            1 -> "找不到可执行文件（ROM 损坏或格式不受支持）"
-            2 -> "缺少密钥（prod.keys）——加密内容无法解密"
-            3 -> "缺少系统文件/固件（部分游戏需要固件，请在设置里安装）"
-            4 -> "共享字体缺失（需安装固件）"
-            else -> "核心错误（代码 $result）"
+            1 -> "系统未初始化（核心状态异常，请重启应用再试）"
+            2 -> "无法识别该 ROM（找不到可执行文件：格式不受支持或文件损坏）"
+            3 -> "缺少系统文件（部分游戏需要固件，请在 设置 → Switch·Eden 安装固件）"
+            4 -> "共享字体缺失（需安装官方固件 zip）"
+            5 -> "视频核心初始化失败（GPU/驱动不兼容，可尝试换驱动或改用 Dynarmic 后端）"
+            6 -> "核心未知错误"
+            else -> if (result >= 7) "游戏加载失败（Loader 错误 ${result - 7}：密钥不匹配或 ROM 不完整）"
+                    else "核心错误（代码 $result）"
         }
         if (!userRequestedStop) {
             failBoot("启动失败：$reason")
@@ -732,6 +852,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
 
     private fun unloadLocked() {
         userRequestedStop = true
+        stopMotionSensorBridge()
         try { if (EdenNative.loaded) NativeLibrary.stopEmulation() } catch (_: Throwable) {}
         // 等待模拟线程退出（有界）
         emuThread?.let { t -> try { t.join(1500) } catch (_: InterruptedException) {} }
@@ -868,13 +989,36 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             "memoryLayout" -> NativeConfig.setInt("memory_layout_mode", v.toIntOrNull() ?: 0)
 
             // ---- 系统 ----
-            "docked" -> NativeConfig.setBoolean("use_docked_mode", v.toBoolean())
+            // ★ v4 修复：edDocked 的取值是 "0"/"1"（DropdownRow 序数），而
+            //   Kotlin "1".toBoolean() == false —— 旧代码“底座模式”永远开不了
+            //   （用户选底座实际写入掌机）。改为显式比较。
+            "docked" -> NativeConfig.setBoolean("use_docked_mode", v == "1")
             "language" -> NativeConfig.setInt("language_index", v.toIntOrNull() ?: 1)
             "region" -> NativeConfig.setInt("region_index", v.toIntOrNull() ?: 1)
             "gameSpeed" -> {
                 _baseGameSpeed = (v.toIntOrNull() ?: 1).coerceIn(0, 4)
                 if (_ffSpeed == 0) applyBaseGameSpeed()
             }
+
+            // ---- v4 补全：性能 / 音频 / 体感（上游 settings.h 已暴露项） ----
+            // "fast_cpu_time" CpuClock 序数：0=Normal 1=Boost 2=Overclock
+            "cpuClock" -> NativeConfig.setInt("fast_cpu_time", v.toIntOrNull() ?: 0)
+            // "fast_gpu_time" GpuClock 序数：0=Normal 1=Boost 2=Overclock
+            "gpuClock" -> NativeConfig.setInt("fast_gpu_time", v.toIntOrNull() ?: 1)
+            "syncCoreSpeed" -> NativeConfig.setBoolean("sync_core_speed", v.toBoolean())
+            "speedLimitOn" -> NativeConfig.setBoolean("use_speed_limit", v.toBoolean())
+            "speedLimit" -> NativeConfig.setShort("speed_limit", (v.toIntOrNull() ?: 100).coerceIn(0, 9999).toShort())
+            "fsrSharpening" -> NativeConfig.setInt("fsr_sharpening_slider", v.toIntOrNull() ?: 0)
+            "astcRecompression" -> NativeConfig.setInt("astc_recompression", v.toIntOrNull() ?: 0)
+            "sampleShading" -> NativeConfig.setInt("sample_shading_fraction", v.toIntOrNull() ?: 0)
+            "frameGen" -> NativeConfig.setBoolean("frame_gen", v.toBoolean())
+            "frameGenTarget" -> NativeConfig.setInt("frame_gen_target_rate", v.toIntOrNull() ?: 0)
+            "patchOldQcom" -> NativeConfig.setBoolean("patch_old_qcom_drivers", v.toBoolean())
+            // "output_engine" AudioEngine 序数：0=Auto 2=SDL3 3=Null
+            //   （Android 构建未编 Cubeb，选 1 会回退 Null —— 不提供该项）
+            "outputEngine" -> NativeConfig.setInt("output_engine", v.toIntOrNull() ?: 2)
+            // 体感：App 侧传感器桥（不进核心配置）
+            "motion" -> setMotionSensorEnabled(appContext, v.toBoolean())
 
             // ---- 音频 ----
             "audioVolume" -> NativeConfig.setByte("volume", (v.toFloatOrNull() ?: 100f).coerceIn(0f, 100f).toInt().toByte())
@@ -884,13 +1028,22 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             else -> android.util.Log.w("EdenEngine", "unknown eden option: $name=$value")
         }
         // 热应用运行时项（分辨率/精度/滤镜等）+ 落盘
-        // ★ 批量事务中不逐键落盘：一次 applyCoreOptions 会连发 27 个
+        // ★ 批量事务中不逐键落盘：一次 applyCoreOptions 会连发 27+ 个
         //   setCoreOption，旧实现每键都全量重写 config.ini（27 次文件写
         //   + 27 次 Reload 类热应用，进游戏/改设置明显卡顿）—— 批内只改
         //   内存值，endCoreOptionsBatch 统一 applySettings + 落盘一次。
         if (batchingCoreOptions) return
         try {
-            NativeLibrary.applySettings()
+            // ★★ v4 修复（启动期竞态）：applySettings() = System::ApplySettings()
+            //   + HIDCore::ReloadInputDevices()。上游 App 全仓库从不调它；
+            //   若在 System::Load 进行中调用（loadRom 后的重放、启动期改设置），
+            //   ReloadInputDevices 会与 HID 服务初始化并发 → 启动失败/闪退
+            //   （“大多数游戏进不去”的时序根因之一）。仅在游戏已真正运行
+            //   （m_is_running=true，即 Load 完成后）才热应用；否则配置值已
+            //   写入 Settings::values，核心在本次/下次启动读取时自然生效。
+            if (NativeLibrary.isRunning()) {
+                NativeLibrary.applySettings()
+            }
             NativeConfig.saveGlobalConfig()
         } catch (_: Throwable) {
         }
@@ -912,7 +1065,12 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         batchingCoreOptions = false
         if (!coreInitialized) return
         try {
-            NativeLibrary.applySettings()
+            // ★★ v4：同 applyEdenOption 尾部的 isRunning 门控 —— 启动期
+            //   （System::Load 进行中，IsRunning=false）绝不热应用，避免
+            //   ReloadInputDevices/Renderer 刷新与核心初始化竞态。
+            if (NativeLibrary.isRunning()) {
+                NativeLibrary.applySettings()
+            }
             NativeConfig.saveGlobalConfig()
         } catch (_: Throwable) {
         }
