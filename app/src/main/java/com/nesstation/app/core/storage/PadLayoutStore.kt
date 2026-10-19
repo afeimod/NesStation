@@ -983,7 +983,7 @@ class PadLayout {
     var edDmaAccuracy: String = "0"       // 0=默认(默认) 1=不安全 2=安全
     var edMemoryLayout: String = "0"      // 0=4GB(默认) 1=6GB 2=8GB 3=10GB 4=12GB
     var edDocked: String = "0"            // 0=掌机(默认·Android) 1=底座（影响分辨率/性能档）
-    var edLanguage: String = "1"          // 0=日 1=美英(默认) 2=法 3=德 4=意 5=西 6=中文 7=韩 8=荷 9=葡 10=俄 15=简中 16=繁中
+    var edLanguage: String = "15"         // ★ v5：默认简体中文（Language::ChineseSimplified=15）；0=日 1=美英 2=法 3=德 4=意 5=西 6=中文 7=韩 8=荷 9=葡 10=俄 15=简中 16=繁中
     var edRegion: String = "1"            // 0=日 1=美(默认) 2=欧 3=澳 4=中 5=韩 6=台
     var edGameSpeed: String = "1"         // 0=0.5x 1=1x(默认) 2=2x 3=4x 4=8x（快进联动）
     var edAudioVolume: String = "100"     // 0..100
@@ -3429,8 +3429,17 @@ object PadLayoutStore {
                 if (it.toIntOrNull() in 0..4) it else "0" }
             edDocked = (p.getString("ed_docked", "0") ?: "0").let {
                 if (it in listOf("0", "1")) it else "0" }
-            edLanguage = (p.getString("ed_language", "1") ?: "1").let {
-                if (it.toIntOrNull() in 0..19) it else "1" }
+            // ★ v5：默认主机语言改为简体中文（15）。一次性迁移旧默认 "1"（美英）
+            //   —— 仅在用户从未主动改过（值=旧默认 且未写迁移标记）时替换；
+            //   迁移标记随任意一次保存写入，之后用户手选任何语言（含回英语）不再覆盖。
+            edLanguage = (p.getString("ed_language", "15") ?: "15").let {
+                when {
+                    it.toIntOrNull() !in 0..19 -> "15"                    // 非法值 → 新默认
+                    it == "1" && !p.getBoolean("ed_lang_migrated_v5", false) ->
+                        "15"                                             // 旧默认（未迁移过）→ 简中
+                    else -> it                                            // 全新安装/已迁移/用户手选：保留
+                }
+            }
             edRegion = (p.getString("ed_region", "1") ?: "1").let {
                 if (it.toIntOrNull() in 0..6) it else "1" }
             edGameSpeed = (p.getString("ed_game_speed", "1") ?: "1").let {
@@ -4362,6 +4371,9 @@ object PadLayoutStore {
             putString("ed_memory_layout", layout.edMemoryLayout)
             putString("ed_docked", layout.edDocked)
             putString("ed_language", layout.edLanguage)
+            // ★ v5：语言默认迁移标记 —— 本次保存后，下次 load 不再把用户手选的
+            //   任意语言（如英语 "1"）迁移回简中（迁移只在旧默认上一次性执行）。
+            putBoolean("ed_lang_migrated_v5", true)
             putString("ed_region", layout.edRegion)
             putString("ed_game_speed", layout.edGameSpeed)
             putString("ed_audio_volume", layout.edAudioVolume)

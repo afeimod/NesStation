@@ -53,6 +53,35 @@ object EdenNative {
                     false
                 } else {
                     System.loadLibrary("yuzu-android")
+                    // ★★ v5（Switch 无声根因修复）★★
+                    // SDL3 以静态库链入 libyuzu-android.so：其 JNI_OnLoad 只完成
+                    // JavaVM 捕获与 org.libsdl.app.* 回调表注册；而
+                    // SDL_SetMainReady() —— SDL_InitSubSystem(SDL_INIT_AUDIO) 的
+                    // 前置门槛 —— 只能经 Java 侧 SDL.setupJNI()（SDLActivity /
+                    // SDLAudioManager / SDLControllerManager 三类 nativeSetupJNI →
+                    // checkJNIReady 三者齐备）触发。上游 NativeLibrary.init 顺序
+                    // 即 loadLibrary → SDL.setupJNI() → initJvm，此处对齐。
+                    // 缺失时 SDL_InitSubSystem 直接返回 "Application didn't
+                    // initialize properly" → SDLSinkStream::SDL_OpenAudioDeviceStream
+                    // 失败仅 LOG_CRITICAL 后静默返回 → 游戏正常运行但全程无声。
+                    //
+                    // org.libsdl.app.* 12 个桥接类【随 v5 vendored 进
+                    // app/src/main/java/org/libsdl/app/】（取自上游 Eden 构建实际
+                    // 链接的 SDL3 预编译包 crueter-ci/SDL3 3.4.14-…-147a8ee32d 的
+                    // java/ 目录 —— core/eden 的 CMake 在 YUZU_USE_BUNDLED_SDL3
+                    // 分支本会把它们拷到 externals/generated/sdl/java 供上游 app
+                    // sourceSets 编译；NesStation 集成裁掉了 app 侧 gradle 引用，
+                    // 故在此直接编入，版本与 libyuzu-android.so 内静态链接的 SDL3
+                    // 严格一致）。旧版 3.7 APK 中的同类来自已废弃的 ARMSX2 java
+                    // sourceSet，当前仓库已无任何模块编译它们，无重复类风险。
+                    try {
+                        org.libsdl.app.SDL.setupJNI()
+                    } catch (t: Throwable) {
+                        // 桥接异常不阻断核心加载（SDL 音频/热插拔降级，游戏可玩）
+                        android.util.Log.w(
+                            TAG, "SDL.setupJNI failed — Switch audio/SDL features degraded", t
+                        )
+                    }
                     true
                 }
             } catch (e: UnsatisfiedLinkError) {

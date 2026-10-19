@@ -993,7 +993,8 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             //   Kotlin "1".toBoolean() == false —— 旧代码“底座模式”永远开不了
             //   （用户选底座实际写入掌机）。改为显式比较。
             "docked" -> NativeConfig.setBoolean("use_docked_mode", v == "1")
-            "language" -> NativeConfig.setInt("language_index", v.toIntOrNull() ?: 1)
+            // ★ v5：回退默认 15（Language::ChineseSimplified，简体中文）
+            "language" -> NativeConfig.setInt("language_index", v.toIntOrNull() ?: 15)
             "region" -> NativeConfig.setInt("region_index", v.toIntOrNull() ?: 1)
             "gameSpeed" -> {
                 _baseGameSpeed = (v.toIntOrNull() ?: 1).coerceIn(0, 4)

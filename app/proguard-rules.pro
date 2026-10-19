@@ -251,3 +251,17 @@
 # expected" → SIGABRT（与 Switch 双闪退同类型的隐患路径）。
 # keep 接口即可钉住 invoke 方法名（覆写方法必须与被 keep 的接口方法同名）。
 -keep class kotlin.jvm.functions.** { *; }
+
+# ─── org.libsdl.app.*（SDL3 Java 桥接契约）★ v5 Switch 无声根因修复 ───────
+# libyuzu-android.so 的 JNI_OnLoad（SDL_android.c）在 System.loadLibrary
+# 时即 FindClass("org/libsdl/app/SDLActivity" | SDLAudioManager |
+# SDLControllerManager | SDLInputConnection | HIDDeviceManager) 注册回调表，
+# 并依赖 Java 侧 SDL.setupJNI()（EdenNative.ensureLoaded 调用）触发三类
+# nativeSetupJNI → checkJNIReady → SDL_SetMainReady() —— SDL_InitSubSystem
+# (SDL_INIT_AUDIO) 的前置门槛。R8 看不到任何 native FindClass 引用：
+#   · 改名 SDLActivity → a.b 会使 FindClass 失败 → 回调表注册失败
+#   · 删除"未被 Java 引用"的 HIDDeviceBLESteamController 等类同样致命
+#   · 改名 nativeSetupJNI/nativeAddAudioDevice 等 external 方法 → Java 调用
+#     UnsatisfiedLinkError → 音频门槛永不打开 → Switch 全程无声
+# 与上方 org.yuzu.yuzu_emu 契约同模式：整个包 keep。
+-keep class org.libsdl.app.** { *; }

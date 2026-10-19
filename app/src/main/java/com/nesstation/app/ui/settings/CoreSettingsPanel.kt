@@ -2680,9 +2680,9 @@ fun CoreSettingsPanel(
                     padLayout.edDocked
                 ) { updateLayout(padLayout.copy {edDocked = it}) }
                 DropdownRow("主机语言",
-                    // Language 枚举序数（节选常用项；6=汉、15=简中、16=繁中）。
-                    listOf("1" to "英语 (默认)", "0" to "日语", "6" to "中文",
-                           "15" to "简体中文", "16" to "繁体中文",
+                    // Language 枚举序数（★ v5：默认改为 15=简体中文；6=中文(汉)、16=繁中）。
+                    listOf("15" to "简体中文 (默认)", "0" to "日语", "6" to "中文",
+                           "16" to "繁体中文", "1" to "英语 (美)",
                            "2" to "法语", "3" to "德语", "4" to "意大利语",
                            "5" to "西班牙语", "7" to "韩语", "8" to "荷兰语",
                            "9" to "葡萄牙语", "10" to "俄语"),
