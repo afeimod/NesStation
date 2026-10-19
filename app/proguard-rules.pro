@@ -206,3 +206,36 @@
 # （与 Azahar/Dolphin 契约同型问题，见上方历史教训）。整个包 keep。
 # (org.ppsspp.ppsspp keep 规则已随 libretro 化重写移除 —— 该 Java 包与
 # libppsspp_jni.so 不再存在于工程中；libretro 核心无任何 Java 契约类。
+
+# ─── Eden（Switch）核心 JNI 契约 ★★ 闪退修复 ★★ ──────────────────────────
+# libyuzu-android.so（:eden-core 模块从 core/eden/ 源码 CPM+CMake 编译）在
+# NativeLibrary.initJvm → Common::Android::Initialize
+# （core/eden/src/common/android/id_cache.cpp）里用 FindClass 按字符串名查找
+# 本包下的契约类并缓存 MethodID/FieldID：
+#   · disk_shader_cache/DiskShaderCacheProgress 及其内部枚举
+#     $LoadCallbackStage（tombstone 实锤的闪退点）；
+#   · model/Game、model/GameDir、model/Patch、overlay/model/OverlayControlData、
+#     features/input/model/PlayerInput、features/input/YuzuInputDevice、
+#     applets/keyboard/SoftwareKeyboard 及其 $KeyboardConfig/$KeyboardData；
+#   · NativeLibrary / utils/NativeConfig / utils/NativeFreedrenoConfig /
+#     features/input/NativeInput 还通过 JNI 符号名（Java_org_yuzu_yuzu_1emu_*）
+#     绑定 native 方法；
+#   · id_cache.cpp 还会 FindClass("kotlin/Pair") 并按字段名访问 first/second
+#     （OverlayControlData 的构造器描述符同样引用 Lkotlin/Pair;）。
+# 这些引用 R8 全部不可见 —— release 混淆会把没有 keep 的类改名/裁剪
+# （@Keep 只保护标注元素本身，不保护嵌套类：外层 object 保住了名字，
+# 内部枚举 DiskShaderCacheProgress$LoadCallbackStage 仍被改名），随后：
+#   FindClass 抛 ClassNotFoundException（pending）→ 未清理异常继续调
+#   NewGlobalRef/下一个 FindClass → ART "No pending exception expected"
+#   → SIGABRT 进程闪退（Java 层 try/catch 无法捕获）。
+# 触发路径（两处同根因）：
+#   ① 进 Switch 核心设置：CoreSettingsPanel 的 EdenKeysFirmwareSection /
+#      EdenDriverSection LaunchedEffect → EdenEngine.coreInitOnce →
+#      EdenNative.ensureInitialized → NativeLibrary.initJvm → abort；
+#   ② 启动 Switch 游戏：EmulatorScreen loadRom 协程 → EdenEngine.G →
+#      ensureInitialized → initJvm → abort。
+# 处理：与上方 citra/dolphinemu/drastic 契约同模式，整个包 keep；
+# kotlin.Pair 一并 keep（tombstone 中 gc.a/zc.w0 等 kotlin-stdlib 类已被
+# 混淆改名，证明本工程 R8 会重命名 kotlin 类）。
+-keep class org.yuzu.yuzu_emu.** { *; }
+-keep class kotlin.Pair { *; }

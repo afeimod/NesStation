@@ -3,6 +3,8 @@
 
 #include <jni.h>
 
+#include <string>
+
 #include "applets/software_keyboard.h"
 #include "applets/web_browser.h"
 #include "common/android/id_cache.h"
@@ -462,6 +464,40 @@ namespace Common::Android {
     }
 #endif
 
+    // ★ NesStation 闪退加固（No pending exception expected SIGABRT）。
+    //
+    //   背景：FindClass 失败会在当前线程留下 pending 的
+    //   ClassNotFoundException；若不清异常继续调用任何 JNI 函数
+    //   （NewGlobalRef / 下一个 FindClass / GetMethodID ...），ART 将直接
+    //   abort 进程（SIGABRT，Java 层无法捕获）。release 混淆构建下
+    //   org.yuzu.yuzu_emu 契约包未被 keep 时（内部枚举
+    //   DiskShaderCacheProgress$LoadCallbackStage 被改名），"进 Switch 核心
+    //   设置"与"启动 Switch 游戏"两条路径（EdenEngine.coreInitOnce /
+    //   loadRom → ensureInitialized → initJvm → Initialize）均在此 100%
+    //   闪退。
+    //
+    //   处理：FindClass 失败时清掉挂起异常，改抛一个带缺失类名、可捕获的
+    //   RuntimeException 并返回 nullptr；调用方（Initialize）立即返回。
+    //   initJvm 把 pending 异常带回 Java 调用栈，EdenEngine.coreInitOnce 的
+    //   catch (Throwable) 由此可以优雅降级并提示错误，而不是杀进程。
+    static jclass FindClassOrThrow(JNIEnv* env, const char* name) {
+        jclass local = env->FindClass(name);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            const jclass runtime_exception = env->FindClass("java/lang/RuntimeException");
+            if (runtime_exception != nullptr && !env->ExceptionCheck()) {
+                env->ThrowNew(
+                    runtime_exception,
+                    (std::string("Eden JNI contract class missing: ") + name +
+                     " (check -keep rules: org.yuzu.yuzu_emu.** / kotlin.Pair in "
+                     "app/proguard-rules.pro)")
+                        .c_str());
+            }
+            return nullptr;
+        }
+        return local;
+    }
+
 void Initialize(JavaVM* vm, JNIEnv *env) {
     s_java_vm = vm;
     InitFFmpegOnLoad(vm);
@@ -471,14 +507,36 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     }
 
     // Initialize Java classes
-    const jclass native_library_class = env->FindClass("org/yuzu/yuzu_emu/NativeLibrary");
+    // ★ 应用侧契约类的 FindClass 一律走 FindClassOrThrow：失败 → 可捕获
+    //   RuntimeException（带缺失类名）并立即返回；java/lang/* 为 boot
+    //   classpath 类（R8 不可改名/裁剪），保持原样即可。
+    const jclass native_library_class =
+        FindClassOrThrow(env, "org/yuzu/yuzu_emu/NativeLibrary");
+    if (native_library_class == nullptr) {
+        return;
+    }
     s_native_library_class = reinterpret_cast<jclass>(env->NewGlobalRef(native_library_class));
-    s_disk_cache_progress_class = reinterpret_cast<jclass>(env->NewGlobalRef(
-        env->FindClass("org/yuzu/yuzu_emu/disk_shader_cache/DiskShaderCacheProgress")));
-    s_load_callback_stage_class = reinterpret_cast<jclass>(env->NewGlobalRef(env->FindClass(
-        "org/yuzu/yuzu_emu/disk_shader_cache/DiskShaderCacheProgress$LoadCallbackStage")));
 
-    const jclass game_dir_class = env->FindClass("org/yuzu/yuzu_emu/model/GameDir");
+    const jclass disk_cache_progress_class =
+        FindClassOrThrow(env, "org/yuzu/yuzu_emu/disk_shader_cache/DiskShaderCacheProgress");
+    if (disk_cache_progress_class == nullptr) {
+        return;
+    }
+    s_disk_cache_progress_class =
+        reinterpret_cast<jclass>(env->NewGlobalRef(disk_cache_progress_class));
+
+    const jclass load_callback_stage_class = FindClassOrThrow(
+        env, "org/yuzu/yuzu_emu/disk_shader_cache/DiskShaderCacheProgress$LoadCallbackStage");
+    if (load_callback_stage_class == nullptr) {
+        return;
+    }
+    s_load_callback_stage_class =
+        reinterpret_cast<jclass>(env->NewGlobalRef(load_callback_stage_class));
+
+    const jclass game_dir_class = FindClassOrThrow(env, "org/yuzu/yuzu_emu/model/GameDir");
+    if (game_dir_class == nullptr) {
+        return;
+    }
     s_game_dir_class = reinterpret_cast<jclass>(env->NewGlobalRef(game_dir_class));
     s_game_dir_constructor = env->GetMethodID(game_dir_class, "<init>",
                                               "(Ljava/lang/String;Z)V");
@@ -502,7 +560,10 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     s_on_program_changed =
         env->GetStaticMethodID(s_native_library_class, "onProgramChanged", "(I)V");
 
-    const jclass game_class = env->FindClass("org/yuzu/yuzu_emu/model/Game");
+    const jclass game_class = FindClassOrThrow(env, "org/yuzu/yuzu_emu/model/Game");
+    if (game_class == nullptr) {
+        return;
+    }
     s_game_class = reinterpret_cast<jclass>(env->NewGlobalRef(game_class));
     s_game_constructor = env->GetMethodID(game_class, "<init>",
                                           "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/"
@@ -519,7 +580,12 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     s_string_class = reinterpret_cast<jclass>(env->NewGlobalRef(string_class));
     env->DeleteLocalRef(string_class);
 
-    const jclass pair_class = env->FindClass("kotlin/Pair");
+    // ★ kotlin/Pair：kotlin-stdlib 类，本工程 R8 会混淆改名（tombstone 中
+    //   gc.a / zc.w0 等 kotlin 类均被改名），必须 keep + 这里同样检查。
+    const jclass pair_class = FindClassOrThrow(env, "kotlin/Pair");
+    if (pair_class == nullptr) {
+        return;
+    }
     s_pair_class = reinterpret_cast<jclass>(env->NewGlobalRef(pair_class));
     s_pair_constructor =
         env->GetMethodID(pair_class, "<init>", "(Ljava/lang/Object;Ljava/lang/Object;)V");
@@ -528,7 +594,10 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     env->DeleteLocalRef(pair_class);
 
     const jclass overlay_control_data_class =
-        env->FindClass("org/yuzu/yuzu_emu/overlay/model/OverlayControlData");
+        FindClassOrThrow(env, "org/yuzu/yuzu_emu/overlay/model/OverlayControlData");
+    if (overlay_control_data_class == nullptr) {
+        return;
+    }
     s_overlay_control_data_class =
         reinterpret_cast<jclass>(env->NewGlobalRef(overlay_control_data_class));
     s_overlay_control_data_constructor =
@@ -548,7 +617,10 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
         env->GetFieldID(overlay_control_data_class, "individualScale", "F");
     env->DeleteLocalRef(overlay_control_data_class);
 
-    const jclass patch_class = env->FindClass("org/yuzu/yuzu_emu/model/Patch");
+    const jclass patch_class = FindClassOrThrow(env, "org/yuzu/yuzu_emu/model/Patch");
+    if (patch_class == nullptr) {
+        return;
+    }
     s_patch_class = reinterpret_cast<jclass>(env->NewGlobalRef(patch_class));
     s_patch_constructor = env->GetMethodID(
         patch_class, "<init>",
@@ -580,7 +652,10 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     env->DeleteLocalRef(boolean_class);
 
     const jclass player_input_class =
-        env->FindClass("org/yuzu/yuzu_emu/features/input/model/PlayerInput");
+        FindClassOrThrow(env, "org/yuzu/yuzu_emu/features/input/model/PlayerInput");
+    if (player_input_class == nullptr) {
+        return;
+    }
     s_player_input_class = reinterpret_cast<jclass>(env->NewGlobalRef(player_input_class));
     s_player_input_constructor = env->GetMethodID(
         player_input_class, "<init>",
@@ -611,7 +686,10 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     env->DeleteLocalRef(player_input_class);
 
     const jclass yuzu_input_device_interface =
-        env->FindClass("org/yuzu/yuzu_emu/features/input/YuzuInputDevice");
+        FindClassOrThrow(env, "org/yuzu/yuzu_emu/features/input/YuzuInputDevice");
+    if (yuzu_input_device_interface == nullptr) {
+        return;
+    }
     s_yuzu_input_device_interface =
         reinterpret_cast<jclass>(env->NewGlobalRef(yuzu_input_device_interface));
     s_yuzu_input_device_get_name =

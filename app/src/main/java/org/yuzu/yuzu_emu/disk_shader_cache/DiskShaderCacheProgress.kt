@@ -33,6 +33,13 @@ object DiskShaderCacheProgress {
     }
 
     // Equivalent to VideoCore::LoadCallbackStage
+    // ★ 闪退修复：id_cache.cpp 会 FindClass("...DiskShaderCacheProgress$
+    //   LoadCallbackStage") 按名查找本枚举。@Keep 标在外层 object 上时，
+    //   R8 不会保护嵌套类 —— release 混淆把本枚举改名后 FindClass 抛
+    //   ClassNotFoundException → ART "No pending exception expected" SIGABRT
+    //   （即"进 Switch 核心设置 / Switch 游戏启动"双闪退根因）。
+    //   此处显式 @Keep 双保险（proguard-rules.pro 已整包 keep）。
+    @Keep
     enum class LoadCallbackStage {
         Prepare, Build, Complete
     }
