@@ -214,6 +214,19 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
      *   与 EmulatorScreen 的 loadRom 协程可能同时进入本函数，旧版无锁双
      *   初始化（System/GPU 驱动参数各跑两遍，时序交叉后状态不可预测）。
      *   加 @Synchronized 串行化，后到者直接命中 coreInitialized=true 返回。
+     *
+     * ★★★ 闪退修复 v3（“进 Switch 核心设置 / 启动 Switch 游戏必闪退”根因）：
+     *   时序对齐 eden 上游 —— areKeysPresent() 及一切 keys/固件状态探测
+     *   必须排在 initializeSystem(false) 之后。旧版把 refreshKeysState 放在
+     *   第 5 步（initializeSystem 之前），此时 System 未初始化、
+     *   GetFilesystem() 为空 shared_ptr，native 实现无条件
+     *   CreateFactories(*GetFilesystem()) → 空指针段错误
+     *   （tombstone: CreateFactories+324 SIGSEGV fault addr 0x0，Kotlin
+     *   catch 拦不住段错误）。上游 eden 由 DirectoryInitialization.start()
+     *   在 Application 启动时先 initializeSystem(false)，UI 层永远不会
+     *   早于此调用，故上游不崩 —— 本函数即 NesStation 版 DirectoryInitialization，
+     *   对齐上游顺序：setAppDirectory → initializeGlobalConfig →
+     *   initializeSystem(false) → 之后才允许状态探测。
      */
     @Synchronized
     fun coreInitOnce(): Boolean {
@@ -247,15 +260,22 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             NativeConfig.setNandDir(nandDir().absolutePath)
             NativeConfig.setSdmcDir(sdmcDir().absolutePath)
 
-            // 5. keys 自动识别（assets → filesDir/eden/keys/）
+            // 5. keys 自动识别（assets → filesDir/eden/keys/）——
+            //    ★ 本步只复制文件，不做状态探测（areKeysPresent 依赖 System
+            //    已初始化，必须等第 6 步完成，见函数头 v3 修复注释）。
             installKeysFromAssets(ctx)
-            refreshKeysState("assets/手动")
 
-            // 6. 系统初始化（System().Initialize + EmulationSession）
+            // 6. 系统初始化（System().Initialize + EmulationSession）——
+            //    上游 DirectoryInitialization.start() 同款时序：先 initializeSystem，
+            //    之后 UI 才允许 areKeysPresent()/isFirmwareAvailable()。
             NativeLibrary.initializeSystem(false)
             try { NativeLibrary.logDeviceInfo() } catch (_: Throwable) {}
 
-            // 7. 应用当前持久化的设置（PadLayoutStore ed* 门面值）
+            // 7. keys/固件状态探测（System 文件系统已就绪 —— 安全；native 侧
+            //    areKeysPresent 已同步加空指针兜底，见 native.cpp v3 修复）
+            refreshKeysState("assets/手动")
+
+            // 8. 应用当前持久化的设置（PadLayoutStore ed* 门面值）
             applyPersistedSettings()
 
             coreInitialized = true

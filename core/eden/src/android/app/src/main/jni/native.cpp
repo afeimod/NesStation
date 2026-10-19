@@ -1761,7 +1761,22 @@ void Java_org_yuzu_yuzu_1emu_NativeLibrary_clearFilesystemProvider(JNIEnv* env, 
 
 jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_areKeysPresent(JNIEnv* env, jobject jobj) {
     auto& system = EmulationSession::GetInstance().System();
-    system.GetFileSystemController().CreateFactories(*system.GetFilesystem());
+    // ★ NesStation 集成修复（v3 tombstone 根因：“进 Switch 核心设置 / 启动
+    //   Switch 游戏必闪退”—— FileSystemController::CreateFactories+324
+    //   SIGSEGV, fault addr 0x0, null pointer dereference）：
+    //   上游 eden 依赖 DirectoryInitialization.start() 在 Application 启动
+    //   时先执行 initializeSystem(false)，UI 层永远不会在 System 未初始化
+    //   时进入本函数，因此上游不崩。NesStation 的设置页首帧（EdenKeys-
+    //   FirmwareSection.refresh）与 loadRom 预检可能在 initializeSystem
+    //   之前调用本函数——此时 System().GetFilesystem() 为空 shared_ptr，
+    //   旧实现无条件 *解引用 后传给 CreateFactories → 空指针段错误
+    //   （Kotlin catch 拦不住 native 段错误）。
+    //   密钥检测本身（ContentManager::AreKeysPresent = !KeyManager::
+    //   Instance().BaseDeriveNecessary()）只依赖 KeyManager 单例，无需
+    //   vfs/factories：文件系统未就绪时跳过工厂重建、直接查询密钥管理器。
+    if (const auto vfs = system.GetFilesystem()) {
+        system.GetFileSystemController().CreateFactories(*vfs);
+    }
     return ContentManager::AreKeysPresent();
 }
 
