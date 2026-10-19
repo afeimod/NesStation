@@ -498,6 +498,74 @@ namespace Common::Android {
         return local;
     }
 
+    // ★★★ 契约加固第二波（2026-10 tombstone 双闪退：
+    //   NoSuchMethodError "addNetPlayMessage(ILjava/lang/String;)V"）★★★
+    //
+    //   FindClass 加固只覆盖了“类名缺失”；方法/字段查找失败同样会挂起
+    //   NoSuchMethodError / NoSuchFieldError（pending exception）。本次
+    //   实锤链路：GetStaticMethodID(addNetPlayMessage) 失败 → 异常挂起
+    //   （代码未检查）→ 继续执行 clearChat / FS RegisterCallbacks（均不
+    //   做 pending-check，静默通过）→ SoftwareKeyboard::InitJNI 的
+    //   FindClass 触发 ART "No pending exception expected" → SIGABRT
+    //   （Java try/catch 无法捕获，进核心设置 / 启动游戏双双闪退）。
+    //
+    //   处理（与 FindClassOrThrow 同策略，按批次组织）：
+    //   · GetStaticMethodID / GetMethodID / GetFieldID 失败 → 立即清异常
+    //     并置 *ok=false（不中断批次，避免半更新状态）；
+    //   · 批次末统一 ThrowContractError（带缺失成员名，可捕获的
+    //     RuntimeException）并立即返回 —— initJvm 把异常带回 Java 调用栈，
+    //     EdenNative.ensureInitialized 的 catch 转为「核心不可用」。
+
+    static void ThrowContractError(JNIEnv* env, const char* what) {
+        const jclass runtime_exception = env->FindClass("java/lang/RuntimeException");
+        if (runtime_exception != nullptr && !env->ExceptionCheck()) {
+            env->ThrowNew(
+                runtime_exception,
+                (std::string("Eden JNI contract member missing: ") + what +
+                 " (check method signature / -keep rules in app sources)")
+                    .c_str());
+        }
+    }
+
+    static jmethodID GetStaticMethodIDSafe(JNIEnv* env, jclass clazz, const char* name,
+                                           const char* sig, bool* ok) {
+        jmethodID method = env->GetStaticMethodID(clazz, name, sig);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            if (ok != nullptr) {
+                *ok = false;
+            }
+            return nullptr;
+        }
+        return method;
+    }
+
+    static jmethodID GetMethodIDSafe(JNIEnv* env, jclass clazz, const char* name,
+                                     const char* sig, bool* ok) {
+        jmethodID method = env->GetMethodID(clazz, name, sig);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            if (ok != nullptr) {
+                *ok = false;
+            }
+            return nullptr;
+        }
+        return method;
+    }
+
+    static jfieldID GetFieldIDSafe(JNIEnv* env, jclass clazz, const char* name,
+                                   const char* sig, bool* ok) {
+        jfieldID field = env->GetFieldID(clazz, name, sig);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            if (ok != nullptr) {
+                *ok = false;
+            }
+            return nullptr;
+        }
+        return field;
+    }
+
 void Initialize(JavaVM* vm, JNIEnv *env) {
     s_java_vm = vm;
     InitFFmpegOnLoad(vm);
@@ -538,43 +606,71 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
         return;
     }
     s_game_dir_class = reinterpret_cast<jclass>(env->NewGlobalRef(game_dir_class));
-    s_game_dir_constructor = env->GetMethodID(game_dir_class, "<init>",
-                                              "(Ljava/lang/String;Z)V");
+    bool contract_ok = true;
+    s_game_dir_constructor =
+        GetMethodIDSafe(env, game_dir_class, "<init>", "(Ljava/lang/String;Z)V", &contract_ok);
     env->DeleteLocalRef(game_dir_class);
+    if (!contract_ok) {
+        ThrowContractError(env, "org/yuzu/yuzu_emu/model/GameDir <init>(String, boolean)");
+        return;
+    }
 
     // Initialize methods
-    s_exit_emulation_activity =
-        env->GetStaticMethodID(s_native_library_class, "exitEmulationActivity", "(I)V");
-    s_disk_cache_load_progress =
-        env->GetStaticMethodID(s_disk_cache_progress_class, "loadProgress", "(III)V");
-    s_copy_to_storage = env->GetStaticMethodID(s_native_library_class, "copyFileToStorage",
-                                               "(Ljava/lang/String;Ljava/lang/String;)Z");
-    s_file_exists = env->GetStaticMethodID(s_native_library_class, "exists",
-                                           "(Ljava/lang/String;)Z");
-    s_file_extension = env->GetStaticMethodID(s_native_library_class, "getFileExtension",
-                                              "(Ljava/lang/String;)Ljava/lang/String;");
-    s_on_emulation_started =
-        env->GetStaticMethodID(s_native_library_class, "onEmulationStarted", "()V");
-    s_on_emulation_stopped =
-        env->GetStaticMethodID(s_native_library_class, "onEmulationStopped", "(I)V");
-    s_on_program_changed =
-        env->GetStaticMethodID(s_native_library_class, "onProgramChanged", "(I)V");
+    contract_ok = true;
+    s_exit_emulation_activity = GetStaticMethodIDSafe(env, s_native_library_class,
+                                                      "exitEmulationActivity", "(I)V",
+                                                      &contract_ok);
+    s_disk_cache_load_progress = GetStaticMethodIDSafe(env, s_disk_cache_progress_class,
+                                                        "loadProgress", "(III)V", &contract_ok);
+    s_copy_to_storage =
+        GetStaticMethodIDSafe(env, s_native_library_class, "copyFileToStorage",
+                              "(Ljava/lang/String;Ljava/lang/String;)Z", &contract_ok);
+    s_file_exists = GetStaticMethodIDSafe(env, s_native_library_class, "exists",
+                                          "(Ljava/lang/String;)Z", &contract_ok);
+    s_file_extension = GetStaticMethodIDSafe(env, s_native_library_class, "getFileExtension",
+                                             "(Ljava/lang/String;)Ljava/lang/String;",
+                                             &contract_ok);
+    s_on_emulation_started = GetStaticMethodIDSafe(env, s_native_library_class,
+                                                   "onEmulationStarted", "()V", &contract_ok);
+    s_on_emulation_stopped = GetStaticMethodIDSafe(env, s_native_library_class,
+                                                   "onEmulationStopped", "(I)V", &contract_ok);
+    s_on_program_changed = GetStaticMethodIDSafe(env, s_native_library_class,
+                                                 "onProgramChanged", "(I)V", &contract_ok);
+    if (!contract_ok) {
+        ThrowContractError(env,
+                           "NativeLibrary static callbacks (exitEmulationActivity/"
+                           "copyFileToStorage/exists/getFileExtension/onEmulationStarted/"
+                           "onEmulationStopped/onProgramChanged) or DiskShaderCacheProgress."
+                           "loadProgress(III)");
+        return;
+    }
 
     const jclass game_class = FindClassOrThrow(env, "org/yuzu/yuzu_emu/model/Game");
     if (game_class == nullptr) {
         return;
     }
     s_game_class = reinterpret_cast<jclass>(env->NewGlobalRef(game_class));
-    s_game_constructor = env->GetMethodID(game_class, "<init>",
-                                          "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/"
-                                          "String;Ljava/lang/String;Ljava/lang/String;Z)V");
-    s_game_title_field = env->GetFieldID(game_class, "title", "Ljava/lang/String;");
-    s_game_path_field = env->GetFieldID(game_class, "path", "Ljava/lang/String;");
-    s_game_program_id_field = env->GetFieldID(game_class, "programId", "Ljava/lang/String;");
-    s_game_developer_field = env->GetFieldID(game_class, "developer", "Ljava/lang/String;");
-    s_game_version_field = env->GetFieldID(game_class, "version", "Ljava/lang/String;");
-    s_game_is_homebrew_field = env->GetFieldID(game_class, "isHomebrew", "Z");
+    contract_ok = true;
+    s_game_constructor = GetMethodIDSafe(
+        env, game_class, "<init>",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)V",
+        &contract_ok);
+    s_game_title_field =
+        GetFieldIDSafe(env, game_class, "title", "Ljava/lang/String;", &contract_ok);
+    s_game_path_field =
+        GetFieldIDSafe(env, game_class, "path", "Ljava/lang/String;", &contract_ok);
+    s_game_program_id_field =
+        GetFieldIDSafe(env, game_class, "programId", "Ljava/lang/String;", &contract_ok);
+    s_game_developer_field =
+        GetFieldIDSafe(env, game_class, "developer", "Ljava/lang/String;", &contract_ok);
+    s_game_version_field =
+        GetFieldIDSafe(env, game_class, "version", "Ljava/lang/String;", &contract_ok);
+    s_game_is_homebrew_field = GetFieldIDSafe(env, game_class, "isHomebrew", "Z", &contract_ok);
     env->DeleteLocalRef(game_class);
+    if (!contract_ok) {
+        ThrowContractError(env, "org/yuzu/yuzu_emu/model/Game <init>/fields");
+        return;
+    }
 
     const jclass string_class = env->FindClass("java/lang/String");
     s_string_class = reinterpret_cast<jclass>(env->NewGlobalRef(string_class));
@@ -587,11 +683,18 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
         return;
     }
     s_pair_class = reinterpret_cast<jclass>(env->NewGlobalRef(pair_class));
-    s_pair_constructor =
-        env->GetMethodID(pair_class, "<init>", "(Ljava/lang/Object;Ljava/lang/Object;)V");
-    s_pair_first_field = env->GetFieldID(pair_class, "first", "Ljava/lang/Object;");
-    s_pair_second_field = env->GetFieldID(pair_class, "second", "Ljava/lang/Object;");
+    contract_ok = true;
+    s_pair_constructor = GetMethodIDSafe(env, pair_class, "<init>",
+                                         "(Ljava/lang/Object;Ljava/lang/Object;)V", &contract_ok);
+    s_pair_first_field =
+        GetFieldIDSafe(env, pair_class, "first", "Ljava/lang/Object;", &contract_ok);
+    s_pair_second_field =
+        GetFieldIDSafe(env, pair_class, "second", "Ljava/lang/Object;", &contract_ok);
     env->DeleteLocalRef(pair_class);
+    if (!contract_ok) {
+        ThrowContractError(env, "kotlin/Pair <init>(Object, Object) / first / second");
+        return;
+    }
 
     const jclass overlay_control_data_class =
         FindClassOrThrow(env, "org/yuzu/yuzu_emu/overlay/model/OverlayControlData");
@@ -600,38 +703,54 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     }
     s_overlay_control_data_class =
         reinterpret_cast<jclass>(env->NewGlobalRef(overlay_control_data_class));
-    s_overlay_control_data_constructor =
-        env->GetMethodID(overlay_control_data_class, "<init>",
-                         "(Ljava/lang/String;ZLkotlin/Pair;Lkotlin/Pair;Lkotlin/Pair;F)V");
-    s_overlay_control_data_id_field =
-        env->GetFieldID(overlay_control_data_class, "id", "Ljava/lang/String;");
+    contract_ok = true;
+    s_overlay_control_data_constructor = GetMethodIDSafe(
+        env, overlay_control_data_class, "<init>",
+        "(Ljava/lang/String;ZLkotlin/Pair;Lkotlin/Pair;Lkotlin/Pair;F)V", &contract_ok);
+    s_overlay_control_data_id_field = GetFieldIDSafe(env, overlay_control_data_class, "id",
+                                                      "Ljava/lang/String;", &contract_ok);
     s_overlay_control_data_enabled_field =
-        env->GetFieldID(overlay_control_data_class, "enabled", "Z");
-    s_overlay_control_data_landscape_position_field =
-        env->GetFieldID(overlay_control_data_class, "landscapePosition", "Lkotlin/Pair;");
-    s_overlay_control_data_portrait_position_field =
-        env->GetFieldID(overlay_control_data_class, "portraitPosition", "Lkotlin/Pair;");
-    s_overlay_control_data_foldable_position_field =
-        env->GetFieldID(overlay_control_data_class, "foldablePosition", "Lkotlin/Pair;");
+        GetFieldIDSafe(env, overlay_control_data_class, "enabled", "Z", &contract_ok);
+    s_overlay_control_data_landscape_position_field = GetFieldIDSafe(
+        env, overlay_control_data_class, "landscapePosition", "Lkotlin/Pair;", &contract_ok);
+    s_overlay_control_data_portrait_position_field = GetFieldIDSafe(
+        env, overlay_control_data_class, "portraitPosition", "Lkotlin/Pair;", &contract_ok);
+    s_overlay_control_data_foldable_position_field = GetFieldIDSafe(
+        env, overlay_control_data_class, "foldablePosition", "Lkotlin/Pair;", &contract_ok);
     s_overlay_control_data_individual_scale_field =
-        env->GetFieldID(overlay_control_data_class, "individualScale", "F");
+        GetFieldIDSafe(env, overlay_control_data_class, "individualScale", "F", &contract_ok);
     env->DeleteLocalRef(overlay_control_data_class);
+    if (!contract_ok) {
+        ThrowContractError(env,
+                           "org/yuzu/yuzu_emu/overlay/model/OverlayControlData <init>/fields");
+        return;
+    }
 
     const jclass patch_class = FindClassOrThrow(env, "org/yuzu/yuzu_emu/model/Patch");
     if (patch_class == nullptr) {
         return;
     }
     s_patch_class = reinterpret_cast<jclass>(env->NewGlobalRef(patch_class));
-    s_patch_constructor = env->GetMethodID(
-        patch_class, "<init>",
-        "(ZLjava/lang/String;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;JI)V");
-    s_patch_enabled_field = env->GetFieldID(patch_class, "enabled", "Z");
-    s_patch_name_field = env->GetFieldID(patch_class, "name", "Ljava/lang/String;");
-    s_patch_version_field = env->GetFieldID(patch_class, "version", "Ljava/lang/String;");
-    s_patch_type_field = env->GetFieldID(patch_class, "type", "I");
-    s_patch_program_id_field = env->GetFieldID(patch_class, "programId", "Ljava/lang/String;");
-    s_patch_title_id_field = env->GetFieldID(patch_class, "titleId", "Ljava/lang/String;");
+    contract_ok = true;
+    s_patch_constructor = GetMethodIDSafe(
+        env, patch_class, "<init>",
+        "(ZLjava/lang/String;Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;JI)V",
+        &contract_ok);
+    s_patch_enabled_field = GetFieldIDSafe(env, patch_class, "enabled", "Z", &contract_ok);
+    s_patch_name_field =
+        GetFieldIDSafe(env, patch_class, "name", "Ljava/lang/String;", &contract_ok);
+    s_patch_version_field =
+        GetFieldIDSafe(env, patch_class, "version", "Ljava/lang/String;", &contract_ok);
+    s_patch_type_field = GetFieldIDSafe(env, patch_class, "type", "I", &contract_ok);
+    s_patch_program_id_field =
+        GetFieldIDSafe(env, patch_class, "programId", "Ljava/lang/String;", &contract_ok);
+    s_patch_title_id_field =
+        GetFieldIDSafe(env, patch_class, "titleId", "Ljava/lang/String;", &contract_ok);
     env->DeleteLocalRef(patch_class);
+    if (!contract_ok) {
+        ThrowContractError(env, "org/yuzu/yuzu_emu/model/Patch <init>/fields");
+        return;
+    }
 
     const jclass double_class = env->FindClass("java/lang/Double");
     s_double_class = reinterpret_cast<jclass>(env->NewGlobalRef(double_class));
@@ -657,33 +776,41 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
         return;
     }
     s_player_input_class = reinterpret_cast<jclass>(env->NewGlobalRef(player_input_class));
-    s_player_input_constructor = env->GetMethodID(
-        player_input_class, "<init>",
-        "(Z[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;ZIJJJJLjava/lang/String;Z)V");
-    s_player_input_connected_field = env->GetFieldID(player_input_class, "connected", "Z");
-    s_player_input_buttons_field =
-        env->GetFieldID(player_input_class, "buttons", "[Ljava/lang/String;");
-    s_player_input_analogs_field =
-        env->GetFieldID(player_input_class, "analogs", "[Ljava/lang/String;");
-    s_player_input_motions_field =
-        env->GetFieldID(player_input_class, "motions", "[Ljava/lang/String;");
+    contract_ok = true;
+    s_player_input_constructor = GetMethodIDSafe(
+        env, player_input_class, "<init>",
+        "(Z[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;ZIJJJJLjava/lang/String;Z)V",
+        &contract_ok);
+    s_player_input_connected_field =
+        GetFieldIDSafe(env, player_input_class, "connected", "Z", &contract_ok);
+    s_player_input_buttons_field = GetFieldIDSafe(env, player_input_class, "buttons",
+                                                  "[Ljava/lang/String;", &contract_ok);
+    s_player_input_analogs_field = GetFieldIDSafe(env, player_input_class, "analogs",
+                                                  "[Ljava/lang/String;", &contract_ok);
+    s_player_input_motions_field = GetFieldIDSafe(env, player_input_class, "motions",
+                                                  "[Ljava/lang/String;", &contract_ok);
     s_player_input_vibration_enabled_field =
-        env->GetFieldID(player_input_class, "vibrationEnabled", "Z");
+        GetFieldIDSafe(env, player_input_class, "vibrationEnabled", "Z", &contract_ok);
     s_player_input_vibration_strength_field =
-        env->GetFieldID(player_input_class, "vibrationStrength", "I");
+        GetFieldIDSafe(env, player_input_class, "vibrationStrength", "I", &contract_ok);
     s_player_input_body_color_left_field =
-        env->GetFieldID(player_input_class, "bodyColorLeft", "J");
+        GetFieldIDSafe(env, player_input_class, "bodyColorLeft", "J", &contract_ok);
     s_player_input_body_color_right_field =
-        env->GetFieldID(player_input_class, "bodyColorRight", "J");
+        GetFieldIDSafe(env, player_input_class, "bodyColorRight", "J", &contract_ok);
     s_player_input_button_color_left_field =
-        env->GetFieldID(player_input_class, "buttonColorLeft", "J");
+        GetFieldIDSafe(env, player_input_class, "buttonColorLeft", "J", &contract_ok);
     s_player_input_button_color_right_field =
-        env->GetFieldID(player_input_class, "buttonColorRight", "J");
-    s_player_input_profile_name_field =
-        env->GetFieldID(player_input_class, "profileName", "Ljava/lang/String;");
+        GetFieldIDSafe(env, player_input_class, "buttonColorRight", "J", &contract_ok);
+    s_player_input_profile_name_field = GetFieldIDSafe(env, player_input_class, "profileName",
+                                                       "Ljava/lang/String;", &contract_ok);
     s_player_input_use_system_vibrator_field =
-        env->GetFieldID(player_input_class, "useSystemVibrator", "Z");
+        GetFieldIDSafe(env, player_input_class, "useSystemVibrator", "Z", &contract_ok);
     env->DeleteLocalRef(player_input_class);
+    if (!contract_ok) {
+        ThrowContractError(env,
+                           "org/yuzu/yuzu_emu/features/input/model/PlayerInput <init>/fields");
+        return;
+    }
 
     const jclass yuzu_input_device_interface =
         FindClassOrThrow(env, "org/yuzu/yuzu_emu/features/input/YuzuInputDevice");
@@ -692,29 +819,55 @@ void Initialize(JavaVM* vm, JNIEnv *env) {
     }
     s_yuzu_input_device_interface =
         reinterpret_cast<jclass>(env->NewGlobalRef(yuzu_input_device_interface));
-    s_yuzu_input_device_get_name =
-        env->GetMethodID(yuzu_input_device_interface, "getName", "()Ljava/lang/String;");
-    s_yuzu_input_device_get_guid =
-        env->GetMethodID(yuzu_input_device_interface, "getGUID", "()Ljava/lang/String;");
-    s_yuzu_input_device_get_port = env->GetMethodID(yuzu_input_device_interface, "getPort",
-                                                    "()I");
-    s_yuzu_input_device_get_supports_vibration =
-        env->GetMethodID(yuzu_input_device_interface, "getSupportsVibration", "()Z");
-    s_yuzu_input_device_vibrate = env->GetMethodID(yuzu_input_device_interface, "vibrate",
-                                                   "(F)V");
-    s_yuzu_input_device_get_axes =
-        env->GetMethodID(yuzu_input_device_interface, "getAxes", "()[Ljava/lang/Integer;");
-    s_yuzu_input_device_has_keys =
-        env->GetMethodID(yuzu_input_device_interface, "hasKeys", "([I)[Z");
+    contract_ok = true;
+    s_yuzu_input_device_get_name = GetMethodIDSafe(env, yuzu_input_device_interface, "getName",
+                                                   "()Ljava/lang/String;", &contract_ok);
+    s_yuzu_input_device_get_guid = GetMethodIDSafe(env, yuzu_input_device_interface, "getGUID",
+                                                   "()Ljava/lang/String;", &contract_ok);
+    s_yuzu_input_device_get_port =
+        GetMethodIDSafe(env, yuzu_input_device_interface, "getPort", "()I", &contract_ok);
+    s_yuzu_input_device_get_supports_vibration = GetMethodIDSafe(
+        env, yuzu_input_device_interface, "getSupportsVibration", "()Z", &contract_ok);
+    s_yuzu_input_device_vibrate =
+        GetMethodIDSafe(env, yuzu_input_device_interface, "vibrate", "(F)V", &contract_ok);
+    s_yuzu_input_device_get_axes = GetMethodIDSafe(env, yuzu_input_device_interface, "getAxes",
+                                                   "()[Ljava/lang/Integer;", &contract_ok);
+    s_yuzu_input_device_has_keys = GetMethodIDSafe(env, yuzu_input_device_interface, "hasKeys",
+                                                   "([I)[Z", &contract_ok);
     env->DeleteLocalRef(yuzu_input_device_interface);
-    s_add_netplay_message = env->GetStaticMethodID(s_native_library_class, "addNetPlayMessage",
-                                                   "(ILjava/lang/String;)V");
-    s_clear_chat = env->GetStaticMethodID(s_native_library_class, "clearChat", "()V");
+    if (!contract_ok) {
+        ThrowContractError(env, "org/yuzu/yuzu_emu/features/input/YuzuInputDevice methods");
+        return;
+    }
+
+    // ★ 2026-10 双闪退 tombstone 实锤点：
+    //   no static method
+    //   "Lorg/yuzu/yuzu_emu/NativeLibrary;.addNetPlayMessage(ILjava/lang/String;)V"
+    //   此前 Java 侧误写为 addNetPlayMessage(String, Int)（编译产物
+    //   (Ljava/lang/String;I)V），与 native 查找不匹配 → NoSuchMethodError
+    //   挂起 → 其后 SoftwareKeyboard::InitJNI 的 FindClass 触发 ART
+    //   "No pending exception expected" → SIGABRT（进核心设置 / 启动游戏
+    //   双路径闪退）。Java 侧已改为 addNetPlayMessage(type: Int,
+    //   message: String)；此处查找签名保持不变，两侧必须严格一致。
+    contract_ok = true;
+    s_add_netplay_message = GetStaticMethodIDSafe(env, s_native_library_class,
+                                                  "addNetPlayMessage",
+                                                  "(ILjava/lang/String;)V", &contract_ok);
+    s_clear_chat =
+        GetStaticMethodIDSafe(env, s_native_library_class, "clearChat", "()V", &contract_ok);
+    if (!contract_ok) {
+        ThrowContractError(env,
+                           "NativeLibrary.addNetPlayMessage(int, String) / clearChat()");
+        return;
+    }
 
     // Initialize Android Storage
+    // （fs_android.cpp 的 RegisterCallbacks 已同步加固：失败清异常留空，
+    //   调用点均判空降级，不再挂起异常。）
     Common::FS::Android::RegisterCallbacks(env, s_native_library_class);
 
     // Initialize applets
+    // （software_keyboard.cpp / web_browser.cpp 的 InitJNI 已同步加固。）
     Common::Android::SoftwareKeyboard::InitJNI(env);
     Common::Android::WebBrowser::InitJNI(env);
 }

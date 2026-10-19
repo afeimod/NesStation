@@ -149,9 +149,21 @@ object NativeLibrary {
 
     @Keep
     @JvmStatic
-    fun addNetPlayMessage(message: String, playerId: Int) {
+    fun addNetPlayMessage(type: Int, message: String) {
         // 网络对战消息 —— NesStation 的 Switch 集成不使用 eden 内置 netplay，
         // 留空实现保住 C++ 侧回调注册（GetStaticMethodID 需要）。
+        // ★★★ 参数顺序必须与 native 侧查找签名严格一致（本次双闪退根因）：
+        //   id_cache.cpp:
+        //     GetStaticMethodID(clazz, "addNetPlayMessage", "(ILjava/lang/String;)V")
+        //   即【Int 在前、String 在后】。此前版本误写成 (message: String,
+        //   playerId: Int)，编译产物为 (Ljava/lang/String;I)V，与 native
+        //   查找不匹配 → GetStaticMethodID 抛 NoSuchMethodError（挂起）→
+        //   下一个 FindClass（SoftwareKeyboard::InitJNI）触发 ART
+        //   "No pending exception expected" → SIGABRT 闪退
+        //   （tombstone: no static method
+        //     "Lorg/yuzu/yuzu_emu/NativeLibrary;.addNetPlayMessage(ILjava/lang/String;)V"）。
+        //   调用方为 multiplayer.cpp 的 AndroidMultiplayer::AddNetPlayMessage
+        //   (jint type, jstring msg) —— type 为 NetPlayStatus 枚举值。
     }
 
     @Keep

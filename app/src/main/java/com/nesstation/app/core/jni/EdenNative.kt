@@ -76,7 +76,18 @@ object EdenNative {
         if (!ensureLoaded()) return false
         synchronized(this) {
             if (!jvmInitialized) {
-                org.yuzu.yuzu_emu.NativeLibrary.initJvm()
+                try {
+                    org.yuzu.yuzu_emu.NativeLibrary.initJvm()
+                } catch (t: Throwable) {
+                    // ★ 兜底加固：id_cache.cpp 的 FindClassOrThrow /
+                    //   GetStaticMethodIDOrThrow 在契约缺失时会抛出带
+                    //   缺失类/方法名的可捕获 RuntimeException。此处兜住
+                    //   并转成「核心不可用」（调用方 coreInitOnce 会设置
+                    //   lastErrorText 并在 UI 呈现），而不是让异常向
+                    //   协程层传播导致 App 崩溃。
+                    android.util.Log.e(TAG, "initJvm (Common::Android::Initialize) failed", t)
+                    return false
+                }
                 jvmInitialized = true
             }
         }

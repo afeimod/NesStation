@@ -239,3 +239,15 @@
 # 混淆改名，证明本工程 R8 会重命名 kotlin 类）。
 -keep class org.yuzu.yuzu_emu.** { *; }
 -keep class kotlin.Pair { *; }
+
+# ─── Kotlin 函数接口（Function0/1/2…）JNI 反射契约 ★ 加固 ─────────────────
+# installFileToNand / verifyInstalledContents / verifyGameContents 等
+# native 导出函数接收 Kotlin lambda 回调（编译为 kotlin.jvm.functions.Function2
+# 的实现）。native 侧（native.cpp）用 GetObjectClass(jcallback) +
+# GetMethodID("invoke", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;")
+# 按名字符串反射调用 —— R8 看不到这个引用，混淆改名 FunctionN.invoke 会
+# 连锁改名全部实现类（JVM 覆写要求同名）→ 固件安装/校验时抛
+# NoSuchMethodError（挂起）→ 下一个 JNI 调用 "No pending exception
+# expected" → SIGABRT（与 Switch 双闪退同类型的隐患路径）。
+# keep 接口即可钉住 invoke 方法名（覆写方法必须与被 keep 的接口方法同名）。
+-keep class kotlin.jvm.functions.** { *; }

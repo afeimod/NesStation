@@ -140,6 +140,16 @@ void AndroidKeyboard::InitializeKeyboard(
 void AndroidKeyboard::ShowNormalKeyboard() const {
     LOG_DEBUG(Frontend, "called, backend requested to show the normal software keyboard.");
 
+    // ★ 契约加固：executeNormal 不可用（InitJNI 时类/方法缺失已清异常留空）
+    //   时不再盲目 CallStaticObjectMethod（null jclass / null MethodID 会让
+    //   ART 直接 abort）—— 提交 Cancel 结果优雅降级。
+    if (s_software_keyboard_class == nullptr || s_swkbd_execute_normal == nullptr) {
+        LOG_WARNING(Frontend,
+                    "SoftwareKeyboard JNI contract unavailable; submitting cancel.");
+        SubmitNormalText(ResultData{"", Service::AM::Frontend::SwkbdResult::Cancel});
+        return;
+    }
+
     ResultData data{};
 
     // Pivot to a new thread, as we cannot call GetEnvForThread() from a Fiber.
@@ -182,6 +192,13 @@ void AndroidKeyboard::ShowInlineKeyboard(
              appear_parameters.type, appear_parameters.key_disable_flags.raw,
              appear_parameters.key_top_as_floating, appear_parameters.enable_backspace_button,
              appear_parameters.enable_return_button, appear_parameters.disable_cancel_button);
+
+    // ★ 契约加固：executeInline 不可用时跳过（不拉起键盘），避免 null
+    //   jclass / null MethodID 直接 abort。
+    if (s_software_keyboard_class == nullptr || s_swkbd_execute_inline == nullptr) {
+        LOG_WARNING(Frontend, "SoftwareKeyboard executeInline unavailable; skipping.");
+        return;
+    }
 
     // Pivot to a new thread, as we cannot call GetEnvForThread() from a Fiber.
     m_is_inline_active = true;
@@ -258,20 +275,62 @@ void AndroidKeyboard::SubmitNormalText(const ResultData& data) const {
 }
 
 void InitJNI(JNIEnv* env) {
-    s_software_keyboard_class = reinterpret_cast<jclass>(
-        env->NewGlobalRef(env->FindClass("org/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard")));
-    s_keyboard_config_class = reinterpret_cast<jclass>(env->NewGlobalRef(
-        env->FindClass("org/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard$KeyboardConfig")));
-    s_keyboard_data_class = reinterpret_cast<jclass>(env->NewGlobalRef(
-        env->FindClass("org/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard$KeyboardData")));
+    // ★ 契约加固（与 id_cache.cpp FindClassOrThrow 同策略）：类/方法缺失
+    //   → 清挂起异常 → 留空指针（调用点已判空降级），而不是让挂起的
+    //   ClassNotFoundException / NoSuchMethodError 在
+    //   Common::Android::Initialize 其后的 JNI 调用中触发 ART
+    //   "No pending exception expected" SIGABRT。
+    s_software_keyboard_class = nullptr;
+    s_keyboard_config_class = nullptr;
+    s_keyboard_data_class = nullptr;
+    s_swkbd_execute_normal = nullptr;
+    s_swkbd_execute_inline = nullptr;
+
+    const jclass keyboard_class =
+        env->FindClass("org/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return;
+    }
+    s_software_keyboard_class =
+        reinterpret_cast<jclass>(env->NewGlobalRef(keyboard_class));
+    env->DeleteLocalRef(keyboard_class);
+
+    const jclass keyboard_config_class = env->FindClass(
+        "org/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard$KeyboardConfig");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    } else {
+        s_keyboard_config_class =
+            reinterpret_cast<jclass>(env->NewGlobalRef(keyboard_config_class));
+        env->DeleteLocalRef(keyboard_config_class);
+    }
+
+    const jclass keyboard_data_class = env->FindClass(
+        "org/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard$KeyboardData");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    } else {
+        s_keyboard_data_class =
+            reinterpret_cast<jclass>(env->NewGlobalRef(keyboard_data_class));
+        env->DeleteLocalRef(keyboard_data_class);
+    }
 
     s_swkbd_execute_normal = env->GetStaticMethodID(
         s_software_keyboard_class, "executeNormal",
         "(Lorg/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard$KeyboardConfig;)Lorg/yuzu/yuzu_emu/"
         "applets/keyboard/SoftwareKeyboard$KeyboardData;");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        s_swkbd_execute_normal = nullptr;
+    }
     s_swkbd_execute_inline = env->GetStaticMethodID(
         s_software_keyboard_class, "executeInline",
         "(Lorg/yuzu/yuzu_emu/applets/keyboard/SoftwareKeyboard$KeyboardConfig;)V");
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        s_swkbd_execute_inline = nullptr;
+    }
 }
 
 void CleanupJNI(JNIEnv* env) {
