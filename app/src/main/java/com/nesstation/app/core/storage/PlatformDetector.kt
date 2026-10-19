@@ -56,6 +56,13 @@ object PlatformDetector {
         // 它会把 emulator BIOS 合集 zip 误判成街机；.bin 也太宽泛，不在此表。
     )
 
+    /**
+     * 压缩包扩展名（zip/7z/gz）。zip 可探头判定内容；7z/gz 无法用
+     * java.util.zip 探头。Switch（Eden）等核心无法直接运行压缩包内
+     * 的游戏 —— 平台页导入/重扫按 [SWITCH_DIRECT_EXTENSIONS] 过滤。
+     */
+    val ARCHIVE_EXTENSIONS = setOf("zip", "7z", "gz")
+
     // ===== 自动扫描（存储权限授予后的自动导入）专用严格判定 =====
     //
     // ★ 修复「授权后扫描乱七八糟的 zip/apk，全进了 arcade 和 dos/md 列表」：
@@ -134,6 +141,17 @@ object PlatformDetector {
         // .iso/.pbp/.chd/.elf 撞名严重，仍走平台页 hint 消歧，不进白名单）
         "cso" to GamePlatform.PSP
     )
+
+    /**
+     * ★ Switch（Eden）可直接启动的裸格式（与上游 Game.extensions 对齐）。
+     *
+     * Eden 核心不支持压缩包 ROM（不能从 .zip/.7z/.gz 里直接跑 Switch 游戏），
+     * 且 zip 探头（SAF 流 ZipInputStream 逐条目读）在大目录上极慢 ——
+     * “Switch 游戏扫描太慢、连 zip 都扫”的根治：Switch 平台页的文件夹
+     * 导入 / 重扫 / 手动多选一律只收这些直连格式，zip/7z/gz 直接跳过
+     * （既不再逐包探头拖慢扫描，也不会把固件 zip/资源 zip 误判成游戏入库）。
+     */
+    val SWITCH_DIRECT_EXTENSIONS: Set<String> = setOf("xci", "nsp", "nca", "nro")
 
     /**
      * 自动扫描严格判定（存储权限授予后的自动导入专用）。
@@ -268,6 +286,9 @@ object PlatformDetector {
     fun detectForRefresh(file: File, hintPlatform: GamePlatform? = null): GamePlatform? {
         val ext = file.extension.lowercase()
         if (ext == "apk") return null
+        // ★ Switch 页重扫不认压缩包：Eden 核心无法直接运行 zip 内的 Switch
+        //   游戏，探头只会白白拖慢重扫，还可能把固件 zip（全 .nca）误入库。
+        if (ext in ARCHIVE_EXTENSIONS && hintPlatform == GamePlatform.NSWITCH) return null
         // 3DS 页 .app（裸 CXI）跟随 hint —— 与 detectFromUri 同规则，
         // 保证刷新重扫不丢手动导入的 3DS .app 条目。
         if (ext == "app" && hintPlatform == GamePlatform.N3DS) return GamePlatform.N3DS
@@ -291,6 +312,9 @@ object PlatformDetector {
     ): GamePlatform? {
         val ext = fileName.substringAfterLast('.', "").lowercase()
         if (ext == "apk") return null
+        // ★ Switch 页重扫不认压缩包（同 detectForRefresh：Eden 跑不了 zip，
+        //   探头拖慢重扫且固件 zip 会误入库）。
+        if (ext in ARCHIVE_EXTENSIONS && hintPlatform == GamePlatform.NSWITCH) return null
         // 3DS 页 .app（裸 CXI）跟随 hint —— 与 detectFromUri 同规则，
         // 保证刷新重扫不丢手动导入的 3DS .app 条目。
         if (ext == "app" && hintPlatform == GamePlatform.N3DS) return GamePlatform.N3DS

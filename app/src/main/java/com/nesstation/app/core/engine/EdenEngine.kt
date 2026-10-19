@@ -208,7 +208,14 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     /**
      * 核心一次性初始化（幂等）：目录/驱动参数/全局配置/系统初始化。
      * loadRom 与设置面板（CoreSettingsPanel 的密钥/固件/驱动分区）共用。
+     *
+     * ★★ 闪退修复（“启动 Switch 游戏 100% 闪退”根因之一）：并发安全 ——
+     *   设置页 EdenKeysFirmwareSection/EdenDriverSection 两个 LaunchedEffect
+     *   与 EmulatorScreen 的 loadRom 协程可能同时进入本函数，旧版无锁双
+     *   初始化（System/GPU 驱动参数各跑两遍，时序交叉后状态不可预测）。
+     *   加 @Synchronized 串行化，后到者直接命中 coreInitialized=true 返回。
      */
+    @Synchronized
     fun coreInitOnce(): Boolean {
         if (coreInitialized) return true
         val ctx = appContext ?: run {
@@ -776,7 +783,30 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     // ------------------------------------------------------------------
 
     override fun setCoreOption(key: String, value: String) {
-        if (!coreInitialized && !EdenNative.loaded) return
+        // ★★ 闪退修复（“启动 Switch 游戏 100% 闪退”根因）★★
+        // 旧守卫 `if (!coreInitialized && !EdenNative.loaded) return` 是逻辑
+        // 错误：NesApp.onCreate 里 probeAvailability() 已把 EdenNative.loaded
+        // 置 true（只加载 .so，未建 NativeConfig），于是 EmulatorScreen 初始
+        // 组合时先于 loadRom 运行的那次 applyCoreOptions（27 个 ed* 键连发）
+        // 全部越过守卫 → applyEdenOption → NativeConfig.saveGlobalConfig() →
+        // native 侧 global_config->SaveAllValues()，而 global_config 还是
+        // nullptr（initializeGlobalConfig 尚未执行）→ Config::SaveValues()
+        // 读 this->global（空指针 + 偏移 48）→ SIGSEGV，Java try/catch 拦不住
+        // native 段错误 → 进程必死（堆栈：Config::SaveValues()+32 ←
+        // AndroidConfig::SaveAllValues()+16 ← setCoreOption）。
+        //
+        // 正确语义：未完成 coreInitOnce 就绝不碰 NativeConfig —— 本次下发
+        // 直接跳过即可（EmulatorScreen 在 loadRom 成功后会重放整表设置，
+        // 见 EmulatorScreen “loadRom 完成后重放”分支，不会丢配置）。
+        if (!EdenNative.loaded) return
+        if (!coreInitialized) {
+            android.util.Log.i(
+                "EdenEngine",
+                "setCoreOption($key) skipped: core not initialized yet " +
+                    "(will be re-applied after loadRom)"
+            )
+            return
+        }
         try {
             applyEdenOption(key.removePrefix("EdenEngine/"), value)
         } catch (t: Throwable) {
@@ -834,6 +864,33 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             else -> android.util.Log.w("EdenEngine", "unknown eden option: $name=$value")
         }
         // 热应用运行时项（分辨率/精度/滤镜等）+ 落盘
+        // ★ 批量事务中不逐键落盘：一次 applyCoreOptions 会连发 27 个
+        //   setCoreOption，旧实现每键都全量重写 config.ini（27 次文件写
+        //   + 27 次 Reload 类热应用，进游戏/改设置明显卡顿）—— 批内只改
+        //   内存值，endCoreOptionsBatch 统一 applySettings + 落盘一次。
+        if (batchingCoreOptions) return
+        try {
+            NativeLibrary.applySettings()
+            NativeConfig.saveGlobalConfig()
+        } catch (_: Throwable) {
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 设置批处理（EmulatorEngine.beginCoreOptionsBatch/endCoreOptionsBatch
+    // 契约实现：批内只改内存，结束时统一热应用 + 一次落盘）
+    // ------------------------------------------------------------------
+
+    @Volatile private var batchingCoreOptions = false
+
+    override fun beginCoreOptionsBatch() {
+        batchingCoreOptions = true
+    }
+
+    override fun endCoreOptionsBatch() {
+        if (!batchingCoreOptions) return
+        batchingCoreOptions = false
+        if (!coreInitialized) return
         try {
             NativeLibrary.applySettings()
             NativeConfig.saveGlobalConfig()

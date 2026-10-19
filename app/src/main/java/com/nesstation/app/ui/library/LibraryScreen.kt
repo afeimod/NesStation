@@ -292,7 +292,12 @@ fun LibraryScreen(
                     // If this throws SecurityException the persistable URI
                     // permission was revoked (e.g. user cleared app data);
                     // we skip this folder instead of deleting its games.
-                    val romFiles = scanUriForRomsRecursive(context, folderUri, folderUri, maxDepth = 5)
+                    // ★ Switch（Eden）重扫只收直连格式：压缩包不收集 →
+                    //   不探头（快）+ 旧版误导入的 zip 条目不在 foundUris →
+                    //   自动从 Switch 列表清理。
+                    val restrictExts = if (hintPlatform == GamePlatform.NSWITCH)
+                        com.nesstation.app.core.storage.PlatformDetector.SWITCH_DIRECT_EXTENSIONS else null
+                    val romFiles = scanUriForRomsRecursive(context, folderUri, folderUri, maxDepth = 5, restrictExts = restrictExts)
 
                     // Scan succeeded — even an empty list means the folder has
                     // no ROM files right now, so entries no longer listed here
@@ -385,7 +390,11 @@ fun LibraryScreen(
                             stepRemoved += toRemove.size
                         }
                     } else {
-                        val romFiles = scanLocalFolderForRoms(folder, maxDepth = 5)
+                        // ★ Switch（Eden）本地重扫只收直连格式（同 SAF 分支：
+                        //   不探头提速 + 旧误导入 zip 条目自动清理）。
+                        val restrictExts = if (hintPlatform == GamePlatform.NSWITCH)
+                            com.nesstation.app.core.storage.PlatformDetector.SWITCH_DIRECT_EXTENSIONS else null
+                        val romFiles = scanLocalFolderForRoms(folder, maxDepth = 5, restrictExts = restrictExts)
                         val folderAbs = folder.absolutePath
 
                         // Remove games under this folder whose file no longer
@@ -568,6 +577,26 @@ fun LibraryScreen(
         val pickedExts = picked.map { it.ext }.toSet()
         val hasCue = "cue" in pickedExts
         val hasCcd = "ccd" in pickedExts
+        // ★ Switch 页手动多选：压缩包一律跳过（Eden 跑不了 zip，导入了也
+        //   无法启动；避免误导入 + 避免 SAF 逐包探头拖慢导入）。
+        if (hintPlatform == GamePlatform.NSWITCH) {
+            val switchOnly = picked.filter { it.ext in
+                com.nesstation.app.core.storage.PlatformDetector.SWITCH_DIRECT_EXTENSIONS }
+            val skippedArchives = picked.size - switchOnly.size
+            if (switchOnly.isEmpty()) {
+                dialogMsg = "所选文件没有 Switch 直连格式（.xci / .nsp / .nca / .nro）\n" +
+                    "Switch 核心不支持直接运行压缩包内的游戏，请先解压"
+                return
+            }
+            picked.clear()
+            picked.addAll(switchOnly)
+            if (skippedArchives > 0) {
+                android.util.Log.i(
+                    "LibraryScreen",
+                    "Switch import: skipped $skippedArchives non-direct-format file(s)"
+                )
+            }
+        }
         // .bin is only skipped if we have a .cue (it's a CD data track).
         // Without .cue, a .bin is likely a SEGA MD cart dump — keep it.
         val skipIfCue = setOf("img", "bin", "ccd", "sub", "iso")
@@ -676,10 +705,21 @@ fun LibraryScreen(
         }
 
         // Recursively scan the selected folder for ROM files
-        val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5)
+        // ★★ Switch（Eden）扫描修复（“太慢/连 zip 都扫”）★★：只收
+        //   xci/nsp/nca/nro 直连格式 —— Eden 核心跑不了压缩包，旧扫描把
+        //   目录里每个 zip/7z 都收集起来逐包 SAF 探头（大目录极慢），
+        //   还会把固件 zip（全 .nca）等误判成 Switch 游戏入库。
+        val restrictExts = if (hintPlatform == GamePlatform.NSWITCH)
+            com.nesstation.app.core.storage.PlatformDetector.SWITCH_DIRECT_EXTENSIONS else null
+        val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5, restrictExts = restrictExts)
         if (romFiles.isEmpty()) {
-            dialogMsg = "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd .3ds .cci .cxi .app .wua .wud .wux .wuhb .rpx）\n" +
-                "（.cia 是安装包不是可直接启动镜像 —— 请用「安装CIA」入口安装）"
+            dialogMsg = if (hintPlatform == GamePlatform.NSWITCH)
+                "所选文件夹未找到 Switch 游戏文件（支持 .xci / .nsp / .nca / .nro）\n" +
+                    "Switch 核心不支持直接运行压缩包内的游戏（zip/7z 请先解压）；\n" +
+                    "密钥（prod.keys）可在 设置 → 核心设置 → Switch 里安装。"
+            else
+                "所选文件夹未找到ROM文件（支持 .nes .smc .sfc .gb .gbc .gba .fds .md .smd .gen .sms .gg .sg .zip .7z .dosz .cue .chd .3ds .cci .cxi .app .wua .wud .wux .wuhb .rpx）\n" +
+                    "（.cia 是安装包不是可直接启动镜像 —— 请用「安装CIA」入口安装）"
             return
         }
         // Save the folder URI so the Refresh button can re-scan it
@@ -1463,6 +1503,68 @@ fun LibraryScreen(
                 }
             }
 
+            // ===== ★ Switch（Eden）密钥提示横幅（"没有密钥要提示加载密钥"）=====
+            //   进入 Switch 平台页时后台探测 areKeysPresent()，缺失即显示
+            //   横幅 + 「加载密钥」按钮（SAF 选 .keys → installKeysFromUri
+            //   即时生效），不再等玩家启动游戏失败后才知道缺密钥。
+            var edenKeysMissing by remember { mutableStateOf(false) }
+            var edenKeysCheckDone by remember { mutableStateOf(false) }
+            val edenKeyPickerLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { uri ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                scope.launch(Dispatchers.IO) {
+                    val engine = com.nesstation.app.core.engine.EdenEngine.get()
+                    val err = engine.installKeysFromUri(context, uri)
+                    edenKeysMissing = try {
+                        org.yuzu.yuzu_emu.NativeLibrary.areKeysPresent().not()
+                    } catch (_: Throwable) { false }
+                    dialogMsg = err ?: "密钥安装成功（加密游戏可正常启动，无需重启应用）"
+                }
+            }
+            LaunchedEffect(selectedPlatform) {
+                edenKeysCheckDone = false
+                if (selectedPlatform != GamePlatform.NSWITCH) return@LaunchedEffect
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val engine = com.nesstation.app.core.engine.EdenEngine.get()
+                    edenKeysMissing = try {
+                        engine.coreInitOnce()
+                        org.yuzu.yuzu_emu.NativeLibrary.areKeysPresent().not()
+                    } catch (_: Throwable) { false }
+                    edenKeysCheckDone = true
+                }
+            }
+            if (selectedPlatform == GamePlatform.NSWITCH && edenKeysCheckDone && edenKeysMissing) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 34.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF7A1F1F).copy(alpha = 0.55f))
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "未安装 Switch 密钥（prod.keys）—— 加密游戏无法启动 / 解密。",
+                        color = Color(0xFFFFC0C0),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = {
+                            try {
+                                edenKeyPickerLauncher.launch(arrayOf("*/*"))
+                            } catch (_: android.content.ActivityNotFoundException) {
+                                dialogMsg = "系统文件选择器不可用"
+                            } catch (_: Exception) {
+                                dialogMsg = "无法打开文件选择器"
+                            }
+                        }
+                    ) { Text("加载密钥", fontSize = 11.sp) }
+                }
+            }
+
             // ===== 封面流主体 =====
             Box(
                 modifier = Modifier
@@ -1609,9 +1711,16 @@ fun LibraryScreen(
 
         // Recursively scan the chosen folder for ROM files (same logic
         // as the SAF folder picker callback above).
-        val romFiles = scanLocalFolderForRoms(folder, maxDepth = 5)
+        // ★ Switch（Eden）本地导入：只收直连格式（同 SAF 路径修复）。
+        val restrictExts = if (hintPlatform == GamePlatform.NSWITCH)
+            com.nesstation.app.core.storage.PlatformDetector.SWITCH_DIRECT_EXTENSIONS else null
+        val romFiles = scanLocalFolderForRoms(folder, maxDepth = 5, restrictExts = restrictExts)
         if (romFiles.isEmpty()) {
-            dialogMsg = "所选文件夹未找到ROM文件（支持 ${ROM_EXTENSIONS.joinToString()}）"
+            dialogMsg = if (hintPlatform == GamePlatform.NSWITCH)
+                "所选文件夹未找到 Switch 游戏文件（支持 .xci / .nsp / .nca / .nro）\n" +
+                    "Switch 核心不支持直接运行压缩包内的游戏（zip/7z 请先解压）"
+            else
+                "所选文件夹未找到ROM文件（支持 ${ROM_EXTENSIONS.joinToString()}）"
             return
         }
         // === FIX: save the local folder path so the Refresh button
@@ -1972,7 +2081,11 @@ internal fun scanUriForRomsRecursive(
     context: android.content.Context,
     treeUri: Uri,
     folderUri: Uri,
-    maxDepth: Int
+    maxDepth: Int,
+    // ★ Switch（Eden）扫描提速/提准：非空时只收集白名单内扩展名的文件
+    //   （zip/7z/gz 等一律不收集 —— 既免掉逐 zip 的 SAF 流探头拖慢扫描，
+    //   也杜绝把固件 zip/资源 zip 误判成 Switch 游戏入库）。
+    restrictExts: Set<String>? = null
 ): List<Pair<String, Uri>> {
     val results = mutableListOf<Pair<String, Uri>>()
     if (maxDepth <= 0) return results
@@ -2027,10 +2140,11 @@ internal fun scanUriForRomsRecursive(
                 if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
                     // Recurse into subdirectory
                     val subUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-                    results.addAll(scanUriForRomsRecursive(context, treeUri, subUri, maxDepth - 1))
+                    results.addAll(scanUriForRomsRecursive(context, treeUri, subUri, maxDepth - 1, restrictExts))
                 } else {
                     val ext = name.substringAfterLast('.', "").lowercase()
-                    if (ext in ROM_EXTENSIONS) {
+                    if (ext in ROM_EXTENSIONS &&
+                        (restrictExts == null || ext in restrictExts)) {
                         val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
                         candidates.add(FileEntry(name, fileUri, ext))
                     }
@@ -2075,7 +2189,12 @@ internal fun scanUriForRomsRecursive(
  * Used by the built-in FileBrowserDialog when the system SAF picker is
  * unavailable (TV devices without DocumentsUI).
  */
-private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
+private fun scanLocalFolderForRoms(
+    folder: File,
+    maxDepth: Int,
+    // ★ Switch（Eden）专用：非空时只收集白名单内扩展名（zip/7z 不收集）
+    restrictExts: Set<String>? = null
+): List<File> {
     val results = mutableListOf<File>()
     if (maxDepth <= 0) return results
     val children = try {
@@ -2103,6 +2222,7 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
     for (f in fileChildren) {
         val ext = f.extension.lowercase()
         if (ext !in ROM_EXTENSIONS) continue
+        if (restrictExts != null && ext !in restrictExts) continue
         if (hasCue && ext in skipIfCue) continue
         if (hasCue.not() && hasCcd && ext in skipIfCcd) continue
         if (hasGdi && ext in skipIfGdi) continue
@@ -2110,7 +2230,7 @@ private fun scanLocalFolderForRoms(folder: File, maxDepth: Int): List<File> {
         results.add(f)
     }
     for (d in dirChildren) {
-        results.addAll(scanLocalFolderForRoms(d, maxDepth - 1))
+        results.addAll(scanLocalFolderForRoms(d, maxDepth - 1, restrictExts))
     }
     return results
 }

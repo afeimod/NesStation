@@ -1605,6 +1605,33 @@ fun EmulatorScreen(
     var loaded by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
+    // ★ Switch（Eden）缺密钥引导（“没有密钥要提示加载密钥”）★★
+    //   loadRom 因缺 prod.keys 失败时：错误面板附「加载密钥」按钮（SAF
+    //   选 .keys → installKeysFromUri 即时生效）；安装成功后自动重试
+    //   启动（edenBootRetry 加入加载 effect 的 key，无需玩家退出重进）。
+    var edenBootRetry by remember { mutableStateOf(0) }
+    val edenKeyPickLauncher = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            val edenEngine = engine as? com.nesstation.app.core.engine.EdenEngine
+            val err = edenEngine?.installKeysFromUri(context, uri)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                if (err == null) {
+                    Toast.makeText(
+                        context, "密钥安装成功，正在重新启动游戏…",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    errorMsg = null
+                    edenBootRetry++   // 重放加载 effect：重新校验密钥并启动
+                } else {
+                    errorMsg = err
+                }
+            }
+        }
+    }
+
     // 激烈核心会话提示（高清渲染被滤镜/GL 回退抑制等场景）：
     // 游戏加载成功后以 Toast 展示一次 —— 修复"高清渲染(2倍分辨率)设置
     // 无效果"这类"设置已开但被静默降级"的排查盲区。
@@ -2485,7 +2512,9 @@ fun EmulatorScreen(
     }
 
     // Load ROM
-    LaunchedEffect(game) {
+    // ★ 加载 effect 的 key 含 edenBootRetry：Switch 缺密钥引导安装成功后
+    //   （见 edenKeyPickLauncher）自动重试启动 —— 其它平台恒为 0，行为不变。
+    LaunchedEffect(game, edenBootRetry) {
         // Ensure previous game is fully cleaned up before loading a new one.
         // loadRom() internally calls cleanup(), but an explicit unload() here
         // guarantees the audio thread, emulation thread, and native core are
@@ -3603,6 +3632,26 @@ fun EmulatorScreen(
                             fontSize = 11.sp,
                             lineHeight = 15.sp
                         )
+                        // ★ Switch（Eden）缺密钥引导：错误提到密钥时给出
+                        //   可操作按钮（SAF 选 .keys → 安装成功自动重试启动），
+                        //   而不是让玩家自己去找设置页。
+                        if (platform == GamePlatform.NSWITCH &&
+                            errorMsg!!.contains("密钥")) {
+                            Spacer(Modifier.size(10.dp))
+                            androidx.compose.material3.Button(
+                                onClick = {
+                                    try {
+                                        edenKeyPickLauncher.launch(arrayOf("*/*"))
+                                    } catch (_: android.content.ActivityNotFoundException) {
+                                        errorMsg = "系统文件选择器不可用，请到 设置 → 核心设置 → Switch 里安装密钥"
+                                    } catch (_: Exception) {
+                                        errorMsg = "无法打开文件选择器，请到 设置 → 核心设置 → Switch 里安装密钥"
+                                    }
+                                }
+                            ) {
+                                Text("选择密钥文件（prod.keys）")
+                            }
+                        }
                         if (platform == GamePlatform.ARCADE) {
                             Spacer(Modifier.size(10.dp))
                             Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0x33FFFFFF)))
@@ -3616,11 +3665,33 @@ fun EmulatorScreen(
                         }
                     }
                 } else {
-                    Text(
-                        text = errorMsg ?: "正在加载…",
-                        color = Color.White,
-                        fontSize = 16.sp
-                    )
+                    Column(
+                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = errorMsg ?: "正在加载…",
+                            color = Color.White,
+                            fontSize = 16.sp
+                        )
+                        // ★ Switch（Eden）缺密钥引导（短错误文案分支）
+                        if (platform == GamePlatform.NSWITCH &&
+                            errorMsg.orEmpty().contains("密钥")) {
+                            Spacer(Modifier.size(12.dp))
+                            androidx.compose.material3.Button(
+                                onClick = {
+                                    try {
+                                        edenKeyPickLauncher.launch(arrayOf("*/*"))
+                                    } catch (_: android.content.ActivityNotFoundException) {
+                                        errorMsg = "系统文件选择器不可用，请到 设置 → 核心设置 → Switch 里安装密钥"
+                                    } catch (_: Exception) {
+                                        errorMsg = "无法打开文件选择器，请到 设置 → 核心设置 → Switch 里安装密钥"
+                                    }
+                                }
+                            ) {
+                                Text("选择密钥文件（prod.keys）")
+                            }
+                        }
+                    }
                 }
             }
         }

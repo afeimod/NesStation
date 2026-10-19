@@ -58,12 +58,27 @@ void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_unloadGlobalConfig(JNIEnv* env, 
     global_config.reset();
 }
 
+// ★ NesStation 集成修复（“启动 Switch 游戏 100% 闪退” native 侧根治）：
+//   旧版 reload/saveGlobalConfig 直接解引用 global_config —— 若前端
+//   （EdenEngine）在 initializeGlobalConfig 之前调用（集成方时序与上游
+//   YuzuApplication.onCreate 不同，EmulatorScreen 先于 loadRom 推送设置
+//   时就会发生），空指针流入 Config::SaveValues() 读 this->global →
+//   SIGSEGV（堆栈止于 Config::SaveValues()+32，Java 侧无法拦截）。
+//   这里统一判空并安全返回，配合引擎侧 setCoreOption 守卫双保险。
 void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_reloadGlobalConfig(JNIEnv* env, jobject obj) {
+    if (global_config == nullptr) {
+        LOG_ERROR(Frontend, "reloadGlobalConfig: global config not initialized");
+        return;
+    }
     global_config->AndroidConfig::ReloadAllValues();
     ResetFxChainToGlobal();
 }
 
 void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_saveGlobalConfig(JNIEnv* env, jobject obj) {
+    if (global_config == nullptr) {
+        LOG_ERROR(Frontend, "saveGlobalConfig: global config not initialized");
+        return;
+    }
     global_config->AndroidConfig::SaveAllValues();
 }
 
@@ -83,6 +98,10 @@ jboolean Java_org_yuzu_yuzu_1emu_utils_NativeConfig_isPerGameConfigLoaded(JNIEnv
 }
 
 void Java_org_yuzu_yuzu_1emu_utils_NativeConfig_savePerGameConfig(JNIEnv* env, jobject obj) {
+    if (per_game_config == nullptr) {
+        LOG_ERROR(Frontend, "savePerGameConfig: per-game config not initialized");
+        return;
+    }
     per_game_config->AndroidConfig::SaveAllValues();
 }
 

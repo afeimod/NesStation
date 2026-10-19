@@ -257,9 +257,19 @@ fun NeonLibraryScreen(
                 "已导入 DOS 游戏：$title"
             }
         } else {
-            val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5)
+            // ★ Switch（Eden）扫描修复：只收 xci/nsp/nca/nro 直连格式 ——
+            //   Eden 跑不了压缩包，旧扫描逐 zip SAF 探头极慢且会把固件 zip
+            //   （全 .nca）误判成 Switch 游戏入库（与 LibraryScreen 同修复）。
+            val restrictExts = if (hint == GamePlatform.NSWITCH)
+                com.nesstation.app.core.storage.PlatformDetector.SWITCH_DIRECT_EXTENSIONS else null
+            val romFiles = scanUriForRomsRecursive(context, uri, uri, maxDepth = 5, restrictExts = restrictExts)
             if (romFiles.isEmpty()) {
-                "所选文件夹未找到ROM文件（支持 ${ROM_EXTENSIONS.joinToString().take(80)}…）"
+                if (hint == GamePlatform.NSWITCH) {
+                    "所选文件夹未找到 Switch 游戏文件（支持 .xci / .nsp / .nca / .nro）\n" +
+                        "Switch 核心不支持直接运行压缩包内的游戏（zip/7z 请先解压）"
+                } else {
+                    "所选文件夹未找到ROM文件（支持 ${ROM_EXTENSIONS.joinToString().take(80)}…）"
+                }
             } else {
                 RomStore.setLastImportFolder(context, uri.toString(), hint)
                 val items = mutableListOf<Triple<String, String, GamePlatform>>()
@@ -319,7 +329,12 @@ fun NeonLibraryScreen(
                 if (folderUriStr.startsWith("content://")) {
                     try {
                         val folderUri = Uri.parse(folderUriStr)
-                        val romFiles = scanUriForRomsRecursive(context, folderUri, folderUri, maxDepth = 5)
+                        // ★ Switch（Eden）重扫只收直连格式（同导入路径修复）：
+                        //   detectFromUri 是宽松判定，未知 zip 会跟随 hint 归
+                        //   NSWITCH 入库 —— 这里直接在收集层挡掉压缩包。
+                        val restrictExts = if (hintPlatform == GamePlatform.NSWITCH)
+                            com.nesstation.app.core.storage.PlatformDetector.SWITCH_DIRECT_EXTENSIONS else null
+                        val romFiles = scanUriForRomsRecursive(context, folderUri, folderUri, maxDepth = 5, restrictExts = restrictExts)
                         val found = romFiles.map { it.second.toString() }.toSet()
                         // 目录树前缀（防止误删兄弟目录的游戏）
                         val s = folderUriStr

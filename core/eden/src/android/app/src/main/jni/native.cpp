@@ -863,6 +863,14 @@ jobjectArray Java_org_yuzu_yuzu_1emu_utils_GpuDriverHelper_getSystemDriverInfo(
     std::string hook_lib_dir = Common::Android::GetJString(env, j_hook_lib_dir);
     auto handle = adrenotools_open_libvulkan(RTLD_NOW, featureFlags, nullptr, hook_lib_dir.c_str(),
                                              nullptr, nullptr, file_redirect_dir_, nullptr);
+    // ★ NesStation 集成修复：adrenotools 打开失败（hook 库缺失 / 无 KGSL 等）
+    //   返回 nullptr —— 旧代码把空句柄包进 DynamicLibrary 继续建 Vulkan
+    //   实例，失败抛出的 C++ 异常穿迬 JNI 边界 → std::terminate → SIGABRT。
+    //   判空后返回 null（Kotlin 契约本就是 Array<String>?）。
+    if (handle == nullptr) {
+        LOG_ERROR(Frontend, "getSystemDriverInfo: adrenotools_open_libvulkan failed");
+        return nullptr;
+    }
     auto driver_library = std::make_shared<Common::DynamicLibrary>(handle);
     InputCommon::InputSubsystem input_subsystem;
     auto window =
@@ -1023,9 +1031,61 @@ jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getCpuBackend(JNIEnv* env, jclass 
     return Common::Android::ToJString(env, "JIT");
 }
 
+// ★ NesStation 集成修复前置声明：getGpuDriver（本文件更早位置）需要
+//   Vulkan 厂商常量与设备属性查询 —— 上游把它们定义在文件更后方的
+//   匿名 namespace 里，前置声明保证编译通过。
+namespace {
+constexpr u32 VENDOR_QUALCOMM = 0x5143;
+constexpr u32 VENDOR_ARM = 0x13B5;
+
+VkPhysicalDeviceProperties GetVulkanDeviceProperties();
+} // namespace
+
 jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getGpuDriver(JNIEnv* env, jobject jobj) {
-    return Common::Android::ToJString(
-        env, EmulationSession::GetInstance().System().GPU().Renderer().GetDeviceVendor());
+    // ★ NesStation 集成修复（“Switch 核心设置进入就闪退”根因）：
+    //   旧实现直接 System().GPU().Renderer().GetDeviceVendor() ——
+    //   Core::System::GPU() 返回 *impl->gpu_core，而 gpu_core 要到游戏真正
+    //   运行（System Load/Init GPU）后才非空。设置页 EdenDriverSection
+    //   进入即调 currentGpuDriver() → 本函数，无游戏运行时 = 解引用空
+    //   指针 → SIGSEGV（Kotlin 侧 catch 拦不住 native 段错误）。
+    //   现在：游戏未运行时改查系统 Vulkan 物理设备厂商（安全路径），
+    //   运行中仍返回渲染器实际使用的设备厂商（语义不变）。
+    auto& system = EmulationSession::GetInstance().System();
+    if (system.IsPoweredOn()) {
+        return Common::Android::ToJString(env, system.GPU().Renderer().GetDeviceVendor());
+    }
+    try {
+        const auto props = GetVulkanDeviceProperties();
+        if (props.deviceID == 0) {
+            return Common::Android::ToJString(env, "Vulkan");
+        }
+        const char* vendor = "Vulkan";
+        switch (props.vendorID) {
+        case VENDOR_QUALCOMM:
+            vendor = "Qualcomm Adreno";
+            break;
+        case VENDOR_ARM:
+            vendor = "ARM Mali";
+            break;
+        case 0x1010:
+            vendor = "Imagination";
+            break;
+        case 0x1002:
+            vendor = "AMD";
+            break;
+        case 0x8086:
+            vendor = "Intel";
+            break;
+        case 0x10DE:
+            vendor = "NVIDIA";
+            break;
+        default:
+            break;
+        }
+        return Common::Android::ToJString(env, vendor);
+    } catch (...) {
+        return Common::Android::ToJString(env, "Vulkan");
+    }
 }
 
 jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getCpuSummary(JNIEnv* env, jobject /*jobj*/) {
@@ -1147,8 +1207,10 @@ jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getCpuSummary(JNIEnv* env, jobject
 
 
 namespace {
-constexpr u32 VENDOR_QUALCOMM = 0x5143;
-constexpr u32 VENDOR_ARM = 0x13B5;
+
+// （VENDOR_QUALCOMM / VENDOR_ARM 常量与 GetVulkanDeviceProperties 声明已
+//  前移至 getGpuDriver 之前的匿名 namespace —— 同一匿名 namespace，
+//  此处直接给出定义即可，勿重复声明常量。）
 
 VkPhysicalDeviceProperties GetVulkanDeviceProperties() {
     Common::DynamicLibrary library;
@@ -1283,12 +1345,19 @@ jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_supportsFrameGeneration(JNIEnv* e
 }
 
 jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_getGpuModel(JNIEnv* env, jobject jobj) {
-    const auto props = GetVulkanDeviceProperties();
-    if (props.deviceID == 0) {
+    // ★ NesStation 集成修复：无 try/catch 时 CreateInstance 抛出的 C++ 异常
+    //   会穿迬 JNI 边界（std::terminate → SIGABRT，Java 拦不住）。包装后
+    //   失败设备返回 "Unknown" 而不是闪退。
+    try {
+        const auto props = GetVulkanDeviceProperties();
+        if (props.deviceID == 0) {
+            return Common::Android::ToJString(env, "Unknown");
+        }
+
+        return Common::Android::ToJString(env, props.deviceName);
+    } catch (...) {
         return Common::Android::ToJString(env, "Unknown");
     }
-
-    return Common::Android::ToJString(env, props.deviceName);
 }
 
 void Java_org_yuzu_yuzu_1emu_NativeLibrary_applySettings(JNIEnv* env, jobject jobj) {
