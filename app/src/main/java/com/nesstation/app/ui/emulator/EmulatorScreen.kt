@@ -8103,6 +8103,7 @@ fun OnScreenController(
     // 3DS ZL/ZR；NGC/WII Z；Wii 专属按键（A/B/1/2/+/−/HOME/C/Z/IR−/IR+）
     val n3dsBtnZL = if (isPortrait) padLayout.n3dsBtnZLP else padLayout.n3dsBtnZL
     val n3dsBtnZR = if (isPortrait) padLayout.n3dsBtnZRP else padLayout.n3dsBtnZR
+    val ngcBtnZ = if (isPortrait) padLayout.ngcBtnZP else padLayout.ngcBtnZ
     val wiiBtnA = if (isPortrait) padLayout.wiiBtnAP else padLayout.wiiBtnA
     val wiiBtnB = if (isPortrait) padLayout.wiiBtnBP else padLayout.wiiBtnB
     val wiiBtn1 = if (isPortrait) padLayout.wiiBtn1P else padLayout.wiiBtn1
