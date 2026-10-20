@@ -4933,17 +4933,21 @@ object PadLayoutStore {
                 // 左/右摇杆常驻，不参与显隐
             )
             GamePlatform.NSWITCH -> listOf(
-                // Switch（Eden）：Pro 手柄全套；双摇杆为常驻模拟控件
-                //（不参与显隐）；游戏区触摸直通窗口触摸（掌机形态）。
+                // Switch（Eden）：Pro 手柄全套；游戏区触摸直通窗口触摸
+                //（掌机形态）。
+                // ★★ v7：双摇杆按用户需求加入显隐（其余平台摇杆仍为常驻
+                //   控件）；连射 A/B 与其他平台同型补上（运行时本就全平台
+                //   渲染，此前 Switch 列表缺项无法关掉）。
                 "dpad" to "十字键", "a" to "A键", "b" to "B键",
                 "x" to "X键", "y" to "Y键",
+                "ta" to "连射A", "tb" to "连射B",
                 "l" to "L键", "r" to "R键",
                 "zl" to "ZL键", "zr" to "ZR键",
                 "l3" to "左摇杆按下", "r3" to "右摇杆按下",
+                "lstick" to "左摇杆", "rstick" to "右摇杆",
                 "capture" to "截屏/采集",
                 "start" to "+键", "select" to "−键",
                 "home" to "HOME"
-                // 左/右摇杆常驻，不参与显隐
             )
             else -> emptyList()
         } + listOf("qs" to "即时存档", "ql" to "即时读档")

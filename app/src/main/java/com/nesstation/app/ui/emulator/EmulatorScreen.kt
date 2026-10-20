@@ -7948,6 +7948,9 @@ fun OnScreenController(
     val showSwitchZrBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "zr")
     val showSwitchHomeBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "home")
     val showSwitchCaptureBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "capture")
+    // ★★ v7：Switch 双摇杆加入显隐（用户需求；其余平台摇杆仍为常驻控件）。
+    val showSwitchLStickBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "lstick")
+    val showSwitchRStickBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "rstick")
 
     // === Per-button visibility for ALL platforms ===
     // Each platform can independently hide/show individual buttons via the
@@ -8351,13 +8354,13 @@ fun OnScreenController(
                                  else if (isNgcWii && ngcWiiGcSet) btnRect(ngcLStick, 1.3f, 1.3f)
                                  else if (isNgcWii && (ngcWiiNunchuk || ngcWiiClassic)) btnRect(wiiLStick, 1.3f, 1.3f)
                                  else if (isWiiU) btnRect(wiiuLStick, 1.3f, 1.3f)
-                                 else if (isSwitch) btnRect(switchLStick, 1.3f, 1.3f)
+                                 else if (isSwitch) (if (showSwitchLStickBtn) btnRect(switchLStick, 1.3f, 1.3f) else null)
                                  else null
                 val rStickRect = if (isPs2) btnRect(ps2RStick, 1.3f, 1.3f)
                                  else if (is3ds) btnRect(n3dsRStick, 1.3f, 1.3f)
                                  else if (isNgcWii && (ngcWiiGcSet || ngcWiiClassic)) btnRect(ngcRStick, 1.3f, 1.3f)
                                  else if (isWiiU) btnRect(wiiuRStick, 1.3f, 1.3f)
-                                 else if (isSwitch) btnRect(switchRStick, 1.3f, 1.3f)
+                                 else if (isSwitch) (if (showSwitchRStickBtn) btnRect(switchRStick, 1.3f, 1.3f) else null)
                                  else null
                 // 3DS ZL/ZR 命中区（肩键形放宽）；Wii U 用同位（wiiu 专属坐标）
                 val zlRect = if (showZlBtn) btnRect(if (isWiiU) wiiuBtnZL else n3dsBtnZL, 1.6f, 0.9f) else null
@@ -9285,23 +9288,28 @@ fun OnScreenController(
         //   （showLR/showXY 白名单已含 NSWITCH）。摇杆输出经 onAnalogAxes →
         //   EdenCoreEngine.setAnalogAxes（VirtualGamepad 模拟轴）。
         if (isSwitch) {
-            val (slsImg, slsImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
-            val (srsImg, srsImgPressed) = rememberThemeButtonImages(overlayTheme, "r3")
-            AnalogStickCanvas(
-                layout = switchLStick, surfaceSize = surfaceSize, opacity = opacity,
-                pressedDirs = lStickDirs, thumbX = lStickTX, thumbY = lStickTY,
-                thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
-                thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
-                image = slsImg, pressedImage = slsImgPressed
-            )
-            AnalogStickCanvas(
-                layout = switchRStick, surfaceSize = surfaceSize, opacity = opacity,
-                pressedDirs = 0,   // 右摇杆箭头不做数字高亮（轴专用）
-                thumbX = rStickTX, thumbY = rStickTY,
-                thumbColor = themeButtonColor(overlayTheme, "r3", Color(0xFFFFD66B)),
-                thumbPressedColor = themePressedButtonColor(overlayTheme, "r3") ?: Color(0xFFFFE57F),
-                image = srsImg, pressedImage = srsImgPressed
-            )
+            // ★★ v7：双摇杆接入显隐（lstick/rstick；其余平台摇杆仍常驻）。
+            if (showSwitchLStickBtn) {
+                val (slsImg, slsImgPressed) = rememberThemeButtonImages(overlayTheme, "l3")
+                AnalogStickCanvas(
+                    layout = switchLStick, surfaceSize = surfaceSize, opacity = opacity,
+                    pressedDirs = lStickDirs, thumbX = lStickTX, thumbY = lStickTY,
+                    thumbColor = themeButtonColor(overlayTheme, "l3", Color(0xFFFFD66B)),
+                    thumbPressedColor = themePressedButtonColor(overlayTheme, "l3") ?: Color(0xFFFFE57F),
+                    image = slsImg, pressedImage = slsImgPressed
+                )
+            }
+            if (showSwitchRStickBtn) {
+                val (srsImg, srsImgPressed) = rememberThemeButtonImages(overlayTheme, "r3")
+                AnalogStickCanvas(
+                    layout = switchRStick, surfaceSize = surfaceSize, opacity = opacity,
+                    pressedDirs = 0,   // 右摇杆箭头不做数字高亮（轴专用）
+                    thumbX = rStickTX, thumbY = rStickTY,
+                    thumbColor = themeButtonColor(overlayTheme, "r3", Color(0xFFFFD66B)),
+                    thumbPressedColor = themePressedButtonColor(overlayTheme, "r3") ?: Color(0xFFFFE57F),
+                    image = srsImg, pressedImage = srsImgPressed
+                )
+            }
             if (showSwitchZlBtn) {
                 val (zlImg, zlImgPressed) = rememberThemeButtonImages(overlayTheme, "zl")
                 PillButtonCanvas(
@@ -11618,6 +11626,9 @@ private fun PadLayoutEditor(
     val showSwitchZrBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "zr")
     val showSwitchHomeBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "home")
     val showSwitchCaptureBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "capture")
+    // ★★ v7：Switch 双摇杆加入显隐（用户需求；其余平台摇杆仍为常驻控件）。
+    val showSwitchLStickBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "lstick")
+    val showSwitchRStickBtn = isSwitch && !PadLayoutStore.isButtonHidden(padLayout, platform, "rstick")
     // 3DS / NGC-WII 专属键的可编辑开关（与 OnScreenController 一致）
     // 3DS ZL/ZR 可编辑开关（NGC/WII 键组门控见下方独立块；Wii U 同用 ZL/ZR 位）
     val showZlBtn = (is3ds || isWiiU) && !PadLayoutStore.isButtonHidden(padLayout, platform, "zl")
@@ -12320,6 +12331,26 @@ private fun PadLayoutEditor(
                         onSelect = { selectedBtn = BtnType.R3 }
                     )
                 }
+                // ★★ v7：TV 切换 / 麦克风 / HOME —— 从 isNgcWii 块迁入（v4 误放，
+                //   对 WIIU 平台是永不渲染的死代码 → 编辑器缺 TV/MIC/HOME）。
+                if (showWiiuTvBtn) {
+                    EditableRoundBtn("TV", Color(0xFF2980B9), wiiuBtnTV, surfaceSize, selectedBtn == BtnType.WIIU_TV,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.WIIU_TV, wiiuBtnTV.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WIIU_TV })
+                }
+                if (showWiiuMicBtn) {
+                    EditableRoundBtn("MIC", Color(0xFF8E44AD), wiiuBtnMic, surfaceSize, selectedBtn == BtnType.WIIU_MIC,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.WIIU_MIC, wiiuBtnMic.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WIIU_MIC })
+                }
+                if (showWiiuHomeBtn) {
+                    EditablePillBtn("HOME", wiiuBtnHome, surfaceSize, selectedBtn == BtnType.WIIU_HOME,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.WIIU_HOME, wiiuBtnHome.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.WIIU_HOME })
+                }
             }
             // DC（Flycast）专属可编辑控件：左模拟摇杆（常驻）
             if (platform == GamePlatform.DC) {
@@ -12481,76 +12512,11 @@ private fun PadLayoutEditor(
                         onSelect = { selectedBtn = BtnType.IR_FAR }
                     )
                 }
-                // ★★ Wii U（Cemu）专属可编辑键：TV 切换 / 麦克风 / HOME
-                //   （ZL/ZR/双摇杆/L3/R3 走上方通用编辑控件：ZL→BtnType.ZL、
-                //   摇杆→LSTICK/RSTICK，槽位映射已按 isWiiU 指到 wiiu* 字段）。
-                if (isWiiU && showWiiuTvBtn) {
-                    EditableRoundBtn("TV", Color(0xFF2980B9), wiiuBtnTV, surfaceSize, selectedBtn == BtnType.WIIU_TV,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.WIIU_TV, wiiuBtnTV.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.WIIU_TV })
-                }
-                if (isWiiU && showWiiuMicBtn) {
-                    EditableRoundBtn("MIC", Color(0xFF8E44AD), wiiuBtnMic, surfaceSize, selectedBtn == BtnType.WIIU_MIC,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.WIIU_MIC, wiiuBtnMic.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.WIIU_MIC })
-                }
-                if (isWiiU && showWiiuHomeBtn) {
-                    EditablePillBtn("HOME", wiiuBtnHome, surfaceSize, selectedBtn == BtnType.WIIU_HOME,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.WIIU_HOME, wiiuBtnHome.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.WIIU_HOME })
-                }
-                // ★★ v4：Switch（Eden）专属可编辑键 —— ZL/ZR / HOME / 截屏 /
-                //   双摇杆 / L3/R3（ABXY/L/R/+/− 走通用编辑控件，槽位映射
-                //   在 updateBtn 的 NSWITCH 分支里指到 switch* 字段）。
-                if (isSwitch && showSwitchZlBtn) {
-                    EditablePillBtn("ZL", switchBtnZL, surfaceSize, selectedBtn == BtnType.ZL,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.ZL, switchBtnZL.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.ZL })
-                }
-                if (isSwitch && showSwitchZrBtn) {
-                    EditablePillBtn("ZR", switchBtnZR, surfaceSize, selectedBtn == BtnType.ZR,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.ZR, switchBtnZR.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.ZR })
-                }
-                if (isSwitch && showSwitchHomeBtn) {
-                    EditablePillBtn("HOME", switchBtnHome, surfaceSize, selectedBtn == BtnType.HOME,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.HOME, switchBtnHome.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.HOME })
-                }
-                if (isSwitch && showSwitchCaptureBtn) {
-                    EditablePillBtn("截屏", switchBtnCapture, surfaceSize, selectedBtn == BtnType.IR_NEAR,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.IR_NEAR, switchBtnCapture.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.IR_NEAR })
-                }
-                if (isSwitch && showL3Btn) {
-                    EditableRoundBtn("L3", Color(0xFF95A5A6), btnL3, surfaceSize, selectedBtn == BtnType.L3,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.L3, btnL3.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.L3 })
-                }
-                if (isSwitch && showR3Btn) {
-                    EditableRoundBtn("R3", Color(0xFF95A5A6), btnR3, surfaceSize, selectedBtn == BtnType.R3,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.R3, btnR3.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.R3 })
-                }
-                if (isSwitch) {
-                    EditableRoundBtn("左摇杆", Color(0xFFFFD66B), switchLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.LSTICK, switchLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.LSTICK })
-                    EditableRoundBtn("右摇杆", Color(0xFFFFD66B), switchRStick, surfaceSize, selectedBtn == BtnType.RSTICK,
-                        onMove = { tx, ty ->
-                            updateBtn(BtnType.RSTICK, switchRStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
-                        }, onSelect = { selectedBtn = BtnType.RSTICK })
-                }
+                // ★★ v7：Wii U（TV/MIC/HOME）与 Switch（ZL/ZR/HOME/截屏/
+                //   L3/R3/双摇杆）可编辑键已迁出本块 —— v4 误把它们放进
+                //   if (isNgcWii) 内部，对 NSWITCH/WIIU 平台是永不渲染的死
+                //   代码。WIIU 三键并入上方 if (isWiiU) 块；Switch 七件套移
+                //   至本块之后作独立 if (isSwitch) 平台块（PS2 块之前）。
                 // ★ 门控同运行时：双节棍摇杆仅双节棍/经典手柄组合出现
                 //   （经典手柄模式下它是经典左摇杆）—— ngc 模式绝不渲染
                 //   （旧实现无条件出现 = "NGC 编辑器多了个双节棍摇杆"）。
@@ -12564,6 +12530,62 @@ private fun PadLayoutEditor(
                             //   选中，且滑条 LSTICK 分支读写的是 GC 主摇杆字段）。
                             updateBtn(BtnType.WII_STICK, wiiLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
                         }, onSelect = { selectedBtn = BtnType.WII_STICK })
+                }
+            }
+            // ★★ v7：Switch（Eden）专属可编辑键 —— ZL/ZR / HOME / 截屏 /
+            //   L3/R3 / 双摇杆。v4 误把这套控件放进 if (isNgcWii) 块内部，
+            //   Switch 平台永不进入 → 编辑器缺这些控件（用户实测“缺少两个
+            //   摇杆、l3r3 zlzr 等按钮”）。现迁出为独立平台块；双摇杆按用户
+            //   需求接入显隐（lstick/rstick）。ABXY/L/R/+/−/十字键仍走通用
+            //   编辑控件（updateBtn 的 NSWITCH 分支已指到 switch* 字段）。
+            if (isSwitch) {
+                if (showSwitchZlBtn) {
+                    EditablePillBtn("ZL", switchBtnZL, surfaceSize, selectedBtn == BtnType.ZL,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.ZL, switchBtnZL.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.ZL })
+                }
+                if (showSwitchZrBtn) {
+                    EditablePillBtn("ZR", switchBtnZR, surfaceSize, selectedBtn == BtnType.ZR,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.ZR, switchBtnZR.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.ZR })
+                }
+                if (showSwitchHomeBtn) {
+                    EditablePillBtn("HOME", switchBtnHome, surfaceSize, selectedBtn == BtnType.HOME,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.HOME, switchBtnHome.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.HOME })
+                }
+                if (showSwitchCaptureBtn) {
+                    EditablePillBtn("截屏", switchBtnCapture, surfaceSize, selectedBtn == BtnType.IR_NEAR,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.IR_NEAR, switchBtnCapture.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.IR_NEAR })
+                }
+                if (showL3Btn) {
+                    EditableRoundBtn("L3", Color(0xFF95A5A6), btnL3, surfaceSize, selectedBtn == BtnType.L3,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.L3, btnL3.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.L3 })
+                }
+                if (showR3Btn) {
+                    EditableRoundBtn("R3", Color(0xFF95A5A6), btnR3, surfaceSize, selectedBtn == BtnType.R3,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.R3, btnR3.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.R3 })
+                }
+                if (showSwitchLStickBtn) {
+                    EditableRoundBtn("左摇杆", Color(0xFFFFD66B), switchLStick, surfaceSize, selectedBtn == BtnType.LSTICK,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.LSTICK, switchLStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.LSTICK })
+                }
+                if (showSwitchRStickBtn) {
+                    EditableRoundBtn("右摇杆", Color(0xFFFFD66B), switchRStick, surfaceSize, selectedBtn == BtnType.RSTICK,
+                        onMove = { tx, ty ->
+                            updateBtn(BtnType.RSTICK, switchRStick.copy(x = tx.coerceIn(0f,1f), y = ty.coerceIn(0f,1f)))
+                        }, onSelect = { selectedBtn = BtnType.RSTICK })
                 }
             }
             // PS2 专属可编辑控件：双摇杆（常驻）+ L3/R3
@@ -13105,6 +13127,9 @@ private fun PadLayoutEditor(
                         "zr" -> BtnType.ZR
                         "home" -> if (platform == GamePlatform.NSWITCH) BtnType.HOME else BtnType.WIIU_HOME
                         "capture" -> BtnType.IR_NEAR
+                        // ★★ v7：双摇杆显隐联动（隐藏时取消编辑器选中，防悬挂预览）
+                        "lstick" -> BtnType.LSTICK
+                        "rstick" -> BtnType.RSTICK
                         else -> null
                     }
                     if (hiddenBtn != null && selectedBtn == hiddenBtn) {
