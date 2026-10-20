@@ -828,10 +828,20 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     }
 
     override fun onSurfaceDestroyed() {
+        // ★★ v9：运行中绝不调 NativeLibrary.surfaceDestroyed() ★★
+        //   native surfaceDestroyed = ANativeWindow_release(会话窗口) + 置空。
+        //   上游 yuzu 只在模拟已停止（Activity 销毁）后才调它；而 NesStation
+        //   的视图换血（游戏内切「视频滤镜」/退出瞬间的视图拆卸）会让它在
+        //   模拟运行中被触发 —— Vulkan present 线程此刻仍向该窗口提交帧，
+        //   运行中释放 = 悬垂窗口段错误（实测：Switch 运行中切换滤镜即闪退，
+        //   双向都崩；对照 CemuEngine.onSurfaceDestroyed = 暂停核心 + 原生
+        //   支持热重建，故 Wii U 同场景不崩）。
+        //   修复：本回调改为静默（Kotlin 侧引用由紧随其后的 setSurface(null)
+        //   清理）；窗口引用统一挪到 unloadLocked（stopEmulation 之后）释放，
+        //   同时消除悬垂与泄漏两个方向。切后台回来场景走 setSurface→
+        //   NativeLibrary.surfaceChanged 指针热换（上游同款，安全）不受影响。
         synchronized(lifecycleLock) {
-            if (EdenNative.loaded && running.get()) {
-                try { NativeLibrary.surfaceDestroyed() } catch (_: Throwable) {}
-            }
+            android.util.Log.i("EdenEngine", "surface destroyed (deferred release to unload)")
         }
     }
 
@@ -966,6 +976,13 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         emuThread = null
         heartbeatThread?.let { t -> try { t.interrupt() } catch (_: Throwable) {} }
         heartbeatThread = null
+        // ★★ v9：会话窗口引用统一在此释放 ★★
+        //   此刻 stopEmulation 已返回、模拟线程已 join（present 线程退出），
+        //   ANativeWindow_release 不再与渲染赛跑 —— 替代原先在
+        //   onSurfaceDestroyed 里运行中释放的悬垂写法（见该回调注释）。
+        //   下一次启动前 startBootLocked 会重新 surfaceChanged(newSurface)，
+        //   先置空无副作用；EdenNative 未加载时跳过（幂等，窗口已空则无操作）。
+        try { if (EdenNative.loaded) NativeLibrary.surfaceDestroyed() } catch (_: Throwable) {}
         running.set(false)
         isLoaded = false
         romPath = null

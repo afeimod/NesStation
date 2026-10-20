@@ -397,7 +397,18 @@ class Ps2CurvedView @JvmOverloads constructor(
             eng?.onSurfaceDestroyed()
             eng?.setSurface(null)
         } catch (_: Throwable) {}
-        try { coreSurface?.release() } catch (_: Throwable) {}
+        // ★★ v9：Eden（Switch）会话中绝不 release 产者 Surface ★★
+        //   release() 会拆掉 BufferQueue 的生产端，而 Eden 的 Vulkan present
+        //   线程此刻可能仍在提交帧（退出游戏时 GL 线程拆卸与引擎 unload
+        //   并发，存在竞态窗口）→ 悬垂段错误。改为把 Surface 留给 GC
+        //   finalizer：unload 停掉 present 之后 finalize 才执行 release，
+        //   时序天然安全。PS2（ARMSX2 停止后才解引用）/ Wii U（Cemu 在
+        //   onSurfaceDestroyed 里已暂停渲染）无此风险，维持立即 release
+        //   防泄漏，行为不变。
+        val isEden = engine is com.nesstation.app.core.engine.EdenEngine
+        if (!isEden) {
+            try { coreSurface?.release() } catch (_: Throwable) {}
+        }
         coreSurface = null
     }
 

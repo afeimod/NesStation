@@ -31,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Home
@@ -627,6 +628,16 @@ fun NeonLibraryScreen(
                             runCatching { ciaPickerLauncher.launch(arrayOf("*/*")) }
                         }
                     }
+                    // ★★ v9：Switch 小程序启动器入口迁到工具行 ★★
+                    //   用户实测反馈：入口应在「导入文件夹 / 刷新」等按钮的
+                    //   工具行里，且为 Switch 核心列表专属（v8 放在封面流
+                    //   上方的悬浮按钮已移除，见右侧 Box 内墓碑）。
+                    if (selectedCore == GamePlatform.NSWITCH) {
+                        Spacer(Modifier.width(7.dp))
+                        NeonToolbarButton(Icons.Rounded.Apps, "小程序") {
+                            showAppletLauncher = true
+                        }
+                    }
                 }
                 Spacer(Modifier.width(7.dp))
                 NeonToolbarButton(Icons.Rounded.Refresh, "刷新") {
@@ -718,23 +729,11 @@ fun NeonLibraryScreen(
 
                 // -- 右侧 3D 封面流 --
                 Box(modifier = Modifier.weight(1f).fillMaxSize()) {
-                    // ★★ v8：Switch 小程序启动器（游戏列表上方入口）★★
-                    //   需求原话：“缺少小程序启动器(这个放在switch核心游戏列表上方)”。
-                    //   相册 / Amiibo 管理 / Mii 编辑器 / 主菜单 —— 内置于官方固件，
-                    //   启动前会校验固件（未安装时给出可操作提示，不黑屏）。
-                    if (!searching && selectedCore == GamePlatform.NSWITCH) {
-                        TextButton(
-                            onClick = { showAppletLauncher = true },
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = 2.dp)
-                        ) {
-                            Text(
-                                "小程序启动器：相册 / Amiibo / Mii / 主菜单（需固件）",
-                                color = Neon.Accent, fontSize = 10.sp
-                            )
-                        }
-                    }
+                    // ★★ v8→v9：Switch 小程序启动器入口已迁至顶部工具行 ★★
+                    //   用户实测反馈：“应该在导入文件夹 刷新等按钮那里，
+                    //   switch核心游戏列表专属” —— 原在此处（封面流上方悬浮
+                    //   按钮）的入口已删除，现位于工具行「安装CIA」之后，
+                    //   仅 Switch 核心页显示。
                     if (displayGames.isEmpty()) {
                         Column(
                             modifier = Modifier.align(Alignment.Center),

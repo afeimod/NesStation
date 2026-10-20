@@ -6483,6 +6483,40 @@ private fun GameSurfaceView(
     // ★★ v8：Wii U / Switch 弧面中转路径（同用 Ps2CurvedView）的 EGL 失败标志：
     //   失败时回退普通 SurfaceView + 平面 FilterOverlay（无凸起，但绝不黑屏）。
     val relayGlFailed = remember { mutableStateOf(false) }
+    // ★★ v9：Switch（Eden）滤镜「仿电视机族」会话内钉住 —— 切滤镜闪退根治 ★★
+    //   根因：Eden 与 Cemu 不同，原生层不支持运行中更换渲染窗口 —— 游戏内
+    //   切「视频滤镜」跨 tv 族（tv/*_tv ↔ 其它）会触发视图换血，旧视图
+    //   surfaceDestroyed 在模拟运行中释放 ANativeWindow / producer Surface
+    //   → Vulkan present 线程悬垂段错误（双向切换都崩；退出瞬间还有同型
+    //   卸载竞态）。修复（纵深防御第二层，第一层见
+    //   EdenEngine.onSurfaceDestroyed + unloadLocked）：Switch 的 tv 族视图
+    //   分支在会话内钉死 —— 跨族切换被压住（Toast 提示下次启动生效），
+    //   族内切换（扫描线/CRT/点阵/XBR… 叠加层）仍实时生效（不换视图，
+    //   只换叠加层，安全）。Wii U（Cemu 原生支持热重建，实测正常）保持
+    //   实时切换不变。
+    val isEdenSwitch = platform == GamePlatform.NSWITCH
+    val edenPinnedFilter = remember { mutableStateOf(videoFilter) }
+    var edenFilterToastShown by remember { mutableStateOf(false) }
+    LaunchedEffect(videoFilter, isEdenSwitch) {
+        if (isEdenSwitch) {
+            val liveIsTv = videoFilter == "tv" || videoFilter.endsWith("_tv")
+            val pinIsTv = edenPinnedFilter.value == "tv" ||
+                edenPinnedFilter.value.endsWith("_tv")
+            if (liveIsTv == pinIsTv) {
+                edenPinnedFilter.value = videoFilter
+            } else if (!edenFilterToastShown) {
+                edenFilterToastShown = true
+                android.widget.Toast.makeText(
+                    ctx,
+                    "Switch 核心切换「仿电视机」类滤镜需退出并重新进入游戏后生效" +
+                        "（运行中切换会闪退，已保留当前画面）",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+    // 视图分支与叠加层统一读钉住值；非 Switch 平台恒等于实时值（零行为变化）
+    val effFilter = if (isEdenSwitch) edenPinnedFilter.value else videoFilter
     // ★★★ V11：MMJ 滤镜叠加层路径（MmjFilterView）的 EGL 失败标志 ★★★
     // 失败时回退普通 SurfaceView + 直绘（无滤镜，但绝不黑屏）。
     val mmjFilterGlFailed = remember { mutableStateOf(false) }
@@ -6896,7 +6930,7 @@ private fun GameSurfaceView(
                 },
                 modifier = ps2CurvedModifier.then(gameViewTracker)
             )
-        } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
+        } else if ((effFilter == "tv" || effFilter.endsWith("_tv")) &&
                    (platform == GamePlatform.WIIU || platform == GamePlatform.NSWITCH) &&
                    !relayGlFailed.value) {
             // === ★★ v8：Wii U / Switch 仿电视机（CRT 弧面）中转路径（黑屏修复）★★
@@ -7364,11 +7398,13 @@ private fun GameSurfaceView(
             //       MmjFilterView 现在是唯一滤镜消费链。
             //
             // GPU-accelerated filter overlay — scanline/CRT/dot/*+dot/*+扫描线/*+仿电视 drawn by Compose
-            if (videoFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
+            // ★ v9：读 effFilter（Switch 会话内钉住值）—— 跨族被压住的请求
+            //   不会把与新视图不匹配的叠加层画上去；其它平台 == videoFilter。
+            if (effFilter in listOf("scanline", "crt", "dot", "xbr_dot", "4xbr_dot", "hq4x_dot",
                                       "tv", "xbr_scanline", "4xbr_scanline", "hq2x_scanline",
                                       "hq4x_scanline", "xbr_tv", "4xbr_tv", "hq2x_tv", "hq4x_tv")) {
                 FilterOverlay(
-                    overlayFilterTypeFor(videoFilter) ?: videoFilter,
+                    overlayFilterTypeFor(effFilter) ?: effFilter,
                     surfaceModifier
                 )
             }

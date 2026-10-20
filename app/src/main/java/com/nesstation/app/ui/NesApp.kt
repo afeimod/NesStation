@@ -570,15 +570,16 @@ private fun PhoneNavHost(
             arguments = listOf(navArgument("gameId") { type = NavType.StringType })
         ) { entry ->
             val id = entry.arguments?.getString("gameId") ?: ""
-            // ★★ v8：Switch 小程序伪条目（eden-applet://…）不入库，路由时即时构造；
-            //   其余 id 照旧查库。
+            // ★★ v8/v9：Switch 小程序伪条目不入库，路由时即时构造；其余 id 照旧查库。
+            //   ★ v9：id 改为路由安全格式 eden-applet-<key>[-m<mode>] —— v8 用
+            //   "eden-applet://…"（含 :// 与 ?）当路由 id，Routes.emulator(id)
+            //   不做 URL 编码，NavController 把它切成额外路径段/查询串 →
+            //   navigate 找不到匹配目的地抛 IllegalArgumentException → 点任何
+            //   小程序必闪退（用户实测）。现经 parseRouteId 还原 (key, mode)。
             val game = games.firstOrNull { it.id == id }
                 ?: RomStore.loadAll(ctx).firstOrNull { it.id == id }
-                ?: com.nesstation.app.ui.eden.EdenApplets.parse(id)?.let {
-                    com.nesstation.app.ui.eden.EdenApplets.buildPseudoEntry(
-                        id.removePrefix("eden-applet://").substringBefore('?'),
-                        it.third.coerceAtLeast(0)
-                    )
+                ?: com.nesstation.app.ui.eden.EdenApplets.parseRouteId(id)?.let { (key, mode) ->
+                    com.nesstation.app.ui.eden.EdenApplets.buildPseudoEntry(key, mode)
                 }
                 ?: GameEntry(id, "未知游戏")
             EmulatorScreen(game = game, onExit = { nav.popBackStack() })
@@ -744,15 +745,16 @@ private fun TvNavHost(
             arguments = listOf(navArgument("gameId") { type = NavType.StringType })
         ) { entry ->
             val id = entry.arguments?.getString("gameId") ?: ""
-            // ★★ v8：Switch 小程序伪条目（eden-applet://…）不入库，路由时即时构造；
-            //   其余 id 照旧查库。
+            // ★★ v8/v9：Switch 小程序伪条目不入库，路由时即时构造；其余 id 照旧查库。
+            //   ★ v9：id 改为路由安全格式 eden-applet-<key>[-m<mode>] —— v8 用
+            //   "eden-applet://…"（含 :// 与 ?）当路由 id，Routes.emulator(id)
+            //   不做 URL 编码，NavController 把它切成额外路径段/查询串 →
+            //   navigate 找不到匹配目的地抛 IllegalArgumentException → 点任何
+            //   小程序必闪退（用户实测）。现经 parseRouteId 还原 (key, mode)。
             val game = games.firstOrNull { it.id == id }
                 ?: RomStore.loadAll(ctx).firstOrNull { it.id == id }
-                ?: com.nesstation.app.ui.eden.EdenApplets.parse(id)?.let {
-                    com.nesstation.app.ui.eden.EdenApplets.buildPseudoEntry(
-                        id.removePrefix("eden-applet://").substringBefore('?'),
-                        it.third.coerceAtLeast(0)
-                    )
+                ?: com.nesstation.app.ui.eden.EdenApplets.parseRouteId(id)?.let { (key, mode) ->
+                    com.nesstation.app.ui.eden.EdenApplets.buildPseudoEntry(key, mode)
                 }
                 ?: GameEntry(id, "未知游戏")
             EmulatorScreen(game = game, onExit = { nav.popBackStack() })
