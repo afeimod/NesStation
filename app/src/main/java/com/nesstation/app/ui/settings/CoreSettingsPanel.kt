@@ -2301,6 +2301,20 @@ fun CoreSettingsPanel(
                                "0" to "单核解释器 (最兼容)"),
                         padLayout.cwCpuMode
                     ) { updateLayout(padLayout.copy {cwCpuMode = it}) }
+                    DropdownRow("线程时间片",
+                        // ★★★ R15: 上游 Cemu GameProfile::threadQuantum 同款设置 ——
+                        //   每个调度时间片授予的 PPC 周期数（上游默认 45000）。值越大
+                        //   线程切换越少 = 提速关键（移动端帧率提升明显）；过小调度
+                        //   频繁（个别老游戏可用 20000 保兼容）。运行中热生效，无需
+                        //   重启游戏；选「跟随默认」则尊重游戏自带档案。
+                        listOf("0" to "跟随默认 (游戏档案·45000)",
+                               "20000" to "20000 (兼容·时间片短)",
+                               "45000" to "45000 (锁定默认值)",
+                               "60000" to "60000 (提速·减少切换)",
+                               "80000" to "80000 (提速↑)",
+                               "100000" to "100000 (提速↑↑)"),
+                        padLayout.cwThreadQuantum
+                    ) { updateLayout(padLayout.copy {cwThreadQuantum = it}) }
                     DropdownRow("GX2DrawDone 快速模式",
                         // ★★★ R11/R13: drawdone 快速路径（提速关键，默认开）。
                         //   R13 增加有界滞后自适应等待：游戏线程至多领先 GPU

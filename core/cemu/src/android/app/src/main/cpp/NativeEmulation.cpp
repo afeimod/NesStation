@@ -399,6 +399,24 @@ Java_info_cemu_cemu_nativeinterface_NativeEmulation_setCpuModeOverride([[maybe_u
         ActiveSettings::SetCPUModeOverride(mode < -1 ? -1 : (int)mode);
 }
 
+// ★★★ NesStation R15: 线程时间片（thread quantum）运行时覆盖 —— 上游 Cemu
+// GameProfile::threadQuantum 同款语义（值 = 每个调度时间片授予的 PPC 周期数；
+// 上游默认 45000，上游档案可选值 20000/45000/60000/80000/100000，加载范围
+// 1000..536870912）。0 = 跟随游戏档案（默认行为不变）；>0 立即生效 —— 调度器
+// __OSLoadThread / __OSThreadStartTimeslice 每个时间片经
+// NesStationPerf::EffectiveThreadQuantum() 读取生效值（运行中热生效，无需
+// 重启；启动期由 App 的 boot 重放保证时序）。周期数越大线程切换越少，
+// 移动端提速关键。
+extern "C" JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeEmulation_setThreadQuantumOverride([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint quantum)
+{
+        uint32_t q = quantum > 0 ? (uint32_t)quantum : 0;
+        if (q != 0 && (q < 1000 || q > 536870912u)) // 上游档案范围钳制（越界视为不覆盖）
+                q = 0;
+        NesStationPerf::s_threadQuantumOverride.store(q, std::memory_order_relaxed);
+        cemuLog_log(LogType::Force, "NesStation: thread quantum override -> {}", q);
+}
+
 // ★★★ NesStation R11: GX2DrawDone 快速模式（默认关 = 严格等待上游语义）
 //   R14 起建议改用 setDrawDoneMode（三档可调）；本接口保留兼容。
 extern "C" JNIEXPORT void JNICALL

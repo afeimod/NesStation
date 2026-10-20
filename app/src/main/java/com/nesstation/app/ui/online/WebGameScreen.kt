@@ -125,6 +125,14 @@ fun WebGameScreen(
     val customViewRef = remember { mutableStateOf<View?>(null) }
     val customViewCallbackRef = remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
+    // ★ v10: 加载进度 / 渲染进程自愈（renderEpoch）/ window.open 弹窗栈 / 回调共享引用
+    val loadProgress = remember { mutableStateOf(100) }
+    val renderEpoch = remember { mutableStateOf(0) }
+    val popupViews = remember { java.util.ArrayList<GameWebView>() }
+    val popupCount = remember { mutableStateOf(0) }
+    val wvClientRef = remember { mutableStateOf<GameWebViewClient?>(null) }
+    val chromeCallbackRef = remember { mutableStateOf<GameWebChromeClient.Callback?>(null) }
+
     // 引擎选择对话框 / 提取 SWF 对话框
     var pendingSwfAction by remember { mutableStateOf<String?>(null) }
 
@@ -350,6 +358,85 @@ fun WebGameScreen(
         webViewRef.value?.releaseAllKeys()
     }
 
+    // ================ ★ v10: 网页全屏退出 / window.open 弹窗管理 ================
+
+    /** 网页全屏退出（返回键与 ChromeClient.onHideFullscreen 共用同一逻辑） */
+    fun exitWebFullscreen() {
+        val view = customViewRef.value
+        if (view != null) (view.parent as? ViewGroup)?.removeView(view)
+        customViewCallbackRef.value?.onCustomViewHidden()
+        customViewRef.value = null
+        customViewCallbackRef.value = null
+    }
+
+    /** 关闭并销毁一个弹窗 WebView（window.close / 返回键 / 渲染进程死亡时调用） */
+    fun closePopupWindow(window: WebView?) {
+        val wv = window ?: return
+        if (popupViews.remove(wv)) {
+            (wv.parent as? ViewGroup)?.removeView(wv)
+            try { wv.destroy() } catch (_: Exception) {}
+            popupCount.value = popupViews.size
+        }
+    }
+
+    /**
+     * ★ v10: window.open / target=_blank → 真实弹窗 WebView（参照 AnWind onCreateWindow）：
+     * 弹窗复用主窗口的 View/Chrome 客户端与 JS 桥，全屏铺在主画面之上，
+     * 手柄/悬浮菜单置顶仍可操作；返回键逐层关闭（见 BackHandler 优先级）。
+     */
+    fun createPopupWindow(opener: WebView?, resultMsg: android.os.Message): Boolean {
+        val container = mainBoxRef.value ?: return false
+        val client = wvClientRef.value ?: return false
+        val chromeCb = chromeCallbackRef.value ?: return false
+        try {
+            val popup = GameWebView(container.context).apply {
+                webChromeClient = object : GameWebChromeClient(chromeCb) {}
+                webViewClient = client
+                webAppInterfaceRef.value?.let { addJavascriptInterface(it, "Android") }
+                when (PrefsManager.uaMode) {
+                    "ie_compat" -> useUaMode("ie_compat")
+                    "mobile" -> useUaMode("mobile")
+                    else -> useDesktopMode(true)
+                }
+                if (PrefsManager.pageZoomMode == "manual") applyPageZoom(PrefsManager.pageZoomManual)
+                setOnKeyListener { _, _, event -> keyEventHandler(event) }
+                injectDocumentStartScripts()
+            }
+            container.addView(popup, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            ))
+            // 手柄/悬浮菜单保持在弹窗之上可操作
+            listOfNotNull(
+                dpadRef.value, actionRef.value, mouseRef.value,
+                systemButtonsRef.value, floatingMenuRef.value
+            ).forEach { it.bringToFront() }
+            popupViews.add(popup)
+            popupCount.value = popupViews.size
+            val transport = resultMsg.obj as? WebView.WebViewTransport
+            transport?.webView = popup
+            resultMsg.sendToTarget()
+            return true
+        } catch (e: Exception) {
+            android.util.Log.w("WebGameScreen", "createPopupWindow failed", e)
+            return false
+        }
+    }
+
+    // ★ v10: 返回键优先级 —— 网页全屏(HTML5 requestFullscreen)先退全屏；
+    //   window.open 弹窗先逐层关闭；两者都不是时交给上面的常规返回逻辑。
+    //   （后注册的 BackHandler 优先生效；引用的局部函数均已在上方声明）
+    BackHandler(enabled = customViewRef.value != null || popupCount.value > 0) {
+        if (customViewRef.value != null) {
+            exitWebFullscreen()
+        } else if (popupViews.isNotEmpty()) {
+            val top = popupViews.removeAt(popupViews.size - 1)
+            (top.parent as? ViewGroup)?.removeView(top)
+            try { top.destroy() } catch (_: Exception) {}
+            popupCount.value = popupViews.size
+        }
+    }
+
     // Compose 主容器
     BoxWithConstraints(
         modifier = Modifier
@@ -364,22 +451,26 @@ fun WebGameScreen(
                 }
             },
             update = { _ ->
-                // 每次 reload 触发重新加载 URL
-                val wv = webViewRef.value
-                if (wv != null) {
-                    val currentUrl = wv.url ?: url
-                    val isSwf = NavHelper.isSwf(currentUrl) || NavHelper.isSwf(url) || NavHelper.isLocalFile(url)
-                    if (isSwf) {
-                        val playerUrl = NavHelper.playerUrl(url, base = null, title = null)
-                        wv.loadUrl(playerUrl)
-                    } else if (url.contains("4399.com")) {
-                        wv.loadUrl(url, mapOf("Referer" to "https://www.4399.com/"))
-                    } else {
-                        wv.loadUrl(url)
-                    }
-                }
+                // ★ v10 修复页面随机重载：AndroidView.update 在每次重组都会执行 ——
+                //   原实现每次执行都 loadUrl(url)，导致开关手柄/鼠标、下载浮层出现、
+                //   进度条更新等任何状态变化都把网页整个重载（游戏中误触开关 = 刷页）。
+                //   初始加载由 LaunchedEffect 完成、刷新由 reloadTrigger effect 走
+                //   WebView.reload()，此处必须保持空操作。
             }
         )
+
+        // ★ v10: 页面加载进度条（顶部，加载中显示）—— 原实现 onProgress 回调为空，
+        //   白屏等待时用户毫无反馈
+        if (loadProgress.value in 1 until 100) {
+            LinearProgressIndicator(
+                progress = { loadProgress.value / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter),
+                color = Color(0xFF8A7BFF),
+                trackColor = Color(0x26FFFFFF)
+            )
+        }
 
         // Download progress overlay - fixed at top
         if (isDownloadingActive.value) {
@@ -413,7 +504,8 @@ fun WebGameScreen(
     }
 
     // 在容器创建后用 LaunchedEffect 把各 view 加进去
-    LaunchedEffect(mainBoxRef.value) {
+    // ★ v10: renderEpoch 为键 —— 渲染进程死亡后销毁旧 WebView 并自动重建重载
+    LaunchedEffect(mainBoxRef.value, renderEpoch.value) {
         val container = mainBoxRef.value ?: return@LaunchedEffect
         if (webViewRef.value == null) {
             // 创建 WebView
@@ -440,9 +532,9 @@ fun WebGameScreen(
             // 注入全屏切换回调（player.html CSS 全屏调用）
             webAppInterface.fullscreenCallback = { toggleFullscreen() }
 
-            // 客户端与回调
+            // 客户端与回调（★ v10: onProgress 接顶部进度条 / 弹窗窗口管理 / 全屏退出统一）
             val chromeCallback = object : GameWebChromeClient.Callback {
-                override fun onProgress(progress: Int) {}
+                override fun onProgress(progress: Int) { loadProgress.value = progress }
                 override fun onTitle(title: String?) {}
                 override fun onConsole(level: String, msg: String, sourceId: String?, line: Int) {}
                 // WebView 全屏：网页调用 requestFullscreen() 时触发。
@@ -462,15 +554,7 @@ fun WebGameScreen(
                     }
                 }
                 override fun onHideFullscreen() {
-                    val view = customViewRef.value
-                    val cb = customViewCallbackRef.value
-                    if (view != null) {
-                        val parent = view.parent as? ViewGroup
-                        parent?.removeView(view)
-                    }
-                    cb?.onCustomViewHidden()
-                    customViewRef.value = null
-                    customViewCallbackRef.value = null
+                    exitWebFullscreen()
                 }
                 override fun onFileChooser(callback: ValueCallback<Array<android.net.Uri>>, accept: String?): Boolean {
                     filePathCallback.value?.onReceiveValue(null)
@@ -479,7 +563,17 @@ fun WebGameScreen(
                     try { activityResultLauncher.launch(mimes) } catch (e: Exception) { callback.onReceiveValue(null); filePathCallback.value = null }
                     return true
                 }
+                // ★ v10: window.open / target=_blank → 真实弹窗 WebView（返回键逐层关闭）
+                override fun handleCreateWindow(opener: WebView?, isDialog: Boolean, resultMsg: android.os.Message): Boolean {
+                    return createPopupWindow(opener, resultMsg)
+                }
+                // ★ v10: window.close() / 页面自行关闭 → 销毁对应弹窗
+                override fun handleCloseWindow(window: WebView?) {
+                    closePopupWindow(window)
+                }
             }
+            // ★ v10: 暴露给 createPopupWindow（弹窗复用同一套 Chrome 行为）
+            chromeCallbackRef.value = chromeCallback
 
             val viewClientCallback = object : GameWebViewClient.Callback {
                 override fun onPageStarted(url: String?) {
@@ -539,9 +633,28 @@ fun WebGameScreen(
                         null
                     }
                 }
+                // ★ v10: 渲染进程死亡自愈（参照 AnWind renderEpoch）—— 不接管则
+                //   Chromium 杀整个应用进程。主窗口销毁重建自动重载；弹窗直接关闭。
+                override fun onRendererGone(deadView: WebView?) {
+                    val main = webViewRef.value
+                    if (deadView != null && deadView !== main) {
+                        closePopupWindow(deadView)
+                        return
+                    }
+                    val dead = main
+                    webViewRef.value = null
+                    if (dead != null) {
+                        (dead.parent as? ViewGroup)?.removeView(dead)
+                        try { dead.destroy() } catch (_: Exception) {}
+                    }
+                    renderEpoch.value = renderEpoch.value + 1
+                    Toast.makeText(context, "页面渲染进程异常，已自动恢复", Toast.LENGTH_SHORT).show()
+                }
             }
 
             val wvClient = GameWebViewClient(viewClientCallback)
+            // ★ v10: 暴露给弹窗创建（弹窗复用同一套 client 行为）
+            wvClientRef.value = wvClient
 
             wv.apply {
                 addJavascriptInterface(webAppInterface, "Android")
@@ -716,10 +829,31 @@ fun WebGameScreen(
         }
     }
 
-    // 释放资源
+    // 释放资源 / 屏幕常亮
     DisposableEffect(Unit) {
+        // ★ v10: 游戏期间屏幕常亮
+        activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
+            activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // ★ v10: 弹窗销毁链 —— 先 JS 静音再 destroy（参照 AnWind，防“关了还在响”）
+            popupViews.forEach { pv ->
+                try {
+                    pv.evaluateJavascript(
+                        "(function(){try{document.querySelectorAll('video,audio').forEach(function(m){" +
+                        "try{m.pause();}catch(e){}});}catch(e){}})();", null)
+                } catch (_: Exception) {}
+                (pv.parent as? ViewGroup)?.removeView(pv)
+                try { pv.destroy() } catch (_: Exception) {}
+            }
+            popupViews.clear()
+            popupCount.value = 0
+            // 主窗口同样先静音再 destroy
             webViewRef.value?.let { wv ->
+                try {
+                    wv.evaluateJavascript(
+                        "(function(){try{document.querySelectorAll('video,audio').forEach(function(m){" +
+                        "try{m.pause();}catch(e){}});}catch(e){}})();", null)
+                } catch (_: Exception) {}
                 (wv.parent as? ViewGroup)?.removeView(wv)
                 wv.destroy()
             }

@@ -90,6 +90,11 @@ open class GameWebView @JvmOverloads constructor(
 
     private val gestureDetector = GestureDetector(context, GestureListener())
 
+    // ★ v10 双指缩放体验：本手势流是否出现过多指 —— 双指捏合过程中 GestureDetector
+    //   可能把两指间位移误判为 fling 而注入方向键（缩放时游戏角色乱动）。
+    //   多指后本手势流内不再注入方向键（DOWN 时复位）。
+    private var multiTouchSeen = false
+
     init {
         configureSettings()
         // 横竖滚动条隐藏，让游戏画面铺满
@@ -100,6 +105,21 @@ open class GameWebView @JvmOverloads constructor(
         isFocusableInTouchMode = true
         // 屏蔽长按系统菜单
         setOnLongClickListener { blockLongPressMenu }
+        // ★ v10: 通用文件下载（apk/zip/图片等 <a download> / content-disposition 附件）——
+        //   SWF 直链不会到这里（shouldOverrideUrlLoading 先行拦截进播放器）。
+        //   走系统 DownloadManager（参照 AnWind）：落公共 Downloads/、系统通知进度、
+        //   文件名解析含 RFC 5987 filename*=UTF-8'' 形式。
+        setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
+            handleExternalDownload(url, userAgent, contentDisposition, mimetype)
+        }
+        // ★ v10: 第三方 Cookie 放行（登录态/弹窗会话共享；部分游戏站点登录必需）
+        try {
+            android.webkit.CookieManager.getInstance().apply {
+                setAcceptCookie(true)
+                setAcceptThirdPartyCookies(this@GameWebView, true)
+            }
+        } catch (_: Exception) {
+        }
         // 添加原生 IME 接口，供 WAFlash 等网页调用唤起输入法（双通道：无 NativeIme 时回落到隐藏 input）
         addJavascriptInterface(object {
             @JavascriptInterface
@@ -142,12 +162,25 @@ open class GameWebView @JvmOverloads constructor(
         builtInZoomControls = true
         displayZoomControls = false                  // 不显示+/-按钮，仅手势缩放
         // PC 网页缩放：强制启用 viewport 缩放，让宽页面适配屏幕
-        setSupportMultipleWindows(false)
+        // ★ v10: 多窗口支持 —— window.open / target=_blank 经 GameWebChromeClient
+        //   .onCreateWindow → 真实弹窗 WebView（此前 false = 弹窗链接点击无反应）
+        setSupportMultipleWindows(true)
         // 保存默认移动版 UA，追加客户端标识
         mobileUa = userAgentString
         userAgentString = "$mobileUa 4399App/1.0 (Android)"
-        // 硬件加速渲染（已在 Manifest 开启，这里再确保 LayerType）
-        setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        // ★ v10: 默认编码/地理能力补齐（AnWind 同款基线；地理授权由 ChromeClient 授予）
+        defaultTextEncodingName = "UTF-8"
+        setGeolocationEnabled(true)
+        // ★ v10: 禁用算法暗色（参照 AnWind）—— 防 MIUI/系统深色模式把网页渲染
+        //   搞成“灰屏/反色”；窗口级硬件加速已在 Manifest 开启。
+        //   同时移除旧版 setLayerType(LAYER_TYPE_HARDWARE)：官方文档不支持对 WebView
+        //   强制硬件层，部分设备（MIUI）会导致“加载完成但永不绘制”（AnWind 实证）。
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(this, false)
+            }
+        } catch (_: Exception) {
+        }
         // 启用 Safe Browsing（AndroidX WebKit，minSdk 23+）
         if (WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_ENABLE)) {
             WebSettingsCompat.setSafeBrowsingEnabled(this, true)
@@ -155,13 +188,59 @@ open class GameWebView @JvmOverloads constructor(
     }
 
     /**
+     * ★ v10: 通用下载走系统 DownloadManager（参照 AnWind）：文件名解析
+     * contentDisposition（含 RFC 5987 filename*=UTF-8'' 形式）→ 落公共
+     * Downloads/，系统通知进度；APK 完成后允许媒体扫描。SWF 直链不会到这里
+     * （shouldOverrideUrlLoading 先行拦截进 Ruffle/WAFlash 播放器）。
+     */
+    private fun handleExternalDownload(url: String, userAgent: String, contentDisposition: String?, mimetype: String?) {
+        try {
+            val fileName = parseDownloadFileName(contentDisposition, url)
+            val request = android.app.DownloadManager.Request(android.net.Uri.parse(url)).apply {
+                try { setMimeType(mimetype) } catch (_: Exception) {}
+                addRequestHeader("User-Agent", userAgent)
+                setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
+                setTitle(fileName)
+                setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                try { allowScanningByMediaScanner() } catch (_: Exception) {}
+            }
+            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+            dm.enqueue(request)
+            post { android.widget.Toast.makeText(context, "开始下载：$fileName", android.widget.Toast.LENGTH_SHORT).show() }
+        } catch (e: Exception) {
+            post { android.widget.Toast.makeText(context, "下载失败：${e.message ?: "无法创建下载"}", android.widget.Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    /** 下载文件名解析：RFC 5987 filename*=UTF-8''… → filename="…" → URL 兑底 */
+    private fun parseDownloadFileName(cd: String?, url: String): String {
+        cd?.let { raw ->
+            val utf8 = Regex("""filename\*\s*=\s*UTF-8''([^;]+)""", RegexOption.IGNORE_CASE).find(raw)?.groupValues?.get(1)
+            if (utf8 != null) {
+                return try { java.net.URLDecoder.decode(utf8, "UTF-8") } catch (_: Exception) { utf8 }
+                    .replace("\r", "").replace("\n", "")
+            }
+            val plain = Regex("""filename\s*=\s*"?([^";]+)"?""", RegexOption.IGNORE_CASE).find(raw)?.groupValues?.get(1)
+            if (plain != null) {
+                return try { java.net.URLDecoder.decode(plain, "UTF-8") } catch (_: Exception) { plain }
+                    .replace("\r", "").replace("\n", "")
+            }
+        }
+        val name = android.net.Uri.parse(url).lastPathSegment?.substringAfterLast('/') ?: "download"
+        return try { java.net.URLDecoder.decode(name, "UTF-8") } catch (_: Exception) { name }
+    }
+
+    /**
      * 注入 Document Start 脚本：在页面任何 JS 之前执行（AndroidX WebKit 1.6.0+）。
      * 必须在 WebView 创建后、首次加载前调用。
      * 解决 evaluateJavascript(onPageStarted) 时序问题——异步注入可能晚于页面自身脚本。
+     * ★ v10: 追加 PINCH_UNLOCK_SCRIPT（双指缩放解锁 —— 必须在页面 meta 解析前
+     *   挂上 MutationObserver，才能覆盖“页面脚本后插/改写 viewport meta”的场景）。
      */
     fun injectDocumentStartScripts() {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(this, DOCUMENT_START_SCRIPT, setOf("*"))
+            WebViewCompat.addDocumentStartJavaScript(this, PINCH_UNLOCK_SCRIPT, setOf("*"))
         }
     }
 
@@ -201,21 +280,29 @@ open class GameWebView @JvmOverloads constructor(
      *
      * 不使用 WebSettings.textZoom:它只缩放文字而不缩放布局/图片,
      * 导致放大时文字溢出容器、缩小时文字与布局比例失调。
-     * setInitialScale + body.zoom 是整页等比缩放,字体跟随布局自然变化。
+     * ★ v10 起仅用 setInitialScale：WebView 层生效、跨导航持久、与原生双指
+     * 捏合同一坐标系（手动档与捏合自然衔接，不再叠加 body.zoom 双缩放）。
      * 必须 reload() 才完整生效(Chromium 限制:运行时改 setInitialScale 需重载文档)。
      */
     fun applyPageZoom(percent: Int) {
         val p = percent.coerceIn(25, 200)
         settings.textZoom = 100  // 重置 textZoom,避免之前的设置残留影响字体
+        // ★ v10 修复双缩放：原实现 setInitialScale(p) 与 body.zoom=p 双通道叠加，
+        //   手动 150% 实际呈现 150%×150% = 225%（缩放严重失真）；且 body.zoom
+        //   会破坏双指缩放的 scale 基准。现仅保留 setInitialScale —— WebView 层
+        //   生效、跨导航持久、与原生捏合同一坐标系（手动档与双指缩放自然衔接）。
         setInitialScale(p)
-        // 额外注入 body.zoom(WebKit 私有 API,Chromium WebView 支持),
-        // 整页 layout 缩放,即使页面有 viewport meta 也能生效。
-        val js = "try{document.body.style.zoom='${p}%';}catch(e){}"
-        post { evaluateJavascript(js, null) }
+        // 清理旧版本遗留的 body.zoom（一次性兼容清理，回 100% 同样清理）
+        post { evaluateJavascript("try{document.body.style.zoom='';}catch(e){}", null) }
     }
 
     // ---------------- 触屏 ----------------
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // ★ v10 双指缩放体验：记录本手势流是否出现过多指 —— 双指捏合过程中
+        //   GestureDetector 可能把两指间的位移误判为 fling 而注入方向键，
+        //   导致缩放时游戏“乱动”；多指后本手势流内不再注入方向键。
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) multiTouchSeen = false
+        else if (event.pointerCount > 1) multiTouchSeen = true
         gestureDetector.onTouchEvent(event)
         if (event.action == MotionEvent.ACTION_DOWN) performClick()
 
@@ -324,6 +411,8 @@ open class GameWebView @JvmOverloads constructor(
         ): Boolean {
             // 视角旋转模式下不注入方向键，避免拖动旋转时误触滚屏/移动
             if (cameraRotationEnabled) return false
+            // ★ v10: 双指手势流（缩放进行中）不注入方向键，防“缩放时游戏乱动”
+            if (multiTouchSeen) return false
             // 滑动手势映射为方向键（部分页游用方向键滚屏）
             if (abs(vx) > abs(vy)) {
                 injectKey(if (vx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
@@ -833,6 +922,58 @@ open class GameWebView @JvmOverloads constructor(
 
         /** 桌面版 Chrome UA（Windows），不含 Mobile/Android，4399 据此返回 PC 版页面 */
         const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        /**
+         * ★ v10: 双指缩放解锁脚本 —— 剥离 viewport 的 user-scalable=no / 放开
+         * maximum-scale 钳制。大量游戏门户（4399 等）在 meta 里写死 no-zoom，
+         * 导致 WebView 原生捏合完全失效（这是“双指缩放不生效”的主根因）。
+         * 幂等（__pinchUnlock 守卫）+ MutationObserver 持续监听（页面脚本可在
+         * 加载后插入/改写 meta），扫描现存 meta 并改写其 content。
+         * 注入点：Document Start（页面 meta 解析前挂观察器）+ onPageStarted 兜底。
+         */
+        const val PINCH_UNLOCK_SCRIPT = """
+            (function(){
+              if (window.__pinchUnlock) return; window.__pinchUnlock = true;
+              function unlockMeta(m){
+                try{
+                  var c = m.getAttribute('content') || '';
+                  if(!c) return;
+                  var orig = c;
+                  c = c.replace(/user-scalable\s*=\s*no/gi, 'user-scalable=yes');
+                  c = c.replace(/maximum-scale\s*=\s*([0-9.]+)\s*(,|$)/gi, function(mm, v, tail){
+                    return (parseFloat(v) < 10) ? ('maximum-scale=10.0' + tail) : mm;
+                  });
+                  if (c !== orig) m.setAttribute('content', c);
+                }catch(e){}
+              }
+              function scanAll(){
+                try{
+                  var metas = document.querySelectorAll('meta[name="viewport"]');
+                  for(var i=0;i<metas.length;i++) unlockMeta(metas[i]);
+                }catch(e){}
+              }
+              scanAll();
+              try{
+                if (window.MutationObserver){
+                  var mo = new MutationObserver(function(muts){
+                    for (var i=0;i<muts.length;i++){
+                      var m = muts[i];
+                      if (m.type === 'attributes'){
+                        var t = m.target;
+                        if (t && t.tagName === 'META' && (t.getAttribute('name')||'').toLowerCase() === 'viewport') unlockMeta(t);
+                      } else if (m.addedNodes && m.addedNodes.length){
+                        for (var j=0;j<m.addedNodes.length;j++){
+                          var n = m.addedNodes[j];
+                          if (n && n.tagName === 'META' && (n.getAttribute('name')||'').toLowerCase() === 'viewport') unlockMeta(n);
+                        }
+                      }
+                    }
+                  });
+                  mo.observe(document.documentElement || document, {childList:true, subtree:true, attributes:true, attributeFilter:['content']});
+                }
+              }catch(e){}
+            })();
+        """
 
         /** IE11 兼容模式 UA（Trident/7.0），4399 部分页面需要此 UA 才能正常加载 */
         const val IE_COMPAT_UA = "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko"

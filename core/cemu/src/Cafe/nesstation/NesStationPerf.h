@@ -348,4 +348,32 @@ namespace NesStationPerf
                         AdpfCloseSession(); // 关闭时释放会话（修复泄漏）
                 }
         }
+
+        // ================= NesStation R15: thread quantum（线程时间片）运行时覆盖 =================
+        // 上游 Cemu GameProfile::threadQuantum 同款语义：值 = 每个调度时间片授予的
+        // PPC 周期数（上游默认 kThreadQuantumDefault = 45000；上游档案注释可选值
+        // 20000/45000/60000/80000/100000，档案加载范围 1000..536870912）。
+        // 周期数越大线程切换越少 —— 移动端提速关键；过小则调度频繁（个别老游戏
+        // 需要小值保兼容）。
+        // 生效路径（三重保证）：
+        //   1. 启动期：App 的 boot 重放经 JNI 写入 s_threadQuantumOverride（在任何
+        //      prepareTitle/游戏档案加载之前）；
+        //   2. 调度器：coreinit_Thread.cpp 的 __OSLoadThread / __OSThreadStartTimeslice
+        //      每个时间片经 EffectiveThreadQuantum() 读取 —— 运行中改动即时生效，
+        //      且与周期统计（executedCycles = quantumTicks - remainingCycles）同基准；
+        //   3. 关闭（0）时完整回退上游行为：继续跟随游戏档案/默认值。
+        inline std::atomic<uint32_t> s_threadQuantumOverride{ 0 }; // 0 = 不覆盖（跟随游戏档案/默认 45000）
+
+        // 取生效量子值：覆盖 >0 时优先（钳制到上游档案范围），否则用档案/默认值
+        inline uint32_t EffectiveThreadQuantum(uint32_t fromProfile)
+        {
+                const uint32_t o = s_threadQuantumOverride.load(std::memory_order_relaxed);
+                if (o == 0)
+                        return fromProfile;
+                if (o < 1000)
+                        return 1000;
+                if (o > 536870912u)
+                        return 536870912u;
+                return o;
+        }
 }

@@ -1385,7 +1385,11 @@ namespace coreinit
 		OSSetCurrentThread(OSGetCoreId(), thread);
 		__OSThreadLoadContext(hCPU, thread);
 		thread->context.upir = coreIndex;
-		thread->quantumTicks = ppcThreadQuantum;
+		// ★ NesStation R15: 线程时间片（thread quantum）—— 覆盖值 >0 时优先于
+		//   游戏档案（设置页「Wii U · 线程时间片」下发）；与 remainingCycles 同
+		//   基准，保证周期统计（executedCycles = quantumTicks - remainingCycles）
+		//   在覆盖态下仍一致。默认（0）时行为与上游完全相同。
+		thread->quantumTicks = NesStationPerf::EffectiveThreadQuantum(ppcThreadQuantum);
 		// statistics
 		thread->wakeUpTime = PPCInterpreter_getMainCoreCycleCounter();
 		thread->wakeUpCount = thread->wakeUpCount + 1;
@@ -1397,7 +1401,8 @@ namespace coreinit
 	{
 		uint32 coreIndex = PPCInterpreter_getCoreIndex(hCPU);
 		// run one timeslice
-		hCPU->remainingCycles = ppcThreadQuantum;
+		// ★ NesStation R15: 每个时间片读取生效量子 —— 运行中切换设置即时热生效
+		hCPU->remainingCycles = NesStationPerf::EffectiveThreadQuantum(ppcThreadQuantum);
 		hCPU->skippedCycles = 0;
 		// we add a slight randomized variance to the thread quantum to avoid getting stuck in repeated code sequences where one or multiple threads always unload inside a lock
 		// this was seen in Mario Party 10 during early boot where several OSLockMutex operations would align in such a way that one thread would never successfully acquire the lock

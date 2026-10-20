@@ -5,6 +5,7 @@ import android.net.http.SslError
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.documentfile.provider.DocumentFile
@@ -35,6 +36,9 @@ open class GameWebViewClient(
         fun getLocalSwfUri(): String?
         /** 获取本地 SWF 所在的目录路径（用于多 SWF 资源加载） */
         fun getLocalSwfDir(): String?
+        /** ★ v10: 渲染进程死亡（不接管则 Chromium 会杀整个应用进程）——
+         *   宿主销毁死视图并重建（主窗口 / 弹窗）。默认空实现（防御性）。 */
+        fun onRendererGone(deadView: WebView?) {}
     }
 
     /**
@@ -45,9 +49,28 @@ open class GameWebViewClient(
     private val adHosts = emptySet<String>()
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-        val url = request.url?.toString() ?: return false
+        val uri = request.url ?: return false
+        val url = uri.toString()
         if (url.endsWith(".swf", ignoreCase = true)) {
             callback.onSwfIntercepted(url, view.url ?: url)
+            return true
+        }
+        // ★ v10: 非网页 scheme 分流（参照 AnWind）—— magnet/ed2k/thunder/weixin/
+        //   alipays/intent:// 等第三方协议交给系统 Intent；白名单 scheme 内继续
+        //   由 WebView 自行加载。此前这类链接要么无反应要么报错。
+        val scheme = uri.scheme?.lowercase()
+        val webSchemes = setOf("http", "https", "file", "content", "data", "about", "javascript", "blob")
+        if (scheme != null && scheme !in webSchemes) {
+            try {
+                val intent = if (scheme == "intent")
+                    android.content.Intent.parseUri(url, android.content.Intent.URI_INTENT_SCHEME)
+                else
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                view.context.startActivity(intent)
+            } catch (_: Exception) {
+                // 未安装可处理应用 / 无 Activity 可唤起 → 静默忽略（页内广告/唤起链接常见）
+            }
             return true
         }
         return false
@@ -617,6 +640,10 @@ open class GameWebViewClient(
         super.onPageStarted(view, url, favicon)
         callback.onPageStarted(url)
 
+        // ★ v10: 双指缩放解锁兜底（Document Start 特性不可用的旧 WebView 上）——
+        //   剥离 viewport 的 user-scalable=no / 放开 maximum-scale 钳制（脚本幂等）
+        view?.evaluateJavascript(GameWebView.PINCH_UNLOCK_SCRIPT, null)
+
         // 注入按键安全钩子：页面失焦时自动释放所有按键（所有页面通用）
         view?.evaluateJavascript(KEY_SAFETY_SCRIPT, null)
 
@@ -765,34 +792,39 @@ open class GameWebViewClient(
         super.onReceivedError(view, errorCode, description, failingUrl)
     }
 
-    /** 根据用户缩放设置构建 viewport 脚本 */
-    private fun buildViewportScript(): String {        val scale = if (PrefsManager.pageZoomMode == "manual") {
-            PrefsManager.pageZoomManual / 100.0
-        } else {
-            -1.0
+    /**
+     * ★ v10: 渲染进程死亡兑底（参照 AnWind）—— 不返回 true 接管时，Chromium
+     * 会连带杀掉整个应用进程（重型 WASM/H5 游戏页面最常见的“整包闪退”）。
+     * 宿主销毁死 WebView 并重建（renderEpoch 驱动），自动恢复浏览。
+     */
+    override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+        try {
+            callback.onRendererGone(view)
+        } catch (_: Exception) {
         }
-        return if (scale > 0) {
-            """
-            (function(){
+        return true // true = 本应用已接管，系统不再杀进程
+    }
+
+    /**
+     * ★ v10 重写：尊重页面自己的 viewport —— 不再对全部页面强制
+     * width=device-width（旧实现会把 PC 版页面压成手机宽度、破坏桌面排版，
+     * 也让双指缩放失去“全景基准”）。auto 模式只解除 no-zoom 钳制
+     * （PINCH_UNLOCK_SCRIPT）；manual 模式额外注入 initial-scale 对准用户
+     * 手动缩放（与 WebView.setInitialScale 同基准）。
+     */
+    private fun buildViewportScript(): String {
+        return if (PrefsManager.pageZoomMode == "manual") {
+            val scale = PrefsManager.pageZoomManual / 100.0
+            GameWebView.PINCH_UNLOCK_SCRIPT + """
+            ;(function(){
               var meta = document.querySelector('meta[name="viewport"]');
               if (!meta) { meta = document.createElement('meta'); meta.name='viewport'; document.head.appendChild(meta); }
-              var s = $scale;
               // minimum-scale=0.01 允许无限缩小，maximum-scale=10.0 是 WebView 允许的最大值
-              meta.content = 'width=device-width, initial-scale=' + s + ', minimum-scale=0.01, maximum-scale=10.0, user-scalable=yes';
+              meta.content = 'width=device-width, initial-scale=' + $scale + ', minimum-scale=0.01, maximum-scale=10.0, user-scalable=yes';
             })();
             """.trimIndent()
         } else {
-            // auto 模式：让 viewport 走 WebView 自身默认（initial-scale=1.0），
-            // 之前的 `Math.min(1, sw / 1200)` 在移动端（sw≈360）会算成 0.3，导致画面过小，违反直觉。
-            // 这里只确保存在 viewport meta 标签，scale 默认就是 1.0（铺满屏幕宽度）。
-            """
-            (function(){
-              var meta = document.querySelector('meta[name="viewport"]');
-              if (!meta) { meta = document.createElement('meta'); meta.name='viewport'; document.head.appendChild(meta); }
-              // minimum-scale=0.01 允许无限缩小，maximum-scale=10.0 是 WebView 允许的最大值
-              meta.content = 'width=device-width, initial-scale=1.0, minimum-scale=0.01, maximum-scale=10.0, user-scalable=yes';
-            })();
-            """.trimIndent()
+            GameWebView.PINCH_UNLOCK_SCRIPT
         }
     }
 

@@ -6341,6 +6341,7 @@ private fun applyCoreOptionsInner(
             //   现在补齐端到端链（CemuEngine.setCoreOption 分支已就绪）：
             engine.setCoreOption("CemuEngine/coreScheduling", layout.cwCoreSched)
             engine.setCoreOption("CemuEngine/cpuMode", layout.cwCpuMode)
+            engine.setCoreOption("CemuEngine/threadQuantum", layout.cwThreadQuantum)
             engine.setCoreOption("CemuEngine/drawdoneFast", layout.cwDrawdoneFast)
             engine.setCoreOption("CemuEngine/drawdoneMode", layout.cwDrawdoneMode)
             engine.setCoreOption("CemuEngine/drawdoneLag", layout.cwDrawdoneLag)

@@ -30,6 +30,12 @@ open class GameWebChromeClient(
         fun onHideFullscreen()
         /** 文件上传选择回调 */
         fun onFileChooser(callback: ValueCallback<Array<Uri>>, accept: String?): Boolean
+        /** ★ v10: 多窗口 —— window.open / target=_blank 由宿主创建弹窗 WebView 并经
+         *   WebViewTransport 交接（宿主必须在 resultMsg 上 sendToTarget）；
+         *   返回 false = 拒绝弹窗。默认拒绝（向后兼容）。 */
+        fun handleCreateWindow(opener: WebView?, isDialog: Boolean, resultMsg: android.os.Message): Boolean = false
+        /** ★ v10: window.close() / 页面自行关闭弹窗通知（宿主销毁对应弹窗） */
+        fun handleCloseWindow(window: WebView?) {}
     }
 
     override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -111,5 +117,17 @@ open class GameWebChromeClient(
 
     override fun onPermissionRequest(request: PermissionRequest?) {
         request?.grant(request.resources)
+    }
+
+    // ---------- 多窗口（window.open / target=_blank → 真实弹窗 WebView） ----------
+    override fun onCreateWindow(
+        view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message?
+    ): Boolean {
+        if (resultMsg == null) return false
+        return callback.handleCreateWindow(view, isDialog, resultMsg)
+    }
+
+    override fun onCloseWindow(window: WebView?) {
+        callback.handleCloseWindow(window)
     }
 }

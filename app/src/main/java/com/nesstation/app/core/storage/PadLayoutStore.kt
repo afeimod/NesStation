@@ -895,6 +895,7 @@ class PadLayout {
     var cwDisableShadows: String = "false"  // 取消阴影渲染："false" 正常阴影(默认) | "true" 阴影比较采样全部替换为受光（阴影消失·画面正常亮度，R7）
     var cwCoreSched: String = "0"           // ★ R11 CPU 核心调度："0" 默认 | "1" 大核优先(最快·发热高) | "2" 小核优先(省电·稳定)
     var cwCpuMode: String = "auto"          // ★ R11 CPU 模式："auto" 默认(多核重编译) | "3" 多核重编译 | "1" 单核重编译 | "0" 单核解释器（重启生效）
+    var cwThreadQuantum: String = "0"       // ★ R15 线程时间片(thread quantum)上游 GameProfile::threadQuantum 同款："0" 跟随游戏档案(默认45000) | "20000"/"45000"/"60000"/"80000"/"100000"（每时间片 PPC 周期数，越大切换越少=提速；热生效）
     var cwDrawdoneFast: String = "true"     // ★ R11/R13 旧字段（保留兼容，读时映射到 mode）
     var cwDrawdoneMode: String = "1"        // ★ R14 GX2DrawDone 模式："0" 严格等待(最兼容) | "1" 滞后等待(默认·帧率稳提速) | "2" 纯跳过(最快)
     var cwDrawdoneLag: String = "1"         // ★ R14 滞后等待的滞后深度："1".."4"（默认1；越大重叠越多·输入延迟越高）
@@ -1915,6 +1916,7 @@ class PadLayout {
         cwDisableShadows = another.cwDisableShadows
         cwCoreSched = another.cwCoreSched
         cwCpuMode = another.cwCpuMode
+        cwThreadQuantum = another.cwThreadQuantum
         cwDrawdoneFast = another.cwDrawdoneFast
         cwDrawdoneMode = another.cwDrawdoneMode
         cwDrawdoneLag = another.cwDrawdoneLag
@@ -3342,6 +3344,9 @@ object PadLayoutStore {
                 if (it in listOf("0", "1", "2")) it else "0" }
             cwCpuMode = (p.getString("cw_cpu_mode", "auto") ?: "auto").let {
                 if (it in listOf("auto", "3", "1", "0")) it else "auto" }
+            cwThreadQuantum = (p.getString("cw_thread_quantum", "0") ?: "0").let {
+                // ★ R15: 合法值为上游档案可选集合；非法/旧值回退 0（跟随档案）
+                if (it in listOf("0", "20000", "45000", "60000", "80000", "100000")) it else "0" }
             cwDrawdoneFast = (p.getString("cw_drawdone_fast", "true") ?: "true").let {
                 // ★ R13: 默认改为开启（提速关键）。旧版默认 false 且全量落盘过 ——
                 //   用一次性迁移标记把老用户从未动过的 false 提升到新默认 true；
@@ -4396,6 +4401,7 @@ object PadLayoutStore {
             putString("cw_disable_shadows", layout.cwDisableShadows)
             putString("cw_core_sched", layout.cwCoreSched)
             putString("cw_cpu_mode", layout.cwCpuMode)
+            putString("cw_thread_quantum", layout.cwThreadQuantum)
             putString("cw_drawdone_fast", layout.cwDrawdoneFast)
             // ★ R13: 一次性迁移标记（配合读取处的旧默认 false → 新默认 true 迁移）
             putBoolean("cw_drawdone_fast_v13", true)

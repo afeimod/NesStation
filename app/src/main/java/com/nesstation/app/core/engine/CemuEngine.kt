@@ -83,6 +83,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     @Volatile private var _coreSchedPolicy = 0
     // ★ R11 CPU 模式：auto=不覆盖（Auto 推断·多核重编译）/ "3" 多核重编译 / "1" 单核重编译 / "0" 单核解释器
     @Volatile private var _cpuMode = "auto"
+    // ★ R15 线程时间片（thread quantum）覆盖值：0 = 跟随游戏档案（上游默认 45000）
+    @Volatile private var _threadQuantum = 0
     // ★ R11/R13 旧字段（R14 起映射进 _drawdoneMode）
     @Volatile private var _drawdoneFast = true
     // ★ R14 GX2DrawDone 三档模式：0 严格等待 / 1 滞后等待(one-behind·默认) / 2 纯跳过
@@ -368,6 +370,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
                     try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
+                    // ★ R15: 启动/Surface 重挂重放线程时间片（值相同则原生侧幂等）
+                    try { NativeEmulation.setThreadQuantumOverride(_threadQuantum) } catch (_: Throwable) {}
                     try { NativeEmulation.setDrawDoneMode(_drawdoneMode, _drawdoneLag) } catch (_: Throwable) {}
                     try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
                     // ★ R13: 帧生成 —— 先注入 DLL 与配置，再开开关（顺序关键）
@@ -442,6 +446,8 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     try { NativeEmulation.setShadowRenderingDisabled(_shadowDisabled) } catch (_: Throwable) {}
                     try { NativeEmulation.setCoreSchedulingPolicy(_coreSchedPolicy) } catch (_: Throwable) {}
                     try { NativeEmulation.setCpuModeOverride(if (_cpuMode == "auto") -1 else _cpuMode.toIntOrNull() ?: -1) } catch (_: Throwable) {}
+                    // ★ R15: 启动/Surface 重挂重放线程时间片（值相同则原生侧幂等）
+                    try { NativeEmulation.setThreadQuantumOverride(_threadQuantum) } catch (_: Throwable) {}
                     try { NativeEmulation.setDrawDoneMode(_drawdoneMode, _drawdoneLag) } catch (_: Throwable) {}
                     try { NativeEmulation.setAdpfEnabled(_adpfEnabled) } catch (_: Throwable) {}
                     // ★ R13: 帧生成重挂恢复（DLL/配置/开关）
@@ -622,6 +628,18 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                             else -> -1 // auto（不覆盖，走 Auto 推断）
                         }
                         try { NativeEmulation.setCpuModeOverride(nativeMode) } catch (_: Throwable) {}
+                    }
+                }
+                // ★★★ R15 线程时间片（thread quantum）：上游 GameProfile::threadQuantum
+                //   同款语义 —— 每个调度时间片授予的 PPC 周期数（上游默认 45000，可选
+                //   20000/45000/60000/80000/100000）。值越大线程切换越少（移动端提速
+                //   关键）；0 = 跟随游戏档案。调度器每个时间片读取生效值 ——
+                //   运行中切换即时热生效，无需重启游戏。
+                "threadQuantum" -> {
+                    val q = value.toIntOrNull()?.coerceIn(0, 536870912) ?: 0
+                    if (q != _threadQuantum) {
+                        _threadQuantum = q
+                        try { NativeEmulation.setThreadQuantumOverride(q) } catch (_: Throwable) {}
                     }
                 }
                 // ★★★ R11 GX2DrawDone 快速模式：只 flush 不等待时间戳退休，

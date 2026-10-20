@@ -46,6 +46,14 @@ object NativeEmulation {
     //   重启游戏完全生效）、GX2DrawDone 快速模式（默认关，实验性）
     external fun setCoreSchedulingPolicy(policy: Int)
     external fun setCpuModeOverride(mode: Int)
+
+    // ★★★ NesStation R15: 线程时间片（thread quantum）覆盖 —— 上游 GameProfile::
+    //   threadQuantum 同款语义（值 = 每个调度时间片授予的 PPC 周期数；上游默认
+    //   45000，可选 20000/45000/60000/80000/100000）。0 = 跟随游戏档案；
+    //   >0 热生效（调度器每时间片读取生效值，无需重启游戏）。值越大线程
+    //   切换越少 = 提速关键。
+    external fun setThreadQuantumOverride(quantum: Int)
+
     external fun setDrawDoneSkipWait(skip: Boolean)
 
     // ★★★ NesStation R14: GX2DrawDone 三档模式 + 滞后深度（同参考 APK
