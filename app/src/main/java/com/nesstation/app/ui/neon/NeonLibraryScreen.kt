@@ -118,6 +118,8 @@ fun NeonLibraryScreen(
     var refreshing by remember { mutableStateOf(false) }
     var statusMsg by remember { mutableStateOf<String?>(null) }
     var longPressGame by remember { mutableStateOf<GameEntry?>(null) }
+    // ★★ v8：Switch 小程序启动器对话框开关（Switch 页列表上方入口）
+    var showAppletLauncher by remember { mutableStateOf(false) }
     var pendingRenameGame by remember { mutableStateOf<GameEntry?>(null) }
     var renameText by remember { mutableStateOf("") }
     var pendingDeleteGame by remember { mutableStateOf<GameEntry?>(null) }
@@ -716,6 +718,23 @@ fun NeonLibraryScreen(
 
                 // -- 右侧 3D 封面流 --
                 Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+                    // ★★ v8：Switch 小程序启动器（游戏列表上方入口）★★
+                    //   需求原话：“缺少小程序启动器(这个放在switch核心游戏列表上方)”。
+                    //   相册 / Amiibo 管理 / Mii 编辑器 / 主菜单 —— 内置于官方固件，
+                    //   启动前会校验固件（未安装时给出可操作提示，不黑屏）。
+                    if (!searching && selectedCore == GamePlatform.NSWITCH) {
+                        TextButton(
+                            onClick = { showAppletLauncher = true },
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 2.dp)
+                        ) {
+                            Text(
+                                "小程序启动器：相册 / Amiibo / Mii / 主菜单（需固件）",
+                                color = Neon.Accent, fontSize = 10.sp
+                            )
+                        }
+                    }
                     if (displayGames.isEmpty()) {
                         Column(
                             modifier = Modifier.align(Alignment.Center),
@@ -852,6 +871,17 @@ fun NeonLibraryScreen(
                 TextButton(onClick = { statusMsg = null }) { Text("确定") }
             },
             text = { Text(msg) }
+        )
+    }
+
+    // ★★ v8：Switch 小程序启动器对话框（Neon 游戏库）
+    if (showAppletLauncher) {
+        com.nesstation.app.ui.eden.EdenAppletLauncherDialog(
+            onLaunch = { entry ->
+                showAppletLauncher = false
+                onOpenGame(entry)
+            },
+            onDismiss = { showAppletLauncher = false }
         )
     }
 

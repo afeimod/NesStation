@@ -230,6 +230,8 @@ fun LibraryScreen(
     var searchQuery by remember { mutableStateOf("") }
     // 搜索框展开状态 — 默认收起，点击搜索 pill 按钮才展开
     var showSearch by remember { mutableStateOf(false) }
+    // ★★ v8：Switch 小程序启动器对话框开关（Switch 页列表上方入口）
+    var showAppletLauncher by remember { mutableStateOf(false) }
 
     // 长按菜单相关状态
     var longPressGame by remember { mutableStateOf<GameEntry?>(null) }
@@ -1565,6 +1567,33 @@ fun LibraryScreen(
                 }
             }
 
+            // ===== ★★ v8：Switch 小程序启动器（游戏列表上方入口）★★
+            //   需求原话：“缺少小程序启动器(这个放在switch核心游戏列表上方)”。
+            //   相册 / Amiibo 管理 / Mii 编辑器 / 主菜单 —— 内置于官方固件，
+            //   启动前会校验固件（未安装时给出可操作提示，不黑屏）。
+            if (selectedPlatform == GamePlatform.NSWITCH) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 34.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF1F3A5F).copy(alpha = 0.55f))
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Switch 小程序：相册 / Amiibo 管理 / Mii 编辑器 / 主菜单（需固件）",
+                        color = Color(0xFFBBD5F5),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { showAppletLauncher = true }
+                    ) { Text("小程序启动器", fontSize = 11.sp) }
+                }
+            }
+
             // ===== 封面流主体 =====
             Box(
                 modifier = Modifier
@@ -1678,6 +1707,17 @@ fun LibraryScreen(
             confirmButton = {
                 TextButton(onClick = { dialogMsg = null }) { Text("确定") }
             }
+        )
+    }
+
+    // ★★ v8：Switch 小程序启动器对话框（FSD 游戏库）
+    if (showAppletLauncher) {
+        com.nesstation.app.ui.eden.EdenAppletLauncherDialog(
+            onLaunch = { entry ->
+                showAppletLauncher = false
+                onOpenGame(entry)
+            },
+            onDismiss = { showAppletLauncher = false }
         )
     }
 

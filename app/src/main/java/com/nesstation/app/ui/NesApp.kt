@@ -570,8 +570,16 @@ private fun PhoneNavHost(
             arguments = listOf(navArgument("gameId") { type = NavType.StringType })
         ) { entry ->
             val id = entry.arguments?.getString("gameId") ?: ""
+            // ★★ v8：Switch 小程序伪条目（eden-applet://…）不入库，路由时即时构造；
+            //   其余 id 照旧查库。
             val game = games.firstOrNull { it.id == id }
                 ?: RomStore.loadAll(ctx).firstOrNull { it.id == id }
+                ?: com.nesstation.app.ui.eden.EdenApplets.parse(id)?.let {
+                    com.nesstation.app.ui.eden.EdenApplets.buildPseudoEntry(
+                        id.removePrefix("eden-applet://").substringBefore('?'),
+                        it.third.coerceAtLeast(0)
+                    )
+                }
                 ?: GameEntry(id, "未知游戏")
             EmulatorScreen(game = game, onExit = { nav.popBackStack() })
         }
@@ -736,8 +744,16 @@ private fun TvNavHost(
             arguments = listOf(navArgument("gameId") { type = NavType.StringType })
         ) { entry ->
             val id = entry.arguments?.getString("gameId") ?: ""
+            // ★★ v8：Switch 小程序伪条目（eden-applet://…）不入库，路由时即时构造；
+            //   其余 id 照旧查库。
             val game = games.firstOrNull { it.id == id }
                 ?: RomStore.loadAll(ctx).firstOrNull { it.id == id }
+                ?: com.nesstation.app.ui.eden.EdenApplets.parse(id)?.let {
+                    com.nesstation.app.ui.eden.EdenApplets.buildPseudoEntry(
+                        id.removePrefix("eden-applet://").substringBefore('?'),
+                        it.third.coerceAtLeast(0)
+                    )
+                }
                 ?: GameEntry(id, "未知游戏")
             EmulatorScreen(game = game, onExit = { nav.popBackStack() })
         }

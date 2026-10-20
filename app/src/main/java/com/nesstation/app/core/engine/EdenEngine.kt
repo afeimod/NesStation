@@ -206,6 +206,101 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     fun firmwareRegisteredDir(): File =
         File(nandDir(), "system/Contents/registered")
 
+    /**
+     * Switch 存档数据目录（NAND 用户存档，标准 yuzu 布局）。
+     * v8 新增：设置页「存档数据管理」的导入/导出直接 zip 本目录。
+     */
+    fun nandUserSaveDir(): File =
+        File(File(nandDir(), "user"), "save")
+
+    /**
+     * ★★ v8：启动 Switch 系统小程序（applet）★★
+     *
+     * 上游 AppletAdapter/AppletLauncherFragment 同款三步：
+     *   1. getAppletLaunchPath(entryId) —— 从固件 NAND 取 applet NCA 路径；
+     *      未安装固件 → 空串 → 可操作错误提示（不黑屏）；
+     *   2. setCurrentAppletId(appletId) —— 告知核心当前程序是哪个 applet；
+     *   3. Cabinet（Amiibo 管理）额外 setCabinetMode(mode) 选择操作模式。
+     * 之后与普通游戏同一条启动链（run(path, 0, true)）。
+     *
+     * 模拟会话结束时 native 侧自动把 applet id 重置回 Application
+     * （native.cpp ShutdownEmulation "Reset current applet ID"），
+     * 所以 applet → 游戏顺序启动无需 Kotlin 侧额外重置。
+     *
+     * @param cabinetMode 仅 Cabinet 用：0=昵称/主人设置 1=游戏数据擦除
+     *                    2=恢复 3=格式化；传 -1 表示非 Cabinet。
+     */
+    fun loadApplet(appletId: Int, entryId: Long, cabinetMode: Int,
+                   onFrame: () -> Unit = {}): Boolean {
+        synchronized(lifecycleLock) {
+            if (!coreInitOnce()) return false
+            if (running.get()) {
+                unloadLocked()
+            }
+            if (!NativeLibrary.areKeysPresent()) {
+                lastErrorText = "缺少 Switch 密钥（prod.keys）。\n" +
+                    "请在 设置 → Switch·Eden → 密钥与固件 里选择密钥文件。"
+                return false
+            }
+            // 先声明 applet 身份（上游顺序：setCurrentAppletId → launch）
+            try {
+                NativeLibrary.setCurrentAppletId(appletId)
+                if (cabinetMode >= 0) {
+                    NativeLibrary.setCabinetMode(cabinetMode)
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("EdenEngine", "set applet id failed", t)
+            }
+            // 从固件 NAND 解析 applet NCA —— 未装固件时为空串
+            val appletPath = try {
+                NativeLibrary.getAppletLaunchPath(entryId)
+            } catch (t: Throwable) {
+                android.util.Log.e("EdenEngine", "getAppletLaunchPath failed", t)
+                ""
+            }
+            if (appletPath.isEmpty()) {
+                // ★ 启动失败回滚 applet id：native 只在模拟会话结束时把
+                //   applet id 重置回 Application（ShutdownEmulation），本次
+                //   没有真正开过会话 → 必须手动复位，否则残留的 Cabinet/
+                //   QLaunch 身份会影响下一次正常游戏启动。
+                try { NativeLibrary.setCurrentAppletId(0x01) } catch (_: Throwable) {}
+                lastErrorText = "固件中未找到该小程序。\n" +
+                    "请到 设置 → Switch·Eden → 密钥与固件 安装官方固件 zip" +
+                    "（小程序内置于固件，重启后生效）。"
+                return false
+            }
+            romPath = appletPath
+            isLoaded = true
+            _paused = false
+            _ffSpeed = 0
+            userRequestedStop = false
+            pendingBoot = true
+            bootStarted = false
+            running.set(true)
+
+            // HUD 心跳（与 loadRom 同款：推模型核心前端无模拟循环；
+            // 16ms 节拍驱动 onFrame 计数 + 联机帧同步）
+            heartbeatThread = thread(name = "eden-hud-heartbeat", isDaemon = true) {
+                try {
+                    while (running.get()) {
+                        _frameHook?.beforeFrame(_netFrame)?.let { (p1, p2) ->
+                            setPad1(p1); setPad2(p2)
+                        }
+                        onFrame()
+                        _netFrame++
+                        try { Thread.sleep(16) } catch (_: InterruptedException) { break }
+                    }
+                } catch (t: Throwable) {
+                    android.util.Log.e("EdenEngine", "heartbeat crashed", t)
+                }
+            }
+
+            // Surface 可能已就绪 —— 直接开跑（与 loadRom 同款）
+            surface?.let { startBootLocked() }
+            return true
+        }
+    }
+
     // ------------------------------------------------------------------
     // 核心一次性初始化（loadRom / 设置页操作前调用）
     // ------------------------------------------------------------------

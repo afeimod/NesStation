@@ -2562,6 +2562,33 @@ fun EmulatorScreen(
             return@LaunchedEffect
         }
 
+        // === ★★ v8：Switch 小程序（applet）启动 ===
+        //   伪条目 romPath 形如 eden-applet://qlaunch（NesApp 路由即时构造，
+        //   不入库、不是文件）—— 不走任何文件/content 分支，直接交给
+        //   EdenEngine.loadApplet（上游 AppletAdapter 同款三步：
+        //   setCurrentAppletId → getAppletLaunchPath → run）。
+        //   未装固件时 loadApplet 返回可操作错误文案（不黑屏）。
+        if (platform == GamePlatform.NSWITCH && romPath.startsWith("eden-applet://")) {
+            val parsed = com.nesstation.app.ui.eden.EdenApplets.parse(romPath)
+            if (parsed == null) {
+                errorMsg = "无法识别的小程序标识：$romPath"
+                return@LaunchedEffect
+            }
+            val (appletId, entryId, cabinetMode) = parsed
+            val ok = withContext(Dispatchers.IO) {
+                (engine as? com.nesstation.app.core.engine.EdenEngine)?.loadApplet(
+                    appletId, entryId, cabinetMode
+                ) { fpsFrameCounter.incrementAndGet() } ?: false
+            }
+            if (!ok) {
+                val err = engine.lastError()
+                errorMsg = err.ifEmpty { "小程序启动失败" }
+            } else {
+                loaded = true
+            }
+            return@LaunchedEffect
+        }
+
         // === 直接读取优化：content:// → 外部存储真实路径 ===
         // libretro/ARMSX2 等 native 核心只能通过文件系统路径读 ROM；SAF
         // 选择的 content:// URI 传统上需要先复制进内部目录才能交给核心。
@@ -6346,7 +6373,16 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("EdenEngine/anisotropy", layout.edAnisotropy)
             engine.setCoreOption("EdenEngine/scalingFilter", layout.edScalingFilter)
             engine.setCoreOption("EdenEngine/antiAliasing", layout.edAntiAliasing)
-            engine.setCoreOption("EdenEngine/aspectRatio", layout.edAspectRatio)
+            // ★★★ v8：Switch 自带画面比例已取消 —— 恒写 Stretch(4) ★★★
+            //   需求原话：“取消switch核心自带的屏幕比例，要根据全局屏幕缩放”
+            //   （与此前 NGC/WII 的 AspectRatio 恒写 "3" 拉伸同款处理）。
+            //   核心恒拉伸 = 画面铺满前端给的 Surface，最终形状 100% 由全局
+            //   「屏幕缩放」决定（stretch / 4:3 / 16:9 / 自定义布局矩形，
+            //   所见即所得，不再有核心侧二次黑边/变形）。
+            //   edAspectRatio 字段保留仅为存量存档兼容，不再被任何 UI 写入。
+            //   AspectRatio 枚举（settings_enums.h:151）：
+            //   0=R16_9 1=R4_3 2=R21_9 3=R16_10 4=Stretch。
+            engine.setCoreOption("EdenEngine/aspectRatio", "4")
             engine.setCoreOption("EdenEngine/framePacing", layout.edFramePacing)
             engine.setCoreOption("EdenEngine/gpuFence", layout.edGpuFence)
             engine.setCoreOption("EdenEngine/nvdec", layout.edNvdec)
@@ -6444,6 +6480,9 @@ private fun GameSurfaceView(
     // PS2 弧面显示路径（Ps2CurvedView）的 EGL 失败标志：失败时回退普通
     // SurfaceView + 平面 FilterOverlay（画面可能无凸起，但绝不黑屏）。
     val ps2GlFailed = remember { mutableStateOf(false) }
+    // ★★ v8：Wii U / Switch 弧面中转路径（同用 Ps2CurvedView）的 EGL 失败标志：
+    //   失败时回退普通 SurfaceView + 平面 FilterOverlay（无凸起，但绝不黑屏）。
+    val relayGlFailed = remember { mutableStateOf(false) }
     // ★★★ V11：MMJ 滤镜叠加层路径（MmjFilterView）的 EGL 失败标志 ★★★
     // 失败时回退普通 SurfaceView + 直绘（无滤镜，但绝不黑屏）。
     val mmjFilterGlFailed = remember { mutableStateOf(false) }
@@ -6858,9 +6897,78 @@ private fun GameSurfaceView(
                 modifier = ps2CurvedModifier.then(gameViewTracker)
             )
         } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
+                   (platform == GamePlatform.WIIU || platform == GamePlatform.NSWITCH) &&
+                   !relayGlFailed.value) {
+            // === ★★ v8：Wii U / Switch 仿电视机（CRT 弧面）中转路径（黑屏修复）★★
+            //   根因：Cemu / Eden 与 ARMSX2 同为「直绘 Surface 的推模型核心」
+            //   （Vulkan 直接上屏），frameBuffer 只是 1 元素占位数组（无 CPU
+            //   回读）。旧实现让 WIIU/NSWITCH 落进下方 TvCurvedGameView 画布
+            //   路径 → 引擎拿不到 Surface、视图拉不到帧 → 选「仿电视机」即
+            //   黑屏（与 3DS/NGC-WII 当年的黑屏同型，那两者已提前排除）。
+            //   修复：复用 PS2 已实测验证的 Ps2CurvedView（机制引擎无关：
+            //   SurfaceTexture 离屏中转，引擎看到的仍是带正尺寸的真实
+            //   Surface，Vulkan ANativeWindow 契约不变），同款 nsCurve 桶形
+            //   弧面上屏 + 扫描线/暗角/玻璃高光 —— 凸起与其他核心一致；
+            //   EGL 失败经 onGlFailed 置 relayGlFailed → 重组后回落普通
+            //   SurfaceView + 平面 FilterOverlay（无凸起，但绝不黑屏）。
+            //   WIIU 的悬浮 GamePad 小窗是独立呈现链（读 DRC 帧），不受本
+            //   中转影响。
+            val relayCurvedModifier = when (effectiveVideoScale) {
+                "4:3" -> Modifier.aspectRatio(4f / 3f)
+                "2:3" -> Modifier.aspectRatio(2f / 3f)
+                "8:3" -> Modifier.aspectRatio(8f / 3f)
+                "3:2" -> Modifier.aspectRatio(3f / 2f)
+                "8:7" -> Modifier.aspectRatio(8f / 7f)
+                "16:9" -> Modifier.aspectRatio(16f / 9f)
+                "custom" -> {
+                    val maxW = constraints.maxWidth
+                    val maxH = constraints.maxHeight
+                    val leftPx = (customRect[0] * maxW).toInt().coerceIn(0, maxW)
+                    val topPx = (customRect[1] * maxH).toInt().coerceIn(0, maxH)
+                    val wPx = ((customRect[2] - customRect[0]) * maxW).toInt().coerceIn(1, maxW)
+                    val hPx = ((customRect[3] - customRect[1]) * maxH).toInt().coerceIn(1, maxH)
+                    val density = LocalDensity.current
+                    Modifier
+                        .offset { IntOffset(leftPx, topPx) }
+                        .size(width = with(density) { wPx.toDp() }, height = with(density) { hPx.toDp() })
+                }
+                else -> Modifier.fillMaxSize() // stretch (default)
+            }
+            AndroidView(
+                factory = { viewCtx ->
+                    Ps2CurvedView(viewCtx).apply {
+                        // 与 SurfaceView 分支一致：可聚焦以接收实体手柄 /
+                        // D-pad 按键（TV 盒子 + 蓝牙手柄场景）
+                        isFocusable = true
+                        isFocusableInTouchMode = true
+                        requestFocus()
+                        setOnKeyListener(gamepadKeyListener)
+                        // EGL 失败回退普通 SurfaceView + 平面叠加
+                        onGlFailed = { relayGlFailed.value = true }
+                    }
+                },
+                update = { v ->
+                    v.engine = engine
+                    v.uiBlocked = uiBlocked
+                    v.setOnKeyListener(gamepadKeyListenerRebind)
+                    if (uiBlocked && gamepadBitsHolder[0] != 0) {
+                        gamepadBitsHolder[0] = 0
+                        routePadBits(engine, currentPlayer, 0, netplayController, platform)
+                    }
+                    if (!uiBlocked) {
+                        v.isFocusable = true
+                        v.isFocusableInTouchMode = true
+                        v.requestFocus()
+                    }
+                },
+                modifier = relayCurvedModifier.then(gameViewTracker)
+            )
+        } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
                    platform != GamePlatform.NDS &&
                    platform != GamePlatform.N3DS &&
                    platform != GamePlatform.NGCWII &&
+                   platform != GamePlatform.WIIU &&
+                   platform != GamePlatform.NSWITCH &&
                    engine !is com.nesstation.app.core.engine.Psx2Engine) {
             // === 仿电视机（CRT 弧面）画布路径 ===
             // tv 系滤镜 + 支持「无 Surface framebuffer 回退」的引擎：
@@ -6872,6 +6980,9 @@ private fun GameSurfaceView(
             // 例外说明：
             //   - PS2 (ARMSX2) 在上方独立分支走 Ps2CurvedView（弧面 +
             //     真实 Surface 中转）；
+            //   - ★★ v8：WIIU / NSWITCH（Cemu / Eden 直绘推模型核心）
+            //     在上方新增独立分支走同款 Ps2CurvedView 中转 —— 旧实现
+            //     落进本路径拉不到帧 → 黑屏（本轮修复主诉求）。
             //   - NDS 双屏的触摸映射依赖平面几何，且双屏各自 4:3，不进弧面
             //     （继续走原有路径）。
             //   - ★ 3DS/NGC-WII 黑屏修复：Azahar / Ishiiruka 均为「直绘
@@ -16340,11 +16451,12 @@ private fun SettingsPanel(
                     listOf("0" to "关闭 (默认·快)", "1" to "FXAA", "2" to "SMAA"),
                     padLayout.edAntiAliasing
                 ) { onLayoutChange(padLayout.copy {edAntiAliasing = it}) }
-                DropdownSetting("画面比例",
-                    listOf("0" to "16:9 (默认)", "1" to "4:3", "2" to "21:9",
-                           "3" to "16:10", "4" to "拉伸全屏"),
-                    padLayout.edAspectRatio
-                ) { onLayoutChange(padLayout.copy {edAspectRatio = it}) }
+                // ★★★ v8：画面比例（edAspectRatio）设置项已删除 ★★★
+                //   需求原话：“取消switch核心自带的屏幕比例”。核心现在恒按
+                //   AspectRatio=Stretch 拉伸渲染（见 applyCoreOptions），
+                //   画面形状完全由全局「屏幕缩放」决定（拉伸/4:3/16:9/
+                //   自定义布局矩形）—— 与 NGC/WII 同款处理。
+                //   edAspectRatio 字段保留仅为存量存档兼容。
                 DropdownSetting("垂直同步",
                     // VSyncMode 序数：0=Immediate 低延迟、1=Mailbox 兼容低撕裂、
                     // 2=FIFO 稳定（默认）、3=FIFO 宽松。

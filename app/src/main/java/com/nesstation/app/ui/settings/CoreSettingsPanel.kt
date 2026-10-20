@@ -2488,6 +2488,14 @@ fun CoreSettingsPanel(
             SettingsSection("Switch · 密钥与固件") {
                 EdenKeysFirmwareSection()
             }
+            // ★★ v8 新增：存档数据管理（导出/导入全部存档 zip）
+            SettingsSection("Switch · 存档数据管理") {
+                EdenSaveDataSection()
+            }
+            // ★★ v8 新增：安装游戏附加内容（升级包 / DLC → NAND）
+            SettingsSection("Switch · 安装升级包 / DLC") {
+                EdenContentInstallSection()
+            }
             SettingsSection("Switch · 画面 / 性能") {
                 DropdownRow("渲染分辨率",
                     // ResolutionSetup 序数（上游 ENUM 顺序）：3=1x 默认。
@@ -2540,11 +2548,12 @@ fun CoreSettingsPanel(
                     listOf("0" to "关闭 (默认·快)", "1" to "FXAA", "2" to "SMAA"),
                     padLayout.edAntiAliasing
                 ) { updateLayout(padLayout.copy {edAntiAliasing = it}) }
-                DropdownRow("画面比例",
-                    listOf("0" to "16:9 (默认)", "1" to "4:3", "2" to "21:9",
-                           "3" to "16:10", "4" to "拉伸全屏"),
-                    padLayout.edAspectRatio
-                ) { updateLayout(padLayout.copy {edAspectRatio = it}) }
+                // ★★★ v8：画面比例（edAspectRatio）设置项已删除 ★★★
+                //   需求原话：“取消switch核心自带的屏幕比例”。核心现在恒按
+                //   AspectRatio=Stretch 拉伸渲染（见 EmulatorScreen.applyCoreOptions，
+                //   恒写 "4"），画面形状完全由全局「屏幕缩放」决定
+                //   （拉伸/4:3/16:9/自定义布局矩形）—— 与 NGC/WII 同款处理。
+                //   edAspectRatio 字段保留仅为存量存档兼容，不再被任何 UI 写入。
                 DropdownRow("垂直同步",
                     // VSyncMode 序数：0=Immediate 低延迟、1=Mailbox 兼容低撕裂、
                     // 2=FIFO 稳定（默认）、3=FIFO 宽松。
@@ -3295,6 +3304,352 @@ fun EdenKeysFirmwareSection(dark: Boolean = false) {
         }
     }
 }
+
+// ===========================================================================
+// ★★ v8：Switch 存档数据管理（导出 / 导入）★★
+//   Switch 存档位于 <filesDir>/eden/nand/user/save/（标准 yuzu NAND 布局，
+//   游戏在内存档）。导出 = 该目录打包 zip（条目带 save/ 前缀，可反复
+//   导入）；导入 = 校验备份格式 → 覆盖式恢复 → 下次进游戏生效。
+//   纯文件操作，不触碰核心/System 状态；有游戏在跑（isLoaded）时按钮禁用。
+// ===========================================================================
+@Composable
+fun EdenSaveDataSection(dark: Boolean = false) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val engine = remember { com.nesstation.app.core.engine.EdenEngine.get() }
+    var busy by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(-1) }
+    var resultMsg by remember { mutableStateOf<String?>(null) }
+    var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var saveSummary by remember { mutableStateOf("") }
+
+    val dimColor = if (dark) Color(0xFF8899AA)
+        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
+        else Color(0xFF4A5568)
+
+    // 存档概览（纯文件扫描；busy 变化后刷新）
+    LaunchedEffect(busy) {
+        val s = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val dir = engine.nandUserSaveDir()
+            if (!dir.isDirectory) "存档目录尚未创建（进入游戏后自动生成）"
+            else {
+                val fs = dir.walkTopDown().filter { it.isFile }.toList()
+                if (fs.isEmpty()) "存档目录为空（进入游戏后自动生成）"
+                else "当前存档：${fs.size} 个文件，共 ${fs.sumOf { it.length() } / 1024} KB"
+            }
+        }
+        saveSummary = s
+    }
+    if (saveSummary.isNotBlank()) {
+        Text(saveSummary, color = dimColor, fontSize = 10.sp, lineHeight = 14.sp)
+    }
+
+    // ---- 导出（SAF CreateDocument → zip 全部存档）----
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true; progress = 0
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val err = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    ctx.contentResolver.openOutputStream(uri)?.let { os ->
+                        edenZipSaveDirToStream(engine.nandUserSaveDir(), os) { p ->
+                            android.os.Handler(android.os.Looper.getMainLooper()).post { progress = p }
+                        }
+                    } ?: "无法打开目标文件写入"
+                } catch (e: Exception) { "导出失败：${e.message ?: e.javaClass.simpleName}" }
+            }
+            busy = false; progress = -1
+            resultMsg = err ?: "存档导出成功（zip 内含 save/ 目录，可用「导入存档」随时恢复）"
+        }
+    }
+    TextButtonRow(
+        label = "导出全部存档（zip）",
+        sub = "NAND 用户存档 (<filesDir>/eden/nand/user/save/) 打包备份",
+        enabled = !busy && !engine.isLoaded,
+        dark = dark
+    ) { exportLauncher.launch("switch-saves-backup.zip") }
+
+    // ---- 导入（SAF 选 zip → 确认覆盖 → 恢复）----
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) pendingImportUri = uri
+    }
+    TextButtonRow(
+        label = "导入存档（zip 恢复）",
+        sub = "从本功能导出的备份恢复 —— 会覆盖现有全部存档，不可撤销",
+        enabled = !busy && !engine.isLoaded,
+        dark = dark
+    ) { importLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*")) }
+
+    if (busy && progress >= 0) {
+        Text(if (progress >= 100) "处理中…" else "处理中… $progress%",
+            color = dimColor, fontSize = 10.sp)
+    }
+
+    // 导入确认（覆盖不可逆）
+    pendingImportUri?.let { uri ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingImportUri = null },
+            title = { Text("导入存档？") },
+            text = { Text("将清空并覆盖现有全部 Switch 存档，该操作不可撤销。\n\n确认继续？") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    pendingImportUri = null
+                    busy = true; progress = 0
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                        val err = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            try {
+                                edenRestoreSaveDirFromZip(engine.nandUserSaveDir(), {
+                                    ctx.contentResolver.openInputStream(uri)
+                                        ?: throw java.io.IOException("无法读取所选文件")
+                                }) { p ->
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post { progress = p }
+                                }
+                            } catch (e: Exception) { "导入失败：${e.message ?: e.javaClass.simpleName}" }
+                        }
+                        busy = false; progress = -1
+                        resultMsg = err ?: "存档导入成功（下次进入游戏生效）"
+                    }
+                }) { Text("覆盖导入") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { pendingImportUri = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // 结果弹窗
+    resultMsg?.let { msg ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { resultMsg = null },
+            title = { Text("存档数据管理") },
+            text = { Text(msg) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { resultMsg = null }) { Text("确定") }
+            }
+        )
+    }
+}
+
+/** 把存档目录打包进 zip 输出流（条目名带 save/ 前缀）；返回错误文案或 null=成功。 */
+private fun edenZipSaveDirToStream(saveDir: java.io.File, out: java.io.OutputStream,
+                                   onProgress: (Int) -> Unit): String? {
+    val files = if (saveDir.isDirectory)
+        saveDir.walkTopDown().filter { it.isFile }.toList() else emptyList()
+    if (files.isEmpty()) return "没有可导出的存档（先进入游戏产生存档）"
+    return try {
+        java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(out)).use { zos ->
+            files.forEachIndexed { i, f ->
+                val rel = f.relativeTo(saveDir).invariantSeparatorsPath
+                zos.putNextEntry(java.util.zip.ZipEntry("save/$rel"))
+                f.inputStream().use { it.copyTo(zos) }
+                zos.closeEntry()
+                onProgress((i + 1) * 100 / files.size)
+            }
+        }
+        null
+    } catch (e: Exception) { "导出失败：${e.message ?: e.javaClass.simpleName}" }
+}
+
+/**
+ * 从导出 zip 恢复存档（校验 save/ 前缀 → 清空目录 → 解包，带 Zip Slip 防护）。
+ * @param openStream 每次调用打开一个新的输入流（校验/解包各读一遍）。
+ */
+private fun edenRestoreSaveDirFromZip(saveDir: java.io.File,
+                                      openStream: () -> java.io.InputStream,
+                                      onProgress: (Int) -> Unit): String? {
+    fun norm(name: String) = name.trim().removePrefix("./").removePrefix("/")
+    // 第一遍：校验是本功能导出的备份
+    val total = try {
+        var count = 0
+        java.util.zip.ZipInputStream(java.io.BufferedInputStream(openStream())).use { zis ->
+            var e = zis.nextEntry
+            while (e != null) {
+                if (!e.isDirectory && norm(e.name).startsWith("save/")) count++
+                zis.closeEntry()
+                e = zis.nextEntry
+            }
+        }
+        count
+    } catch (e: Exception) { return "读取备份失败：${e.message ?: e.javaClass.simpleName}" }
+    if (total == 0) return "不是有效的 Switch 存档备份（zip 内应包含 save/ 目录）"
+    // 覆盖式恢复
+    saveDir.deleteRecursively()
+    saveDir.mkdirs()
+    // 第二遍：解包
+    val rootCanon = saveDir.canonicalFile.path
+    try {
+        var done = 0
+        java.util.zip.ZipInputStream(java.io.BufferedInputStream(openStream())).use { zis ->
+            var e = zis.nextEntry
+            while (e != null) {
+                if (!e.isDirectory) {
+                    val rel = norm(e.name).removePrefix("save/")
+                    if (rel.isNotBlank()) {
+                        val target = java.io.File(saveDir, rel)
+                        // Zip Slip 防护：目标必须落在存档目录内
+                        if (target.canonicalFile.path.startsWith(rootCanon + java.io.File.separator)) {
+                            target.parentFile?.mkdirs()
+                            java.io.FileOutputStream(target).use { fos -> zis.copyTo(fos) }
+                        }
+                    }
+                }
+                zis.closeEntry()
+                done++
+                onProgress(done * 100 / (total * 2))
+                e = zis.nextEntry
+            }
+        }
+    } catch (e: Exception) { return "解包失败：${e.message ?: e.javaClass.simpleName}" }
+    return null
+}
+
+// ===========================================================================
+// ★★ v8：安装游戏附加内容（升级包 / DLC）★★
+//   上游 InstallableActions.installContent 同构：SAF 选 .nsp/.xci →
+//   先拷到 cacheDir 真实路径（与 installKeysFromUri 同款中转，native 只认
+//   文件系统路径）→ NativeLibrary.installFileToNand → 删除临时文件。
+//   结果码对照 ContentManager InstallResult（0=成功 1=覆盖 2=失败
+//   3=拒绝安装基础包/游戏本体）。安装进 NAND 后，下次启动对应游戏自动
+//   启用升级/DLC。前置：密钥已安装（解密需要）；无游戏在跑（isLoaded）。
+// ===========================================================================
+@Composable
+fun EdenContentInstallSection(dark: Boolean = false) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val engine = remember { com.nesstation.app.core.engine.EdenEngine.get() }
+    var busy by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(-1) }
+    var resultMsg by remember { mutableStateOf<String?>(null) }
+    var keysPresent by remember { mutableStateOf<Boolean?>(null) }
+
+    val dimColor = if (dark) Color(0xFF8899AA)
+        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
+        else Color(0xFF4A5568)
+
+    if (!com.nesstation.app.core.jni.EdenNative.ensureLoaded()) {
+        Text("Eden 核心未加载（需要 arm64-v8a + Android 9+），内容安装不可用。",
+            color = Color(0xFFB00020), fontSize = 11.sp, lineHeight = 15.sp)
+        return
+    }
+
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try { engine.coreInitOnce() } catch (_: Throwable) {}
+            keysPresent = try { org.yuzu.yuzu_emu.NativeLibrary.areKeysPresent() } catch (_: Throwable) { null }
+        }
+    }
+
+    Text(
+        "选择游戏对应的升级包（Update）或 DLC 文件（.nsp / .xci）安装进主机存储，" +
+            "下次启动对应游戏自动生效；同一内容重复安装会覆盖。游戏本体请通过" +
+            "游戏库导入运行，此处只装附加内容。",
+        color = dimColor, fontSize = 10.sp, lineHeight = 14.sp)
+    if (keysPresent == false) {
+        Text("未检测到密钥 —— 升级包 / DLC 是加密内容，请先在上方「密钥与固件」安装 prod.keys。",
+            color = Color(0xFFB00020), fontSize = 10.sp, lineHeight = 14.sp)
+    }
+    if (engine.isLoaded) {
+        Text("检测到有 Switch 游戏在运行 —— 请先退出游戏再安装内容。",
+            color = Color(0xFFB00020), fontSize = 10.sp, lineHeight = 14.sp)
+    }
+
+    val installLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        busy = true; progress = 0
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+            val report = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val sb = StringBuilder()
+                var success = 0; var overwrite = 0; var fail = 0; var baseGame = 0
+                uris.forEach { u ->
+                    val name = edenSafDisplayName(ctx, u) ?: "所选文件"
+                    val tmp = java.io.File(ctx.cacheDir,
+                        "eden_install_${System.identityHashCode(u)}_${name}")
+                    try {
+                        // 空间预检：cacheDir 剩余空间（留 64MB 余量）
+                        val size = edenSafSize(ctx, u)
+                        if (size > 0 && size > ctx.cacheDir.usableSpace - (64L shl 20)) {
+                            fail++
+                            sb.append("失败 ").append(name)
+                                .append("：内部空间不足（需 ${size / (1024L * 1024)} MB）\n")
+                            return@forEach
+                        }
+                        // SAF → 真实路径中转（installKeysFromUri 同款）
+                        ctx.contentResolver.openInputStream(u)?.use { ins ->
+                            tmp.outputStream().use { ins.copyTo(it) }
+                        } ?: throw java.io.IOException("无法读取所选文件")
+                        val code = org.yuzu.yuzu_emu.NativeLibrary
+                            .installFileToNand(tmp.absolutePath) { max, p ->
+                                if (max > 0) {
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        progress = (p * 100 / max).toInt().coerceIn(0, 100)
+                                    }
+                                }
+                                false
+                            }
+                        when (code) {
+                            0 -> { success++; sb.append("成功 ").append(name).append("：安装完成\n") }
+                            1 -> { overwrite++; sb.append("成功 ").append(name).append("：覆盖安装\n") }
+                            3 -> { baseGame++; sb.append("失败 ").append(name)
+                                .append("：这是游戏本体（基础包），此处只装升级包/DLC\n") }
+                            else -> { fail++; sb.append("失败 ").append(name)
+                                .append("：安装失败（文件损坏/非升级包或 DLC/缺密钥）\n") }
+                        }
+                    } catch (t: Throwable) {
+                        fail++
+                        sb.append("失败 ").append(name).append("：")
+                            .append(t.message ?: t.javaClass.simpleName).append("\n")
+                    } finally {
+                        try { tmp.delete() } catch (_: Throwable) {}
+                    }
+                }
+                "安装完成：成功 $success 个，覆盖 $overwrite 个，失败 ${fail + baseGame} 个。\n\n$sb".trim()
+            }
+            busy = false; progress = -1
+            resultMsg = report
+        }
+    }
+    TextButtonRow(
+        label = "选择并安装升级包 / DLC",
+        sub = "SAF 多选 .nsp / .xci → 拷入临时目录安装进 NAND → 自动清理",
+        enabled = !busy && keysPresent == true && !engine.isLoaded,
+        dark = dark
+    ) { installLauncher.launch(arrayOf("*/*")) }
+
+    if (busy && progress >= 0) {
+        Text("安装中… $progress%", color = dimColor, fontSize = 10.sp)
+    }
+
+    resultMsg?.let { msg ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { resultMsg = null },
+            title = { Text("安装结果") },
+            text = { Text(msg) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { resultMsg = null }) { Text("确定") }
+            }
+        )
+    }
+}
+
+/** SAF 文件显示名（OpenableColumns.DISPLAY_NAME）。 */
+private fun edenSafDisplayName(ctx: android.content.Context, uri: android.net.Uri): String? = try {
+    ctx.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && cursor.moveToFirst()) cursor.getString(idx) else null
+    }
+} catch (_: Exception) { null }
+
+/** SAF 文件大小（字节；未知返回 -1）。 */
+private fun edenSafSize(ctx: android.content.Context, uri: android.net.Uri): Long = try {
+    ctx.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val idx = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+        if (idx >= 0 && cursor.moveToFirst()) cursor.getLong(idx) else -1L
+    } ?: -1L
+} catch (_: Exception) { -1L }
 
 // ===========================================================================
 // ★★ Switch（Eden）自定义 GPU 驱动管理 —— 上游 GpuDriverHelper 同构 ★★

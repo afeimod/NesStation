@@ -227,6 +227,22 @@ object NativeLibrary {
     external fun getAppletCaptureWidth(): Int
     external fun getAppletCaptureHeight(): Int
 
+    // ------------------------------------------------------------------
+    // ★★ v8：小程序（applet）启动 —— 上游 AppletAdapter 同款三入口 ★★
+    //   native 实现见 core/eden/src/android/app/src/main/jni/native.cpp
+    //   （getAppletLaunchPath:1513 / setCurrentAppletId:1530 /
+    //    setCabinetMode:1535，签名逐字核对一致）。
+    // ------------------------------------------------------------------
+
+    /** 取固件 NAND 内 applet NCA 的启动路径；未安装固件返回空串。 */
+    external fun getAppletLaunchPath(id: Long): String
+
+    /** 启动 applet 前声明当前程序身份（Service::AM::Applets::AppletId）。 */
+    external fun setCurrentAppletId(appletId: Int)
+
+    /** 仅 Cabinet（Amiibo 管理）用：选择操作模式（Service::NFP::CabinetMode）。 */
+    external fun setCabinetMode(cabinetMode: Int)
+
     external fun unpauseEmulation()
     external fun pauseEmulation()
     external fun stopEmulation()
