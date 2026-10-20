@@ -471,14 +471,6 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     private var motionTimestamp: Long = 0L
     @Volatile private var motionFlipOrientation = false
 
-    // 上游 NativeInput.Player1Device = 0 / NativeInput.ConsoleDevice = 8
-    // （上游 EmulationActivity.onSensorChanged 末尾双路送数：Player1 手柄
-    //  六轴 + 主机六轴各一次 —— 大量 Switch 游戏读的是 ConsoleDevice 通道）
-    private companion object {
-        const val MOTION_PLAYER1_PORT = 0
-        const val MOTION_CONSOLE_PORT = 8
-    }
-
     /**
      * 开关体感传感器桥（设置面板“体感”开关 → setCoreOption("EdenEngine/motion")）。
      * enabled=false 时注销监听；重复调用安全（幂等）。
@@ -1121,6 +1113,15 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
 
     companion object {
         @Volatile private var instance: EdenEngine? = null
+
+        // 上游 NativeInput.Player1Device = 0 / ConsoleDevice = 8
+        // （上游 EmulationActivity.onSensorChanged 末尾双路送数：Player1 手柄
+        //  六轴 + 主机六轴各一次 —— 大量 Switch 游戏读的是 ConsoleDevice 通道）
+        // ★★ v6.1：常量从类体第二个 companion 合并进来 —— Kotlin 规定每类
+        //   最多一个 companion object，v6 误加第二个属非法源码，kapt stub
+        //   生成损坏后在 CI 报出误导性的 duplicate class 编译错误。
+        private const val MOTION_PLAYER1_PORT = 0
+        private const val MOTION_CONSOLE_PORT = 8
 
         fun get(): EdenEngine =
             instance ?: EdenEngine().also { instance = it }
