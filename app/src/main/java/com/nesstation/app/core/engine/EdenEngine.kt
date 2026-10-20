@@ -471,6 +471,14 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     private var motionTimestamp: Long = 0L
     @Volatile private var motionFlipOrientation = false
 
+    // 上游 NativeInput.Player1Device = 0 / NativeInput.ConsoleDevice = 8
+    // （上游 EmulationActivity.onSensorChanged 末尾双路送数：Player1 手柄
+    //  六轴 + 主机六轴各一次 —— 大量 Switch 游戏读的是 ConsoleDevice 通道）
+    private companion object {
+        const val MOTION_PLAYER1_PORT = 0
+        const val MOTION_CONSOLE_PORT = 8
+    }
+
     /**
      * 开关体感传感器桥（设置面板“体感”开关 → setCoreOption("EdenEngine/motion")）。
      * enabled=false 时注销监听；重复调用安全（幂等）。
@@ -531,8 +539,16 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
                     val deltaTimestamp = if (motionTimestamp == 0L) 0L
                                          else (event.timestamp - motionTimestamp) / 1000
                     motionTimestamp = event.timestamp
+                    // ★★ v6 修复“体感左右几乎没作用”：上游同口径双路送数 ——
+                    //   Player1Device(0) + ConsoleDevice(8)。v5 只送了玩家1一路，
+                    //   读主机六轴通道的游戏（体感左/右为主机通道）拿不到数据。
                     NativeInput.onDeviceMotionEvent(
-                        0, deltaTimestamp,
+                        MOTION_PLAYER1_PORT, deltaTimestamp,
+                        motionGyro[0], motionGyro[1], motionGyro[2],
+                        motionAccel[0], motionAccel[1], motionAccel[2]
+                    )
+                    NativeInput.onDeviceMotionEvent(
+                        MOTION_CONSOLE_PORT, deltaTimestamp,
                         motionGyro[0], motionGyro[1], motionGyro[2],
                         motionAccel[0], motionAccel[1], motionAccel[2]
                     )
@@ -773,9 +789,13 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
 
     override fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float) {
         if (!EdenNative.loaded || !running.get()) return
-        // 屏幕坐标约定（上=负）→ 上游同口径（y 上=负），直接透传
-        NativeInput.onOverlayJoystickEventImpl(0, 0, lx, ly)   // 左摇杆
-        NativeInput.onOverlayJoystickEventImpl(0, 1, rx, ry)   // 右摇杆
+        // ★★ v6 修复“左摇杆上下反了”：上游 InputOverlayDrawableJoystick
+        //   明确注释 "Nintendo joysticks have y axis inverted"，发送的是
+        //   realYAxis = -yAxis（触摸拖上 → axisY 负 → 发送正值）。
+        //   即 native 侧约定 Y 向上为正；前端拖杆是屏幕坐标（上=负）
+        //   → 必须取负对齐，旧实现直接透传导致上下颠倒。
+        NativeInput.onOverlayJoystickEventImpl(0, 0, lx, -ly)   // 左摇杆
+        NativeInput.onOverlayJoystickEventImpl(0, 1, rx, -ry)   // 右摇杆
     }
 
     override fun setTouchInput(x: Float, y: Float, pressed: Boolean) {

@@ -8024,16 +8024,22 @@ fun OnScreenController(
                else if (is3ds) (if (isPortrait) padLayout.n3dsDpadP else padLayout.n3dsDpad)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcDpadP else padLayout.ngcDpad)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuDpadP else padLayout.wiiuDpad)
+               // ★★ v6：Switch 专属十字键（不再复用 NES 通用字段）
+               else if (isSwitch) (if (isPortrait) padLayout.switchDpadP else padLayout.switchDpad)
                else if (isPortrait) padLayout.dpadP else padLayout.dpad
     val btnA = if (isPs2) (if (isPortrait) padLayout.ps2BtnAP else padLayout.ps2BtnA)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnAP else padLayout.n3dsBtnA)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnAP else padLayout.ngcBtnA)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnAP else padLayout.wiiuBtnA)
+               // ★★ v6：Switch 专属 A 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnAP else padLayout.switchBtnA)
                else if (isPortrait) padLayout.btnAP else padLayout.btnA
     val btnB = if (isPs2) (if (isPortrait) padLayout.ps2BtnBP else padLayout.ps2BtnB)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnBP else padLayout.n3dsBtnB)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnBP else padLayout.ngcBtnB)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnBP else padLayout.wiiuBtnB)
+               // ★★ v6：Switch 专属 B 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnBP else padLayout.switchBtnB)
                else if (isPortrait) padLayout.btnBP else padLayout.btnB
     // 连发 A/B（小 AB）：所有平台可见（可在"显示/隐藏按键"里按需隐藏）。
     // 6 键平台（有 X/Y）且用户从未拖动过时，用避让后的默认位置，
@@ -8048,30 +8054,42 @@ fun OnScreenController(
                    else if (is3ds) (if (isPortrait) padLayout.n3dsBtnStartP else padLayout.n3dsBtnStart)
                    else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnStartP else padLayout.ngcBtnStart)
                    else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnPlusP else padLayout.wiiuBtnPlus)
+                   // ★★ v6：Switch + 键（START 位）专属
+                   else if (isSwitch) (if (isPortrait) padLayout.switchBtnPlusP else padLayout.switchBtnPlus)
                    else if (isPortrait) padLayout.btnStartP else padLayout.btnStart
     val btnSelect = if (isPs2) (if (isPortrait) padLayout.ps2BtnSelectP else padLayout.ps2BtnSelect)
                     else if (is3ds) (if (isPortrait) padLayout.n3dsBtnSelectP else padLayout.n3dsBtnSelect)
                     else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnMinusP else padLayout.wiiuBtnMinus)
+                    // ★★ v6：Switch − 键（SELECT 位）专属
+                    else if (isSwitch) (if (isPortrait) padLayout.switchBtnMinusP else padLayout.switchBtnMinus)
                     else if (isPortrait) padLayout.btnSelectP else padLayout.btnSelect
     val btnL = if (isPs2) (if (isPortrait) padLayout.ps2BtnL1P else padLayout.ps2BtnL1)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnLP else padLayout.n3dsBtnL)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnLP else padLayout.ngcBtnL)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnLP else padLayout.wiiuBtnL)
+               // ★★ v6：Switch 专属 L 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnLP else padLayout.switchBtnL)
                else if (isPortrait) padLayout.btnLP else padLayout.btnL
     val btnR = if (isPs2) (if (isPortrait) padLayout.ps2BtnR1P else padLayout.ps2BtnR1)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnRP else padLayout.n3dsBtnR)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnRP else padLayout.ngcBtnR)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnRP else padLayout.wiiuBtnR)
+               // ★★ v6：Switch 专属 R 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnRP else padLayout.switchBtnR)
                else if (isPortrait) padLayout.btnRP else padLayout.btnR
     val btnX = if (isPs2) (if (isPortrait) padLayout.ps2BtnXP else padLayout.ps2BtnX)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnXP else padLayout.n3dsBtnX)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnXP else padLayout.ngcBtnX)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnXP else padLayout.wiiuBtnX)
+               // ★★ v6：Switch 专属 X 键（旧通用默认与右摇杆重叠 → 编辑器里“丢失”）
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnXP else padLayout.switchBtnX)
                else if (isPortrait) padLayout.btnXP else padLayout.btnX
     val btnY = if (isPs2) (if (isPortrait) padLayout.ps2BtnYP else padLayout.ps2BtnY)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnYP else padLayout.n3dsBtnY)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnYP else padLayout.ngcBtnY)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnYP else padLayout.wiiuBtnY)
+               // ★★ v6：Switch 专属 Y 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnYP else padLayout.switchBtnY)
                else if (isPortrait) padLayout.btnYP else padLayout.btnY
     val btnL2 = if (isPs2) (if (isPortrait) padLayout.ps2BtnL2P else padLayout.ps2BtnL2)
                 else if (isPortrait) padLayout.btnL2P else padLayout.btnL2
@@ -8084,8 +8102,12 @@ fun OnScreenController(
     val ps2BtnR3 = if (isPortrait) padLayout.ps2BtnR3P else padLayout.ps2BtnR3
     // ★ 通用 L3/R3（NGC/WII wii 模式：前倾/后倾体感按钮；WIIU：摇杆按下）
     val btnL3 = if (isWiiU) (if (isPortrait) padLayout.wiiuBtnL3P else padLayout.wiiuBtnL3)
+                // ★★ v6：Switch 摇杆按下 L3 专属槽位
+                else if (isSwitch) (if (isPortrait) padLayout.switchBtnL3P else padLayout.switchBtnL3)
                 else if (isPortrait) padLayout.btnL3P else padLayout.btnL3
     val btnR3 = if (isWiiU) (if (isPortrait) padLayout.wiiuBtnR3P else padLayout.wiiuBtnR3)
+                // ★★ v6：Switch 摇杆按下 R3 专属槽位
+                else if (isSwitch) (if (isPortrait) padLayout.switchBtnR3P else padLayout.switchBtnR3)
                 else if (isPortrait) padLayout.btnR3P else padLayout.btnR3
     // 3DS / NGC-WII 专属摇杆（CirclePad / C-Stick；GC 主摇杆 / C 摇杆；
     // Wii 双节棍摇杆）—— 常驻模拟控件，不参与显隐
@@ -11692,16 +11714,22 @@ private fun PadLayoutEditor(
                else if (is3ds) (if (isPortrait) padLayout.n3dsDpadP else padLayout.n3dsDpad)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcDpadP else padLayout.ngcDpad)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuDpadP else padLayout.wiiuDpad)
+               // ★★ v6：Switch 专属十字键（不再复用 NES 通用字段）
+               else if (isSwitch) (if (isPortrait) padLayout.switchDpadP else padLayout.switchDpad)
                else if (isPortrait) padLayout.dpadP else padLayout.dpad
     val btnA = if (isPs2) (if (isPortrait) padLayout.ps2BtnAP else padLayout.ps2BtnA)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnAP else padLayout.n3dsBtnA)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnAP else padLayout.ngcBtnA)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnAP else padLayout.wiiuBtnA)
+               // ★★ v6：Switch 专属 A 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnAP else padLayout.switchBtnA)
                else if (isPortrait) padLayout.btnAP else padLayout.btnA
     val btnB = if (isPs2) (if (isPortrait) padLayout.ps2BtnBP else padLayout.ps2BtnB)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnBP else padLayout.n3dsBtnB)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnBP else padLayout.ngcBtnB)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnBP else padLayout.wiiuBtnB)
+               // ★★ v6：Switch 专属 B 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnBP else padLayout.switchBtnB)
                else if (isPortrait) padLayout.btnBP else padLayout.btnB
     // 连发 A/B 编辑器位置：6 键平台且未拖动过时用避让后的默认位置，
     // 保证编辑器里看到的与游戏中渲染的一致。
@@ -11715,30 +11743,42 @@ private fun PadLayoutEditor(
                    else if (is3ds) (if (isPortrait) padLayout.n3dsBtnStartP else padLayout.n3dsBtnStart)
                    else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnStartP else padLayout.ngcBtnStart)
                    else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnPlusP else padLayout.wiiuBtnPlus)
+                   // ★★ v6：Switch + 键（START 位）专属
+                   else if (isSwitch) (if (isPortrait) padLayout.switchBtnPlusP else padLayout.switchBtnPlus)
                    else if (isPortrait) padLayout.btnStartP else padLayout.btnStart
     val btnSelect = if (isPs2) (if (isPortrait) padLayout.ps2BtnSelectP else padLayout.ps2BtnSelect)
                     else if (is3ds) (if (isPortrait) padLayout.n3dsBtnSelectP else padLayout.n3dsBtnSelect)
                     else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnMinusP else padLayout.wiiuBtnMinus)
+                    // ★★ v6：Switch − 键（SELECT 位）专属
+                    else if (isSwitch) (if (isPortrait) padLayout.switchBtnMinusP else padLayout.switchBtnMinus)
                     else if (isPortrait) padLayout.btnSelectP else padLayout.btnSelect
     val btnL = if (isPs2) (if (isPortrait) padLayout.ps2BtnL1P else padLayout.ps2BtnL1)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnLP else padLayout.n3dsBtnL)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnLP else padLayout.ngcBtnL)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnLP else padLayout.wiiuBtnL)
+               // ★★ v6：Switch 专属 L 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnLP else padLayout.switchBtnL)
                else if (isPortrait) padLayout.btnLP else padLayout.btnL
     val btnR = if (isPs2) (if (isPortrait) padLayout.ps2BtnR1P else padLayout.ps2BtnR1)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnRP else padLayout.n3dsBtnR)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnRP else padLayout.ngcBtnR)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnRP else padLayout.wiiuBtnR)
+               // ★★ v6：Switch 专属 R 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnRP else padLayout.switchBtnR)
                else if (isPortrait) padLayout.btnRP else padLayout.btnR
     val btnX = if (isPs2) (if (isPortrait) padLayout.ps2BtnXP else padLayout.ps2BtnX)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnXP else padLayout.n3dsBtnX)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnXP else padLayout.ngcBtnX)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnXP else padLayout.wiiuBtnX)
+               // ★★ v6：Switch 专属 X 键（旧通用默认与右摇杆重叠 → 编辑器里“丢失”）
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnXP else padLayout.switchBtnX)
                else if (isPortrait) padLayout.btnXP else padLayout.btnX
     val btnY = if (isPs2) (if (isPortrait) padLayout.ps2BtnYP else padLayout.ps2BtnY)
                else if (is3ds) (if (isPortrait) padLayout.n3dsBtnYP else padLayout.n3dsBtnY)
                else if (isNgcWii) (if (isPortrait) padLayout.ngcBtnYP else padLayout.ngcBtnY)
                else if (isWiiU) (if (isPortrait) padLayout.wiiuBtnYP else padLayout.wiiuBtnY)
+               // ★★ v6：Switch 专属 Y 键
+               else if (isSwitch) (if (isPortrait) padLayout.switchBtnYP else padLayout.switchBtnY)
                else if (isPortrait) padLayout.btnYP else padLayout.btnY
     val btnL2 = if (isPs2) (if (isPortrait) padLayout.ps2BtnL2P else padLayout.ps2BtnL2)
                 else if (isPortrait) padLayout.btnL2P else padLayout.btnL2
@@ -11750,8 +11790,12 @@ private fun PadLayoutEditor(
     val ps2BtnR3 = if (isPortrait) padLayout.ps2BtnR3P else padLayout.ps2BtnR3
     // ★ 通用 L3/R3（NGC/WII wii 模式：前倾/后倾体感按钮；WIIU：摇杆按下）
     val btnL3 = if (isWiiU) (if (isPortrait) padLayout.wiiuBtnL3P else padLayout.wiiuBtnL3)
+                // ★★ v6：Switch 摇杆按下 L3 专属槽位
+                else if (isSwitch) (if (isPortrait) padLayout.switchBtnL3P else padLayout.switchBtnL3)
                 else if (isPortrait) padLayout.btnL3P else padLayout.btnL3
     val btnR3 = if (isWiiU) (if (isPortrait) padLayout.wiiuBtnR3P else padLayout.wiiuBtnR3)
+                // ★★ v6：Switch 摇杆按下 R3 专属槽位
+                else if (isSwitch) (if (isPortrait) padLayout.switchBtnR3P else padLayout.switchBtnR3)
                 else if (isPortrait) padLayout.btnR3P else padLayout.btnR3
     // 3DS / NGC-WII 专属摇杆与按键（与 OnScreenController 一致）
     val n3dsLStick = if (isPortrait) padLayout.n3dsLStickP else padLayout.n3dsLStick
@@ -11812,16 +11856,22 @@ private fun PadLayoutEditor(
                             else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsDpadP = newLayout} else padLayout.copy {this.n3dsDpad = newLayout})
                             else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcDpadP = newLayout} else padLayout.copy {this.ngcDpad = newLayout})
                             else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuDpadP = newLayout} else padLayout.copy {this.wiiuDpad = newLayout})
+                            // ★★ v6：Switch 写回专属字段（与槽位声明同步）
+                            else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchDpadP = newLayout} else padLayout.copy {this.switchDpad = newLayout})
                             else if (isPortrait) padLayout.copy {this.dpadP = newLayout} else padLayout.copy {this.dpad = newLayout}
             BtnType.A -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnAP = newLayout} else padLayout.copy {this.ps2BtnA = newLayout})
                          else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnAP = newLayout} else padLayout.copy {this.n3dsBtnA = newLayout})
                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnAP = newLayout} else padLayout.copy {this.ngcBtnA = newLayout})
                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnAP = newLayout} else padLayout.copy {this.wiiuBtnA = newLayout})
+                         // ★★ v6：Switch 写回专属字段
+                         else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnAP = newLayout} else padLayout.copy {this.switchBtnA = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnAP = newLayout} else padLayout.copy {this.btnA = newLayout}
             BtnType.B -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnBP = newLayout} else padLayout.copy {this.ps2BtnB = newLayout})
                          else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnBP = newLayout} else padLayout.copy {this.n3dsBtnB = newLayout})
                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnBP = newLayout} else padLayout.copy {this.ngcBtnB = newLayout})
                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnBP = newLayout} else padLayout.copy {this.wiiuBtnB = newLayout})
+                         // ★★ v6：Switch 写回专属字段
+                         else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnBP = newLayout} else padLayout.copy {this.switchBtnB = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnBP = newLayout} else padLayout.copy {this.btnB = newLayout}
             BtnType.TURBO_A -> if (isPortrait) padLayout.copy {this.btnTurboAP = newLayout} else padLayout.copy {this.btnTurboA = newLayout}
             BtnType.TURBO_B -> if (isPortrait) padLayout.copy {this.btnTurboBP = newLayout} else padLayout.copy {this.btnTurboB = newLayout}
@@ -11829,6 +11879,8 @@ private fun PadLayoutEditor(
                              else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnStartP = newLayout} else padLayout.copy {this.n3dsBtnStart = newLayout})
                              else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnStartP = newLayout} else padLayout.copy {this.ngcBtnStart = newLayout})
                              else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnPlusP = newLayout} else padLayout.copy {this.wiiuBtnPlus = newLayout})
+                             // ★★ v6：Switch + 键写回专属字段
+                             else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnPlusP = newLayout} else padLayout.copy {this.switchBtnPlus = newLayout})
                              else if (isPortrait) padLayout.copy {this.btnStartP = newLayout} else padLayout.copy {this.btnStart = newLayout}
             // ★★ 3DS SELECT 拖动失效修复（“3ds的select按键布局时无法拖动”
             //   根因）：编辑器读的是平台专属字段（n3dsBtnSelect，见上方
@@ -11841,26 +11893,37 @@ private fun PadLayoutEditor(
                               else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnSelectP = newLayout} else padLayout.copy {this.n3dsBtnSelect = newLayout})
                               else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnMinusP = newLayout} else padLayout.copy {this.wiiuBtnMinus = newLayout})
                               else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnSelectP = newLayout} else padLayout.copy {this.btnSelect = newLayout})
+                              // ★★ v6：Switch − 键写回专属字段（注意须在 isNgcWii 分支之前语义更佳，
+                              //   但两平台互斥不冲突；保持链式结构一致故放此处）
+                              else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnMinusP = newLayout} else padLayout.copy {this.switchBtnMinus = newLayout})
                               else if (isPortrait) padLayout.copy {this.btnSelectP = newLayout} else padLayout.copy {this.btnSelect = newLayout}
             BtnType.L -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL1P = newLayout} else padLayout.copy {this.ps2BtnL1 = newLayout})
                          else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnLP = newLayout} else padLayout.copy {this.n3dsBtnL = newLayout})
                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnLP = newLayout} else padLayout.copy {this.ngcBtnL = newLayout})
                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnLP = newLayout} else padLayout.copy {this.wiiuBtnL = newLayout})
+                         // ★★ v6：Switch 写回专属字段
+                         else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnLP = newLayout} else padLayout.copy {this.switchBtnL = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnLP = newLayout} else padLayout.copy {this.btnL = newLayout}
             BtnType.R -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnR1P = newLayout} else padLayout.copy {this.ps2BtnR1 = newLayout})
                          else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnRP = newLayout} else padLayout.copy {this.n3dsBtnR = newLayout})
                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnRP = newLayout} else padLayout.copy {this.ngcBtnR = newLayout})
                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnRP = newLayout} else padLayout.copy {this.wiiuBtnR = newLayout})
+                         // ★★ v6：Switch 写回专属字段
+                         else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnRP = newLayout} else padLayout.copy {this.switchBtnR = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnRP = newLayout} else padLayout.copy {this.btnR = newLayout}
             BtnType.X -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnXP = newLayout} else padLayout.copy {this.ps2BtnX = newLayout})
                          else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnXP = newLayout} else padLayout.copy {this.n3dsBtnX = newLayout})
                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnXP = newLayout} else padLayout.copy {this.ngcBtnX = newLayout})
                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnXP = newLayout} else padLayout.copy {this.wiiuBtnX = newLayout})
+                         // ★★ v6：Switch 写回专属字段
+                         else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnXP = newLayout} else padLayout.copy {this.switchBtnX = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnXP = newLayout} else padLayout.copy {this.btnX = newLayout}
             BtnType.Y -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnYP = newLayout} else padLayout.copy {this.ps2BtnY = newLayout})
                          else if (is3ds) (if (isPortrait) padLayout.copy {this.n3dsBtnYP = newLayout} else padLayout.copy {this.n3dsBtnY = newLayout})
                          else if (isNgcWii) (if (isPortrait) padLayout.copy {this.ngcBtnYP = newLayout} else padLayout.copy {this.ngcBtnY = newLayout})
                          else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnYP = newLayout} else padLayout.copy {this.wiiuBtnY = newLayout})
+                         // ★★ v6：Switch 写回专属字段
+                         else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnYP = newLayout} else padLayout.copy {this.switchBtnY = newLayout})
                          else if (isPortrait) padLayout.copy {this.btnYP = newLayout} else padLayout.copy {this.btnY = newLayout}
             BtnType.L2 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnL2P = newLayout} else padLayout.copy {this.ps2BtnL2 = newLayout})
                           else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnL2P = newLayout} else padLayout.copy {this.btnL2 = newLayout})
@@ -11874,12 +11937,13 @@ private fun PadLayoutEditor(
                           else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnL3P = newLayout} else padLayout.copy {this.wiiuBtnL3 = newLayout})
                           else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnL3P = newLayout} else padLayout.copy {this.btnL3 = newLayout})
                           // ★ v4：Switch 摇杆按下用通用 btnL3/btnR3 槽位
-                          else if (isSwitch) (if (isPortrait) padLayout.copy {this.btnL3P = newLayout} else padLayout.copy {this.btnL3 = newLayout})
+                          // ★★ v6：改为 Switch 专属字段（与槽位声明同步）
+                          else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnL3P = newLayout} else padLayout.copy {this.switchBtnL3 = newLayout})
                           else if (isPortrait) padLayout.copy {this.ps2BtnL3P = newLayout} else padLayout.copy {this.ps2BtnL3 = newLayout}
             BtnType.R3 -> if (isPs2) (if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout})
                           else if (isWiiU) (if (isPortrait) padLayout.copy {this.wiiuBtnR3P = newLayout} else padLayout.copy {this.wiiuBtnR3 = newLayout})
                           else if (isNgcWii) (if (isPortrait) padLayout.copy {this.btnR3P = newLayout} else padLayout.copy {this.btnR3 = newLayout})
-                          else if (isSwitch) (if (isPortrait) padLayout.copy {this.btnR3P = newLayout} else padLayout.copy {this.btnR3 = newLayout})
+                          else if (isSwitch) (if (isPortrait) padLayout.copy {this.switchBtnR3P = newLayout} else padLayout.copy {this.switchBtnR3 = newLayout})
                           else if (isPortrait) padLayout.copy {this.ps2BtnR3P = newLayout} else padLayout.copy {this.ps2BtnR3 = newLayout}
             BtnType.LSTICK -> when {
                 isPs2 -> if (isPortrait) padLayout.copy {this.ps2LStickP = newLayout} else padLayout.copy {this.ps2LStick = newLayout}
@@ -12002,7 +12066,11 @@ private fun PadLayoutEditor(
                 )
             }
             if (showStartBtn && (!isNgcWii || showNgcStart)) {
-                EditablePillBtn(if (platform == GamePlatform.PCE) "RUN" else "START", btnStart, surfaceSize, selectedBtn == BtnType.START,
+                EditablePillBtn(if (platform == GamePlatform.PCE) "RUN"
+                                else if (platform == GamePlatform.WIIU) "+"
+                                // ★★ v6：编辑器 + 键标签与运行时一致
+                                else if (platform == GamePlatform.NSWITCH) "+"
+                                else "START", btnStart, surfaceSize, selectedBtn == BtnType.START,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
                         val ny = targetY.coerceIn(0f, 1f)
@@ -12012,7 +12080,10 @@ private fun PadLayoutEditor(
                 )
             }
             if (showSelectBtn && !isNgcWii) {
-                EditablePillBtn("SELECT", btnSelect, surfaceSize, selectedBtn == BtnType.SELECT,
+                EditablePillBtn(if (platform == GamePlatform.WIIU) "−"
+                                // ★★ v6：编辑器 − 键标签与运行时一致
+                                else if (platform == GamePlatform.NSWITCH) "−"
+                                else "SELECT", btnSelect, surfaceSize, selectedBtn == BtnType.SELECT,
                     onMove = { targetX, targetY ->
                         val nx = targetX.coerceIn(0f, 1f)
                         val ny = targetY.coerceIn(0f, 1f)
@@ -12747,6 +12818,8 @@ private fun PadLayoutEditor(
                             platform == GamePlatform.PSP -> pspLStick
                             isNgcWii -> ngcLStick
                             isWiiU -> wiiuLStick
+                            // ★★ v6：Switch 摇杆（旧实现落到 ps2LStick → 滑杆显示 PS2 尺寸）
+                            isSwitch -> switchLStick
                             else -> ps2LStick
                         }
                         currentSize = stick.sizeDp; minSize = 80; maxSize = 220; label = "左摇杆大小"
@@ -12757,6 +12830,8 @@ private fun PadLayoutEditor(
                             is3ds -> n3dsRStick
                             isNgcWii -> ngcRStick
                             isWiiU -> wiiuRStick
+                            // ★★ v6：Switch 右摇杆
+                            isSwitch -> switchRStick
                             else -> ps2RStick
                         }
                         currentSize = stick.sizeDp; minSize = 80; maxSize = 220; label = "右摇杆大小"
@@ -12766,20 +12841,21 @@ private fun PadLayoutEditor(
                     //   而旧实现读写 PS2 专属 ps2BtnL3/ps2BtnR3 —— 滑杆数值回弹
                     //   且把 PS2 的坐标一并写进 btnL3（按钮位置漂移）。
                     BtnType.L3 -> {
-                        currentSize = if (isNgcWii || isWiiU) btnL3.sizeDp else ps2BtnL3.sizeDp
+                        currentSize = if (isNgcWii || isWiiU || isSwitch) btnL3.sizeDp else ps2BtnL3.sizeDp
                         minSize = 24; maxSize = 80
-                        label = when { isNgcWii -> "前晃键大小"; isWiiU -> "L3（左摇杆按下）大小"; else -> "L3大小" }
+                        label = when { isNgcWii -> "前晃键大小"; isWiiU -> "L3（左摇杆按下）大小"; isSwitch -> "L3（左摇杆按下）大小"; else -> "L3大小" }
                     }
                     BtnType.R3 -> {
-                        currentSize = if (isNgcWii || isWiiU) btnR3.sizeDp else ps2BtnR3.sizeDp
+                        currentSize = if (isNgcWii || isWiiU || isSwitch) btnR3.sizeDp else ps2BtnR3.sizeDp
                         minSize = 24; maxSize = 80
-                        label = when { isNgcWii -> "后晃键大小"; isWiiU -> "R3（右摇杆按下）大小"; else -> "R3大小" }
+                        label = when { isNgcWii -> "后晃键大小"; isWiiU -> "R3（右摇杆按下）大小"; isSwitch -> "R3（右摇杆按下）大小"; else -> "R3大小" }
                     }
-                    // 3DS / NGC-WII 专属键尺寸
-                    BtnType.ZL -> { currentSize = (if (isWiiU) wiiuBtnZL else n3dsBtnZL).sizeDp; minSize = 30; maxSize = 100; label = "ZL大小" }
-                    BtnType.ZR -> { currentSize = (if (isWiiU) wiiuBtnZR else n3dsBtnZR).sizeDp; minSize = 30; maxSize = 100; label = "ZR大小" }
+                    // 3DS / NGC-WII 专属键尺寸（★★ v6：Switch 读 switch* 字段——旧实现
+                    //   读 n3ds*/wii* 字段 → 滑杆显示错误尺寸）
+                    BtnType.ZL -> { currentSize = (if (isSwitch) switchBtnZL else if (isWiiU) wiiuBtnZL else n3dsBtnZL).sizeDp; minSize = 30; maxSize = 100; label = "ZL大小" }
+                    BtnType.ZR -> { currentSize = (if (isSwitch) switchBtnZR else if (isWiiU) wiiuBtnZR else n3dsBtnZR).sizeDp; minSize = 30; maxSize = 100; label = "ZR大小" }
                     BtnType.Z -> { currentSize = ngcBtnZ.sizeDp; minSize = 30; maxSize = 90; label = "Z键大小" }
-                    BtnType.HOME -> { currentSize = if (isWiiU) wiiuBtnHome.sizeDp else wiiBtnHome.sizeDp; minSize = 24; maxSize = 100; label = "HOME大小" }
+                    BtnType.HOME -> { currentSize = if (isSwitch) switchBtnHome.sizeDp else if (isWiiU) wiiuBtnHome.sizeDp else wiiBtnHome.sizeDp; minSize = 24; maxSize = 100; label = "HOME大小" }
                     // ★★ Wii 专属控件尺寸滑条补齐（配合 WII_DPAD/WII_A/WII_B/
                     //   WII_STICK 新槽位；旧实现这些控件无法选中 → 滑条分支
                     //   永远不可达）。★★
@@ -12793,7 +12869,7 @@ private fun PadLayoutEditor(
                     BtnType.WII_MINUS -> { currentSize = wiiBtnMinus.sizeDp; minSize = 24; maxSize = 100; label = "Wii −大小" }
                     BtnType.WII_C -> { currentSize = wiiBtnC.sizeDp; minSize = 30; maxSize = 100; label = "双节棍C大小" }
                     BtnType.WII_Z -> { currentSize = wiiBtnZ.sizeDp; minSize = 30; maxSize = 100; label = "双节棍Z大小" }
-                    BtnType.IR_NEAR -> { currentSize = wiiBtnIrNear.sizeDp; minSize = 24; maxSize = 100; label = "IR−大小" }
+                    BtnType.IR_NEAR -> { currentSize = if (isSwitch) switchBtnCapture.sizeDp else wiiBtnIrNear.sizeDp; minSize = 24; maxSize = 100; label = if (isSwitch) "截屏键大小" else "IR−大小" }
                     BtnType.IR_FAR -> { currentSize = wiiBtnIrFar.sizeDp; minSize = 24; maxSize = 100; label = "IR+大小" }
                     // ★ Wii U（Cemu）专属控件尺寸滑条
                     BtnType.WIIU_TV -> { currentSize = wiiuBtnTV.sizeDp; minSize = 24; maxSize = 100; label = "TV切换大小" }
@@ -12832,8 +12908,9 @@ private fun PadLayoutEditor(
                             BtnType.L2 -> btnL2
                             BtnType.R2 -> btnR2
                             // ★★ 同 L3/R3 大小滑杆修复：NGC/WII 平台写通用字段。
-                            BtnType.L3 -> if (isWiiU) btnL3 else if (isNgcWii) btnL3 else ps2BtnL3
-                            BtnType.R3 -> if (isWiiU) btnR3 else if (isNgcWii) btnR3 else ps2BtnR3
+                            //   ★★ v6：Switch 写专属槽位（btnL3 局部变量已按 isSwitch 切换）
+                            BtnType.L3 -> if (isSwitch) btnL3 else if (isWiiU) btnL3 else if (isNgcWii) btnL3 else ps2BtnL3
+                            BtnType.R3 -> if (isSwitch) btnR3 else if (isWiiU) btnR3 else if (isNgcWii) btnR3 else ps2BtnR3
                             BtnType.LSTICK -> when {
                                 isPs2 -> ps2LStick
                                 is3ds -> n3dsLStick
@@ -12841,6 +12918,8 @@ private fun PadLayoutEditor(
                                 platform == GamePlatform.PSP -> pspLStick
                                 isNgcWii -> ngcLStick
                                 isWiiU -> wiiuLStick
+                                // ★★ v6：Switch 摇杆（旧实现落到 ps2LStick → 调大小把 PS2 坐标写进 Switch）
+                                isSwitch -> switchLStick
                                 else -> ps2LStick
                             }
                             BtnType.RSTICK -> when {
@@ -12848,14 +12927,16 @@ private fun PadLayoutEditor(
                                 is3ds -> n3dsRStick
                                 isNgcWii -> ngcRStick
                                 isWiiU -> wiiuRStick
+                                // ★★ v6：Switch 右摇杆
+                                isSwitch -> switchRStick
                                 else -> ps2RStick
                             }
                             BtnType.L3 -> ps2BtnL3
                             BtnType.R3 -> ps2BtnR3
-                            BtnType.ZL -> if (isWiiU) wiiuBtnZL else n3dsBtnZL
-                            BtnType.ZR -> if (isWiiU) wiiuBtnZR else n3dsBtnZR
+                            BtnType.ZL -> if (isSwitch) switchBtnZL else if (isWiiU) wiiuBtnZL else n3dsBtnZL
+                            BtnType.ZR -> if (isSwitch) switchBtnZR else if (isWiiU) wiiuBtnZR else n3dsBtnZR
                             BtnType.Z -> ngcBtnZ
-                            BtnType.HOME -> if (isWiiU) wiiuBtnHome else wiiBtnHome
+                            BtnType.HOME -> if (isSwitch) switchBtnHome else if (isWiiU) wiiuBtnHome else wiiBtnHome
                             BtnType.WII_DPAD -> wiiDpad
                             BtnType.WII_A -> wiiBtnA
                             BtnType.WII_B -> wiiBtnB
@@ -12866,7 +12947,7 @@ private fun PadLayoutEditor(
                             BtnType.WII_MINUS -> wiiBtnMinus
                             BtnType.WII_C -> wiiBtnC
                             BtnType.WII_Z -> wiiBtnZ
-                            BtnType.IR_NEAR -> wiiBtnIrNear
+                            BtnType.IR_NEAR -> if (isSwitch) switchBtnCapture else wiiBtnIrNear
                             BtnType.IR_FAR -> wiiBtnIrFar
                             // ★ Wii U（Cemu）专属
                             BtnType.WIIU_TV -> wiiuBtnTV

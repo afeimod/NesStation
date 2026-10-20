@@ -1017,6 +1017,37 @@ class PadLayout {
     var switchBtnHomeP: ButtonLayout = ButtonLayout(x = 0.42f, y = 0.045f, sizeDp = 48)
     var switchBtnCapture: ButtonLayout = ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 54)
     var switchBtnCaptureP: ButtonLayout = ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 48)
+    // ★★ v6：Switch 通用键位补齐专属布局字段（十字键/ABXY/L/R/+−/L3/R3）。
+    //   旧实现复用 NES 通用字段（dpad/btnA/...），三重问题：
+    //   1) 默认值是 NES 的巨型布局（140dp 十字键 / 72dp AB），用户实测
+    //      “默认大小太大了”；
+    //   2) X (0.88,0.54) 与 Switch 右摇杆 (0.88,0.56) 完全重叠 → X/Y 键
+    //      被摇杆盖住，编辑器里“缺很多按键”；
+    //   3) 在 Switch 调布局会连带改掉 NES/FC 等所有通用字段平台。
+    //   本套默认按 396dp 宽横屏 / 822dp 高竖屏逐键验算不重叠（与双摇杆/
+    //   ZL/ZR/HOME/截屏旧默认共存）。旧配置无此键 → 首次加载即生效。
+    var switchDpad: ButtonLayout = ButtonLayout(x = 0.14f, y = 0.80f, sizeDp = 92)
+    var switchDpadP: ButtonLayout = ButtonLayout(x = 0.13f, y = 0.51f, sizeDp = 84)
+    var switchBtnA: ButtonLayout = ButtonLayout(x = 0.925f, y = 0.78f, sizeDp = 50)
+    var switchBtnAP: ButtonLayout = ButtonLayout(x = 0.87f, y = 0.45f, sizeDp = 46)
+    var switchBtnB: ButtonLayout = ButtonLayout(x = 0.85f, y = 0.855f, sizeDp = 50)
+    var switchBtnBP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.505f, sizeDp = 46)
+    var switchBtnX: ButtonLayout = ButtonLayout(x = 0.85f, y = 0.705f, sizeDp = 50)
+    var switchBtnXP: ButtonLayout = ButtonLayout(x = 0.80f, y = 0.395f, sizeDp = 46)
+    var switchBtnY: ButtonLayout = ButtonLayout(x = 0.775f, y = 0.78f, sizeDp = 50)
+    var switchBtnYP: ButtonLayout = ButtonLayout(x = 0.73f, y = 0.45f, sizeDp = 46)
+    var switchBtnL: ButtonLayout = ButtonLayout(x = 0.15f, y = 0.09f, sizeDp = 52)
+    var switchBtnLP: ButtonLayout = ButtonLayout(x = 0.15f, y = 0.08f, sizeDp = 46)
+    var switchBtnR: ButtonLayout = ButtonLayout(x = 0.85f, y = 0.09f, sizeDp = 52)
+    var switchBtnRP: ButtonLayout = ButtonLayout(x = 0.85f, y = 0.08f, sizeDp = 46)
+    var switchBtnPlus: ButtonLayout = ButtonLayout(x = 0.64f, y = 0.88f, sizeDp = 42)
+    var switchBtnPlusP: ButtonLayout = ButtonLayout(x = 0.62f, y = 0.92f, sizeDp = 40)
+    var switchBtnMinus: ButtonLayout = ButtonLayout(x = 0.38f, y = 0.88f, sizeDp = 42)
+    var switchBtnMinusP: ButtonLayout = ButtonLayout(x = 0.38f, y = 0.92f, sizeDp = 40)
+    var switchBtnL3: ButtonLayout = ButtonLayout(x = 0.30f, y = 0.44f, sizeDp = 34)
+    var switchBtnL3P: ButtonLayout = ButtonLayout(x = 0.34f, y = 0.76f, sizeDp = 34)
+    var switchBtnR3: ButtonLayout = ButtonLayout(x = 0.72f, y = 0.68f, sizeDp = 34)
+    var switchBtnR3P: ButtonLayout = ButtonLayout(x = 0.66f, y = 0.76f, sizeDp = 34)
 
     companion object {
         /** 把 Play! 时代的 "1x|2x|4x|8x" 迁移为 PCEE2 的 "1".."4"；非法值回落默认。 */
@@ -2158,6 +2189,30 @@ class PadLayout {
         switchBtnHomeP = another.switchBtnHomeP
         switchBtnCapture = another.switchBtnCapture
         switchBtnCaptureP = another.switchBtnCaptureP
+        // ★★ v6：Switch 通用键位专属字段补拷贝（缺失即 copyFrom 漏项 →
+        //   copy{...} 会把漏项重置为默认，布局拖动互相覆盖 —— v4 问题3同型）
+        switchDpad = another.switchDpad
+        switchDpadP = another.switchDpadP
+        switchBtnA = another.switchBtnA
+        switchBtnAP = another.switchBtnAP
+        switchBtnB = another.switchBtnB
+        switchBtnBP = another.switchBtnBP
+        switchBtnX = another.switchBtnX
+        switchBtnXP = another.switchBtnXP
+        switchBtnY = another.switchBtnY
+        switchBtnYP = another.switchBtnYP
+        switchBtnL = another.switchBtnL
+        switchBtnLP = another.switchBtnLP
+        switchBtnR = another.switchBtnR
+        switchBtnRP = another.switchBtnRP
+        switchBtnPlus = another.switchBtnPlus
+        switchBtnPlusP = another.switchBtnPlusP
+        switchBtnMinus = another.switchBtnMinus
+        switchBtnMinusP = another.switchBtnMinusP
+        switchBtnL3 = another.switchBtnL3
+        switchBtnL3P = another.switchBtnL3P
+        switchBtnR3 = another.switchBtnR3
+        switchBtnR3P = another.switchBtnR3P
         inputMode = another.inputMode
         homeBackgroundUri = another.homeBackgroundUri
         homeBackgroundIsVideo = another.homeBackgroundIsVideo
@@ -3499,6 +3554,51 @@ object PadLayoutStore {
                 ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 54))
             switchBtnCaptureP = loadBtn(p, "switch_p_btn_capture",
                 ButtonLayout(x = 0.58f, y = 0.045f, sizeDp = 48))
+            // ★★ v6：Switch 通用键位专属字段持久化（旧配置无键 → 新紧凑默认）
+            switchDpad = loadBtn(p, "switch_dpad",
+                ButtonLayout(x = 0.14f, y = 0.80f, sizeDp = 92))
+            switchDpadP = loadBtn(p, "switch_p_dpad",
+                ButtonLayout(x = 0.13f, y = 0.51f, sizeDp = 84))
+            switchBtnA = loadBtn(p, "switch_btn_a",
+                ButtonLayout(x = 0.925f, y = 0.78f, sizeDp = 50))
+            switchBtnAP = loadBtn(p, "switch_p_btn_a",
+                ButtonLayout(x = 0.87f, y = 0.45f, sizeDp = 46))
+            switchBtnB = loadBtn(p, "switch_btn_b",
+                ButtonLayout(x = 0.85f, y = 0.855f, sizeDp = 50))
+            switchBtnBP = loadBtn(p, "switch_p_btn_b",
+                ButtonLayout(x = 0.80f, y = 0.505f, sizeDp = 46))
+            switchBtnX = loadBtn(p, "switch_btn_x",
+                ButtonLayout(x = 0.85f, y = 0.705f, sizeDp = 50))
+            switchBtnXP = loadBtn(p, "switch_p_btn_x",
+                ButtonLayout(x = 0.80f, y = 0.395f, sizeDp = 46))
+            switchBtnY = loadBtn(p, "switch_btn_y",
+                ButtonLayout(x = 0.775f, y = 0.78f, sizeDp = 50))
+            switchBtnYP = loadBtn(p, "switch_p_btn_y",
+                ButtonLayout(x = 0.73f, y = 0.45f, sizeDp = 46))
+            switchBtnL = loadBtn(p, "switch_btn_l",
+                ButtonLayout(x = 0.15f, y = 0.09f, sizeDp = 52))
+            switchBtnLP = loadBtn(p, "switch_p_btn_l",
+                ButtonLayout(x = 0.15f, y = 0.08f, sizeDp = 46))
+            switchBtnR = loadBtn(p, "switch_btn_r",
+                ButtonLayout(x = 0.85f, y = 0.09f, sizeDp = 52))
+            switchBtnRP = loadBtn(p, "switch_p_btn_r",
+                ButtonLayout(x = 0.85f, y = 0.08f, sizeDp = 46))
+            switchBtnPlus = loadBtn(p, "switch_btn_plus",
+                ButtonLayout(x = 0.64f, y = 0.88f, sizeDp = 42))
+            switchBtnPlusP = loadBtn(p, "switch_p_btn_plus",
+                ButtonLayout(x = 0.62f, y = 0.92f, sizeDp = 40))
+            switchBtnMinus = loadBtn(p, "switch_btn_minus",
+                ButtonLayout(x = 0.38f, y = 0.88f, sizeDp = 42))
+            switchBtnMinusP = loadBtn(p, "switch_p_btn_minus",
+                ButtonLayout(x = 0.38f, y = 0.92f, sizeDp = 40))
+            switchBtnL3 = loadBtn(p, "switch_btn_l3",
+                ButtonLayout(x = 0.30f, y = 0.44f, sizeDp = 34))
+            switchBtnL3P = loadBtn(p, "switch_p_btn_l3",
+                ButtonLayout(x = 0.34f, y = 0.76f, sizeDp = 34))
+            switchBtnR3 = loadBtn(p, "switch_btn_r3",
+                ButtonLayout(x = 0.72f, y = 0.68f, sizeDp = 34))
+            switchBtnR3P = loadBtn(p, "switch_p_btn_r3",
+                ButtonLayout(x = 0.66f, y = 0.76f, sizeDp = 34))
             ngcLStick = loadBtn(p, "ngc_lstick", ButtonLayout(x = 0.13f, y = 0.44f, sizeDp = 108))
             ngcLStickP = loadBtn(p, "ngc_p_lstick", ButtonLayout(x = 0.18f, y = 0.46f, sizeDp = 94))
             ngcRStick = loadBtn(p, "ngc_rstick", ButtonLayout(x = 0.87f, y = 0.36f, sizeDp = 68))
@@ -4404,6 +4504,29 @@ object PadLayoutStore {
             saveBtn("switch_p_btn_home", layout.switchBtnHomeP)
             saveBtn("switch_btn_capture", layout.switchBtnCapture)
             saveBtn("switch_p_btn_capture", layout.switchBtnCaptureP)
+            // ★★ v6：Switch 通用键位专属字段持久化（与 load 一一对应）
+            saveBtn("switch_dpad", layout.switchDpad)
+            saveBtn("switch_p_dpad", layout.switchDpadP)
+            saveBtn("switch_btn_a", layout.switchBtnA)
+            saveBtn("switch_p_btn_a", layout.switchBtnAP)
+            saveBtn("switch_btn_b", layout.switchBtnB)
+            saveBtn("switch_p_btn_b", layout.switchBtnBP)
+            saveBtn("switch_btn_x", layout.switchBtnX)
+            saveBtn("switch_p_btn_x", layout.switchBtnXP)
+            saveBtn("switch_btn_y", layout.switchBtnY)
+            saveBtn("switch_p_btn_y", layout.switchBtnYP)
+            saveBtn("switch_btn_l", layout.switchBtnL)
+            saveBtn("switch_p_btn_l", layout.switchBtnLP)
+            saveBtn("switch_btn_r", layout.switchBtnR)
+            saveBtn("switch_p_btn_r", layout.switchBtnRP)
+            saveBtn("switch_btn_plus", layout.switchBtnPlus)
+            saveBtn("switch_p_btn_plus", layout.switchBtnPlusP)
+            saveBtn("switch_btn_minus", layout.switchBtnMinus)
+            saveBtn("switch_p_btn_minus", layout.switchBtnMinusP)
+            saveBtn("switch_btn_l3", layout.switchBtnL3)
+            saveBtn("switch_p_btn_l3", layout.switchBtnL3P)
+            saveBtn("switch_btn_r3", layout.switchBtnR3)
+            saveBtn("switch_p_btn_r3", layout.switchBtnR3P)
             saveBtn("ngc_lstick", layout.ngcLStick)
             saveBtn("ngc_p_lstick", layout.ngcLStickP)
             saveBtn("ngc_rstick", layout.ngcRStick)
