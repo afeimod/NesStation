@@ -24,12 +24,13 @@ import android.widget.Toast
 /**
  * 可拖动悬浮球 + 快捷菜单。
  *
- * ★ v12 全面翻新（用户反馈："悬浮球改成圆形好看点、菜单现代化一点"）：
- * - 球体：54dp 正圆 + 紫罗兰渐变（TL→BR）+ 细描边 + 自绘三横线"汉堡"图标，
- *   替换 v11 的 44dp 灰底 + android 系统旧图标；
- * - 菜单：横屏 4 列 / 竖屏 3 列的网格卡片（圆角 20dp 容器 + 彩色圆形徽章 +
- *   汉字图标 + 11sp 标签 + 系统涟漪反馈），替换 v11 的两列老式系统图标行。
- * 拖动/边缘停靠/回调接口与 v11 完全兼容，宿主（WebGameScreen）零改动。
+ * ★ v12 全面翻新：球体渐变正圆 + 自绘汉堡图标；菜单网格卡片化。
+ * ★ v14 紧凑化（用户反馈："悬浮球太大、点出的菜单也大、不要背景"）：
+ * - 球体：54dp → 38dp（图标同步缩至 18dp intrinsic）；
+ * - 菜单：横屏 5 列 / 竖屏 4 列紧凑网格（56dp 单元 + 26dp 徽章 + 9sp 标签），
+ *   彻底去掉深色容器背景与单元格底色 —— 只留彩色徽章 + 文字 + 涟漪，
+ *   透明 PopupWindow 悬浮在页面上。
+ * 拖动/边缘停靠/回调接口与 v12 完全兼容，宿主（WebGameScreen）零改动。
  */
 class FloatingMenuView @JvmOverloads constructor(
     context: Context,
@@ -89,7 +90,7 @@ class FloatingMenuView @JvmOverloads constructor(
             alpha = 0.96f
             contentDescription = "菜单"
         }
-        addView(triggerBtn, LayoutParams(dp(54), dp(54)).apply { gravity = Gravity.CENTER })
+        addView(triggerBtn, LayoutParams(dp(38), dp(38)).apply { gravity = Gravity.CENTER })
         setupDrag()
     }
 
@@ -200,15 +201,16 @@ class FloatingMenuView @JvmOverloads constructor(
     private fun showMenu() {
         val isLandscapeRes = resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val columns = if (isLandscapeRes) 4 else 3
+        // ★ v14: 横屏 5 列 / 竖屏 4 列（单元从 78dp 缩到 56dp，列数加密）
+        val columns = if (isLandscapeRes) 5 else 4
         val items = menuItems()
-        val cell = dp(78)
-        val menuWidth = columns * cell + dp(16)
+        val cell = dp(56)
+        val menuWidth = columns * cell + dp(4)
 
+        // ★ v14: 无背景容器 —— 徽章+文字直接悬浮在页面上（用户"不要背景"）
         val menuContainer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = createRoundedBg(0xF21C1F2B.toInt(), 20)
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setPadding(dp(2), dp(2), dp(2), dp(2))
         }
 
         fun rippleForeground(v: View) {
@@ -226,31 +228,31 @@ class FloatingMenuView @JvmOverloads constructor(
             return LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(dp(4), dp(8), dp(4), dp(8))
+                setPadding(dp(2), dp(4), dp(2), dp(4))
                 isClickable = true
                 isFocusable = true
-                background = createRoundedBg(0x14FFFFFF, 12)
+                // ★ v14: 单元格无底色，涟漪保留点击反馈
                 rippleForeground(this)
                 layoutParams = LinearLayout.LayoutParams(cell, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    setMargins(dp(2), 0, dp(2), 0)
+                    setMargins(dp(1), 0, dp(1), 0)
                 }
                 addView(TextView(context).apply {
                     text = item.glyph
                     setTextColor(Color.WHITE)
-                    textSize = 15f
+                    textSize = 11f
                     typeface = android.graphics.Typeface.create(
                         android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD
                     )
                     gravity = Gravity.CENTER
                     background = createBadgeBg(accent)
-                    layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply {
-                        bottomMargin = dp(6)
+                    layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply {
+                        bottomMargin = dp(3)
                     }
                 })
                 addView(TextView(context).apply {
                     text = item.title
                     setTextColor(0xFFDDE3EE.toInt())
-                    textSize = 11f
+                    textSize = 9f
                     gravity = Gravity.CENTER
                 })
                 setOnClickListener {
@@ -276,7 +278,7 @@ class FloatingMenuView @JvmOverloads constructor(
         for (i in 0 until menuContainer.childCount) {
             val r = menuContainer.getChildAt(i) as? LinearLayout ?: continue
             val lp = r.layoutParams as? LinearLayout.LayoutParams
-            lp?.bottomMargin = dp(6)
+            lp?.bottomMargin = dp(4)
             r.layoutParams = lp
         }
 
@@ -284,15 +286,15 @@ class FloatingMenuView @JvmOverloads constructor(
             ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             isOutsideTouchable = true
-            elevation = dp(12).toFloat()
+            elevation = dp(6).toFloat()
             setOnDismissListener { isMenuOpen = false }
-            // 让菜单右边对齐到球的右缘（球贴右缘时菜单不出屏）
-            val xoff = -(menuWidth - dp(54) + dp(10))
+            // 让菜单右边对齐到球的右缘（球贴右缘时菜单不出屏；v14 球缩至 38dp）
+            val xoff = -(menuWidth - dp(38) + dp(6))
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                showAsDropDown(triggerBtn, xoff, dp(6), Gravity.END)
+                showAsDropDown(triggerBtn, xoff, dp(4), Gravity.END)
             } else {
                 @Suppress("DEPRECATION")
-                showAsDropDown(triggerBtn, xoff, dp(6))
+                showAsDropDown(triggerBtn, xoff, dp(4))
             }
         }
         isMenuOpen = true
@@ -313,12 +315,6 @@ class FloatingMenuView @JvmOverloads constructor(
         shape = GradientDrawable.OVAL
         setColor((accent and 0x00FFFFFF) or 0x42000000)
         setStroke(dp(1), (accent and 0x00FFFFFF) or 0x66000000)
-    }
-
-    /** 现代圆角容器 */
-    private fun createRoundedBg(color: Int, radiusDp: Int) = GradientDrawable().apply {
-        cornerRadius = dp(radiusDp).toFloat()
-        setColor(color)
     }
 
     /** 自绘"汉堡"三横线图标（dp 适配 intrinsic，白色圆头短条 —— 比系统图标干净） */
@@ -353,8 +349,8 @@ class FloatingMenuView @JvmOverloads constructor(
         @Deprecated("Deprecated in Java")
         override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
 
-        override fun getIntrinsicWidth(): Int = (24 * density).toInt()
-        override fun getIntrinsicHeight(): Int = (24 * density).toInt()
+        override fun getIntrinsicWidth(): Int = (18 * density).toInt()
+        override fun getIntrinsicHeight(): Int = (18 * density).toInt()
     }
 
     private fun dp(value: Int): Int {

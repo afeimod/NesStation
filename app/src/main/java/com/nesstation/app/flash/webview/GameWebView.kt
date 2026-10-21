@@ -236,11 +236,14 @@ open class GameWebView @JvmOverloads constructor(
      * 解决 evaluateJavascript(onPageStarted) 时序问题——异步注入可能晚于页面自身脚本。
      * ★ v10: 追加 PINCH_UNLOCK_SCRIPT（双指缩放解锁 —— 必须在页面 meta 解析前
      *   挂上 MutationObserver，才能覆盖“页面脚本后插/改写 viewport meta”的场景）。
+     * ★ v14: 追加 UA_DESKTOP_SPOOF_SCRIPT（桌面/兼容模式的视口拉宽 + 客户端
+     *   提示伪装 —— 只改 UA 请求头时响应式站点照样手机布局，详见脚本注释）。
      */
     fun injectDocumentStartScripts() {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(this, DOCUMENT_START_SCRIPT, setOf("*"))
             WebViewCompat.addDocumentStartJavaScript(this, PINCH_UNLOCK_SCRIPT, setOf("*"))
+            WebViewCompat.addDocumentStartJavaScript(this, UA_DESKTOP_SPOOF_SCRIPT, setOf("*"))
         }
     }
 
@@ -971,6 +974,117 @@ open class GameWebView @JvmOverloads constructor(
 
         /** IE11 兼容模式 UA（Trident/7.0），4399 部分页面需要此 UA 才能正常加载 */
         const val IE_COMPAT_UA = "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko"
+
+        /**
+         * ★ v14: 桌面/兼容模式视口拉宽 + 客户端提示伪装 —— useUaMode/useDesktopMode
+         * 的配套 Document Start 脚本。只改 UA 请求头对两类站点无效（用户实测
+         * “电脑模式还是手机版网页”）：
+         *   ① 响应式站点：CSS 断点看视口宽度，width=device-width 的 meta 把布局
+         *      锁死在手机宽度 → 桌面 UA 也渲染手机版；
+         *   ② 客户端探测：WebView 的 Sec-CH-UA-Mobile 客户端提示不受
+         *      setUserAgentString 覆盖影响（仍上报 ?1/Android 平台），现代站点
+         *      navigator.userAgentData.mobile === true 照样切移动版。
+         * 本脚本在页面任何 JS 之前执行，读当前 navigator.userAgent（Kotlin 侧已
+         * 覆盖）自适应判定：桌面/IE UA → ① viewport 的 device-width 改写为 1280
+         * 并去掉 initial-scale（布局视口拉宽 + loadWithOverviewMode 自动缩小 =
+         * 真·桌面版式）；② navigator.userAgentData 伪装为 Windows/非移动、
+         * navigator.platform=Win32。移动 UA → 什么都不做（缩放解锁仍归
+         * PINCH_UNLOCK_SCRIPT）。与 WebPinchLayout 缩放仲裁共存：window.__az
+         * 活跃期间不碰 meta。幂等（__uaDesk 守卫）+ MutationObserver 监听
+         * 页面后插/改写 meta。服务端 Accept-CH 探测无法在 JS 层拦截（公版
+         * WebView 无该 API），该场景由 UA 请求头本身覆盖。
+         */
+        const val UA_DESKTOP_SPOOF_SCRIPT = """
+            (function(){
+              if (window.__uaDesk) return; window.__uaDesk = true;
+              var ua = '';
+              try { ua = navigator.userAgent || ''; } catch(e) {}
+              var isDesk = /Windows NT/.test(ua) || /Trident\/7/.test(ua) ||
+                           /Macintosh/.test(ua) || /X11/.test(ua);
+              if (!isDesk) return;
+              // --- 1. navigator.userAgentData / platform 客户端提示伪装 ---
+              try {
+                var deskUAD = {
+                  brands: [
+                    { brand: 'Not_A Brand', version: '8' },
+                    { brand: 'Chromium', version: '120' },
+                    { brand: 'Google Chrome', version: '120' }
+                  ],
+                  mobile: false,
+                  platform: 'Windows',
+                  getHighEntropyValues: function(hints) {
+                    return Promise.resolve({
+                      architecture: 'x86', bitness: '64', mobile: false, model: '',
+                      platform: 'Windows', platformVersion: '15.0.0',
+                      uaFullVersion: '120.0.0.0',
+                      fullVersionList: [
+                        { brand: 'Chromium', version: '120.0.0.0' },
+                        { brand: 'Google Chrome', version: '120.0.0.0' }
+                      ]
+                    });
+                  }
+                };
+                try {
+                  Object.defineProperty(Navigator.prototype, 'userAgentData', {
+                    get: function() { return deskUAD; },
+                    configurable: true
+                  });
+                } catch(e) {
+                  try {
+                    Object.defineProperty(navigator, 'userAgentData', {
+                      get: function() { return deskUAD; },
+                      configurable: true
+                    });
+                  } catch(e2) {}
+                }
+                try {
+                  Object.defineProperty(navigator, 'platform', {
+                    value: 'Win32', configurable: true
+                  });
+                } catch(e) {}
+              } catch(e) {}
+              // --- 2. viewport 桌面化：device-width → 1280，去 initial-scale ---
+              function deskView(m){
+                if (window.__az) return;
+                try {
+                  var c = m.getAttribute('content') || '';
+                  if (!c) return;
+                  var orig = c;
+                  c = c.replace(/width\s*=\s*["']?device-width["']?/gi, 'width=1280');
+                  c = c.replace(/,?\s*initial-scale\s*=\s*[0-9.]+/gi, '');
+                  if (c !== orig) m.setAttribute('content', c);
+                } catch(e) {}
+              }
+              function scanAll(){
+                try {
+                  var metas = document.querySelectorAll('meta[name="viewport"]');
+                  for (var i = 0; i < metas.length; i++) deskView(metas[i]);
+                } catch(e) {}
+              }
+              scanAll();
+              try {
+                if (window.MutationObserver) {
+                  var mo = new MutationObserver(function(muts){
+                    for (var i = 0; i < muts.length; i++) {
+                      var m = muts[i];
+                      if (m.type === 'attributes') {
+                        var t = m.target;
+                        if (t && t.tagName === 'META' &&
+                        (t.getAttribute('name') || '').toLowerCase() === 'viewport') deskView(t);
+                      } else if (m.addedNodes && m.addedNodes.length) {
+                        for (var j = 0; j < m.addedNodes.length; j++) {
+                          var n = m.addedNodes[j];
+                          if (n && n.tagName === 'META' &&
+                          (n.getAttribute('name') || '').toLowerCase() === 'viewport') deskView(n);
+                        }
+                      }
+                    }
+                  });
+                  mo.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true, attributeFilter: ['content'] });
+                }
+              } catch(e) {}
+            })();
+        """
 
         /** 游戏常用按键白名单 */
         val GAME_KEYS = intArrayOf(

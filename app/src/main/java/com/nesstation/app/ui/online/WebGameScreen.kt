@@ -409,11 +409,16 @@ fun WebGameScreen(
     fun openInBrowser(target: String, ua: String) {
         val wv = webViewRef.value ?: return
         if (target.isBlank()) return
-        PrefsManager.sp.edit().putString("ua_mode", ua).apply()
-        when (ua) {
+        // ★ v14: 全局 UA 模式优先 —— 收藏/入口各自存的 uaMode 不再凌驾于用户
+        //   当前选择（“切了模式点收藏还是老样子”根治）；仅显式 ie_compat 的
+        //   收藏（老 Flash 页兼容需要）保留专属模式。桌面/兼容模式的新页视口
+        //   拉宽与客户端提示伪装由 UA_DESKTOP_SPOOF_SCRIPT 按 UA 自适应生效。
+        val effectiveUa = if (ua == "ie_compat") "ie_compat" else PrefsManager.uaMode
+        PrefsManager.sp.edit().putString("ua_mode", effectiveUa).apply()
+        when (effectiveUa) {
             "ie_compat" -> wv.useUaMode("ie_compat")
             "mobile" -> wv.useUaMode("mobile")
-            else -> wv.useDesktopMode(true)
+            else -> wv.useUaMode("desktop")
         }
         homeVisible = false
         wv.loadUrl(target)
@@ -638,6 +643,15 @@ fun WebGameScreen(
             //   其他      -> 默认移动版 UA + 4399App 标识
             wv.useUaMode(mode)
         }
+        // ★ v14: 立即可见反馈（"切了没任何变化"感知问题）—— Toast + 重载；
+        //   桌面/兼容模式下新页视口自动拉宽 + 客户端提示伪装
+        //   （UA_DESKTOP_SPOOF_SCRIPT 按 UA 自适应，无需额外处理）。
+        val uaLabel = when (mode) {
+            "ie_compat" -> "兼容模式（IE11）"
+            "mobile" -> "移动模式"
+            else -> "桌面模式（Chrome）"
+        }
+        Toast.makeText(context, "已切换：$uaLabel（正在刷新）", Toast.LENGTH_SHORT).show()
         reload()
     }
 
@@ -2057,42 +2071,43 @@ private fun BrowserToolbar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xF0161822))
-            .padding(horizontal = 2.dp, vertical = 2.dp),
+            .padding(horizontal = 1.dp, vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) {
-            Icon(Icons.Rounded.ArrowBack, "后退", tint = Color.White, modifier = Modifier.size(20.dp))
+        IconButton(onClick = onBack, modifier = Modifier.size(26.dp)) {
+            Icon(Icons.Rounded.ArrowBack, "后退", tint = Color.White, modifier = Modifier.size(14.dp))
         }
-        IconButton(onClick = onForward, modifier = Modifier.size(38.dp)) {
-            Icon(Icons.Rounded.ArrowForward, "前进", tint = Color.White, modifier = Modifier.size(20.dp))
+        IconButton(onClick = onForward, modifier = Modifier.size(26.dp)) {
+            Icon(Icons.Rounded.ArrowForward, "前进", tint = Color.White, modifier = Modifier.size(14.dp))
         }
         if (loading) {
-            IconButton(onClick = onStop, modifier = Modifier.size(38.dp)) {
-                Icon(Icons.Rounded.Close, "停止", tint = Color(0xFFFF8A80), modifier = Modifier.size(20.dp))
+            IconButton(onClick = onStop, modifier = Modifier.size(26.dp)) {
+                Icon(Icons.Rounded.Close, "停止", tint = Color(0xFFFF8A80), modifier = Modifier.size(14.dp))
             }
         } else {
-            IconButton(onClick = onReload, modifier = Modifier.size(38.dp)) {
-                Icon(Icons.Rounded.Refresh, "刷新", tint = Color.White, modifier = Modifier.size(20.dp))
+            IconButton(onClick = onReload, modifier = Modifier.size(26.dp)) {
+                Icon(Icons.Rounded.Refresh, "刷新", tint = Color.White, modifier = Modifier.size(14.dp))
             }
         }
-        IconButton(onClick = onHome, modifier = Modifier.size(38.dp)) {
-            Icon(Icons.Rounded.Home, "主页", tint = Color.White, modifier = Modifier.size(20.dp))
+        IconButton(onClick = onHome, modifier = Modifier.size(26.dp)) {
+            Icon(Icons.Rounded.Home, "主页", tint = Color.White, modifier = Modifier.size(14.dp))
         }
         OutlinedTextField(
             value = address,
             onValueChange = onAddressChange,
             modifier = Modifier
                 .weight(1f)
+                .height(32.dp)
                 .onFocusChanged { onAddressFocusChange(it.isFocused) },
             singleLine = true,
-            placeholder = { Text("搜索或输入网址", color = Color(0xFF8899AA), fontSize = 13.sp) },
+            placeholder = { Text("搜索或输入网址", color = Color(0xFF8899AA), fontSize = 11.sp) },
             leadingIcon = {
-                Icon(Icons.Rounded.Search, null, tint = Color(0xFF8899AA), modifier = Modifier.size(16.dp))
+                Icon(Icons.Rounded.Search, null, tint = Color(0xFF8899AA), modifier = Modifier.size(12.dp))
             },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(onGo = { onGo() }),
-            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 11.sp),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
             colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Color(0xFF8A7BFF),
                 unfocusedBorderColor = Color(0x33FFFFFF),
@@ -2101,17 +2116,17 @@ private fun BrowserToolbar(
                 cursorColor = Color(0xFF8A7BFF)
             )
         )
-        IconButton(onClick = onFavorite, modifier = Modifier.size(38.dp)) {
+        IconButton(onClick = onFavorite, modifier = Modifier.size(26.dp)) {
             Icon(
                 if (isFavorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
                 "收藏",
                 tint = if (isFavorite) Color(0xFFFFD54F) else Color.White,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(14.dp)
             )
         }
         // ☰ 菜单：打开悬浮菜单（手柄/Flash/缩放/兼容模式等全部设置入口）
-        IconButton(onClick = onMenu, modifier = Modifier.size(38.dp)) {
-            Icon(Icons.Rounded.MoreVert, "菜单", tint = Color.White, modifier = Modifier.size(20.dp))
+        IconButton(onClick = onMenu, modifier = Modifier.size(26.dp)) {
+            Icon(Icons.Rounded.MoreVert, "菜单", tint = Color.White, modifier = Modifier.size(14.dp))
         }
     }
 }
@@ -2134,7 +2149,7 @@ private fun BrowserTabStrip(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xF0101218))
-            .padding(horizontal = 2.dp, vertical = 2.dp),
+            .padding(horizontal = 1.dp, vertical = 1.dp),
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)
     ) {
         items(tabs, key = { it.id }) { tab ->
@@ -2142,34 +2157,34 @@ private fun BrowserTabStrip(
             val isActive = tab.id == activeTabId
             Row(
                 modifier = Modifier
-                    .height(30.dp)
+                    .height(22.dp)
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                     .background(if (isActive) Color(0xFF232736) else Color(0x1AFFFFFF))
                     .clickable { onSelect(tab.id) }
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     title.take(12),
                     color = if (isActive) Color.White else Color(0xFF8899AA),
-                    fontSize = 11.sp,
+                    fontSize = 9.sp,
                     maxLines = 1,
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    modifier = Modifier.width(96.dp)
+                    modifier = Modifier.width(60.dp)
                 )
                 Icon(
                     Icons.Rounded.Close, "关闭标签",
                     tint = Color(0xFF8899AA),
                     modifier = Modifier
                         .padding(start = 4.dp)
-                        .size(14.dp)
+                        .size(11.dp)
                         .clickable { onClose(tab.id) }
                 )
             }
         }
         item {
-            IconButton(onClick = onNew, modifier = Modifier.size(30.dp)) {
-                Icon(Icons.Rounded.Add, "新建标签", tint = Color(0xFF8A7BFF), modifier = Modifier.size(18.dp))
+            IconButton(onClick = onNew, modifier = Modifier.size(22.dp)) {
+                Icon(Icons.Rounded.Add, "新建标签", tint = Color(0xFF8A7BFF), modifier = Modifier.size(12.dp))
             }
         }
     }
@@ -2187,8 +2202,9 @@ private val BgPresetGradients = listOf(
 )
 
 /**
- * ★ v13: 浏览器主页现代化 —— 收藏改为横向滑动大卡片轮播（LazyRow），
+ * ★ v13: 浏览器主页现代化 —— 收藏改为横向滑动卡片轮播（LazyRow），
  *   主页背景可自定义（相册图片 / 内置渐变预设 / 默认深色，顶栏"背景"入口）。
+ *   ★ v14: 卡片按用户反馈全面紧凑化（64x78 小卡）。
  *   语义不变：点击收藏打开站点；长按弹管理菜单；尾部"+"卡片添加收藏。
  *   覆盖整个内容区 —— 底层 about:blank 载体完全不可见。
  */
@@ -2269,7 +2285,7 @@ private fun BrowserHomeOverlay(
         )
 
         Column(modifier = Modifier.fillMaxSize()) {
-            androidx.compose.foundation.layout.Spacer(Modifier.size(22.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
             // ---- 顶栏：标题区 + 背景自定义入口 ----
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -2281,31 +2297,31 @@ private fun BrowserHomeOverlay(
                     Text(
                         "在线游戏",
                         color = Color.White,
-                        fontSize = 24.sp,
+                        fontSize = 16.sp,
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                     )
                     androidx.compose.foundation.layout.Spacer(Modifier.size(2.dp))
                     Text(
                         "共 ${shownFavorites.size} 个收藏 · 点击打开 · 长按管理 · 工具栏★收藏当前页",
                         color = Color(0xFFAAB6C6),
-                        fontSize = 11.sp
+                        fontSize = 9.sp
                     )
                 }
-                androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
+                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
                 androidx.compose.material3.TextButton(
                     onClick = { showBgDialog = true },
                     modifier = Modifier
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                         .background(Color(0x2EFFFFFF))
                 ) {
-                    Text("背景", color = Color(0xE6FFFFFF), fontSize = 12.sp)
+                    Text("背景", color = Color(0xE6FFFFFF), fontSize = 10.sp)
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(20.dp))
-            // ---- ★ 收藏横滑轮播（大卡片，现代排列） ----
+            androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+            // ---- ★ 收藏横滑轮播（v14 紧凑小卡，现代排列） ----
             LazyRow(
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(14.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 items(shownFavorites.size, key = { i -> shownFavorites[i].url }) { i ->
@@ -2319,11 +2335,11 @@ private fun BrowserHomeOverlay(
                     AddFavoriteCard(onClick = onAdd)
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
             Text(
                 "← 左右滑动浏览全部收藏 →",
                 color = Color(0xFF8FA2B8),
-                fontSize = 10.sp,
+                fontSize = 8.sp,
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.CenterHorizontally)
@@ -2357,7 +2373,7 @@ private fun BrowserHomeOverlay(
     }
 }
 
-/** 单个收藏卡片（v13 现代样式）：128x150 圆角大卡，图标/首字母 + 卡内底部渐变标题区。 */
+/** 单个收藏卡片（v14 紧凑样式）：64x78 圆角小卡，图标/首字母 + 卡内底部渐变标题区。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FavoriteCard(
@@ -2379,8 +2395,8 @@ private fun FavoriteCard(
     }
     Box(
         modifier = Modifier
-            .size(128.dp, 150.dp)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
+            .size(64.dp, 78.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
             .background(
                 androidx.compose.ui.graphics.Brush.linearGradient(
                     listOf(accent.copy(alpha = 0.85f), Color(0xFF171A2E))
@@ -2399,18 +2415,18 @@ private fun FavoriteCard(
             Text(
                 displayTitle.take(1).ifBlank { "?" },
                 color = Color.White.copy(alpha = 0.94f),
-                fontSize = 46.sp,
+                fontSize = 20.sp,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .padding(bottom = 18.dp)
+                    .padding(bottom = 8.dp)
             )
         }
         // 卡内底部渐变标题区（铺在图标上也保证可读）
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(26.dp)
                 .align(Alignment.BottomCenter)
                 .background(
                     androidx.compose.ui.graphics.Brush.verticalGradient(
@@ -2422,12 +2438,12 @@ private fun FavoriteCard(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .padding(horizontal = 5.dp, vertical = 4.dp)
         ) {
             Text(
                 displayTitle,
                 color = Color.White,
-                fontSize = 12.sp,
+                fontSize = 9.sp,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
@@ -2435,7 +2451,7 @@ private fun FavoriteCard(
             Text(
                 host,
                 color = Color(0xFF9FADC0),
-                fontSize = 9.sp,
+                fontSize = 7.sp,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
@@ -2443,18 +2459,18 @@ private fun FavoriteCard(
     }
 }
 
-/** 尾部"+"添加卡片（v13：与收藏大卡同尺寸同圆角） */
+/** 尾部"+"添加卡片（v14：与收藏小卡同尺寸同圆角） */
 @Composable
 private fun AddFavoriteCard(onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(128.dp, 150.dp)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
+            .size(64.dp, 78.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
             .background(Color(0x1FFFFFFF))
             .border(
                 width = 1.dp,
                 color = Color(0x40FFFFFF),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
             )
             .clickable(onClick = onClick)
     ) {
@@ -2463,9 +2479,9 @@ private fun AddFavoriteCard(onClick: () -> Unit) {
             verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
             modifier = Modifier.align(Alignment.Center)
         ) {
-            Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(28.dp))
+            Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(16.dp))
             androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-            Text("添加收藏", color = Color(0xFF8899AA), fontSize = 11.sp)
+            Text("添加收藏", color = Color(0xFF8899AA), fontSize = 8.sp)
         }
     }
 }
