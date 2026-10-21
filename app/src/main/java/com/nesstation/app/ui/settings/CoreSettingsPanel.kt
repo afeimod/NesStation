@@ -2978,6 +2978,28 @@ fun CemuDriverSection(
             ) {
                 installLauncher.launch(arrayOf("application/zip"))
             }
+
+            // ★ v13: 手动清除着色器缓存 —— 换驱动后“加载着色器闪退”的自救入口
+            //   （启动时自动指纹校验之外的手动兜底）：丢弃旧驱动的 Vulkan 管线
+            //   缓存，保留驱动无关的 transferable 通用缓存，下次进游戏自动重编。
+            TextButtonRow(
+                label = "清除着色器缓存（驱动冲突修复）",
+                sub = "换驱动后进游戏加载着色器闪退时点这里；只清驱动相关缓存，通用缓存保留",
+                enabled = !installing,
+                dark = dark
+            ) {
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                    val removed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.nesstation.app.core.engine.CemuEngine.wipeShaderCaches(ctx)
+                    }
+                    Toast.makeText(
+                        ctx,
+                        if (removed > 0) "已清除 $removed 项驱动相关着色器缓存（通用缓存已保留）"
+                        else "没有可清除的着色器缓存",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         }
     }
 

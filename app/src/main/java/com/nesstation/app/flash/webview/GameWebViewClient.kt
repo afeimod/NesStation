@@ -24,13 +24,25 @@ open class GameWebViewClient(
 ) : WebViewClient() {
 
     interface Callback {
-        /** ★ v12: 带 view —— 多标签下后台标签导航不串台（宿主按活动标签门控） */
-        fun onPageStarted(view: WebView?, url: String?)
-        fun onPageFinished(view: WebView?, url: String?)
+        // ---------- ★ v12.1 兼容层（v11 老签名，带默认实现）----------
+        // 用户仓库里的 SWF 播放器（ui/swf/SwfPlayerScreen.kt）按 v11 老签名
+        // override 这些成员（无 view 参数）。v12 只把签名换成带 view 的新签名、
+        // 且仅核对了 WebGameScreen，漏了仓库内其他实现者 → CI 报
+        // "'onPageStarted' overrides nothing" / "does not implement abstract member"。
+        // v12.1 让新老签名并存、全部带默认体：老实现者编译恢复、行为与 v11 一致；
+        // 新实现者（浏览器多标签宿主）继续 override 带 view 版本实现按标签门控。
+        fun onPageStarted(url: String?) {}
+        fun onPageFinished(url: String?) {}
+        fun onSwfIntercepted(swfUrl: String, pageUrl: String) {}
+        /** ★ v12: 带 view —— 多标签下后台标签导航不串台（宿主按活动标签门控）；
+         *  默认向下委托老签名（只实现老签名的宿主行为不变） */
+        fun onPageStarted(view: WebView?, url: String?) = onPageStarted(url)
+        fun onPageFinished(view: WebView?, url: String?) = onPageFinished(url)
         fun onProgress(progress: Int)
         fun onError(url: String?, errorCode: Int, description: String?)
         /** ★ v12: 带 view —— SWF 在拦截它的那个标签内播放，不串台 */
-        fun onSwfIntercepted(view: WebView?, swfUrl: String, pageUrl: String)
+        fun onSwfIntercepted(view: WebView?, swfUrl: String, pageUrl: String) =
+            onSwfIntercepted(swfUrl, pageUrl)
         fun shouldInjectRuffle(url: String?): Boolean
         /** 获取 WAFlash 预下载的 SWF 缓存文件路径 */
         fun getCachedSwfPath(): String?

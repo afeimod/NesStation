@@ -493,7 +493,10 @@ fun WebGameScreen(
         val container = mainBoxRef.value!!
         return GameWebView(container.context).apply {
             webChromeClient = object : GameWebChromeClient(chromeCallbackRef.value!!) {}
-            webViewClient = wvClientRef.value
+            // ★ v12.1: 非空断言修复 CI 496（GameWebViewClient? 不能赋给
+            //   WebViewClient 槽位）。主窗 client 在重建 effect 里与 chromeCallback
+            //   同源先行赋值（wvClientRef.value = wvClient），能走到新建标签必非空。
+            webViewClient = wvClientRef.value!!
             webAppInterfaceRef.value?.let { addJavascriptInterface(it, "Android") }
             when (PrefsManager.uaMode) {
                 "ie_compat" -> useUaMode("ie_compat")
@@ -1246,7 +1249,10 @@ fun WebGameScreen(
                         android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
                 }
             }
-            barsWereVisible = androidx.core.view.WindowCompat.getRootWindowInsets(w.decorView)
+            // ★ v12.1: 修复 CI 1249 —— WindowCompat 并没有 getRootWindowInsets
+            //   （v12 误用导致 Unresolved reference），正确 API 是
+            //   androidx.core.view.ViewCompat.getRootWindowInsets(View): WindowInsetsCompat?
+            barsWereVisible = androidx.core.view.ViewCompat.getRootWindowInsets(w.decorView)
                 ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.systemBars()) ?: true
             androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, false)
             androidx.core.view.WindowInsetsControllerCompat(w, w.decorView).hide(
@@ -2169,12 +2175,23 @@ private fun BrowserTabStrip(
     }
 }
 
+// ---------- ★ v13: 主页背景预设（自定义背景 = 相册图片 / 内置渐变 / 默认深色） ----------
+private val BgPresetNames = listOf("星夜紫", "深海蓝", "熔金落日", "森林绿", "石墨灰")
+
+private val BgPresetGradients = listOf(
+    listOf(Color(0xFF1A1B3A), Color(0xFF4F46E5).copy(alpha = 0.38f), Color(0xFF0F1015)),
+    listOf(Color(0xFF06283D), Color(0xFF1363DF).copy(alpha = 0.38f), Color(0xFF021019)),
+    listOf(Color(0xFF3B1F2B), Color(0xFFE56718).copy(alpha = 0.30f), Color(0xFF14090D)),
+    listOf(Color(0xFF0E2A1F), Color(0xFF1B7A4B).copy(alpha = 0.32f), Color(0xFF06130C)),
+    listOf(Color(0xFF17181C), Color(0xFF3A3F4B).copy(alpha = 0.42f), Color(0xFF0B0C0F))
+)
+
 /**
- * 浏览器主页（收藏夹网格 + 提示条）。点击收藏打开站点；
- * 长按弹管理菜单（打开/重命名/自定义图标/删除）；尾部"+"卡片添加收藏。
- * 覆盖整个内容区 —— 底层 about:blank 载体完全不可见。
+ * ★ v13: 浏览器主页现代化 —— 收藏改为横向滑动大卡片轮播（LazyRow），
+ *   主页背景可自定义（相册图片 / 内置渐变预设 / 默认深色，顶栏"背景"入口）。
+ *   语义不变：点击收藏打开站点；长按弹管理菜单；尾部"+"卡片添加收藏。
+ *   覆盖整个内容区 —— 底层 about:blank 载体完全不可见。
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BrowserHomeOverlay(
     favorites: List<WebGameEntry>,
@@ -2182,49 +2199,165 @@ private fun BrowserHomeOverlay(
     onOpenMenu: (WebGameEntry) -> Unit,
     onAdd: () -> Unit
 ) {
-    Column(
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    // 背景偏好（SharedPreferences 持久化；对话框操作后本地 state 即时刷新）
+    var bgMode by remember { mutableStateOf(WebFavoritesStore.getBackground(ctx).first) }
+    var bgPreset by remember { mutableStateOf(WebFavoritesStore.getBackground(ctx).second) }
+    var bgImagePath by remember { mutableStateOf(WebFavoritesStore.getBackgroundImagePath(ctx)) }
+    var showBgDialog by remember { mutableStateOf(false) }
+
+    // SAF 选图 → 降采样落盘 <filesDir>/web_bg/custom_bg.jpg（应用私有、稳定可读）
+    val bgPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val saved = WebFavoritesStore.applyBackgroundImage(ctx, uri)
+            if (saved != null) {
+                bgMode = "image"
+                bgImagePath = saved
+            } else {
+                Toast.makeText(ctx, "导入背景图片失败", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // 背景位图（图片模式）—— remember 缓存，随路径变化重建
+    val bgBitmap = remember(bgImagePath) {
+        if (bgImagePath.isNullOrBlank()) null
+        else try {
+            if (java.io.File(bgImagePath).exists()) android.graphics.BitmapFactory.decodeFile(bgImagePath) else null
+        } catch (_: Exception) { null }
+    }
+
+    // 展示层去重（LazyRow key 需 url 唯一，防异常种子数据导致重复 key）
+    val shownFavorites = remember(favorites) { favorites.distinctBy { it.url } }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(PrimaryBackground)
     ) {
-        androidx.compose.foundation.layout.Spacer(Modifier.size(18.dp))
-        Text(
-            "浏览器 · 在线游戏",
-            color = Color.White,
-            fontSize = 20.sp,
-            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
-        androidx.compose.foundation.layout.Spacer(Modifier.size(4.dp))
-        Text(
-            "收藏夹 · ${favorites.size} 个站点（点击打开 · 长按管理 · 工具栏★收藏当前页）",
-            color = Color(0xFF8899AA),
-            fontSize = 11.sp,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
-        androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 96.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
-            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            gridItems(favorites) { fav ->
-                FavoriteCard(
-                    fav = fav,
-                    onClick = { onNavigate(fav) },
-                    onLongClick = { onOpenMenu(fav) }
+        // ---- 背景层：自定义图片 / 预设渐变（默认 = PrimaryBackground 深色底） ----
+        when (bgMode) {
+            "image" -> if (bgBitmap != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bgBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
                 )
             }
-            item {
-                AddFavoriteCard(onClick = onAdd)
-            }
+            "preset" -> Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            BgPresetGradients[bgPreset.coerceIn(0, BgPresetGradients.lastIndex)]
+                        )
+                    )
+            )
         }
+        // ---- 压暗纱：任何背景下都保证前景文字/卡片可读 ----
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(Color(0x2E000000), Color(0x66000000))
+                    )
+                )
+        )
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            androidx.compose.foundation.layout.Spacer(Modifier.size(22.dp))
+            // ---- 顶栏：标题区 + 背景自定义入口 ----
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "在线游戏",
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                    androidx.compose.foundation.layout.Spacer(Modifier.size(2.dp))
+                    Text(
+                        "共 ${shownFavorites.size} 个收藏 · 点击打开 · 长按管理 · 工具栏★收藏当前页",
+                        color = Color(0xFFAAB6C6),
+                        fontSize = 11.sp
+                    )
+                }
+                androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
+                androidx.compose.material3.TextButton(
+                    onClick = { showBgDialog = true },
+                    modifier = Modifier
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+                        .background(Color(0x2EFFFFFF))
+                ) {
+                    Text("背景", color = Color(0xE6FFFFFF), fontSize = 12.sp)
+                }
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.size(20.dp))
+            // ---- ★ 收藏横滑轮播（大卡片，现代排列） ----
+            LazyRow(
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(shownFavorites.size, key = { i -> shownFavorites[i].url }) { i ->
+                    FavoriteCard(
+                        fav = shownFavorites[i],
+                        onClick = { onNavigate(shownFavorites[i]) },
+                        onLongClick = { onOpenMenu(shownFavorites[i]) }
+                    )
+                }
+                item {
+                    AddFavoriteCard(onClick = onAdd)
+                }
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
+            Text(
+                "← 左右滑动浏览全部收藏 →",
+                color = Color(0xFF8FA2B8),
+                fontSize = 10.sp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.CenterHorizontally)
+            )
+        }
+    }
+
+    // ---- 背景选择对话框 ----
+    if (showBgDialog) {
+        BackgroundChooserDialog(
+            currentMode = bgMode,
+            currentPreset = bgPreset,
+            hasImage = bgImagePath != null,
+            onUseDefault = {
+                WebFavoritesStore.setBackground(ctx, "none", 0)
+                bgMode = "none"
+            },
+            onUsePreset = { idx ->
+                WebFavoritesStore.setBackground(ctx, "preset", idx)
+                bgMode = "preset"
+                bgPreset = idx
+            },
+            onPickImage = { bgPicker.launch(arrayOf("image/*")) },
+            onClearImage = {
+                WebFavoritesStore.clearBackgroundImage(ctx)
+                bgMode = "none"
+                bgImagePath = null
+            },
+            onDismiss = { showBgDialog = false }
+        )
     }
 }
 
-/** 单个收藏卡片：自定义图标优先，无图标用首字母色卡；底部标题条。 */
+/** 单个收藏卡片（v13 现代样式）：128x150 圆角大卡，图标/首字母 + 卡内底部渐变标题区。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FavoriteCard(
@@ -2241,13 +2374,16 @@ private fun FavoriteCard(
         } catch (_: Exception) { null }
     }
     val accent = FavAccentPalette[displayTitle.hashCode().mod(FavAccentPalette.size)]
+    val host = remember(fav.url) {
+        try { android.net.Uri.parse(fav.url).host ?: fav.url } catch (_: Exception) { fav.url }
+    }
     Box(
         modifier = Modifier
-            .aspectRatio(0.9f)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .size(128.dp, 150.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
             .background(
-                androidx.compose.ui.graphics.Brush.horizontalGradient(
-                    listOf(accent.copy(alpha = 0.32f), Color(0x141A1A2E))
+                androidx.compose.ui.graphics.Brush.linearGradient(
+                    listOf(accent.copy(alpha = 0.85f), Color(0xFF171A2E))
                 )
             )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
@@ -2262,24 +2398,44 @@ private fun FavoriteCard(
         } else {
             Text(
                 displayTitle.take(1).ifBlank { "?" },
-                color = Color.White.copy(alpha = 0.9f),
-                fontSize = 34.sp,
+                color = Color.White.copy(alpha = 0.94f),
+                fontSize = 46.sp,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                modifier = Modifier.align(Alignment.Center)
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(bottom = 18.dp)
             )
         }
-        // 底部标题条
+        // 卡内底部渐变标题区（铺在图标上也保证可读）
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xCC10131A))
+                .height(56.dp)
                 .align(Alignment.BottomCenter)
-                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(Color(0x00000000), Color(0xD90B0D14))
+                    )
+                )
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp)
         ) {
             Text(
                 displayTitle,
                 color = Color.White,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+            Text(
+                host,
+                color = Color(0xFF9FADC0),
+                fontSize = 9.sp,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
@@ -2287,18 +2443,18 @@ private fun FavoriteCard(
     }
 }
 
-/** 尾部"+"添加卡片 */
+/** 尾部"+"添加卡片（v13：与收藏大卡同尺寸同圆角） */
 @Composable
 private fun AddFavoriteCard(onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .aspectRatio(0.9f)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .size(128.dp, 150.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
             .background(Color(0x1FFFFFFF))
             .border(
                 width = 1.dp,
                 color = Color(0x40FFFFFF),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
             )
             .clickable(onClick = onClick)
     ) {
@@ -2308,7 +2464,79 @@ private fun AddFavoriteCard(onClick: () -> Unit) {
             modifier = Modifier.align(Alignment.Center)
         ) {
             Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(28.dp))
-            Text("添加", color = Color(0xFF8899AA), fontSize = 11.sp)
+            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+            Text("添加收藏", color = Color(0xFF8899AA), fontSize = 11.sp)
+        }
+    }
+}
+
+/** ★ v13: 背景选择对话框（默认深色 / 5 个内置渐变 / 相册图片 / 清除图片） */
+@Composable
+private fun BackgroundChooserDialog(
+    currentMode: String,
+    currentPreset: Int,
+    hasImage: Boolean,
+    onUseDefault: () -> Unit,
+    onUsePreset: (Int) -> Unit,
+    onPickImage: () -> Unit,
+    onClearImage: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自定义主页背景") },
+        text = {
+            Column {
+                BgOptionRow("默认深色", currentMode == "none", null) {
+                    onUseDefault(); onDismiss()
+                }
+                BgPresetNames.forEachIndexed { i, name ->
+                    BgOptionRow(name, currentMode == "preset" && currentPreset == i, BgPresetGradients[i]) {
+                        onUsePreset(i); onDismiss()
+                    }
+                }
+                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+                androidx.compose.material3.TextButton(onClick = { onPickImage(); onDismiss() }) {
+                    Text("从相册选择图片…", color = Color(0xFF8A7BFF), fontSize = 13.sp)
+                }
+                if (hasImage) {
+                    androidx.compose.material3.TextButton(onClick = { onClearImage(); onDismiss() }) {
+                        Text("清除自定义图片", color = Color(0xFFE2707C), fontSize = 13.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("完成") }
+        },
+        dismissButton = {}
+    )
+}
+
+/** 背景选项行：渐变色卡（可选）+ 名称 + 选中态 */
+@Composable
+private fun BgOptionRow(
+    label: String,
+    selected: Boolean,
+    swatch: List<Color>?,
+    onClick: () -> Unit
+) {
+    androidx.compose.material3.TextButton(onClick = onClick) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (swatch != null) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp, 22.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+                        .background(androidx.compose.ui.graphics.Brush.horizontalGradient(swatch))
+                )
+                androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+            }
+            Text(label, color = if (selected) Color(0xFF8A7BFF) else Color(0xFFC7D0DE), fontSize = 13.sp)
+            if (selected) {
+                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+                Text("✓", color = Color(0xFF8A7BFF), fontSize = 13.sp)
+            }
         }
     }
 }

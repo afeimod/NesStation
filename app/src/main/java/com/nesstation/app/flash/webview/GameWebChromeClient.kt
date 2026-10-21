@@ -22,9 +22,18 @@ open class GameWebChromeClient(
 ) : WebChromeClient() {
 
     interface Callback {
-        /** ★ v12: 带 view —— 进度/标题按标签门控（后台标签不串台） */
-        fun onProgress(view: WebView?, progress: Int)
-        fun onTitle(view: WebView?, title: String?)
+        // ---------- ★ v12.1 兼容层（v10 老签名，带默认实现）----------
+        // 用户仓库里的 SWF 播放器（ui/swf/SwfPlayerScreen.kt）按 v10 老签名
+        // override 这些成员（无 view 参数）。v12 换成带 view 的新签名时漏了仓库内
+        // 其他实现者 → CI 报 "'onProgress'/'onTitle' overrides nothing" /
+        // "does not implement abstract member onProgress"。
+        // 新老并存 + 默认委托：老实现者编译恢复、行为不变；新宿主继续按标签门控。
+        fun onProgress(progress: Int) {}
+        fun onTitle(title: String?) {}
+        /** ★ v12: 带 view —— 进度/标题按标签门控（后台标签不串台）；
+         *  默认向下委托老签名（只实现老签名的宿主行为不变） */
+        fun onProgress(view: WebView?, progress: Int) = onProgress(progress)
+        fun onTitle(view: WebView?, title: String?) = onTitle(title)
         fun onConsole(level: String, msg: String, sourceId: String?, line: Int)
         /** 全屏（Flash 全屏播放） */
         fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)

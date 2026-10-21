@@ -167,6 +167,11 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     @Volatile private var probedAvailability: Availability? = null
 
+    /** ★ v13: 本次启动将生效的 GPU 驱动指纹（customDriverPath，空 = 系统驱动）。
+     *  setCoreOption 重放时记录；startBootLocked 在渲染器初始化前据此做
+     *  驱动相关着色器缓存失效校验（换驱动后旧管线缓存 = 加载着色器闪退根源）。 */
+    @Volatile private var pendingDriverFingerprint: String? = null
+
     fun probeAvailability(): Availability {
         probedAvailability?.let { return it }
         val result = try {
@@ -349,6 +354,33 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     NativeEmulation.initializeSystems()
                 } catch (t: Throwable) {
                     android.util.Log.w("CemuEngine", "initializeSystems failed", t)
+                }
+
+                // --- ★ v13: 驱动指纹校验（WiiU 换驱动后“加载着色器闪退”根治）---
+                //   Vulkan 管线缓存与驱动版本强绑定：换驱动后核心在加载着色器
+                //   阶段反序列化旧驱动写下的管线缓存 → 驱动内崩溃（SIGSEGV，
+                //   Java 层无法捕获）。各模拟器上游同款做法：驱动指纹（= 将生效
+                //   的 customDriverPath）与上次启动不一致 → 丢弃驱动相关缓存
+                //   （保留驱动无关的 transferable 通用缓存，之后后台重编）。
+                //   必须在 initializeRenderer 之前同步完成 —— 渲染器初始化时
+                //   adrenotools 加载驱动并打开缓存文件，之后清理就晚了。
+                try {
+                    val vctx = appContext
+                    if (vctx != null) {
+                        val inMem = try {
+                            NativeSettings.getCustomDriverPath()
+                        } catch (_: Throwable) { null }
+                        val fingerprint = pendingDriverFingerprint ?: inMem ?: ""
+                        val wipedEntries = invalidateShaderCachesForDriver(vctx, fingerprint)
+                        if (wipedEntries > 0) {
+                            android.util.Log.i(
+                                "CemuEngine",
+                                "GPU driver changed -> wiped $wipedEntries shader cache entries (transferable kept)"
+                            )
+                        }
+                    }
+                } catch (t: Throwable) {
+                    android.util.Log.w("CemuEngine", "shader cache invalidation failed", t)
                 }
 
                 // --- initializeRenderer（Vulkan 全局 + VulkanRenderer）---
@@ -765,6 +797,10 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 //   读取生效。仅在值变化时落盘，避免滑条类设置 60Hz 重入。
                 "customDriverPath" -> {
                     val want = value.takeIf { it.isNotBlank() }
+                    // ★ v13: 记录“本次启动将生效”的驱动指纹 —— 渲染器初始化前
+                    //   的着色器缓存失效校验据此判断驱动是否切换（重放无论值
+                    //   变没变都记录；空 = 系统驱动）。
+                    pendingDriverFingerprint = want ?: ""
                     val cur = try {
                         NativeSettings.getCustomDriverPath()
                     } catch (_: Throwable) {
@@ -1303,6 +1339,71 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
         fun get(): CemuEngine =
             instance ?: CemuEngine().also { instance = it }
+
+        // ---------- ★ v13: 驱动指纹化着色器缓存失效（换驱动闪退根治） ----------
+        // 背景：Vulkan 管线缓存（pipeline cache）与驱动版本强绑定。安装/切换
+        //   驱动后，核心在“加载着色器”阶段反序列化旧驱动写下的管线缓存 →
+        //   驱动内崩溃（SIGSEGV，Java 层无法捕获，用户所见即“装了驱动一进
+        //   游戏加载着色器就闪退”）。上游各模拟器同款做法：驱动指纹变化时
+        //   丢弃驱动相关缓存，保留驱动无关的 transferable（反编译着色器源）
+        //   供后台重编 —— 首帧变慢但不再闪退。
+        private const val DRIVER_FINGERPRINT_FILE = "cemu_driver_fingerprint.txt"
+
+        /** 指纹标记文件（<filesDir>/cemu_driver_fingerprint.txt，记录上次启动生效的驱动）。 */
+        fun driverFingerprintFile(ctx: Context): File =
+            File(ctx.filesDir, DRIVER_FINGERPRINT_FILE)
+
+        /**
+         * 清除驱动相关的着色器缓存（管线/precompiled 等），保留 transferable 整枝。
+         * 覆盖 <filesDir>/cemu/shaderCache（loadRom 里 userDataPath == cachePath
+         * == <filesDir>/cemu）与 <cacheDir>/shaderCache（保险位）。返回删除条目数。
+         */
+        fun wipeShaderCaches(ctx: Context): Int {
+            var removed = 0
+            val roots = listOf(
+                File(File(ctx.filesDir, "cemu"), "shaderCache"),
+                File(ctx.cacheDir, "shaderCache")
+            )
+            for (root in roots) {
+                if (!root.exists()) continue
+                try {
+                    root.walkBottomUp().forEach { f ->
+                        if (f == root) return@forEach
+                        if (f.relativeTo(root).path.contains("transferable", ignoreCase = true)) {
+                            return@forEach
+                        }
+                        if (f.delete()) removed++
+                    }
+                } catch (t: Throwable) {
+                    android.util.Log.w("CemuEngine", "wipe shader cache partial: ${t.message}")
+                }
+            }
+            return removed
+        }
+
+        /**
+         * 驱动指纹校验：指纹（customDriverPath，空 = 系统驱动）与上次启动记录
+         * 不一致（含首次运行无记录）→ 清驱动相关缓存 + 写入新记录。
+         * 返回清除条目数（0 = 无需清理）。任何异常都不抛出（启动路径防御）。
+         */
+        fun invalidateShaderCachesForDriver(ctx: Context, fingerprint: String): Int {
+            try {
+                val marker = driverFingerprintFile(ctx)
+                val fp = fingerprint.trim()
+                val prev = if (marker.exists()) marker.readText().trim() else null
+                if (prev == fp) return 0
+                val removed = wipeShaderCaches(ctx)
+                marker.writeText(fp)
+                android.util.Log.i(
+                    "CemuEngine",
+                    "driver fingerprint '$prev' -> '$fp': wiped $removed cache entries"
+                )
+                return removed
+            } catch (t: Throwable) {
+                android.util.Log.w("CemuEngine", "invalidateShaderCachesForDriver failed", t)
+                return 0
+            }
+        }
     }
 }
 
