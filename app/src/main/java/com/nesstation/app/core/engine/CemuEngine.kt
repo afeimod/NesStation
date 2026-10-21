@@ -167,15 +167,6 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
     @Volatile private var probedAvailability: Availability? = null
 
-    /** ★ v13: 本次启动将生效的 GPU 驱动指纹（customDriverPath，空 = 系统驱动）。
-     *  setCoreOption 重放时记录；startBootLocked 在渲染器初始化前据此做
-     *  驱动相关着色器缓存失效校验（换驱动后旧管线缓存 = 加载着色器闪退根源）。 */
-    @Volatile private var pendingDriverFingerprint: String? = null
-
-    /** ★ v14: 崩溃标记自动清除回调（渲染器存活同关后仍存活 = 未崩溃 → 清标记；
-     *  unloadLocked 正常退出时取消并直接清除）。主线程 Handler 持有。 */
-    @Volatile private var crashMarkerClearRunnable: Runnable? = null
-
     fun probeAvailability(): Availability {
         probedAvailability?.let { return it }
         val result = try {
@@ -360,107 +351,21 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                     android.util.Log.w("CemuEngine", "initializeSystems failed", t)
                 }
 
-                // --- ★ v14: 驱动崩溃自动安全模式（“装驱动一进游戏加载着色器就闪退”二道防线） ---
-                //   机理：自定义驱动在着色器/pipeline 阶段的原生崩溃（SIGSEGV）直接杀
-                //   整个进程，Java 层无法捕获 → v13 的缓存清理治不到驱动本身与设备
-                //   不兼容的场景（用户实测仍闪退）。本防线：带自定义驱动启动前先落
-                //   “崩溃待定”标记，渲染器存活满 15s（已过着色器加载高发窗口）自动
-                //   清除；进程若在窗口内死亡 → 标记存活 → 下次启动检测到即自动回退
-                //   系统驱动 + Toast 提示（设置→驱动管理可重新启用）。正常退出
-                //   （unloadLocked）也取消并清除标记（防误判）。
-                var effectiveDriverPath = ""
-                try {
-                    val vctx0 = appContext
-                    if (vctx0 != null) {
-                        val inMem0 = try {
-                            NativeSettings.getCustomDriverPath()
-                        } catch (_: Throwable) { null }
-                        effectiveDriverPath = (pendingDriverFingerprint ?: inMem0 ?: "").trim()
-                        if (effectiveDriverPath.isNotEmpty() && isDriverCrashSafeMode(vctx0)) {
-                            // 上次带自定义驱动启动时进程死亡 → 本次强制回退系统驱动
-                            try {
-                                NativeSettings.setCustomDriverPath(null)
-                                NativeSettings.saveSettings()
-                            } catch (t: Throwable) {
-                                android.util.Log.w("CemuEngine", "safe-mode fallback failed", t)
-                            }
-                            pendingDriverFingerprint = ""
-                            effectiveDriverPath = ""
-                            android.util.Log.w(
-                                "CemuEngine",
-                                "custom driver crashed last boot -> safe mode: falling back to system driver"
-                            )
-                            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                try {
-                                    android.widget.Toast.makeText(
-                                        vctx0,
-                                        "检测到上次使用自定义驱动时崩溃，本次已临时回退系统驱动（设置→Wii U 驱动管理可重新启用）",
-                                        android.widget.Toast.LENGTH_LONG
-                                    ).show()
-                                } catch (_: Throwable) {}
-                            }
-                        }
-                    }
-                } catch (t: Throwable) {
-                    android.util.Log.w("CemuEngine", "driver safe-mode check failed", t)
-                }
+                // ★ v16（参考上游，停止乱修）：此处不再做任何驱动指纹校验/
+                //   崩溃标记/安全模式回退/execstack 修补 —— 上游 Cemu-AZ
+                //   （SSimco Android 移植）对自定义驱动的全部处理就是
+                //   adrenotools 在 initializeRenderer 内加载 settings.xml 的
+                //   custom_driver_path，没有任何 Java 层缓存管理。
+                //   "Loading cached pipelines" 加载阶段闪退的真根因（启动期
+                //   批量重编译全量缓存管线 → 驱动内存爆掉 SIGSEGV，
+                //   cemu-project/Cemu#396 同类）已在原生侧修复：覆盖件
+                //   VulkanPipelineStableCache.cpp 于 Android 跳过该批量预编
+                //   译，管线改由运行期首次绘制时按上游 async_compile 语义
+                //   创建，驱动级 VkPipelineCache 提供跨启动快速命中。
+                //   缓存不删除（上游从不删缓存）、驱动选择不被改写。
 
-                // --- ★ v13: 驱动指纹校验（WiiU 换驱动后“加载着色器闪退”根治）---
-                //   Vulkan 管线缓存与驱动版本强绑定：换驱动后核心在加载着色器
-                //   阶段反序列化旧驱动写下的管线缓存 → 驱动内崩溃（SIGSEGV，
-                //   Java 层无法捕获）。各模拟器上游同款做法：驱动指纹（= 将生效
-                //   的 customDriverPath）与上次启动不一致 → 丢弃驱动相关缓存
-                //   （保留驱动无关的 transferable 通用缓存，之后后台重编）。
-                //   必须在 initializeRenderer 之前同步完成 —— 渲染器初始化时
-                //   adrenotools 加载驱动并打开缓存文件，之后清理就晚了。
-                try {
-                    val vctx = appContext
-                    if (vctx != null) {
-                        val inMem = try {
-                            NativeSettings.getCustomDriverPath()
-                        } catch (_: Throwable) { null }
-                        val fingerprint = pendingDriverFingerprint ?: inMem ?: ""
-                        val wipedEntries = invalidateShaderCachesForDriver(vctx, fingerprint)
-                        if (wipedEntries > 0) {
-                            android.util.Log.i(
-                                "CemuEngine",
-                                "GPU driver changed -> wiped $wipedEntries shader cache entries (transferable kept)"
-                            )
-                        }
-                    }
-                } catch (t: Throwable) {
-                    android.util.Log.w("CemuEngine", "shader cache invalidation failed", t)
-                }
-
-                // --- ★ v14: 崩溃待定标记 + 驱动 ELF execstack 修补（仍用自定义驱动时） ---
-                if (effectiveDriverPath.isNotEmpty()) {
-                    try {
-                        val vctx1 = appContext
-                        if (vctx1 != null) {
-                            setDriverCrashMarker(vctx1)
-                            cancelCrashMarkerClear()
-                            val r = Runnable {
-                                try { clearDriverCrashMarker(vctx1) } catch (_: Throwable) {}
-                            }
-                            crashMarkerClearRunnable = r
-                            android.os.Handler(android.os.Looper.getMainLooper())
-                                .postDelayed(r, DRIVER_CRASH_SURVIVE_MS)
-                        }
-                        // execstack 修补：部分 Turnip/Mesa 构建的 custom_vulkan.so 带了
-                        //   PT_GNU_STACK RWE（可执行栈）标记 —— Android 10+ SELinux 拒绝
-                        //   execstack（日志 avc: denied { execstack }），驱动栈执行行为
-                        //   异常时会在着色器阶段埋雷。清除 PF_X 让加载器按不可执行栈
-                        //   正常映射（幂等：已是 RW 时不再写）。
-                        val patched = patchDriverElfExecStack(vctx1, effectiveDriverPath)
-                        if (patched) {
-                            android.util.Log.i("CemuEngine", "custom_vulkan.so execstack flag cleared (PT_GNU_STACK RW)")
-                        }
-                    } catch (t: Throwable) {
-                        android.util.Log.w("CemuEngine", "driver crash marker / execstack patch failed", t)
-                    }
-                }
-
-                // --- initializeRenderer（Vulkan 全局 + VulkanRenderer）---
+                // --- initializeRenderer（Vulkan 全局 + VulkanRenderer；自定义
+                //     驱动经 adrenotools 在此加载，上游同款）---
                 NativeEmulation.initializeRenderer()
 
                 // --- 主画布 surface（TV 画面）---
@@ -530,15 +435,6 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
         lastErrorText = msg
         running.set(false)
         try { onPrematureExit?.invoke(msg) } catch (_: Throwable) {}
-    }
-
-    /** ★ v14: 取消待定的崩溃标记自动清除（正常退出时用）。 */
-    private fun cancelCrashMarkerClear() {
-        val r = crashMarkerClearRunnable ?: return
-        try {
-            android.os.Handler(android.os.Looper.getMainLooper()).removeCallbacks(r)
-        } catch (_: Throwable) {}
-        crashMarkerClearRunnable = null
     }
 
     // ------------------------------------------------------------------
@@ -883,10 +779,6 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
                 //   读取生效。仅在值变化时落盘，避免滑条类设置 60Hz 重入。
                 "customDriverPath" -> {
                     val want = value.takeIf { it.isNotBlank() }
-                    // ★ v13: 记录“本次启动将生效”的驱动指纹 —— 渲染器初始化前
-                    //   的着色器缓存失效校验据此判断驱动是否切换（重放无论值
-                    //   变没变都记录；空 = 系统驱动）。
-                    pendingDriverFingerprint = want ?: ""
                     val cur = try {
                         NativeSettings.getCustomDriverPath()
                     } catch (_: Throwable) {
@@ -1008,12 +900,6 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
     private fun unloadLocked() {
         userRequestedStop = true
         running.set(false)
-        // ★ v14: 正常退出 = 上次启动没有崩溃 → 取消待定的自动清除并立即清标记
-        //   （否则 15s 内退出重进会被误判进安全模式）。
-        cancelCrashMarkerClear()
-        try {
-            appContext?.let { clearDriverCrashMarker(it) }
-        } catch (_: Throwable) {}
         try { NativeEmulation.shutdownTitle() } catch (t: Throwable) {
             android.util.Log.w("CemuEngine", "shutdownTitle failed", t)
         }
@@ -1431,193 +1317,6 @@ class CemuEngine private constructor() : EmulatorEngine, CemuCoreEngine {
 
         fun get(): CemuEngine =
             instance ?: CemuEngine().also { instance = it }
-
-        // ---------- ★ v13: 驱动指纹化着色器缓存失效（换驱动闪退根治） ----------
-        // 背景：Vulkan 管线缓存（pipeline cache）与驱动版本强绑定。安装/切换
-        //   驱动后，核心在“加载着色器”阶段反序列化旧驱动写下的管线缓存 →
-        //   驱动内崩溃（SIGSEGV，Java 层无法捕获，用户所见即“装了驱动一进
-        //   游戏加载着色器就闪退”）。上游各模拟器同款做法：驱动指纹变化时
-        //   丢弃驱动相关缓存，保留驱动无关的 transferable（反编译着色器源）
-        //   供后台重编 —— 首帧变慢但不再闪退。
-        private const val DRIVER_FINGERPRINT_FILE = "cemu_driver_fingerprint.txt"
-
-        /** 指纹标记文件（<filesDir>/cemu_driver_fingerprint.txt，记录上次启动生效的驱动）。 */
-        fun driverFingerprintFile(ctx: Context): File =
-            File(ctx.filesDir, DRIVER_FINGERPRINT_FILE)
-
-        /**
-         * 清除驱动相关的着色器缓存（管线/precompiled 等），保留 transferable 整枝。
-         * 覆盖 <filesDir>/cemu/shaderCache（loadRom 里 userDataPath == cachePath
-         * == <filesDir>/cemu）与 <cacheDir>/shaderCache（保险位）。返回删除条目数。
-         */
-        fun wipeShaderCaches(ctx: Context): Int {
-            var removed = 0
-            val roots = listOf(
-                File(File(ctx.filesDir, "cemu"), "shaderCache"),
-                File(ctx.cacheDir, "shaderCache")
-            )
-            for (root in roots) {
-                if (!root.exists()) continue
-                try {
-                    root.walkBottomUp().forEach { f ->
-                        if (f == root) return@forEach
-                        if (f.relativeTo(root).path.contains("transferable", ignoreCase = true)) {
-                            return@forEach
-                        }
-                        if (f.delete()) removed++
-                    }
-                } catch (t: Throwable) {
-                    android.util.Log.w("CemuEngine", "wipe shader cache partial: ${t.message}")
-                }
-            }
-            return removed
-        }
-
-        /**
-         * 驱动指纹校验：指纹（customDriverPath，空 = 系统驱动）与上次启动记录
-         * 不一致（含首次运行无记录）→ 清驱动相关缓存 + 写入新记录。
-         * 返回清除条目数（0 = 无需清理）。任何异常都不抛出（启动路径防御）。
-         */
-        fun invalidateShaderCachesForDriver(ctx: Context, fingerprint: String): Int {
-            try {
-                val marker = driverFingerprintFile(ctx)
-                val fp = fingerprint.trim()
-                val prev = if (marker.exists()) marker.readText().trim() else null
-                if (prev == fp) return 0
-                val removed = wipeShaderCaches(ctx)
-                marker.writeText(fp)
-                android.util.Log.i(
-                    "CemuEngine",
-                    "driver fingerprint '$prev' -> '$fp': wiped $removed cache entries"
-                )
-                return removed
-            } catch (t: Throwable) {
-                android.util.Log.w("CemuEngine", "invalidateShaderCachesForDriver failed", t)
-                return 0
-            }
-        }
-
-        // ---------- ★ v14: 驱动崩溃安全模式（标记文件 = 崩溃待定/安全模式开关） ----------
-        // 语义：<filesDir>/cemu_driver_crash_pending.txt 存在 = “上次带自定义驱动
-        //   启动疑似崩溃，本次启动回退系统驱动”。带自定义驱动启动前写入；渲染器
-        //   存活满 [DRIVER_CRASH_SURVIVE_MS] 后自动删除；进程在窗口内死亡 → 标记
-        //   存活 → 下次启动 [startBootLocked] 检测到即回退系统驱动 + Toast。
-        //   正常退出（unloadLocked）取消自动清除并直接删除（防误判）。设置面板
-        //   提供手动进入/退出安全模式入口（CoreSettingsPanel）。
-        private const val DRIVER_CRASH_PENDING_FILE = "cemu_driver_crash_pending.txt"
-
-        /** 崩溃窗口：渲染器初始化后存活满此时长即视为“没崩溃”（清标记）。 */
-        private const val DRIVER_CRASH_SURVIVE_MS = 15000L
-
-        /** 崩溃待定/安全模式标记文件（存在 = 下次启动回退系统驱动）。 */
-        fun driverCrashPendingFile(ctx: Context): File =
-            File(ctx.filesDir, DRIVER_CRASH_PENDING_FILE)
-
-        /** 是否处于驱动安全模式（上次带自定义驱动启动疑似崩溃）。 */
-        fun isDriverCrashSafeMode(ctx: Context): Boolean = try {
-            driverCrashPendingFile(ctx).exists()
-        } catch (_: Throwable) { false }
-
-        /** 写入崩溃待定标记（带自定义驱动启动前）。 */
-        fun setDriverCrashMarker(ctx: Context) {
-            try {
-                driverCrashPendingFile(ctx).writeText("pending")
-            } catch (t: Throwable) {
-                android.util.Log.w("CemuEngine", "setDriverCrashMarker failed", t)
-            }
-        }
-
-        /** 清除崩溃待定标记（存活满窗口 / 正常退出 / 手动退出安全模式）。 */
-        fun clearDriverCrashMarker(ctx: Context) {
-            try {
-                val f = driverCrashPendingFile(ctx)
-                if (f.exists()) f.delete()
-            } catch (t: Throwable) {
-                android.util.Log.w("CemuEngine", "clearDriverCrashMarker failed", t)
-            }
-        }
-
-        /** ELF64 PT_GNU_STACK 段类型（GNU 扩展：栈可执行性标记）。 */
-        private const val PT_GNU_STACK = 0x6474E551L
-
-        /** ELF 段标志：可执行。 */
-        private const val PF_X = 0x1
-
-        /**
-         * ★ v14: 驱动 ELF execstack 修补 —— 扫 custom_vulkan.so（驱动目录与
-         * <filesDir> 双候选）的 ELF64 程序头，把 PT_GNU_STACK 的 PF_X 位清掉。
-         *   背景：部分 Turnip/Mesa 驱动构建带“可执行栈”标记，Android 10+ SELinux
-         *   拒绝 execstack（用户日志 avc: denied { execstack }）—— 加载器降级为
-         *   不可执行栈，驱动内任何依赖栈执行的路径（JIT thunk 等）会变成着色器
-         *   阶段的隐性崩溃源。直接把标记修成 RW，行为与内核实际授权一致。
-         *   幂等（已是 RW 不再写）；任何异常不抛出（启动路径防御）。
-         *   返回 true = 至少修补了一个文件。
-         */
-        fun patchDriverElfExecStack(ctx: Context?, driverPath: String): Boolean {
-            var patched = false
-            val dir = File(driverPath)
-            val candidates = mutableListOf<File>()
-            if (driverPath.endsWith(".so")) {
-                candidates.add(dir)
-            } else {
-                candidates.add(File(dir, "custom_vulkan.so"))
-            }
-            if (ctx != null) candidates.add(File(ctx.filesDir, "custom_vulkan.so"))
-            for (cand in candidates.distinct()) {
-                try {
-                    if (!cand.isFile) continue
-                    if (patchElfGnuStackNoExec(cand)) patched = true
-                } catch (t: Throwable) {
-                    android.util.Log.w("CemuEngine", "execstack patch failed: ${cand.path}", t)
-                }
-            }
-            return patched
-        }
-
-        /** 单文件 ELF64 PT_GNU_STACK 去 PF_X（返回 true = 已改写）。 */
-        private fun patchElfGnuStackNoExec(so: File): Boolean {
-            java.io.RandomAccessFile(so, "rw").use { raf ->
-                val hdr = ByteArray(64)
-                raf.readFully(hdr)
-                if (hdr[0].toInt() != 0x7F || hdr[1].toInt() != 0x45 ||
-                    hdr[2].toInt() != 0x4C || hdr[3].toInt() != 0x46
-                ) return false
-                if (hdr[4].toInt() != 2) return false // 仅 ELFCLASS64（Android arm64 驱动必然是）
-                fun u16(off: Int): Int =
-                    (hdr[off].toInt() and 0xFF) or ((hdr[off + 1].toInt() and 0xFF) shl 8)
-                fun u64(off: Int): Long {
-                    var v = 0L
-                    for (i in 7 downTo 0) v = (v shl 8) or (hdr[off + i].toLong() and 0xFF)
-                    return v
-                }
-                val phoff = u64(0x20)
-                val phentsize = u16(0x36)
-                val phnum = u16(0x38)
-                if (phoff <= 0L || phentsize < 0x38 || phnum <= 0 || phnum > 512) return false
-                var patchedAny = false
-                val ph = ByteArray(phentsize)
-                for (i in 0 until phnum) {
-                    val base = phoff + i.toLong() * phentsize
-                    raf.seek(base)
-                    raf.readFully(ph)
-                    val pType = (ph[0].toLong() and 0xFF) or ((ph[1].toLong() and 0xFF) shl 8) or
-                        ((ph[2].toLong() and 0xFF) shl 16) or ((ph[3].toLong() and 0xFF) shl 24)
-                    if (pType != PT_GNU_STACK) continue
-                    val flags = (ph[4].toInt() and 0xFF) or ((ph[5].toInt() and 0xFF) shl 8) or
-                        ((ph[6].toInt() and 0xFF) shl 16) or ((ph[7].toInt() and 0xFF) shl 24)
-                    if (flags and PF_X == 0) continue
-                    val nf = flags and PF_X.inv()
-                    ph[4] = (nf and 0xFF).toByte()
-                    ph[5] = ((nf shr 8) and 0xFF).toByte()
-                    ph[6] = ((nf shr 16) and 0xFF).toByte()
-                    ph[7] = ((nf shr 24) and 0xFF).toByte()
-                    raf.seek(base)
-                    raf.write(ph)
-                    patchedAny = true
-                }
-                return patchedAny
-            }
-        }
     }
 }
 

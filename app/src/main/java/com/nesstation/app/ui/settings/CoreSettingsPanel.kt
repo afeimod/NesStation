@@ -2857,8 +2857,6 @@ fun CemuDriverSection(
     // 当前选中：核心 settings.xml 里的值优先（selectDriver 即时写入），
     // 核心不可用时回落 PadLayout 记录（cwDriverPath，仅 UI 展示）
     var selectedPath by remember { mutableStateOf<String?>(null) }
-    // ★ v14: 驱动崩溃安全模式开关镜像（标记文件存在 = 下次启动回退系统驱动）
-    var safeMode by remember { mutableStateOf(false) }
 
     // 初始化：核心可用性 + 驱动列表 + 当前选中（后台线程，避免 IO 卡 UI）；
     // refreshKey 变化（安装/删除后）重新扫描
@@ -2872,7 +2870,6 @@ fun CemuDriverSection(
         driverSupported = com.nesstation.app.core.storage.CemuDriverStore.supportsLoadingCustomDriver()
         selectedPath = com.nesstation.app.core.storage.CemuDriverStore.getCurrentDriverPath()
             ?: padLayout.cwDriverPath.ifBlank { null }
-        safeMode = com.nesstation.app.core.engine.CemuEngine.isDriverCrashSafeMode(ctx)
     }
 
     val installLauncher = rememberLauncherForActivityResult(
@@ -2980,50 +2977,6 @@ fun CemuDriverSection(
                 dark = dark
             ) {
                 installLauncher.launch(arrayOf("application/zip"))
-            }
-
-            // ★ v13: 手动清除着色器缓存 —— 换驱动后“加载着色器闪退”的自救入口
-            //   （启动时自动指纹校验之外的手动兜底）：丢弃旧驱动的 Vulkan 管线
-            //   缓存，保留驱动无关的 transferable 通用缓存，下次进游戏自动重编。
-            TextButtonRow(
-                label = "清除着色器缓存（驱动冲突修复）",
-                sub = "换驱动后进游戏加载着色器闪退时点这里；只清驱动相关缓存，通用缓存保留",
-                enabled = !installing,
-                dark = dark
-            ) {
-                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
-                    val removed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        com.nesstation.app.core.engine.CemuEngine.wipeShaderCaches(ctx)
-                    }
-                    Toast.makeText(
-                        ctx,
-                        if (removed > 0) "已清除 $removed 项驱动相关着色器缓存（通用缓存已保留）"
-                        else "没有可清除的着色器缓存",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-
-            // ★ v14: 驱动崩溃安全模式手动开关 —— 自动防线（启动期崩溃检测）之外
-            //   的用户自控入口：进 = 强制下次启动用系统驱动；退 = 恢复自定义驱动。
-            //   （自动触发后这里也会显示“已进入”，点退出即可重新尝试自定义驱动。）
-            TextButtonRow(
-                label = if (safeMode) "退出安全模式（重新启用自定义驱动）"
-                        else "进入安全模式（禁用自定义驱动）",
-                sub = if (safeMode) "上次使用自定义驱动时疑似崩溃已自动禁用；点此恢复，下次启动重新尝试"
-                      else "下次启动起强制使用系统 Vulkan 驱动；自定义驱动反复崩溃时使用",
-                enabled = !installing,
-                dark = dark
-            ) {
-                if (safeMode) {
-                    com.nesstation.app.core.engine.CemuEngine.clearDriverCrashMarker(ctx)
-                    safeMode = false
-                    Toast.makeText(ctx, "已退出安全模式：下次启动将重新尝试自定义驱动", Toast.LENGTH_LONG).show()
-                } else {
-                    com.nesstation.app.core.engine.CemuEngine.setDriverCrashMarker(ctx)
-                    safeMode = true
-                    Toast.makeText(ctx, "已进入安全模式：下次启动起用系统驱动，自定义驱动不再加载", Toast.LENGTH_LONG).show()
-                }
             }
         }
     }

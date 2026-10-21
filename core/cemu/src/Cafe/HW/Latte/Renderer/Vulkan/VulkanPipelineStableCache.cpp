@@ -1,3 +1,23 @@
+// ★★★ NesStation v16 —— 本文件为上游 afeimod/Cemu-AZ（SSimco Android 移植）
+//   VulkanPipelineStableCache.cpp 的覆盖件：除下方 UpdateLoading() 内的
+//   Android 启动期预编译门控外，其余代码与上游逐字节一致（上游与
+//   cemu-project/Cemu main 完全一致，已 diff 验证）。
+//
+//   修复背景（上游已知问题 cemu-project/Cemu#396 同类）：boot 阶段
+//   "Loading cached pipelines... x/y" 会把 transferable/{titleId}_vkpipeline.bin
+//   里的全量缓存管线逐条反序列化并喂给当前驱动的 vkCreateGraphicsPipelines
+//   （最多 8 线程并发）。管线条目跨会话只增不减，驱动内部缓存结构随之增长
+//   （实测 1147 条加载至 82% 时进程 RSS 449->908MB），超过移动设备承受
+//   阈值后在驱动内 SIGSEGV —— 桌面端同样存在（约 4180 条阈值），上游社区
+//   的既有 workaround 即绕过该阶段；PR #1211 曾提议同款禁用。
+//
+//   Android 门控（仅 BOOST_PLAT_ANDROID 生效）：启动期不再批量重编译缓存
+//   管线 —— 管线改由运行期首次绘制时按上游 async_compile 语义创建，
+//   跨启动的快速重建由驱动级 VkPipelineCache（shaderCache/driver/vk，
+//   pipelineCacheUUID 由驱动校验，异驱动数据自动拒绝）提供。transferable
+//   文件保持打开，运行期新管线照常写入（FileCache 按内容哈希覆盖同条目，
+//   不会膨胀）；不删除任何缓存（上游从不删除缓存）。
+
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineCompiler.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanPipelineStableCache.h"
@@ -75,6 +95,16 @@ uint32 VulkanPipelineStableCache::BeginLoading(uint64 cacheTitleId)
 
 bool VulkanPipelineStableCache::UpdateLoading(uint32& pipelinesLoadedTotal, uint32& pipelinesMissingShaders)
 {
+#if BOOST_PLAT_ANDROID
+	// ★ NesStation v16: Android 不做启动期批量管线预编译（上游 #396 同类
+	//   加载阶段闪退的根治点）。立即返回完成：进度循环不渲染任何帧，
+	//   EndLoading() 随后照常关闭编译线程，s_cache 保持打开供运行期
+	//   AddFileAsync 写入新管线。管线在首次绘制时按上游 async_compile
+	//   语义创建（驱动级 VkPipelineCache 提供跨启动快速命中）。
+	pipelinesLoadedTotal = g_vkCacheState.pipelinesQueued;
+	pipelinesMissingShaders = 0;
+	return false;
+#else
 	pipelinesLoadedTotal = g_vkCacheState.pipelinesLoaded;
 	pipelinesMissingShaders = 0;
 	while (g_vkCacheState.pipelineLoadIndex <= g_vkCacheState.pipelineMaxFileIndex)
@@ -103,6 +133,7 @@ bool VulkanPipelineStableCache::UpdateLoading(uint32& pipelinesLoadedTotal, uint
 		return true; // pipelines still compiling
 	}
 	return false; // done
+#endif // BOOST_PLAT_ANDROID
 }
 
 void VulkanPipelineStableCache::EndLoading()

@@ -30,6 +30,12 @@ import android.widget.Toast
  * - 菜单：横屏 5 列 / 竖屏 4 列紧凑网格（56dp 单元 + 26dp 徽章 + 9sp 标签），
  *   彻底去掉深色容器背景与单元格底色 —— 只留彩色徽章 + 文字 + 涟漪，
  *   透明 PopupWindow 悬浮在页面上。
+ * ★ v15 可见性修复（用户反馈："悬浮菜单看不见了，颜色弄好点"）：
+ * v14 全透明悬浮在浅色/噪点网页上被淹没（徽章底仅 26% alpha、标签浅灰蓝
+ * DDE3EE）。本次：尺寸不动（38dp 球 / 56dp 单元 / 26dp 徽章 / 9sp），每个
+ * 单元自带一片小深色圆角芯片托底（createCellChipBg，90% 深蓝黑 —— 单元
+ * 级小芯片而非整块面板背景，兼顾"无大背景"与"看得清"）；徽章实色化
+ * （26% -> 95% alpha）+ 白描边；字形/标签纯白 + 阴影，任何页面底色都清晰。
  * 拖动/边缘停靠/回调接口与 v12 完全兼容，宿主（WebGameScreen）零改动。
  */
 class FloatingMenuView @JvmOverloads constructor(
@@ -231,7 +237,9 @@ class FloatingMenuView @JvmOverloads constructor(
                 setPadding(dp(2), dp(4), dp(2), dp(4))
                 isClickable = true
                 isFocusable = true
-                // ★ v14: 单元格无底色，涟漪保留点击反馈
+                // ★ v15: 单元级小深色芯片托底（非整块面板背景）—— 保证任意
+                //   页面底色（白底/浅色/游戏画面）上菜单都清晰可见
+                background = createCellChipBg()
                 rippleForeground(this)
                 layoutParams = LinearLayout.LayoutParams(cell, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     setMargins(dp(1), 0, dp(1), 0)
@@ -245,15 +253,19 @@ class FloatingMenuView @JvmOverloads constructor(
                     )
                     gravity = Gravity.CENTER
                     background = createBadgeBg(accent)
+                    // ★ v15: 字形阴影（浅色页面上白字也有轮廓）
+                    setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(), 0xCC000000.toInt())
                     layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply {
                         bottomMargin = dp(3)
                     }
                 })
                 addView(TextView(context).apply {
                     text = item.title
-                    setTextColor(0xFFDDE3EE.toInt())
+                    // ★ v15: 浅灰蓝 DDE3EE 在白底页面上几乎不可见 → 纯白 + 阴影
+                    setTextColor(Color.WHITE)
                     textSize = 9f
                     gravity = Gravity.CENTER
+                    setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(), 0xCC000000.toInt())
                 })
                 setOnClickListener {
                     item.action()
@@ -302,19 +314,31 @@ class FloatingMenuView @JvmOverloads constructor(
 
     // ============================ 绘制件（零资源依赖） ============================
 
-    /** 悬浮球底：正圆 + 紫罗兰渐变 + 半透明细描边 */
+    /** 悬浮球底：正圆 + 紫罗兰渐变 + 半透明细描边（★ v15 描边 25%→50% 白，浅色页面上轮廓更清） */
     private fun createBallBg() = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         colors = intArrayOf(0xFF9C8BFF.toInt(), 0xFF6C5CE7.toInt())
         orientation = GradientDrawable.Orientation.TL_BR
-        setStroke(dp(1), 0x40FFFFFF)
+        setStroke(dp(1), 0x80FFFFFF.toInt())
     }
 
-    /** 功能徽章底：强调色 26% 透明度圆底 */
+    /** 功能徽章底：★ v15 强调色实底（26%→95% alpha）+ 白描边（任意页面底色都清晰） */
     private fun createBadgeBg(accent: Int) = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
-        setColor((accent and 0x00FFFFFF) or 0x42000000)
-        setStroke(dp(1), (accent and 0x00FFFFFF) or 0x66000000)
+        setColor((accent and 0x00FFFFFF) or 0xF2000000.toInt())
+        setStroke(dp(1), 0x99FFFFFF.toInt())
+    }
+
+    /**
+     * ★ v15: 菜单单元小芯片托底 —— 深蓝黑 90% 圆角。单元级小卡片而非整块
+     * 面板背景（用户"不要背景"指大块容器底），既保持紧凑轻盈，又保证菜单
+     * 在白底网页/浅色页面/游戏画面等任意底色上清晰可见。
+     */
+    private fun createCellChipBg() = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE
+        cornerRadius = dp(14).toFloat()
+        setColor(0xE6151721.toInt())
+        setStroke(dp(1), 0x2EFFFFFF)
     }
 
     /** 自绘"汉堡"三横线图标（dp 适配 intrinsic，白色圆头短条 —— 比系统图标干净） */
