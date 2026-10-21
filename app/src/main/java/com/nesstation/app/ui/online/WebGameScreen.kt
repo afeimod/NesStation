@@ -44,6 +44,9 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+// ★ v11.1 热修：v11 新增工具栏/收藏夹 UI 用了 Modifier.size()（21 处）但漏了
+//   本导入 —— CI "Unresolved reference: size" ×21（其余 7 个 v11 文件无此问题）。
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.clip
