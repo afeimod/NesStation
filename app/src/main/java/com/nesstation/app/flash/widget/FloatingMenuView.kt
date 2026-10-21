@@ -146,6 +146,14 @@ class FloatingMenuView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * ★ v11: 外部入口（浏览器工具栏☰按钮）—— 主页等 Compose 覆盖层会盖住
+     * 本触发器的场景下，工具栏菜单按钮仍可打开完整菜单。
+     */
+    fun openMenu() {
+        if (!isMenuOpen) showMenu()
+    }
+
     private fun showMenu() {
         val isLandscape = resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE

@@ -806,26 +806,22 @@ open class GameWebViewClient(
     }
 
     /**
+     * viewport 兜底注入脚本（onPageStarted / onPageCommitVisible / onPageFinished）：
      * ★ v10 重写：尊重页面自己的 viewport —— 不再对全部页面强制
      * width=device-width（旧实现会把 PC 版页面压成手机宽度、破坏桌面排版，
-     * 也让双指缩放失去“全景基准”）。auto 模式只解除 no-zoom 钳制
-     * （PINCH_UNLOCK_SCRIPT）；manual 模式额外注入 initial-scale 对准用户
-     * 手动缩放（与 WebView.setInitialScale 同基准）。
+     * 也让双指缩放失去“全景基准”），只解除 no-zoom 钳制（PINCH_UNLOCK_SCRIPT）。
+     * ★ v11：manual 模式的 initial-scale 强改撤销（与 WebPinchLayout 统一
+     *   缩放系统互踩，见方法体注释）。
      */
     private fun buildViewportScript(): String {
-        return if (PrefsManager.pageZoomMode == "manual") {
-            val scale = PrefsManager.pageZoomManual / 100.0
-            GameWebView.PINCH_UNLOCK_SCRIPT + """
-            ;(function(){
-              var meta = document.querySelector('meta[name="viewport"]');
-              if (!meta) { meta = document.createElement('meta'); meta.name='viewport'; document.head.appendChild(meta); }
-              // minimum-scale=0.01 允许无限缩小，maximum-scale=10.0 是 WebView 允许的最大值
-              meta.content = 'width=device-width, initial-scale=' + $scale + ', minimum-scale=0.01, maximum-scale=10.0, user-scalable=yes';
-            })();
-            """.trimIndent()
-        } else {
-            GameWebView.PINCH_UNLOCK_SCRIPT
-        }
+        // ★ v11: 手动缩放的 meta 强改（width=device-width + initial-scale=百分比）
+        //   已整体撤销 —— 该通道与 PINCH_UNLOCK/页面自身 meta/WebPinchLayout 接管域
+        //   三方互相覆盖打架（用户实测"百分比设置没作用"的根因之一），且给 PC 页
+        //   强塞 width=device-width 会破坏桌面排版。
+        //   真实缩放唯一通道 = WebPinchLayout（viewport meta 动态注入，即时生效）；
+        //   此处仅保留 PINCH_UNLOCK（原生捏合解锁，Document Start 特性不可用时的
+        //   onPageStarted 兜底注入）。
+        return GameWebView.PINCH_UNLOCK_SCRIPT
     }
 
     companion object {

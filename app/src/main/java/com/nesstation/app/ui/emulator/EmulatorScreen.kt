@@ -2244,6 +2244,10 @@ fun EmulatorScreen(
                    padLayout.cwDrawdoneFast, padLayout.cwAdpf, padLayout.cwFrameGen,
                    padLayout.cwFrameGenMultiplier, padLayout.cwFrameGenFlowScale,
                    padLayout.cwFrameGenQuality, padLayout.cwFrameGenDllPath,
+                   // ★ v11: 线程时间片（thread quantum）纳入热应用监听 ——
+                   //   游戏内独立设置里改动即时下发（调度器每时间片读取覆盖值，
+                   //   热生效无需重启；此前仅主设置页可改且改动不监听）。
+                   padLayout.cwThreadQuantum,
                    // Switch（Eden）ed* 全表 —— 与 cw* 同理：游戏内（含主面板）
                    //   改动经 applyCoreOptions 重放 → EdenEngine.setCoreOption
                    //   → NativeConfig 热生效（cpuBackend/docked 等重启游戏项
@@ -16223,6 +16227,21 @@ private fun SettingsPanel(
                            "0" to "单核解释器 (最兼容)"),
                     padLayout.cwCpuMode
                 ) { onLayoutChange(padLayout.copy {cwCpuMode = it}) }
+                DropdownSetting("线程时间片",
+                    // ★★★ R15/v11: 上游 Cemu GameProfile::threadQuantum 同款 ——
+                    //   每个调度时间片授予的 PPC 周期数（上游默认 45000）。值越大
+                    //   线程切换越少 = 提速关键（移动端帧率提升明显）；过小调度
+                    //   频繁（个别老游戏可用 20000 保兼容）。运行中热生效，无需
+                    //   重启游戏；选「跟随默认」则尊重游戏自带档案。
+                    //   v11 补进游戏内独立设置（此前只在主设置页，用户找不到）。
+                    listOf("0" to "跟随默认 (游戏档案·45000)",
+                           "20000" to "20000 (兼容·时间片短)",
+                           "45000" to "45000 (锁定默认值)",
+                           "60000" to "60000 (提速·减少切换)",
+                           "80000" to "80000 (提速↑)",
+                           "100000" to "100000 (提速↑↑)"),
+                    padLayout.cwThreadQuantum
+                ) { onLayoutChange(padLayout.copy {cwThreadQuantum = it}) }
                 DropdownSetting("GX2DrawDone 模式",
                     // ★★★ R14: 三档模式（反汇编参考「风之杖HD 重编译版」
                     //   set_drawdone_mode 的 0/1/2 语义移植）：

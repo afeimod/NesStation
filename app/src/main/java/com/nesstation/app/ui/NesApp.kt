@@ -52,8 +52,8 @@ import com.nesstation.app.ui.about.AboutScreen
 import com.nesstation.app.ui.battle.BattleMatchArgs
 import com.nesstation.app.ui.battle.BattleMatchScreen
 import com.nesstation.app.ui.battle.BattleScreen
-import com.nesstation.app.ui.online.OnlineGamesScreen
 import com.nesstation.app.ui.online.WebGameScreen
+import com.nesstation.app.ui.online.BROWSER_HOME_URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -478,15 +478,13 @@ private fun PhoneNavHost(
             )
         }
         composable(Routes.ONLINE_GAMES) {
-            OnlineGamesScreen(
-                onBack = { nav.popBackStack() },
-                onHome = {
-                    // 返回主页：弹出到 HOME 路由
-                    nav.popBackStack(Routes.HOME, inclusive = false)
-                },
-                onOpenGame = { game ->
-                    nav.navigate(Routes.webGame(game.url, game.uaMode))
-                }
+            // ★ v11: 在线游戏入口 = 真实浏览器（收藏夹主页起步）——
+            //   旧「站点列表」（OnlineGamesScreen）退役：默认站点已种子迁移进
+            //   收藏夹，增/删/改名/图标在浏览器主页长按管理。
+            WebGameScreen(
+                url = BROWSER_HOME_URL,
+                uaMode = "desktop",
+                onExit = { nav.popBackStack() }
             )
         }
         composable(
@@ -704,12 +702,11 @@ private fun TvNavHost(
             )
         }
         composable(Routes.ONLINE_GAMES) {
-            OnlineGamesScreen(
-                onBack = { nav.popBackStack() },
-                onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
-                onOpenGame = { game ->
-                    nav.navigate(Routes.webGame(game.url, game.uaMode))
-                }
+            // ★ v11: 在线游戏入口 = 真实浏览器（TV 布局同款，收藏夹主页起步）
+            WebGameScreen(
+                url = BROWSER_HOME_URL,
+                uaMode = "desktop",
+                onExit = { nav.popBackStack() }
             )
         }
         composable(

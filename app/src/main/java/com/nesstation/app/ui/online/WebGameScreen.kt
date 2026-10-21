@@ -21,6 +21,36 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.items
+// ★ v11 浏览器化：工具栏/收藏夹主页所需
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ArrowForward
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.ImeAction
+import com.nesstation.app.flash.webview.WebPinchLayout
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,12 +101,48 @@ private val PrimaryBackground
         else Color(0xFF0F1115)
 
 /**
+ * ★ v11: 浏览器主页伪协议 —— 在线游戏入口直通真实浏览器，
+ * 主页 = 收藏夹网格（默认种子：原内置 12 站点 + 用户旧自添加站点）。
+ * 主页的 WebView 载体是 about:blank，由 BrowserHomeOverlay 全覆盖。
+ */
+const val BROWSER_HOME_URL = "nesstation://home"
+
+/** 主页（about:blank）判定 */
+private const val BLANK_URL = "about:blank"
+
+/**
+ * ★ v11: 地址栏输入规整（参照 AnWind normalizeUrl）：
+ * - 带协议前缀 → 原样；
+ * - 无空格且含点（域名启发）→ 补 https://；
+ * - 其余 → 百度搜索（关键词用户主要呈中文，站点搜索覆盖面最广）。
+ */
+private fun normalizeUrl(input: String): String {
+    val t = input.trim()
+    if (t.isEmpty()) return ""
+    val lower = t.lowercase()
+    if (lower.startsWith("http://") || lower.startsWith("https://") ||
+        lower.startsWith("file://") || lower.startsWith("content://") ||
+        lower.startsWith("about:")) return t
+    val isDomain = !t.contains(' ') && (t.contains('.') || lower.startsWith("localhost"))
+    return if (isDomain) "https://$t"
+    else "https://www.baidu.com/s?wd=" + java.net.URLEncoder.encode(t, "UTF-8")
+}
+
+/**
  * 在线网页游戏/Flash 游戏的 Compose 入口。
  *
  * 1:1 移植自 3.3-fix2 GameActivity：把 3.3 的 setupWebView / setupGamepad / setupFloatingMenu
  * 全部用 AndroidView 嵌入到 Compose 里。
  *
- * @param url   入口 URL（页面 URL 或 .swf 直链）
+ * ★ v11 起本屏同时是「真实浏览器」：
+ * - 顶部常驻浏览器工具栏（后退/前进/刷新停止/主页/地址栏/收藏星标）；
+ * - 入口传 [BROWSER_HOME_URL] 时落在浏览器主页 = 收藏夹网格
+ *   （默认种子：原内置 12 站点 + 用户旧自添加站点，支持增/删/改名/图标）；
+ * - WebView 由 WebPinchLayout 仲裁容器承载：双指缩放强制可用且连续
+ *   （页面 meta/preventDefault 禁缩放时容器接管）；
+ * - 返回键优先级：网页全屏 → 弹窗 → 退出工具栏全屏 → 网页后退 → 回主页 → 退出。
+ *
+ * @param url   入口 URL（页面 URL / .swf 直链 / [BROWSER_HOME_URL]）
  * @param uaMode  入口 UA 模式：desktop / mobile / ie_compat
  * @param onExit  退出回调
  */
@@ -136,6 +202,20 @@ fun WebGameScreen(
     // 引擎选择对话框 / 提取 SWF 对话框
     var pendingSwfAction by remember { mutableStateOf<String?>(null) }
 
+    // ★ v11 浏览器化：主页/地址栏/页面标题/收藏夹/工具栏状态
+    var homeVisible by remember { mutableStateOf(url == BROWSER_HOME_URL) }
+    var addressText by remember { mutableStateOf("") }
+    var addressBarFocused by remember { mutableStateOf(false) }
+    var pageTitle by remember { mutableStateOf("") }
+    var favorites by remember { mutableStateOf(WebFavoritesStore.loadAll(context)) }
+    var showAddFavoriteDialog by remember { mutableStateOf(false) }
+    var menuFavGame by remember { mutableStateOf<WebGameEntry?>(null) }
+    var pendingFavIcon by remember { mutableStateOf<WebGameEntry?>(null) }
+    var pendingFavRename by remember { mutableStateOf<WebGameEntry?>(null) }
+    // 缩放仲裁容器（主窗）与当前缩放值
+    val pinchLayoutRef = remember { mutableStateOf<WebPinchLayout?>(null) }
+    val pinchZoom = remember { mutableStateOf(1f) }
+
     // ---------- File chooser ----------
     val filePathCallback = remember { mutableStateOf<ValueCallback<Array<android.net.Uri>>?>(null) }
     val activityResultLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -146,34 +226,38 @@ fun WebGameScreen(
         filePathCallback.value = null
     }
 
+    // ★ v11: 收藏夹自定义图标选择器（主页长按收藏 → 自定义图标）
+    val favIconPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        val fav = pendingFavIcon
+        pendingFavIcon = null
+        val uri = uris.firstOrNull()
+        if (uri == null || fav == null) return@rememberLauncherForActivityResult
+        try {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) { }
+            val iconsDir = java.io.File(context.filesDir, "icons").apply { mkdirs() }
+            val dest = java.io.File(iconsDir,
+                "fav_${System.currentTimeMillis()}_${uri.lastPathSegment?.substringAfterLast('/') ?: "icon"}.png")
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                dest.outputStream().use { output -> input.copyTo(output) }
+            } ?: throw IllegalStateException("无法读取所选图片")
+            WebFavoritesStore.setCustomIcon(context, fav.url, dest.absolutePath)
+            favorites = WebFavoritesStore.loadAll(context)
+            Toast.makeText(context, "已设置收藏图标：${fav.customTitle ?: fav.title}", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            Toast.makeText(context, "图标设置失败", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // ---------- Activity (for fullscreen / orientation) ----------
     val activity = context as? Activity
 
-    // ---------- 物理键盘（实体键盘）透传 ----------
-    val keyEventHandler: (KeyEvent) -> Boolean = { event ->
-        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-            // 系统 BACK 键：网页能后退就后退，不能后退才退出。
-            // 之前是无条件 onExit() —— 用户按返回键直接退出游戏，体验差。
-            if (event.action == KeyEvent.ACTION_UP) {
-                val wv = webViewRef.value
-                if (wv != null && wv.canGoBack()) wv.goBack() else onExit()
-            }
-            true
-        } else if (event.keyCode in GameWebView.GAME_KEYS) {
-            val wv = webViewRef.value
-            if (wv != null) {
-                wv.dispatchKeyEvent(event)
-                true
-            } else false
-        } else false
-    }
-    BackHandler(enabled = true, onBack = {
-        // 系统返回键 / 悬浮菜单"返回"共用同一逻辑：
-        // 优先网页后退，无可后退历史时退出。
-        val wv = webViewRef.value
-        if (wv != null && wv.canGoBack()) wv.goBack() else onExit()
-    })
-
+    // ---------- 屏幕方向 / 全屏（★ v11 上移：keyEventHandler/BackHandler 引用须先声明） ----------
     fun applyOrientation(landscape: Boolean) {
         activity?.requestedOrientation = if (landscape)
             ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
@@ -200,11 +284,12 @@ fun WebGameScreen(
         }
     }
 
-    // 切换全屏
+    // 切换全屏（★ v11：工具栏随全屏隐藏；悬浮菜单触发器保持可见 ——
+    // v10 会把菜单触发器一并藏起来，全屏后无路可退。
+    // 视频全屏时触发器隐藏改由 onShowFullscreen 单独驱动。）
     fun toggleFullscreen() {
         isFullscreen = !isFullscreen
         applyFullscreen(isFullscreen)
-        floatingMenuRef.value?.isFullscreen = isFullscreen
     }
 
     fun toggleOrientation() {
@@ -212,6 +297,117 @@ fun WebGameScreen(
         applyOrientation(isLandscape)
         floatingMenuRef.value?.isLandscape = isLandscape
     }
+
+    // ================ ★ v11: 浏览器导航助手（须先于 keyEventHandler/BackHandler 声明） ================
+
+    /** 回浏览器主页（收藏夹网格）。WebView 载体是 about:blank（在后台栈里，
+     *  返回时自然回到它），主页 UI 由 BrowserHomeOverlay 全覆盖。 */
+    fun goHome() {
+        val wv = webViewRef.value ?: return
+        homeVisible = true
+        if (!addressBarFocused) addressText = ""
+        wv.loadUrl(BLANK_URL)
+    }
+
+    /**
+     * 浏览器「后退」语义链：
+     * 1. WebView 有历史 → goBack（返回上一页，用户核心诉求）；
+     * 2. 无历史且当前不在主页 → 回主页（不再“直接退回模拟器主页”）；
+     * 返回 false = 已在主页且无历史（交由调用方决定退出）。
+     */
+    fun browserBack(): Boolean {
+        val wv = webViewRef.value ?: return false
+        if (wv.canGoBack()) {
+            wv.goBack()
+            return true
+        }
+        if (!homeVisible) {
+            goHome()
+            return true
+        }
+        return false
+    }
+
+    /** 打开网址（收藏/地址栏/搜索共用）：同步 UA 模式后加载。 */
+    fun openInBrowser(target: String, ua: String) {
+        val wv = webViewRef.value ?: return
+        if (target.isBlank()) return
+        PrefsManager.sp.edit().putString("ua_mode", ua).apply()
+        when (ua) {
+            "ie_compat" -> wv.useUaMode("ie_compat")
+            "mobile" -> wv.useUaMode("mobile")
+            else -> wv.useDesktopMode(true)
+        }
+        homeVisible = false
+        wv.loadUrl(target)
+    }
+
+    /** 地址栏 Go：输入规整（域名补协议/关键词搜索）后加载。 */
+    fun navigateAddress(input: String) {
+        val target = normalizeUrl(input)
+        if (target.isNotEmpty()) openInBrowser(target, PrefsManager.uaMode)
+    }
+
+    /** 工具栏收藏星标：当前页加入/移出收藏夹（主页无网页可收藏）。 */
+    fun toggleFavorite() {
+        val wv = webViewRef.value ?: return
+        val current = wv.url ?: return
+        if (current.isBlank() || current == BLANK_URL) {
+            Toast.makeText(context, "主页无网页可收藏", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (WebFavoritesStore.isFavorite(context, current)) {
+            WebFavoritesStore.remove(context, current)
+            favorites = WebFavoritesStore.loadAll(context)
+            Toast.makeText(context, "已从收藏夹移除", Toast.LENGTH_SHORT).show()
+        } else {
+            val title = pageTitle.ifBlank { wv.title ?: current }
+            WebFavoritesStore.add(context, title, current, PrefsManager.uaMode)
+            favorites = WebFavoritesStore.loadAll(context)
+            Toast.makeText(context, "已加入收藏夹（主页长按可管理）", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 销毁一个被 WebPinchLayout 承载的 WebView（含容器）：主窗/弹窗/渲染自愈共用。 */
+    fun destroyWebViewHolder(wv: android.webkit.WebView) {
+        val holder = wv.parent as? ViewGroup
+        holder?.removeView(wv)
+        (holder?.parent as? ViewGroup)?.removeView(holder)
+        try { wv.destroy() } catch (_: Exception) {}
+    }
+
+    // ---------- 物理键盘（实体键盘）透传 ----------
+    val keyEventHandler: (KeyEvent) -> Boolean = { event ->
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            // 系统 BACK 键：★ v11 浏览器语义 —— 工具栏全屏先退全屏；
+            // 网页能后退就后退；无历史回主页；已在主页才退出。
+            if (event.action == KeyEvent.ACTION_UP) {
+                if (isFullscreen) {
+                    toggleFullscreen()
+                } else if (!browserBack()) {
+                    onExit()
+                }
+            }
+            true
+        } else if (event.keyCode in GameWebView.GAME_KEYS) {
+            val wv = webViewRef.value
+            if (wv != null) {
+                wv.dispatchKeyEvent(event)
+                true
+            } else false
+        } else false
+    }
+    BackHandler(enabled = true, onBack = {
+        // 系统返回键：★ v11 与物理键同链（全屏 → 网页后退 → 回主页 → 退出）。
+        // 网页全屏视频/window.open 弹窗由后注册的 BackHandler#2 优先处理。
+        if (isFullscreen) {
+            toggleFullscreen()
+        } else if (!browserBack()) {
+            onExit()
+        }
+    })
+
+    // ---------- 屏幕方向 / 全屏：★ v11 已整体上移（见 activity 声明后） ----------
 
     fun toggleGamepad() {
         gamepadVisible = !gamepadVisible
@@ -256,9 +452,13 @@ fun WebGameScreen(
             .putString("page_zoom_mode", mode)
             .putInt("page_zoom_manual", manual)
             .apply()
-        // 直接用 WebSettings.textZoom + setInitialScale(与 viewport meta 无关)
-        webViewRef.value?.applyPageZoom(if (mode == "manual") manual else 100)
-        reload()
+        // ★ v11: 统一缩放通道 —— WebPinchLayout 动态 viewport 注入，
+        //   即时生效、无需 reload，与双指捏合同一坐标系自然衔接。
+        //   （v10 的 setInitialScale+reload 与页面 meta/PINCH_UNLOCK 打架，
+        //    用户实测"百分比设置完全没作用"，已整体废弃。）
+        webViewRef.value?.applyPageZoom(manual)   // 仅清理通道（textZoom/body.zoom 残留）
+        val z = if (mode == "manual") manual.coerceIn(25, 300) / 100f else 1f
+        pinchLayoutRef.value?.setZoomImmediate(z)
     }
 
     fun applyUa(mode: String) {
@@ -369,13 +569,21 @@ fun WebGameScreen(
         customViewCallbackRef.value = null
     }
 
-    /** 关闭并销毁一个弹窗 WebView（window.close / 返回键 / 渲染进程死亡时调用） */
+    /** 关闭并销毁一个弹窗 WebView（window.close / 返回键 / 渲染进程死亡时调用）。
+     *   ★ v11: 弹窗由 WebPinchLayout 承载 → 连容器一起销毁；
+     *   地址栏同步回主窗口当前页（弹窗导航曾把地址栏带去弹窗 URL）。 */
     fun closePopupWindow(window: WebView?) {
         val wv = window ?: return
         if (popupViews.remove(wv)) {
-            (wv.parent as? ViewGroup)?.removeView(wv)
-            try { wv.destroy() } catch (_: Exception) {}
+            destroyWebViewHolder(wv)
             popupCount.value = popupViews.size
+            val mainUrl = webViewRef.value?.url
+            if (!addressBarFocused) {
+                addressText = when {
+                    mainUrl == null || mainUrl == BLANK_URL -> ""
+                    else -> mainUrl
+                }
+            }
         }
     }
 
@@ -402,7 +610,10 @@ fun WebGameScreen(
                 setOnKeyListener { _, _, event -> keyEventHandler(event) }
                 injectDocumentStartScripts()
             }
-            container.addView(popup, FrameLayout.LayoutParams(
+            // ★ v11: 弹窗同样由缩放仲裁容器承载（弹窗内双指缩放与主窗同能力）
+            val popupPinch = WebPinchLayout(container.context)
+            popupPinch.setWebView(popup)
+            container.addView(popupPinch, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             ))
@@ -430,73 +641,110 @@ fun WebGameScreen(
         if (customViewRef.value != null) {
             exitWebFullscreen()
         } else if (popupViews.isNotEmpty()) {
-            val top = popupViews.removeAt(popupViews.size - 1)
-            (top.parent as? ViewGroup)?.removeView(top)
-            try { top.destroy() } catch (_: Exception) {}
+            // ★ v11: 弹窗由 WebPinchLayout 承载 → 连容器一起销毁
+            destroyWebViewHolder(popupViews.removeAt(popupViews.size - 1))
             popupCount.value = popupViews.size
         }
     }
 
-    // Compose 主容器
+    // Compose 主容器（★ v11: Column = 浏览器工具栏 + 内容区；全屏时工具栏隐藏）
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(PrimaryBackground)
     ) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                FrameLayoutGameContainer(ctx).apply {
-                    mainBoxRef.value = this
-                }
-            },
-            update = { _ ->
-                // ★ v10 修复页面随机重载：AndroidView.update 在每次重组都会执行 ——
-                //   原实现每次执行都 loadUrl(url)，导致开关手柄/鼠标、下载浮层出现、
-                //   进度条更新等任何状态变化都把网页整个重载（游戏中误触开关 = 刷页）。
-                //   初始加载由 LaunchedEffect 完成、刷新由 reloadTrigger effect 走
-                //   WebView.reload()，此处必须保持空操作。
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            // ===== 浏览器工具栏（后退/前进/刷新停止/主页/地址栏/收藏星标） =====
+            if (!isFullscreen) {
+                val curUrl = webViewRef.value?.url
+                val favActive = !homeVisible && curUrl != null && curUrl != BLANK_URL &&
+                    favorites.any { it.url == curUrl }
+                BrowserToolbar(
+                    address = addressText,
+                    onAddressChange = { addressText = it },
+                    onAddressFocusChange = { addressBarFocused = it },
+                    onGo = { navigateAddress(addressText) },
+                    onBack = { val wv = webViewRef.value; if (wv?.canGoBack() == true) wv.goBack() },
+                    onForward = { val wv = webViewRef.value; if (wv?.canGoForward() == true) wv.goForward() },
+                    onReload = { reload() },
+                    onStop = { webViewRef.value?.stopLoading() },
+                    onHome = { goHome() },
+                    onFavorite = { toggleFavorite() },
+                    onMenu = { floatingMenuRef.value?.openMenu() },
+                    isFavorite = favActive,
+                    loading = loadProgress.value in 1 until 100
+                )
             }
-        )
 
-        // ★ v10: 页面加载进度条（顶部，加载中显示）—— 原实现 onProgress 回调为空，
-        //   白屏等待时用户毫无反馈
-        if (loadProgress.value in 1 until 100) {
-            LinearProgressIndicator(
-                progress = { loadProgress.value / 100f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter),
-                color = Color(0xFF8A7BFF),
-                trackColor = Color(0x26FFFFFF)
-            )
-        }
+            // ===== 内容区 =====
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        FrameLayoutGameContainer(ctx).apply {
+                            mainBoxRef.value = this
+                        }
+                    },
+                    update = { _ ->
+                        // ★ v10 修复页面随机重载：AndroidView.update 在每次重组都会执行 ——
+                        //   原实现每次执行都 loadUrl(url)，导致开关手柄/鼠标、下载浮层出现、
+                        //   进度条更新等任何状态变化都把网页整个重载（游戏中误触开关 = 刷页）。
+                        //   初始加载由 LaunchedEffect 完成、刷新由 reloadTrigger effect 走
+                        //   WebView.reload()，此处必须保持空操作。
+                    }
+                )
 
-        // Download progress overlay - fixed at top
-        if (isDownloadingActive.value) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xE61A1A2E))
-                    .padding(8.dp)
-                    .align(Alignment.TopCenter)
-            ) {
-                val items = downloadProgress.value
-                val completed = items.count { it.status == DownloadStatus.COMPLETED }
-                val total = items.size
-                val currentPercent = items.filter { it.status == DownloadStatus.DOWNLOADING }.maxByOrNull { it.progress }?.progress ?: 0
-
-                Column {
-                    Text("下载进度: $completed/$total" + if (currentPercent > 0) " (当前: $currentPercent%)" else "", color = Color.White, fontSize = 12.sp)
-                    LinearProgressIndicator(
-                        progress = { if (total > 0) completed.toFloat() / total else 0f },
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        color = Color(0xFFFFC107)
+                // ★ v11: 浏览器主页 = 收藏夹网格（覆盖内容区，about:blank 载体被完全遮住）
+                if (!isFullscreen && homeVisible) {
+                    BrowserHomeOverlay(
+                        favorites = favorites,
+                        onNavigate = { entry -> openInBrowser(entry.url, entry.uaMode) },
+                        onOpenMenu = { entry -> menuFavGame = entry },
+                        onAdd = { showAddFavoriteDialog = true }
                     )
-                    // Show individual file status
-                    items.filter { it.status != DownloadStatus.COMPLETED }.forEach { item ->
-                        Text("${item.title}: ${when (item.status) { DownloadStatus.DOWNLOADING -> "下载中 ${item.progress}%"; DownloadStatus.FAILED -> "失败(重试${item.retryCount})"; DownloadStatus.PENDING -> "等待中"; DownloadStatus.CANCELLED -> "已取消"; else -> "" }}",
-                            color = Color.White, fontSize = 10.sp)
+                }
+
+                // ★ v10: 页面加载进度条（顶部，加载中显示）—— 原实现 onProgress 回调为空，
+                //   白屏等待时用户毫无反馈（v11 移入内容区、主页不显示）
+                if (!homeVisible && loadProgress.value in 1 until 100) {
+                    LinearProgressIndicator(
+                        progress = { loadProgress.value / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter),
+                        color = Color(0xFF8A7BFF),
+                        trackColor = Color(0x26FFFFFF)
+                    )
+                }
+
+                // Download progress overlay - fixed at top
+                if (isDownloadingActive.value) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xE61A1A2E))
+                            .padding(8.dp)
+                            .align(Alignment.TopCenter)
+                    ) {
+                        val items = downloadProgress.value
+                        val completed = items.count { it.status == DownloadStatus.COMPLETED }
+                        val total = items.size
+                        val currentPercent = items.filter { it.status == DownloadStatus.DOWNLOADING }.maxByOrNull { it.progress }?.progress ?: 0
+
+                        Column {
+                            Text("下载进度: $completed/$total" + if (currentPercent > 0) " (当前: $currentPercent%)" else "", color = Color.White, fontSize = 12.sp)
+                            LinearProgressIndicator(
+                                progress = { if (total > 0) completed.toFloat() / total else 0f },
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                                color = Color(0xFFFFC107)
+                            )
+                            // Show individual file status
+                            items.filter { it.status != DownloadStatus.COMPLETED }.forEach { item ->
+                                Text("${item.title}: ${when (item.status) { DownloadStatus.DOWNLOADING -> "下载中 ${item.progress}%"; DownloadStatus.FAILED -> "失败(重试${item.retryCount})"; DownloadStatus.PENDING -> "等待中"; DownloadStatus.CANCELLED -> "已取消"; else -> "" }}",
+                                    color = Color.White, fontSize = 10.sp)
+                            }
+                        }
                     }
                 }
             }
@@ -535,7 +783,10 @@ fun WebGameScreen(
             // 客户端与回调（★ v10: onProgress 接顶部进度条 / 弹窗窗口管理 / 全屏退出统一）
             val chromeCallback = object : GameWebChromeClient.Callback {
                 override fun onProgress(progress: Int) { loadProgress.value = progress }
-                override fun onTitle(title: String?) {}
+                override fun onTitle(title: String?) {
+                    // ★ v11: 页面标题 → 收藏星标默认名
+                    pageTitle = title ?: ""
+                }
                 override fun onConsole(level: String, msg: String, sourceId: String?, line: Int) {}
                 // WebView 全屏：网页调用 requestFullscreen() 时触发。
                 // 把 WebView 内部生成的全屏 view 加到 mainBoxRef 覆盖在 WebView 上层，
@@ -543,6 +794,9 @@ fun WebGameScreen(
                 override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
                     customViewRef.value = view
                     customViewCallbackRef.value = callback
+                    // ★ v11: 视频全屏才藏悬浮菜单触发器（customView 会盖住它）。
+                    //   工具栏全屏（toggleFullscreen）不再藏 —— v10 全屏后无路可退。菜单隐/显由本回调统一驱动：触发器隐藏（customView 盖住），退出还原
+                    floatingMenuRef.value?.isFullscreen = true
                     val parent = mainBoxRef.value
                     if (parent != null) {
                         parent.addView(view, FrameLayout.LayoutParams(
@@ -554,6 +808,8 @@ fun WebGameScreen(
                     }
                 }
                 override fun onHideFullscreen() {
+                    // ★ v11: 视频全屏退出 → 还原悬浮菜单触发器
+                    floatingMenuRef.value?.isFullscreen = false
                     exitWebFullscreen()
                 }
                 override fun onFileChooser(callback: ValueCallback<Array<android.net.Uri>>, accept: String?): Boolean {
@@ -578,8 +834,26 @@ fun WebGameScreen(
             val viewClientCallback = object : GameWebViewClient.Callback {
                 override fun onPageStarted(url: String?) {
                     webViewRef.value?.releaseAllKeys()
+                    // ★ v11: 地址栏同步 + 主页检测 + 缩放域导航重置
+                    //   （焦点内输入时不同步 —— 正在打字不覆盖）
+                    if (url == BLANK_URL) {
+                        homeVisible = true
+                        if (!addressBarFocused) addressText = ""
+                    } else if (!url.isNullOrBlank()) {
+                        homeVisible = false
+                        if (!addressBarFocused) addressText = url
+                    }
+                    pinchLayoutRef.value?.resetForNavigation()
                 }
-                override fun onPageFinished(url: String?) {}
+                override fun onPageFinished(url: String?) {
+                    // ★ v11: 持久化手动缩放基线重放 —— 每页加载完成回到用户
+                    //   设定的百分比（auto 已在 onPageStarted 重置回 100%）
+                    if (PrefsManager.pageZoomMode == "manual") {
+                        pinchLayoutRef.value?.setZoomImmediate(
+                            PrefsManager.pageZoomManual.coerceIn(25, 300) / 100f
+                        )
+                    }
+                }
                 override fun onProgress(progress: Int) {}
                 override fun onError(url: String?, errorCode: Int, description: String?) {
                     if (errorCode == -1) return
@@ -635,6 +909,7 @@ fun WebGameScreen(
                 }
                 // ★ v10: 渲染进程死亡自愈（参照 AnWind renderEpoch）—— 不接管则
                 //   Chromium 杀整个应用进程。主窗口销毁重建自动重载；弹窗直接关闭。
+                // ★ v11: 主窗销毁连带其缩放容器（WebPinchLayout）一起拆除。
                 override fun onRendererGone(deadView: WebView?) {
                     val main = webViewRef.value
                     if (deadView != null && deadView !== main) {
@@ -644,9 +919,9 @@ fun WebGameScreen(
                     val dead = main
                     webViewRef.value = null
                     if (dead != null) {
-                        (dead.parent as? ViewGroup)?.removeView(dead)
-                        try { dead.destroy() } catch (_: Exception) {}
+                        destroyWebViewHolder(dead)
                     }
+                    pinchLayoutRef.value = null
                     renderEpoch.value = renderEpoch.value + 1
                     Toast.makeText(context, "页面渲染进程异常，已自动恢复", Toast.LENGTH_SHORT).show()
                 }
@@ -675,21 +950,41 @@ fun WebGameScreen(
             }
             wv.injectDocumentStartScripts()
 
-            container.addView(wv, android.widget.FrameLayout.LayoutParams(
+            // ★ v11: 双指缩放仲裁容器（WebPinchLayout）承载 WebView ——
+            //   页面禁缩放（meta/preventDefault）时容器接管手势，动态改写
+            //   viewport meta 强制连续缩放（AnWind 已验证方案）。
+            val oldPinch = pinchLayoutRef.value
+            if (oldPinch != null && oldPinch.parent == container) container.removeView(oldPinch)
+            val pinch = WebPinchLayout(container.context).apply {
+                onZoomChanged = { z -> pinchZoom.value = z }
+            }
+            pinchLayoutRef.value = pinch
+            pinch.setWebView(wv)
+            container.addView(pinch, android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             ))
+            // ★ v11: 渲染自愈重建时 pinch 追加在控件之后 —— 把手柄/菜单拉回最上层
+            listOfNotNull(
+                dpadRef.value, actionRef.value, mouseRef.value,
+                systemButtonsRef.value, floatingMenuRef.value
+            ).forEach { it.bringToFront() }
             webViewRef.value = wv
 
-            // 初始加载
+            // 初始加载（★ v11: 浏览器主页入口 = about:blank + 主页收藏夹网格）
+            val isHome = url == BROWSER_HOME_URL
             val isSwf = NavHelper.isSwf(url) || NavHelper.isLocalFile(url)
-            if (isSwf) {
-                val playerUrl = NavHelper.playerUrl(url, base = null, title = null)
-                wv.loadUrl(playerUrl)
-            } else if (url.contains("4399.com")) {
-                wv.loadUrl(url, mapOf("Referer" to "https://www.4399.com/"))
-            } else {
-                wv.loadUrl(url)
+            when {
+                isHome -> {
+                    homeVisible = true
+                    wv.loadUrl(BLANK_URL)
+                }
+                isSwf -> {
+                    val playerUrl = NavHelper.playerUrl(url, base = null, title = null)
+                    wv.loadUrl(playerUrl)
+                }
+                url.contains("4399.com") -> wv.loadUrl(url, mapOf("Referer" to "https://www.4399.com/"))
+                else -> wv.loadUrl(url)
             }
         }
     }
@@ -792,14 +1087,10 @@ fun WebGameScreen(
             override fun onOpenUaMode() { showUaDialog.value = true }
             override fun onRefresh() = reload()
             override fun onBack() {
-                // 悬浮菜单"返回"按钮：
-                // 优先网页后退；无可后退历史时不直接退出（用户可以用"关闭"按钮退出），
-                // 而是提示"已是第一页"——避免误触退出游戏。
-                val wv = webViewRef.value
-                if (wv != null && wv.canGoBack()) {
-                    wv.goBack()
-                } else {
-                    Toast.makeText(context, "已是第一页，点\"关闭\"退出", Toast.LENGTH_SHORT).show()
+                // 悬浮菜单"返回"：★ v11 与系统返回键同链（网页后退 → 回主页 →
+                //   已在主页提示）。不直接退出 —— 退出用"关闭"按钮，防误触。
+                if (!browserBack()) {
+                    Toast.makeText(context, "已在主页，点\"关闭\"退出浏览器", Toast.LENGTH_SHORT).show()
                 }
             }
             override fun onClose() = onExit()
@@ -807,7 +1098,8 @@ fun WebGameScreen(
             override fun onToggleCameraRotation() = toggleCameraRotation()
             override fun onOpenAspectRatio() { showAspectRatioDialog.value = true }
         })
-        menu.isFullscreen = isFullscreen
+        // ★ v11: 菜单触发器不再随工具栏全屏隐藏（v10 全屏后无路可退）；
+        //   仅视频全屏（customView 盖住触发器）时由 onShow/onHideFullscreen 驱动隐藏。
         menu.isLandscape = isLandscape
         floatingMenuRef.value = menu
         menu.attachTo(container)
@@ -836,14 +1128,14 @@ fun WebGameScreen(
         onDispose {
             activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             // ★ v10: 弹窗销毁链 —— 先 JS 静音再 destroy（参照 AnWind，防“关了还在响”）
+            // ★ v11: 弹窗/主窗均由 WebPinchLayout 承载 → destroyWebViewHolder 连容器一起拆
             popupViews.forEach { pv ->
                 try {
                     pv.evaluateJavascript(
                         "(function(){try{document.querySelectorAll('video,audio').forEach(function(m){" +
                         "try{m.pause();}catch(e){}});}catch(e){}})();", null)
                 } catch (_: Exception) {}
-                (pv.parent as? ViewGroup)?.removeView(pv)
-                try { pv.destroy() } catch (_: Exception) {}
+                destroyWebViewHolder(pv)
             }
             popupViews.clear()
             popupCount.value = 0
@@ -854,9 +1146,10 @@ fun WebGameScreen(
                         "(function(){try{document.querySelectorAll('video,audio').forEach(function(m){" +
                         "try{m.pause();}catch(e){}});}catch(e){}})();", null)
                 } catch (_: Exception) {}
-                (wv.parent as? ViewGroup)?.removeView(wv)
-                wv.destroy()
+                destroyWebViewHolder(wv)
             }
+            pinchLayoutRef.value?.detachWebView()
+            pinchLayoutRef.value = null
         }
     }
 
@@ -985,6 +1278,64 @@ fun WebGameScreen(
             .setNegativeButton("取消", null)
             .setOnDismissListener { showAspectRatioDialog.value = false }
             .show()
+    }
+
+    // ========== ★ v11: 收藏夹管理（主页长按 / 添加 / 重命名 / 图标） ==========
+    menuFavGame?.let { fav ->
+        val favName = fav.customTitle?.takeIf { it.isNotBlank() } ?: fav.title
+        android.app.AlertDialog.Builder(context)
+            .setTitle(favName)
+            .setItems(arrayOf("打开", "重命名", "自定义图标", "删除收藏")) { dlg, which ->
+                when (which) {
+                    0 -> openInBrowser(fav.url, fav.uaMode)
+                    1 -> pendingFavRename = fav
+                    2 -> {
+                        // 选图 → favIconPicker 回调拷贝进 filesDir/icons 并写库
+                        pendingFavIcon = fav
+                        try {
+                            favIconPicker.launch(arrayOf("image/*"))
+                        } catch (e: Exception) {
+                            pendingFavIcon = null
+                            Toast.makeText(context, "无法打开图片选择器", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    3 -> {
+                        WebFavoritesStore.remove(context, fav.url)
+                        favorites = WebFavoritesStore.loadAll(context)
+                        Toast.makeText(context, "已删除收藏：$favName", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                dlg.dismiss()
+            }
+            .setOnDismissListener { menuFavGame = null }
+            .show()
+    }
+
+    if (showAddFavoriteDialog) {
+        AddFavoriteDialog(
+            onConfirm = { t, u, ua ->
+                if (WebFavoritesStore.add(context, t, u, ua)) {
+                    favorites = WebFavoritesStore.loadAll(context)
+                    Toast.makeText(context, "已添加收藏", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "网址不能为空", Toast.LENGTH_SHORT).show()
+                }
+                showAddFavoriteDialog = false
+            },
+            onDismiss = { showAddFavoriteDialog = false }
+        )
+    }
+
+    pendingFavRename?.let { fav ->
+        RenameFavoriteDialog(
+            initialTitle = fav.customTitle?.takeIf { it.isNotBlank() } ?: fav.title,
+            onConfirm = { newTitle ->
+                WebFavoritesStore.setCustomTitle(context, fav.url, newTitle)
+                favorites = WebFavoritesStore.loadAll(context)
+                pendingFavRename = null
+            },
+            onDismiss = { pendingFavRename = null }
+        )
     }
 }
 
@@ -1521,3 +1872,316 @@ private const val MOUSE_CURSOR_SCRIPT = """
   }, {passive: true});
 })();
 """
+
+// ======================================================================
+// ★ v11: 浏览器工具栏 / 收藏夹主页 / 收藏管理对话框
+// ======================================================================
+
+/** 收藏卡片循环取用的强调色（旧在线游戏列表同款色板） */
+private val FavAccentPalette = listOf(
+    Color(0xFF8A7BFF), Color(0xFFE74C3C), Color(0xFF27AE60), Color(0xFF3498DB),
+    Color(0xFFE67E22), Color(0xFF1ABC9C), Color(0xFF9B59B6), Color(0xFFF1C40F),
+    Color(0xFFE84393), Color(0xFF00CEC9), Color(0xFF6C5CE7), Color(0xFFFDCB6E)
+)
+
+/**
+ * 浏览器工具栏：后退 / 前进 / 刷新停止 / 主页 | 地址栏（回车前往）| 收藏星标 | ☰菜单。
+ * 全屏（isFullscreen）时不组合 —— 纯净游戏视图；菜单按钮是主页等覆盖层场景
+ * 下唯一能打开悬浮菜单的入口（触发器会被覆盖层盖住）。
+ */
+@Composable
+private fun BrowserToolbar(
+    address: String,
+    onAddressChange: (String) -> Unit,
+    onAddressFocusChange: (Boolean) -> Unit,
+    onGo: () -> Unit,
+    onBack: () -> Unit,
+    onForward: () -> Unit,
+    onReload: () -> Unit,
+    onStop: () -> Unit,
+    onHome: () -> Unit,
+    onFavorite: () -> Unit,
+    onMenu: () -> Unit,
+    isFavorite: Boolean,
+    loading: Boolean
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xF0161822))
+            .padding(horizontal = 2.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) {
+            Icon(Icons.Rounded.ArrowBack, "后退", tint = Color.White, modifier = Modifier.size(20.dp))
+        }
+        IconButton(onClick = onForward, modifier = Modifier.size(38.dp)) {
+            Icon(Icons.Rounded.ArrowForward, "前进", tint = Color.White, modifier = Modifier.size(20.dp))
+        }
+        if (loading) {
+            IconButton(onClick = onStop, modifier = Modifier.size(38.dp)) {
+                Icon(Icons.Rounded.Close, "停止", tint = Color(0xFFFF8A80), modifier = Modifier.size(20.dp))
+            }
+        } else {
+            IconButton(onClick = onReload, modifier = Modifier.size(38.dp)) {
+                Icon(Icons.Rounded.Refresh, "刷新", tint = Color.White, modifier = Modifier.size(20.dp))
+            }
+        }
+        IconButton(onClick = onHome, modifier = Modifier.size(38.dp)) {
+            Icon(Icons.Rounded.Home, "主页", tint = Color.White, modifier = Modifier.size(20.dp))
+        }
+        OutlinedTextField(
+            value = address,
+            onValueChange = onAddressChange,
+            modifier = Modifier
+                .weight(1f)
+                .onFocusChanged { onAddressFocusChange(it.isFocused) },
+            singleLine = true,
+            placeholder = { Text("搜索或输入网址", color = Color(0xFF8899AA), fontSize = 13.sp) },
+            leadingIcon = {
+                Icon(Icons.Rounded.Search, null, tint = Color(0xFF8899AA), modifier = Modifier.size(16.dp))
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = { onGo() }),
+            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Color(0xFF8A7BFF),
+                unfocusedBorderColor = Color(0x33FFFFFF),
+                focusedContainerColor = Color(0x14FFFFFF),
+                unfocusedContainerColor = Color(0x14FFFFFF),
+                cursorColor = Color(0xFF8A7BFF)
+            )
+        )
+        IconButton(onClick = onFavorite, modifier = Modifier.size(38.dp)) {
+            Icon(
+                if (isFavorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
+                "收藏",
+                tint = if (isFavorite) Color(0xFFFFD54F) else Color.White,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        // ☰ 菜单：打开悬浮菜单（手柄/Flash/缩放/兼容模式等全部设置入口）
+        IconButton(onClick = onMenu, modifier = Modifier.size(38.dp)) {
+            Icon(Icons.Rounded.MoreVert, "菜单", tint = Color.White, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+/**
+ * 浏览器主页（收藏夹网格 + 提示条）。点击收藏打开站点；
+ * 长按弹管理菜单（打开/重命名/自定义图标/删除）；尾部"+"卡片添加收藏。
+ * 覆盖整个内容区 —— 底层 about:blank 载体完全不可见。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BrowserHomeOverlay(
+    favorites: List<WebGameEntry>,
+    onNavigate: (WebGameEntry) -> Unit,
+    onOpenMenu: (WebGameEntry) -> Unit,
+    onAdd: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(PrimaryBackground)
+    ) {
+        androidx.compose.foundation.layout.Spacer(Modifier.size(18.dp))
+        Text(
+            "浏览器 · 在线游戏",
+            color = Color.White,
+            fontSize = 20.sp,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+        androidx.compose.foundation.layout.Spacer(Modifier.size(4.dp))
+        Text(
+            "收藏夹 · ${favorites.size} 个站点（点击打开 · 长按管理 · 工具栏★收藏当前页）",
+            color = Color(0xFF8899AA),
+            fontSize = 11.sp,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
+        androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 96.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            gridItems(favorites) { fav ->
+                FavoriteCard(
+                    fav = fav,
+                    onClick = { onNavigate(fav) },
+                    onLongClick = { onOpenMenu(fav) }
+                )
+            }
+            item {
+                AddFavoriteCard(onClick = onAdd)
+            }
+        }
+    }
+}
+
+/** 单个收藏卡片：自定义图标优先，无图标用首字母色卡；底部标题条。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FavoriteCard(
+    fav: WebGameEntry,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val displayTitle = fav.customTitle?.takeIf { it.isNotBlank() } ?: fav.title
+    val icon = remember(fav.iconPath) {
+        val path = fav.iconPath
+        if (path.isNullOrBlank()) null
+        else try {
+            if (java.io.File(path).exists()) android.graphics.BitmapFactory.decodeFile(path) else null
+        } catch (_: Exception) { null }
+    }
+    val accent = FavAccentPalette[displayTitle.hashCode().mod(FavAccentPalette.size)]
+    Box(
+        modifier = Modifier
+            .aspectRatio(0.9f)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .background(
+                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                    listOf(accent.copy(alpha = 0.32f), Color(0x141A1A2E))
+                )
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    ) {
+        if (icon != null) {
+            androidx.compose.foundation.Image(
+                bitmap = icon.asImageBitmap(),
+                contentDescription = displayTitle,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+            )
+        } else {
+            Text(
+                displayTitle.take(1).ifBlank { "?" },
+                color = Color.White.copy(alpha = 0.9f),
+                fontSize = 34.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+        // 底部标题条
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xCC10131A))
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+        ) {
+            Text(
+                displayTitle,
+                color = Color.White,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/** 尾部"+"添加卡片 */
+@Composable
+private fun AddFavoriteCard(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(0.9f)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+            .background(Color(0x1FFFFFFF))
+            .border(
+                width = 1.dp,
+                color = Color(0x40FFFFFF),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
+            )
+            .clickable(onClick = onClick)
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(28.dp))
+            Text("添加", color = Color(0xFF8899AA), fontSize = 11.sp)
+        }
+    }
+}
+
+/** 添加收藏对话框：名称 + 网址 + UA 模式切换 */
+@Composable
+private fun AddFavoriteDialog(
+    onConfirm: (String, String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+    var uaMode by remember { mutableStateOf("desktop") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加收藏") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = title, onValueChange = { title = it }, singleLine = true,
+                    label = { Text("名称") }
+                )
+                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+                OutlinedTextField(
+                    value = url, onValueChange = { url = it }, singleLine = true,
+                    label = { Text("网址") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
+                )
+                androidx.compose.foundation.layout.Spacer(Modifier.size(4.dp))
+                androidx.compose.material3.TextButton(onClick = {
+                    uaMode = if (uaMode == "desktop") "mobile" else "desktop"
+                }) {
+                    Text(
+                        "UA 模式：" + if (uaMode == "desktop") "桌面版（点击切换）" else "手机版（点击切换）",
+                        color = Color(0xFF8A7BFF), fontSize = 13.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { onConfirm(title.trim(), url.trim(), uaMode) }) {
+                Text("添加")
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+/** 重命名收藏对话框 */
+@Composable
+private fun RenameFavoriteDialog(
+    initialTitle: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf(initialTitle) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名收藏") },
+        text = {
+            OutlinedTextField(
+                value = name, onValueChange = { name = it }, singleLine = true,
+                label = { Text("名称") }
+            )
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { onConfirm(name.trim()) }) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}

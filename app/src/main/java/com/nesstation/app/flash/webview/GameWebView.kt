@@ -268,31 +268,20 @@ open class GameWebView @JvmOverloads constructor(
     }
 
     /**
-     * 应用页面缩放(整页,包括布局/图片/文字)。
-     * @param percent 25..200 的百分比值。100=不变,>100 放大,<100 缩小。
+     * 应用页面缩放 —— ★ v11 起本方法仅作「清理通道」：真实缩放统一走
+     * WebPinchLayout（宿主持有，见 WebGameScreen.applyZoom → setZoomImmediate），
+     * 与原生双指捏合同一坐标系（viewport meta），无需 reload 即时生效。
      *
-     * 实现:
-     * 1. WebView.setInitialScale:整页 CSS 缩放(对应 viewport meta initial-scale)。
-     *    对 4399 这种有 viewport meta 的页面也生效:因为 initial-scale 由 WebView 控制,
-     *    会覆盖页面自己的 viewport 值(Android 端 WebView 行为)。
-     * 2. JS 注入 document.body.style.zoom:WebKit 私有 API,整页 layout 缩放(终极方案),
-     *    解决 setInitialScale 对某些 PC 页面不响应的问题。
+     * v10 的 setInitialScale+reload 方案已被用户实测否决：在带 viewport meta 的
+     * 页面上与 PINCH_UNLOCK/页面自身 meta 互相覆盖打架，表现为“百分比设置
+     * 完全没作用”；setInitialScale 还要求整页重载、体验割裂。
      *
-     * 不使用 WebSettings.textZoom:它只缩放文字而不缩放布局/图片,
-     * 导致放大时文字溢出容器、缩小时文字与布局比例失调。
-     * ★ v10 起仅用 setInitialScale：WebView 层生效、跨导航持久、与原生双指
-     * 捏合同一坐标系（手动档与捏合自然衔接，不再叠加 body.zoom 双缩放）。
-     * 必须 reload() 才完整生效(Chromium 限制:运行时改 setInitialScale 需重载文档)。
+     * 本方法保留（历史调用方兼容）：重置 textZoom 残留 + 清理旧版 body.zoom。
      */
     fun applyPageZoom(percent: Int) {
-        val p = percent.coerceIn(25, 200)
+        val p = percent.coerceIn(25, 300)
         settings.textZoom = 100  // 重置 textZoom,避免之前的设置残留影响字体
-        // ★ v10 修复双缩放：原实现 setInitialScale(p) 与 body.zoom=p 双通道叠加，
-        //   手动 150% 实际呈现 150%×150% = 225%（缩放严重失真）；且 body.zoom
-        //   会破坏双指缩放的 scale 基准。现仅保留 setInitialScale —— WebView 层
-        //   生效、跨导航持久、与原生捏合同一坐标系（手动档与双指缩放自然衔接）。
-        setInitialScale(p)
-        // 清理旧版本遗留的 body.zoom（一次性兼容清理，回 100% 同样清理）
+        // 清理旧版本遗留的 body.zoom（一次性兼容清理）
         post { evaluateJavascript("try{document.body.style.zoom='';}catch(e){}", null) }
     }
 
@@ -935,6 +924,10 @@ open class GameWebView @JvmOverloads constructor(
             (function(){
               if (window.__pinchUnlock) return; window.__pinchUnlock = true;
               function unlockMeta(m){
+                // ★ v11: WebPinchLayout 缩放接管期间（window.__az 活跃）不得碰 meta ——
+                //   接管域的 minimum-scale=maximum-scale 是缩放系统的唯一事实源，
+                //   此处若把 maximum-scale "解锁"成 10 会让两套系统互踩（缩放跳变）。
+                if (window.__az) return;
                 try{
                   var c = m.getAttribute('content') || '';
                   if(!c) return;
@@ -947,6 +940,7 @@ open class GameWebView @JvmOverloads constructor(
                 }catch(e){}
               }
               function scanAll(){
+                if (window.__az) return;
                 try{
                   var metas = document.querySelectorAll('meta[name="viewport"]');
                   for(var i=0;i<metas.length;i++) unlockMeta(metas[i]);
