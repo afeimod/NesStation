@@ -2,8 +2,12 @@ package com.nesstation.app.flash.widget
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.PixelFormat
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.util.AttributeSet
 import android.view.Gravity
@@ -12,15 +16,20 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageButton
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.TextView
 import android.widget.Toast
 
 /**
- * 可拖动的悬浮菜单按钮。
- * 1:1 移植自 3.3-fix2 FloatingMenuView，去掉 R.drawable/R.string 依赖（用代码创建 drawable 与中文字符串）。
+ * 可拖动悬浮球 + 快捷菜单。
+ *
+ * ★ v12 全面翻新（用户反馈："悬浮球改成圆形好看点、菜单现代化一点"）：
+ * - 球体：54dp 正圆 + 紫罗兰渐变（TL→BR）+ 细描边 + 自绘三横线"汉堡"图标，
+ *   替换 v11 的 44dp 灰底 + android 系统旧图标；
+ * - 菜单：横屏 4 列 / 竖屏 3 列的网格卡片（圆角 20dp 容器 + 彩色圆形徽章 +
+ *   汉字图标 + 11sp 标签 + 系统涟漪反馈），替换 v11 的两列老式系统图标行。
+ * 拖动/边缘停靠/回调接口与 v11 完全兼容，宿主（WebGameScreen）零改动。
  */
 class FloatingMenuView @JvmOverloads constructor(
     context: Context,
@@ -51,32 +60,36 @@ class FloatingMenuView @JvmOverloads constructor(
 
     private var isMenuOpen = false
 
+    /** 每个功能的徽章强调色（与浏览器收藏卡片同一色系） */
+    private val menuAccents = intArrayOf(
+        0xFF8A7BFF.toInt(), 0xFFE74C3C.toInt(), 0xFF27AE60.toInt(), 0xFF3498DB.toInt(),
+        0xFFE67E22.toInt(), 0xFF1ABC9C.toInt(), 0xFF9B59B6.toInt(), 0xFFF1C40F.toInt()
+    )
+
     var isFullscreen = false
         set(value) {
             field = value
-            // WebView 进入全屏(Ruffle requestFullscreen 触发)时,触发器会被 WebView 的
-            // customView 盖在 DecorView 上,显示出来也按不到,直接隐藏。
+            // WebView 视频全屏时 customView 会盖住本球，隐藏并收起菜单
             triggerBtn.visibility = if (value) GONE else VISIBLE
-            // 如果当前菜单已打开,关闭它
             if (value && isMenuOpen) {
                 popup?.dismiss()
                 isMenuOpen = false
             }
-            updateTriggerIcon()
         }
 
     var isLandscape = true
-        set(value) { field = value; updateTriggerIcon() }
+        set(value) { field = value }
 
     init {
         triggerBtn = ImageButton(context).apply {
-            background = createCircleBg(0xFF263238.toInt())
-            setImageResource(android.R.drawable.ic_menu_sort_by_size)
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-            alpha = 0.85f
+            background = createBallBg()
+            setImageDrawable(MenuGlyphDrawable(resources.displayMetrics.density))
+            setPadding(0, 0, 0, 0)
+            elevation = dp(6).toFloat()
+            alpha = 0.96f
             contentDescription = "菜单"
         }
-        addView(triggerBtn, LayoutParams(dp(44), dp(44)).apply { gravity = Gravity.CENTER })
+        addView(triggerBtn, LayoutParams(dp(54), dp(54)).apply { gravity = Gravity.CENTER })
         setupDrag()
     }
 
@@ -154,125 +167,197 @@ class FloatingMenuView @JvmOverloads constructor(
         if (!isMenuOpen) showMenu()
     }
 
+    fun dismissMenu() {
+        popup?.dismiss()
+    }
+
+    // ============================ ★ v12 现代菜单 ============================
+
+    private class MenuItem(
+        val title: String,
+        /** 圆形徽章里的单字/短字图标（汉字为主，语义直达；换资源图标为 0 依赖） */
+        val glyph: String,
+        val action: () -> Unit
+    )
+
+    private fun menuItems(): List<MenuItem> = listOf(
+        MenuItem("全屏切换", "全") { callbacks?.onToggleFullscreen() },
+        MenuItem("横竖屏", "转") { callbacks?.onToggleOrientation() },
+        MenuItem("手柄", "柄") { callbacks?.onToggleGamepad() },
+        MenuItem("鼠标", "鼠") { callbacks?.onToggleMouse() },
+        MenuItem("按键映射", "键") { callbacks?.onOpenKeyMapping() },
+        MenuItem("Flash引擎", "F") { callbacks?.onOpenFlashSettings() },
+        MenuItem("页面缩放", "缩") { callbacks?.onOpenPageZoom() },
+        MenuItem("画面比例", "比") { callbacks?.onOpenAspectRatio() },
+        MenuItem("兼容模式", "UA") { callbacks?.onOpenUaMode() },
+        MenuItem("视角旋转", "视") { callbacks?.onToggleCameraRotation() },
+        MenuItem("提取SWF", "取") { callbacks?.onExtractSwf() },
+        MenuItem("刷新", "刷") { callbacks?.onRefresh() },
+        MenuItem("返回", "退") { callbacks?.onBack() },
+        MenuItem("关闭", "关") { callbacks?.onClose() }
+    )
+
     private fun showMenu() {
-        val isLandscape = resources.configuration.orientation ==
+        val isLandscapeRes = resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val columns = if (isLandscape) 2 else 1
+        val columns = if (isLandscapeRes) 4 else 3
+        val items = menuItems()
+        val cell = dp(78)
+        val menuWidth = columns * cell + dp(16)
 
         val menuContainer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = createRoundedBg(0xCC1A1A1A.toInt())
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = createRoundedBg(0xF21C1F2B.toInt(), 20)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
 
-        val items = listOf(
-            MenuItem("全屏切换", android.R.drawable.ic_menu_view) { callbacks?.onToggleFullscreen() },
-            MenuItem("横竖屏切换", android.R.drawable.ic_menu_rotate) { callbacks?.onToggleOrientation() },
-            MenuItem("手柄开关", android.R.drawable.ic_menu_compass) { callbacks?.onToggleGamepad() },
-            MenuItem("鼠标光标", android.R.drawable.ic_menu_camera) { callbacks?.onToggleMouse() },
-            MenuItem("按键映射", android.R.drawable.ic_menu_agenda) { callbacks?.onOpenKeyMapping() },
-            MenuItem("Flash 引擎", android.R.drawable.ic_menu_preferences) { callbacks?.onOpenFlashSettings() },
-            MenuItem("页面缩放", android.R.drawable.ic_menu_zoom) { callbacks?.onOpenPageZoom() },
-            MenuItem("画面比例", android.R.drawable.ic_menu_crop) { callbacks?.onOpenAspectRatio() },
-            MenuItem("兼容模式", android.R.drawable.ic_menu_help) { callbacks?.onOpenUaMode() },
-            MenuItem("视角旋转(3D)", android.R.drawable.ic_menu_rotate) { callbacks?.onToggleCameraRotation() },
-            MenuItem("提取 SWF", android.R.drawable.ic_menu_search) { callbacks?.onExtractSwf() },
-            MenuItem("刷新", android.R.drawable.ic_menu_revert) { callbacks?.onRefresh() },
-            MenuItem("返回", android.R.drawable.ic_menu_revert) { callbacks?.onBack() },
-            MenuItem("关闭", android.R.drawable.ic_menu_close_clear_cancel) { callbacks?.onClose() }
-        )
+        fun rippleForeground(v: View) {
+            // 系统涟漪反馈（selectableItemBackground），API 23+ 用前景
+            try {
+                val ta = context.obtainStyledAttributes(intArrayOf(android.R.attr.selectableItemBackground))
+                val d = ta.getDrawable(0)
+                ta.recycle()
+                if (d != null) v.foreground = d
+            } catch (_: Exception) {}
+        }
 
-        fun buildItemView(item: MenuItem): View {
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-                gravity = Gravity.CENTER_VERTICAL
+        fun buildCell(item: MenuItem, accentIdx: Int): View {
+            val accent = menuAccents[accentIdx % menuAccents.size]
+            return LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(4), dp(8), dp(4), dp(8))
                 isClickable = true
                 isFocusable = true
-                background = createRoundedBg(0xFF263238.toInt())
+                background = createRoundedBg(0x14FFFFFF, 12)
+                rippleForeground(this)
+                layoutParams = LinearLayout.LayoutParams(cell, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    setMargins(dp(2), 0, dp(2), 0)
+                }
+                addView(TextView(context).apply {
+                    text = item.glyph
+                    setTextColor(Color.WHITE)
+                    textSize = 15f
+                    typeface = android.graphics.Typeface.create(
+                        android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD
+                    )
+                    gravity = Gravity.CENTER
+                    background = createBadgeBg(accent)
+                    layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply {
+                        bottomMargin = dp(6)
+                    }
+                })
+                addView(TextView(context).apply {
+                    text = item.title
+                    setTextColor(0xFFDDE3EE.toInt())
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                })
+                setOnClickListener {
+                    item.action()
+                    popup?.dismiss()
+                }
             }
-            val icon = ImageView(context).apply {
-                setImageResource(item.iconRes)
-                setPadding(0, 0, dp(6), 0)
-                layoutParams = LinearLayout.LayoutParams(dp(20), dp(20))
-            }
-            val text = TextView(context).apply {
-                text = item.title
-                setTextColor(Color.WHITE)
-                textSize = 13f
-            }
-            row.addView(icon)
-            row.addView(text)
-            row.setOnClickListener {
-                item.action()
-                popup?.dismiss()
-            }
-            return row
         }
 
-        if (columns == 1) {
-            items.forEach { menuContainer.addView(buildItemView(it)) }
-        } else {
-            var row: LinearLayout? = null
-            items.forEachIndexed { index, item ->
-                if (index % 2 == 0) {
-                    row = LinearLayout(context).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        setPadding(0, 0, 0, 0)
-                    }
-                    menuContainer.addView(row)
-                }
-                val cell = LinearLayout(context).apply {
+        var row: LinearLayout? = null
+        items.forEachIndexed { index, item ->
+            if (index % columns == 0) {
+                row = LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    setPadding(dp(4), dp(0), dp(4), dp(0))
-                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    gravity = Gravity.CENTER
                 }
-                cell.addView(buildItemView(item))
-                row?.addView(cell)
+                menuContainer.addView(row)
             }
+            row?.addView(buildCell(item, index))
+        }
+
+        // 网格行之间的窄间距
+        for (i in 0 until menuContainer.childCount) {
+            val r = menuContainer.getChildAt(i) as? LinearLayout ?: continue
+            val lp = r.layoutParams as? LinearLayout.LayoutParams
+            lp?.bottomMargin = dp(6)
+            r.layoutParams = lp
         }
 
         popup = PopupWindow(menuContainer, ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             isOutsideTouchable = true
-            elevation = dp(8).toFloat()
+            elevation = dp(12).toFloat()
             setOnDismissListener { isMenuOpen = false }
-            // 兼容 Android < 7.0 (API 24)：4 参数 showAsDropDown 需 API 24+
+            // 让菜单右边对齐到球的右缘（球贴右缘时菜单不出屏）
+            val xoff = -(menuWidth - dp(54) + dp(10))
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                showAsDropDown(triggerBtn, -dp(160), 0, Gravity.END)
+                showAsDropDown(triggerBtn, xoff, dp(6), Gravity.END)
             } else {
-                showAsDropDown(triggerBtn, -dp(160), 0)
+                @Suppress("DEPRECATION")
+                showAsDropDown(triggerBtn, xoff, dp(6))
             }
         }
         isMenuOpen = true
     }
 
-    private fun updateTriggerIcon() {
-        triggerBtn.setImageResource(android.R.drawable.ic_menu_sort_by_size)
+    // ============================ 绘制件（零资源依赖） ============================
+
+    /** 悬浮球底：正圆 + 紫罗兰渐变 + 半透明细描边 */
+    private fun createBallBg() = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        colors = intArrayOf(0xFF9C8BFF.toInt(), 0xFF6C5CE7.toInt())
+        orientation = GradientDrawable.Orientation.TL_BR
+        setStroke(dp(1), 0x40FFFFFF)
+    }
+
+    /** 功能徽章底：强调色 26% 透明度圆底 */
+    private fun createBadgeBg(accent: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor((accent and 0x00FFFFFF) or 0x42000000)
+        setStroke(dp(1), (accent and 0x00FFFFFF) or 0x66000000)
+    }
+
+    /** 现代圆角容器 */
+    private fun createRoundedBg(color: Int, radiusDp: Int) = GradientDrawable().apply {
+        cornerRadius = dp(radiusDp).toFloat()
+        setColor(color)
+    }
+
+    /** 自绘"汉堡"三横线图标（dp 适配 intrinsic，白色圆头短条 —— 比系统图标干净） */
+    private class MenuGlyphDrawable(private val density: Float) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+
+        override fun draw(canvas: Canvas) {
+            val w = bounds.width().toFloat()
+            val h = bounds.height().toFloat()
+            if (w <= 0f || h <= 0f) return
+            val barW = w * 0.58f
+            val barH = h * 0.115f
+            val left = (w - barW) / 2f
+            val gap = h * 0.16f
+            val total = barH * 3f + gap * 2f
+            var top = (h - total) / 2f
+            val radii = barH / 2f
+            repeat(3) {
+                canvas.drawRoundRect(left, top, left + barW, top + barH, radii, radii, paint)
+                top += barH + gap
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+
+        override fun setAlpha(alpha: Int) {
+            paint.alpha = alpha
+            invalidateSelf()
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {}
+
+        override fun getIntrinsicWidth(): Int = (24 * density).toInt()
+        override fun getIntrinsicHeight(): Int = (24 * density).toInt()
     }
 
     private fun dp(value: Int): Int {
         return (value * resources.displayMetrics.density).toInt()
-    }
-
-    private fun createCircleBg(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(color)
-    }
-
-    private fun createRoundedBg(color: Int) = GradientDrawable().apply {
-        cornerRadius = dp(8).toFloat()
-        setColor(color)
-    }
-
-    private data class MenuItem(
-        val title: String,
-        val iconRes: Int,
-        val action: () -> Unit
-    )
-
-    fun dismissMenu() {
-        popup?.dismiss()
     }
 }

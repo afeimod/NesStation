@@ -22,8 +22,9 @@ open class GameWebChromeClient(
 ) : WebChromeClient() {
 
     interface Callback {
-        fun onProgress(progress: Int)
-        fun onTitle(title: String?)
+        /** ★ v12: 带 view —— 进度/标题按标签门控（后台标签不串台） */
+        fun onProgress(view: WebView?, progress: Int)
+        fun onTitle(view: WebView?, title: String?)
         fun onConsole(level: String, msg: String, sourceId: String?, line: Int)
         /** 全屏（Flash 全屏播放） */
         fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)
@@ -39,11 +40,11 @@ open class GameWebChromeClient(
     }
 
     override fun onProgressChanged(view: WebView?, newProgress: Int) {
-        callback.onProgress(newProgress)
+        callback.onProgress(view, newProgress)
     }
 
     override fun onReceivedTitle(view: WebView?, title: String?) {
-        callback.onTitle(title)
+        callback.onTitle(view, title)
     }
 
     override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {

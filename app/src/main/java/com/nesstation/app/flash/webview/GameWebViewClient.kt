@@ -24,11 +24,13 @@ open class GameWebViewClient(
 ) : WebViewClient() {
 
     interface Callback {
-        fun onPageStarted(url: String?)
-        fun onPageFinished(url: String?)
+        /** ★ v12: 带 view —— 多标签下后台标签导航不串台（宿主按活动标签门控） */
+        fun onPageStarted(view: WebView?, url: String?)
+        fun onPageFinished(view: WebView?, url: String?)
         fun onProgress(progress: Int)
         fun onError(url: String?, errorCode: Int, description: String?)
-        fun onSwfIntercepted(swfUrl: String, pageUrl: String)
+        /** ★ v12: 带 view —— SWF 在拦截它的那个标签内播放，不串台 */
+        fun onSwfIntercepted(view: WebView?, swfUrl: String, pageUrl: String)
         fun shouldInjectRuffle(url: String?): Boolean
         /** 获取 WAFlash 预下载的 SWF 缓存文件路径 */
         fun getCachedSwfPath(): String?
@@ -52,7 +54,7 @@ open class GameWebViewClient(
         val uri = request.url ?: return false
         val url = uri.toString()
         if (url.endsWith(".swf", ignoreCase = true)) {
-            callback.onSwfIntercepted(url, view.url ?: url)
+            callback.onSwfIntercepted(view, url, view.url ?: url)
             return true
         }
         // ★ v10: 非网页 scheme 分流（参照 AnWind）—— magnet/ed2k/thunder/weixin/
@@ -638,7 +640,7 @@ open class GameWebViewClient(
 
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         super.onPageStarted(view, url, favicon)
-        callback.onPageStarted(url)
+        callback.onPageStarted(view, url)
 
         // ★ v10: 双指缩放解锁兜底（Document Start 特性不可用的旧 WebView 上）——
         //   剥离 viewport 的 user-scalable=no / 放开 maximum-scale 钳制（脚本幂等）
@@ -758,7 +760,7 @@ open class GameWebViewClient(
             )
         }, 300)
 
-        callback.onPageFinished(url)
+        callback.onPageFinished(view, url)
     }
 
     override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {

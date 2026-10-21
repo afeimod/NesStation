@@ -21,6 +21,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.items
+// ★ v12: 标签栏所需
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 // ★ v11 浏览器化：工具栏/收藏夹主页所需
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -88,6 +92,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -194,11 +199,16 @@ fun WebGameScreen(
     val customViewRef = remember { mutableStateOf<View?>(null) }
     val customViewCallbackRef = remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
-    // ★ v10: 加载进度 / 渲染进程自愈（renderEpoch）/ window.open 弹窗栈 / 回调共享引用
+    // ★ v10: 加载进度 / 渲染进程自愈（renderEpoch）/ 回调共享引用
     val loadProgress = remember { mutableStateOf(100) }
     val renderEpoch = remember { mutableStateOf(0) }
-    val popupViews = remember { java.util.ArrayList<GameWebView>() }
-    val popupCount = remember { mutableStateOf(0) }
+    // ★ v12: 多标签引擎（参照 AnWind TabManager —— 每标签独占常驻 WebView +
+    //   缩放容器，切换只 attach/detach 不销毁重建；window.open 弹窗 = 新标签，
+    //   不再永久叠层 —— 根除 v11"开新标签后回主页，点任何收藏都还是旧弹窗页面"）
+    val browserTabs = remember { mutableStateListOf<BrowserTabInfo>() }
+    var activeTabId by remember { mutableStateOf(0) }
+    val tabTitleMap = remember { mutableStateMapOf<Int, String>() }
+    var nextTabId by remember { mutableStateOf(1) }
     val wvClientRef = remember { mutableStateOf<GameWebViewClient?>(null) }
     val chromeCallbackRef = remember { mutableStateOf<GameWebChromeClient.Callback?>(null) }
 
@@ -215,8 +225,7 @@ fun WebGameScreen(
     var menuFavGame by remember { mutableStateOf<WebGameEntry?>(null) }
     var pendingFavIcon by remember { mutableStateOf<WebGameEntry?>(null) }
     var pendingFavRename by remember { mutableStateOf<WebGameEntry?>(null) }
-    // 缩放仲裁容器（主窗）与当前缩放值
-    val pinchLayoutRef = remember { mutableStateOf<WebPinchLayout?>(null) }
+    // 当前缩放值（活动标签的容器回调同步）
     val pinchZoom = remember { mutableStateOf(1f) }
 
     // ---------- File chooser ----------
@@ -268,37 +277,95 @@ fun WebGameScreen(
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
     }
 
-    fun applyFullscreen(full: Boolean) {
-        if (full) {
-            // 简单实现：隐藏系统栏
-            activity?.window?.let { w ->
-                androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, false)
-                androidx.core.view.WindowInsetsControllerCompat(w, w.decorView).hide(
-                    androidx.core.view.WindowInsetsCompat.Type.systemBars()
-                )
-            }
-        } else {
-            activity?.window?.let { w ->
-                androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, true)
-                androidx.core.view.WindowInsetsControllerCompat(w, w.decorView).show(
-                    androidx.core.view.WindowInsetsCompat.Type.systemBars()
-                )
-            }
-        }
-    }
-
-    // 切换全屏（★ v11：工具栏随全屏隐藏；悬浮菜单触发器保持可见 ——
-    // v10 会把菜单触发器一并藏起来，全屏后无路可退。
-    // 视频全屏时触发器隐藏改由 onShowFullscreen 单独驱动。）
+    // 切换全屏（★ v12：浏览器会话进入即沉浸 + 占用刘海（见 DisposableEffect），
+    //   系统栏全程隐藏，此处只切换工具栏/标签栏显隐 —— 若再动系统栏，一退出
+    //   全屏就重新露出黑边、刘海又被让出去。）
     fun toggleFullscreen() {
         isFullscreen = !isFullscreen
-        applyFullscreen(isFullscreen)
     }
 
     fun toggleOrientation() {
         isLandscape = !isLandscape
         applyOrientation(isLandscape)
         floatingMenuRef.value?.isLandscape = isLandscape
+    }
+
+    // ================ ★ v12: 多标签引擎（参照 AnWind TabManager） ================
+
+    /** view → 所在标签 */
+    fun findTabOf(wv: WebView?): BrowserTabInfo? =
+        browserTabs.firstOrNull { it.webView === wv }
+
+    /** 当前活动标签 */
+    fun activeTab(): BrowserTabInfo? =
+        browserTabs.firstOrNull { it.id == activeTabId }
+
+    /** JS 静音（销毁前执行，防"关了标签声音还在"） */
+    fun muteWebView(wv: WebView) {
+        try {
+            wv.evaluateJavascript(
+                "(function(){try{document.querySelectorAll('video,audio').forEach(function(m){" +
+                    "try{m.pause();}catch(e){}});}catch(e){}})();", null
+            )
+        } catch (_: Exception) {}
+    }
+
+    /** 标签附着内容容器（独占全屏；控件组拉回最上层） */
+    fun attachTab(tab: BrowserTabInfo) {
+        val container = mainBoxRef.value ?: return
+        if (tab.pinch.parent !== container) {
+            (tab.pinch.parent as? ViewGroup)?.removeView(tab.pinch)
+            container.addView(tab.pinch, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            ))
+        }
+        listOfNotNull(
+            dpadRef.value, actionRef.value, mouseRef.value,
+            systemButtonsRef.value, floatingMenuRef.value
+        ).forEach { it.bringToFront() }
+    }
+
+    /** 切换活动标签 —— 活动标签独占显示（v11"弹窗永久叠层盖住主窗"根除点） */
+    fun switchToTab(id: Int) {
+        val tab = browserTabs.firstOrNull { it.id == id } ?: return
+        if (id == activeTabId) return
+        val container = mainBoxRef.value
+        // 其余标签全部脱离视图树（常驻内存，切回即恢复，不重载）
+        browserTabs.forEach { t ->
+            if (t.id != id && t.pinch.parent === container) container?.removeView(t.pinch)
+        }
+        activeTabId = id
+        webViewRef.value = tab.webView
+        attachTab(tab)
+        dpadRef.value?.targetWebView = tab.webView
+        actionRef.value?.targetWebView = tab.webView
+        mouseRef.value?.targetWebView = tab.webView
+        // UI 状态随标签同步（缩放/地址栏/主页）
+        pinchZoom.value = tab.pinch.currentZoom()
+        val u = tab.webView.url
+        val isHome = u == null || u == BLANK_URL
+        homeVisible = isHome
+        if (!addressBarFocused) addressText = if (isHome) "" else (u ?: "")
+    }
+
+    /** 关闭标签（window.close / 标签栏 X / 后退过栈底 / 渲染进程死亡） */
+    fun closeTab(id: Int) {
+        val tab = browserTabs.firstOrNull { it.id == id } ?: return
+        if (browserTabs.size <= 1) {
+            Toast.makeText(context, "最后一个标签无法关闭", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val wasActive = tab.id == activeTabId
+        browserTabs.remove(tab)
+        muteWebView(tab.webView)
+        (tab.pinch.parent as? ViewGroup)?.removeView(tab.pinch)
+        tab.pinch.detachWebView()
+        try { tab.webView.destroy() } catch (_: Exception) {}
+        tabTitleMap.remove(tab.id)
+        if (wasActive) {
+            browserTabs.lastOrNull()?.let { switchToTab(it.id) }
+        }
     }
 
     // ================ ★ v11: 浏览器导航助手（须先于 keyEventHandler/BackHandler 声明） ================
@@ -319,9 +386,16 @@ fun WebGameScreen(
      * 返回 false = 已在主页且无历史（交由调用方决定退出）。
      */
     fun browserBack(): Boolean {
-        val wv = webViewRef.value ?: return false
+        val tab = activeTab() ?: return false
+        val wv = tab.webView
         if (wv.canGoBack()) {
             wv.goBack()
+            return true
+        }
+        // ★ v12: 弹窗标签退过栈底 = 关闭标签回 opener（Chrome 语义；
+        //   v11 弹窗永久叠层、主页/收藏按钮对它完全无效，只能靠返回键逐层销毁）。
+        if (tab.isPopup && browserTabs.size > 1) {
+            closeTab(tab.id)
             return true
         }
         if (!homeVisible) {
@@ -402,13 +476,93 @@ fun WebGameScreen(
     }
     BackHandler(enabled = true, onBack = {
         // 系统返回键：★ v11 与物理键同链（全屏 → 网页后退 → 回主页 → 退出）。
-        // 网页全屏视频/window.open 弹窗由后注册的 BackHandler#2 优先处理。
+        // 网页全屏视频由后注册的 BackHandler#2 优先处理；★ v12 弹窗已升级为
+        // 标签（后退过栈底由 browserBack 的标签链关闭回 opener）。
         if (isFullscreen) {
             toggleFullscreen()
         } else if (!browserBack()) {
             onExit()
         }
     })
+
+    // ================ ★ v12: 标签工厂 / 新建标签 / window.open→标签 ================
+
+    /** 标签页用 GameWebView 工厂（新建标签 / window.open 弹窗共用配置：
+     *  复用主窗 client 与 Chrome 回调、JS 桥、UA、缩放基线、按键透传）。 */
+    fun newTabWebView(): GameWebView {
+        val container = mainBoxRef.value!!
+        return GameWebView(container.context).apply {
+            webChromeClient = object : GameWebChromeClient(chromeCallbackRef.value!!) {}
+            webViewClient = wvClientRef.value
+            webAppInterfaceRef.value?.let { addJavascriptInterface(it, "Android") }
+            when (PrefsManager.uaMode) {
+                "ie_compat" -> useUaMode("ie_compat")
+                "mobile" -> useUaMode("mobile")
+                else -> useDesktopMode(true)
+            }
+            if (PrefsManager.pageZoomMode == "manual") applyPageZoom(PrefsManager.pageZoomManual)
+            setOnKeyListener { _, _, event -> keyEventHandler(event) }
+            injectDocumentStartScripts()
+        }
+    }
+
+    /** 新建空白标签（标签栏"+"；落在主页网格，点收藏/输地址即导航） */
+    fun openNewTab() {
+        if (browserTabs.size >= 8) {
+            Toast.makeText(context, "标签太多啦（最多 8 个）", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val tabId = nextTabId++
+        val wv = newTabWebView()
+        val pinch = WebPinchLayout(wv.context).apply {
+            onZoomChanged = { z -> if (activeTabId == tabId) pinchZoom.value = z }
+        }
+        pinch.setWebView(wv)
+        browserTabs.add(BrowserTabInfo(tabId, wv, pinch, isPopup = false))
+        tabTitleMap[tabId] = "新标签"
+        switchToTab(tabId)
+        homeVisible = true
+        if (!addressBarFocused) addressText = ""
+        wv.loadUrl(BLANK_URL)
+    }
+
+    /** ★ v12: window.close / 页面自行关闭 → 关闭对应标签（原 closePopupWindow） */
+    fun closeTabOf(window: WebView?) {
+        val wv = window ?: return
+        val tab = findTabOf(wv) ?: return
+        closeTab(tab.id)
+    }
+
+    /**
+     * ★ v12: window.open / target=_blank → 新标签（原 createPopupWindow 重构）：
+     * 弹窗 WebView 登记为标签并立即激活（Chromium 直接在其中导航，POST 表单 /
+     * JS 重定向全兼容），不再永久叠层 —— 点链接开新标签、回主页、点收藏互不遮挡。
+     */
+    fun createTabFromPopup(opener: WebView?, resultMsg: android.os.Message): Boolean {
+        if (mainBoxRef.value == null || wvClientRef.value == null || chromeCallbackRef.value == null) return false
+        if (browserTabs.size >= 8) {
+            Toast.makeText(context, "标签太多啦（最多 8 个）", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        return try {
+            val tabId = nextTabId++
+            val popup = newTabWebView()
+            val pinch = WebPinchLayout(popup.context).apply {
+                onZoomChanged = { z -> if (activeTabId == tabId) pinchZoom.value = z }
+            }
+            pinch.setWebView(popup)
+            browserTabs.add(BrowserTabInfo(tabId, popup, pinch, isPopup = true))
+            tabTitleMap[tabId] = "新标签"
+            switchToTab(tabId)
+            val transport = resultMsg.obj as? WebView.WebViewTransport
+            transport?.webView = popup
+            resultMsg.sendToTarget()
+            true
+        } catch (e: Exception) {
+            android.util.Log.w("WebGameScreen", "createTabFromPopup failed", e)
+            false
+        }
+    }
 
     // ---------- 屏幕方向 / 全屏：★ v11 已整体上移（见 activity 声明后） ----------
 
@@ -461,7 +615,8 @@ fun WebGameScreen(
         //    用户实测"百分比设置完全没作用"，已整体废弃。）
         webViewRef.value?.applyPageZoom(manual)   // 仅清理通道（textZoom/body.zoom 残留）
         val z = if (mode == "manual") manual.coerceIn(25, 300) / 100f else 1f
-        pinchLayoutRef.value?.setZoomImmediate(z)
+        // ★ v12: 缩放走活动标签自己的仲裁容器（每标签各自保留缩放状态）
+        activeTab()?.pinch?.setZoomImmediate(z)
     }
 
     fun applyUa(mode: String) {
@@ -561,7 +716,7 @@ fun WebGameScreen(
         webViewRef.value?.releaseAllKeys()
     }
 
-    // ================ ★ v10: 网页全屏退出 / window.open 弹窗管理 ================
+    // ================ ★ v10/v12: 网页全屏退出（标签管理已上移至多标签引擎） ================
 
     /** 网页全屏退出（返回键与 ChromeClient.onHideFullscreen 共用同一逻辑） */
     fun exitWebFullscreen() {
@@ -572,81 +727,11 @@ fun WebGameScreen(
         customViewCallbackRef.value = null
     }
 
-    /** 关闭并销毁一个弹窗 WebView（window.close / 返回键 / 渲染进程死亡时调用）。
-     *   ★ v11: 弹窗由 WebPinchLayout 承载 → 连容器一起销毁；
-     *   地址栏同步回主窗口当前页（弹窗导航曾把地址栏带去弹窗 URL）。 */
-    fun closePopupWindow(window: WebView?) {
-        val wv = window ?: return
-        if (popupViews.remove(wv)) {
-            destroyWebViewHolder(wv)
-            popupCount.value = popupViews.size
-            val mainUrl = webViewRef.value?.url
-            if (!addressBarFocused) {
-                addressText = when {
-                    mainUrl == null || mainUrl == BLANK_URL -> ""
-                    else -> mainUrl
-                }
-            }
-        }
-    }
-
-    /**
-     * ★ v10: window.open / target=_blank → 真实弹窗 WebView（参照 AnWind onCreateWindow）：
-     * 弹窗复用主窗口的 View/Chrome 客户端与 JS 桥，全屏铺在主画面之上，
-     * 手柄/悬浮菜单置顶仍可操作；返回键逐层关闭（见 BackHandler 优先级）。
-     */
-    fun createPopupWindow(opener: WebView?, resultMsg: android.os.Message): Boolean {
-        val container = mainBoxRef.value ?: return false
-        val client = wvClientRef.value ?: return false
-        val chromeCb = chromeCallbackRef.value ?: return false
-        try {
-            val popup = GameWebView(container.context).apply {
-                webChromeClient = object : GameWebChromeClient(chromeCb) {}
-                webViewClient = client
-                webAppInterfaceRef.value?.let { addJavascriptInterface(it, "Android") }
-                when (PrefsManager.uaMode) {
-                    "ie_compat" -> useUaMode("ie_compat")
-                    "mobile" -> useUaMode("mobile")
-                    else -> useDesktopMode(true)
-                }
-                if (PrefsManager.pageZoomMode == "manual") applyPageZoom(PrefsManager.pageZoomManual)
-                setOnKeyListener { _, _, event -> keyEventHandler(event) }
-                injectDocumentStartScripts()
-            }
-            // ★ v11: 弹窗同样由缩放仲裁容器承载（弹窗内双指缩放与主窗同能力）
-            val popupPinch = WebPinchLayout(container.context)
-            popupPinch.setWebView(popup)
-            container.addView(popupPinch, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            ))
-            // 手柄/悬浮菜单保持在弹窗之上可操作
-            listOfNotNull(
-                dpadRef.value, actionRef.value, mouseRef.value,
-                systemButtonsRef.value, floatingMenuRef.value
-            ).forEach { it.bringToFront() }
-            popupViews.add(popup)
-            popupCount.value = popupViews.size
-            val transport = resultMsg.obj as? WebView.WebViewTransport
-            transport?.webView = popup
-            resultMsg.sendToTarget()
-            return true
-        } catch (e: Exception) {
-            android.util.Log.w("WebGameScreen", "createPopupWindow failed", e)
-            return false
-        }
-    }
-
-    // ★ v10: 返回键优先级 —— 网页全屏(HTML5 requestFullscreen)先退全屏；
-    //   window.open 弹窗先逐层关闭；两者都不是时交给上面的常规返回逻辑。
-    //   （后注册的 BackHandler 优先生效；引用的局部函数均已在上方声明）
-    BackHandler(enabled = customViewRef.value != null || popupCount.value > 0) {
+    // ★ v12: 视频全屏优先于标签/网页后退（后注册的 BackHandler 优先生效）——
+    //   window.open 已升级为标签（后退过栈底由 browserBack 关闭标签回 opener）。
+    BackHandler(enabled = customViewRef.value != null) {
         if (customViewRef.value != null) {
             exitWebFullscreen()
-        } else if (popupViews.isNotEmpty()) {
-            // ★ v11: 弹窗由 WebPinchLayout 承载 → 连容器一起销毁
-            destroyWebViewHolder(popupViews.removeAt(popupViews.size - 1))
-            popupCount.value = popupViews.size
         }
     }
 
@@ -657,6 +742,18 @@ fun WebGameScreen(
             .background(PrimaryBackground)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+
+            // ===== ★ v12: 标签栏（≥2 个标签时显示；AnWind TabBar 手机化） =====
+            if (!isFullscreen && browserTabs.size > 1) {
+                BrowserTabStrip(
+                    tabs = browserTabs,
+                    activeTabId = activeTabId,
+                    titles = tabTitleMap,
+                    onSelect = { switchToTab(it) },
+                    onClose = { closeTab(it) },
+                    onNew = { openNewTab() }
+                )
+            }
 
             // ===== 浏览器工具栏（后退/前进/刷新停止/主页/地址栏/收藏星标） =====
             if (!isFullscreen) {
@@ -758,7 +855,9 @@ fun WebGameScreen(
     // ★ v10: renderEpoch 为键 —— 渲染进程死亡后销毁旧 WebView 并自动重建重载
     LaunchedEffect(mainBoxRef.value, renderEpoch.value) {
         val container = mainBoxRef.value ?: return@LaunchedEffect
-        if (webViewRef.value == null) {
+        // ★ v12: 主标签以 browserTabs 登记（id=0）为准 —— 渲染自愈后旧引用
+        //   已被清除，若仍以 webViewRef 判重，活动标签为弹窗时主标签永不重建。
+        if (browserTabs.none { it.id == 0 }) {
             // 创建 WebView
             val wv = GameWebView(container.context)
             // WebView 创建时应用用户保存的缩放
@@ -785,10 +884,15 @@ fun WebGameScreen(
 
             // 客户端与回调（★ v10: onProgress 接顶部进度条 / 弹窗窗口管理 / 全屏退出统一）
             val chromeCallback = object : GameWebChromeClient.Callback {
-                override fun onProgress(progress: Int) { loadProgress.value = progress }
-                override fun onTitle(title: String?) {
-                    // ★ v11: 页面标题 → 收藏星标默认名
-                    pageTitle = title ?: ""
+                // ★ v12: 进度条只跟随活动标签（后台标签加载不闪进度条）
+                override fun onProgress(view: WebView?, progress: Int) {
+                    if (view === webViewRef.value) loadProgress.value = progress
+                }
+                override fun onTitle(view: WebView?, title: String?) {
+                    // ★ v12: 标签栏标题按 view 归属各自标签；
+                    //   页面标题 → 收藏星标默认名（只认活动标签）
+                    findTabOf(view)?.let { tabTitleMap[it.id] = (title ?: "").ifBlank { "网页" } }
+                    if (view === webViewRef.value) pageTitle = title ?: ""
                 }
                 override fun onConsole(level: String, msg: String, sourceId: String?, line: Int) {}
                 // WebView 全屏：网页调用 requestFullscreen() 时触发。
@@ -822,23 +926,25 @@ fun WebGameScreen(
                     try { activityResultLauncher.launch(mimes) } catch (e: Exception) { callback.onReceiveValue(null); filePathCallback.value = null }
                     return true
                 }
-                // ★ v10: window.open / target=_blank → 真实弹窗 WebView（返回键逐层关闭）
+                // ★ v12: window.open / target=_blank → 新标签（原 createPopupWindow）
                 override fun handleCreateWindow(opener: WebView?, isDialog: Boolean, resultMsg: android.os.Message): Boolean {
-                    return createPopupWindow(opener, resultMsg)
+                    return createTabFromPopup(opener, resultMsg)
                 }
-                // ★ v10: window.close() / 页面自行关闭 → 销毁对应弹窗
+                // ★ v12: window.close() / 页面自行关闭 → 关闭对应标签
                 override fun handleCloseWindow(window: WebView?) {
-                    closePopupWindow(window)
+                    closeTabOf(window)
                 }
             }
-            // ★ v10: 暴露给 createPopupWindow（弹窗复用同一套 Chrome 行为）
+            // ★ v10: 暴露给 createTabFromPopup（标签复用同一套 Chrome 行为）
             chromeCallbackRef.value = chromeCallback
 
             val viewClientCallback = object : GameWebViewClient.Callback {
-                override fun onPageStarted(url: String?) {
-                    webViewRef.value?.releaseAllKeys()
-                    // ★ v11: 地址栏同步 + 主页检测 + 缩放域导航重置
-                    //   （焦点内输入时不同步 —— 正在打字不覆盖）
+                override fun onPageStarted(view: WebView?, url: String?) {
+                    (view as? GameWebView)?.releaseAllKeys()
+                    // ★ v12: 缩放域导航重置按各自标签的容器（后台标签互不干扰）
+                    findTabOf(view)?.pinch?.resetForNavigation()
+                    // ★ v12: 地址栏/主页状态只跟随活动标签（后台标签导航不串台）
+                    if (view !== webViewRef.value) return
                     if (url == BLANK_URL) {
                         homeVisible = true
                         if (!addressBarFocused) addressText = ""
@@ -846,13 +952,12 @@ fun WebGameScreen(
                         homeVisible = false
                         if (!addressBarFocused) addressText = url
                     }
-                    pinchLayoutRef.value?.resetForNavigation()
                 }
-                override fun onPageFinished(url: String?) {
-                    // ★ v11: 持久化手动缩放基线重放 —— 每页加载完成回到用户
-                    //   设定的百分比（auto 已在 onPageStarted 重置回 100%）
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    // ★ v11/v12: 持久化手动缩放基线重放 —— 每标签各自容器，
+                    //   后台标签载完也保持基线（切回不漂移）
                     if (PrefsManager.pageZoomMode == "manual") {
-                        pinchLayoutRef.value?.setZoomImmediate(
+                        findTabOf(view)?.pinch?.setZoomImmediate(
                             PrefsManager.pageZoomManual.coerceIn(25, 300) / 100f
                         )
                     }
@@ -862,12 +967,10 @@ fun WebGameScreen(
                     if (errorCode == -1) return
                     errorMessage.value = "加载失败: $description"
                 }
-                override fun onSwfIntercepted(swfUrl: String, pageUrl: String) {
-                    val wv2 = webViewRef.value
-                    if (wv2 != null) {
-                        val playerUrl = NavHelper.playerUrl(swfUrl, base = pageUrl, title = null)
-                        wv2.loadUrl(playerUrl)
-                    }
+                override fun onSwfIntercepted(view: WebView?, swfUrl: String, pageUrl: String) {
+                    // ★ v12: SWF 在拦截它的那个标签内播放（不串台到活动标签）
+                    val target = view ?: webViewRef.value
+                    target?.loadUrl(NavHelper.playerUrl(swfUrl, base = pageUrl, title = null))
                 }
                 override fun shouldInjectRuffle(url: String?): Boolean {
                     if (url == null) return false
@@ -910,23 +1013,22 @@ fun WebGameScreen(
                         null
                     }
                 }
-                // ★ v10: 渲染进程死亡自愈（参照 AnWind renderEpoch）—— 不接管则
-                //   Chromium 杀整个应用进程。主窗口销毁重建自动重载；弹窗直接关闭。
-                // ★ v11: 主窗销毁连带其缩放容器（WebPinchLayout）一起拆除。
+                // ★ v10/v12: 渲染进程死亡自愈（参照 AnWind renderEpoch）—— 不接管则
+                //   Chromium 杀整个应用进程。主标签 = renderEpoch 重建重载；
+                //   弹窗标签 = 直接关闭（AnWind 同款）。
                 override fun onRendererGone(deadView: WebView?) {
-                    val main = webViewRef.value
-                    if (deadView != null && deadView !== main) {
-                        closePopupWindow(deadView)
-                        return
+                    val tab = findTabOf(deadView)
+                    if (tab == null) return
+                    if (tab.id == 0) {
+                        if (deadView != null) destroyWebViewHolder(deadView)
+                        browserTabs.removeAll { it.id == 0 }
+                        if (tab.id == activeTabId) webViewRef.value = null
+                        renderEpoch.value = renderEpoch.value + 1
+                        Toast.makeText(context, "页面渲染进程异常，已自动恢复", Toast.LENGTH_SHORT).show()
+                    } else {
+                        closeTab(tab.id)
+                        Toast.makeText(context, "标签页渲染异常，已自动关闭", Toast.LENGTH_SHORT).show()
                     }
-                    val dead = main
-                    webViewRef.value = null
-                    if (dead != null) {
-                        destroyWebViewHolder(dead)
-                    }
-                    pinchLayoutRef.value = null
-                    renderEpoch.value = renderEpoch.value + 1
-                    Toast.makeText(context, "页面渲染进程异常，已自动恢复", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -953,26 +1055,24 @@ fun WebGameScreen(
             }
             wv.injectDocumentStartScripts()
 
-            // ★ v11: 双指缩放仲裁容器（WebPinchLayout）承载 WebView ——
+            // ★ v11/v12: 双指缩放仲裁容器（WebPinchLayout）承载 WebView ——
             //   页面禁缩放（meta/preventDefault）时容器接管手势，动态改写
             //   viewport meta 强制连续缩放（AnWind 已验证方案）。
-            val oldPinch = pinchLayoutRef.value
-            if (oldPinch != null && oldPinch.parent == container) container.removeView(oldPinch)
             val pinch = WebPinchLayout(container.context).apply {
-                onZoomChanged = { z -> pinchZoom.value = z }
+                onZoomChanged = { z -> if (activeTabId == 0) pinchZoom.value = z }
             }
-            pinchLayoutRef.value = pinch
             pinch.setWebView(wv)
-            container.addView(pinch, android.widget.FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            ))
-            // ★ v11: 渲染自愈重建时 pinch 追加在控件之后 —— 把手柄/菜单拉回最上层
-            listOfNotNull(
-                dpadRef.value, actionRef.value, mouseRef.value,
-                systemButtonsRef.value, floatingMenuRef.value
-            ).forEach { it.bringToFront() }
-            webViewRef.value = wv
+            // ★ v12: 主标签登记 + 活动标签独占附着不变式
+            val freshMain = BrowserTabInfo(0, wv, pinch)
+            val idx0 = browserTabs.indexOfFirst { it.id == 0 }
+            if (idx0 >= 0) browserTabs[idx0] = freshMain else browserTabs.add(0, freshMain)
+            if (!tabTitleMap.containsKey(0)) tabTitleMap[0] = if (url == BROWSER_HOME_URL) "主页" else "标签 1"
+            if (browserTabs.none { it.id == activeTabId }) activeTabId = 0
+            browserTabs.forEach { t ->
+                if (t.id == activeTabId) attachTab(t)
+                else if (t.pinch.parent === container) container.removeView(t.pinch)
+            }
+            webViewRef.value = activeTab()?.webView
 
             // 初始加载（★ v11: 浏览器主页入口 = about:blank + 主页收藏夹网格）
             val isHome = url == BROWSER_HOME_URL
@@ -1124,35 +1224,62 @@ fun WebGameScreen(
         }
     }
 
-    // 释放资源 / 屏幕常亮
+    // 释放资源 / 屏幕常亮 / ★ v12 刘海沉浸会话
     DisposableEffect(Unit) {
         // ★ v10: 游戏期间屏幕常亮
         activity?.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // ★ v12: 浏览器会话 = 占用刘海屏 + 沉浸式（参照 AnWind SHORT_EDGES）。
+        //   v11 未设 cutout mode 且跟随系统 decorFits —— 刘海/挖孔区域整条
+        //   黑边（Redmi K60 Pro 横屏挖孔在侧边尤明显）。进入浏览器后：
+        //   ① layoutInDisplayCutoutMode = SHORT_EDGES（内容延伸绘制进挖孔区）；
+        //   ② decorFits=false + 系统栏隐藏（WebView 真正边到边）。
+        //   退出时逐项还原（进入时系统栏本来就可见才还原显示，防把别的
+        //   界面原本的沉浸状态改掉）。
+        val w = activity?.window
+        var oldCutout = -1
+        var barsWereVisible = true
+        if (w != null) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                oldCutout = w.attributes.layoutInDisplayCutoutMode
+                w.attributes = w.attributes.apply {
+                    layoutInDisplayCutoutMode =
+                        android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            barsWereVisible = androidx.core.view.WindowCompat.getRootWindowInsets(w.decorView)
+                ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.systemBars()) ?: true
+            androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, false)
+            androidx.core.view.WindowInsetsControllerCompat(w, w.decorView).hide(
+                androidx.core.view.WindowInsetsCompat.Type.systemBars()
+            )
+        }
         onDispose {
             activity?.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            // ★ v10: 弹窗销毁链 —— 先 JS 静音再 destroy（参照 AnWind，防“关了还在响”）
-            // ★ v11: 弹窗/主窗均由 WebPinchLayout 承载 → destroyWebViewHolder 连容器一起拆
-            popupViews.forEach { pv ->
-                try {
-                    pv.evaluateJavascript(
-                        "(function(){try{document.querySelectorAll('video,audio').forEach(function(m){" +
-                        "try{m.pause();}catch(e){}});}catch(e){}})();", null)
-                } catch (_: Exception) {}
-                destroyWebViewHolder(pv)
+            // 视频全屏兜底退出（customView 挂在容器上，销毁前先收）
+            if (customViewRef.value != null) exitWebFullscreen()
+            // 还原窗口：cutout mode / 系统栏 / decorFits
+            if (w != null) {
+                if (oldCutout >= 0 && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    w.attributes = w.attributes.apply { layoutInDisplayCutoutMode = oldCutout }
+                }
+                if (barsWereVisible) {
+                    androidx.core.view.WindowCompat.setDecorFitsSystemWindows(w, true)
+                    androidx.core.view.WindowInsetsControllerCompat(w, w.decorView).show(
+                        androidx.core.view.WindowInsetsCompat.Type.systemBars()
+                    )
+                }
             }
-            popupViews.clear()
-            popupCount.value = 0
-            // 主窗口同样先静音再 destroy
-            webViewRef.value?.let { wv ->
-                try {
-                    wv.evaluateJavascript(
-                        "(function(){try{document.querySelectorAll('video,audio').forEach(function(m){" +
-                        "try{m.pause();}catch(e){}});}catch(e){}})();", null)
-                } catch (_: Exception) {}
-                destroyWebViewHolder(wv)
+            // ★ v12: 全部标签销毁链（先 JS 静音再 destroy，参照 AnWind 防"关了还在响"；
+            //   各标签缩放容器连同剥离）
+            browserTabs.forEach { tab ->
+                muteWebView(tab.webView)
+                (tab.pinch.parent as? ViewGroup)?.removeView(tab.pinch)
+                tab.pinch.detachWebView()
+                try { tab.webView.destroy() } catch (_: Exception) {}
             }
-            pinchLayoutRef.value?.detachWebView()
-            pinchLayoutRef.value = null
+            browserTabs.clear()
+            tabTitleMap.clear()
+            webViewRef.value = null
         }
     }
 
@@ -1345,6 +1472,18 @@ fun WebGameScreen(
 /** FrameLayout 子类，作为手柄 + WebView + 菜单的承载容器 */
 @SuppressLint("ViewConstructor")
 private class FrameLayoutGameContainer(context: Context) : android.widget.FrameLayout(context)
+
+/**
+ * ★ v12: 浏览器标签 —— 每标签独占常驻 WebView + 缩放仲裁容器（AnWind BrowserTab 同构：
+ * 切换只 attach/detach 不销毁重建，切回即恢复；isPopup 标记 window.open 出身的标签，
+ * 后退过栈底时按 Chrome 语义关闭回 opener）。
+ */
+private class BrowserTabInfo(
+    val id: Int,
+    val webView: GameWebView,
+    val pinch: WebPinchLayout,
+    val isPopup: Boolean = false
+)
 
 @Composable
 private fun FlashEngineDialog(
@@ -1967,6 +2106,65 @@ private fun BrowserToolbar(
         // ☰ 菜单：打开悬浮菜单（手柄/Flash/缩放/兼容模式等全部设置入口）
         IconButton(onClick = onMenu, modifier = Modifier.size(38.dp)) {
             Icon(Icons.Rounded.MoreVert, "菜单", tint = Color.White, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+// ======================================================================
+// ★ v12: 标签栏（AnWind TabBar 手机化 —— 横滑 chip 列表 + 新建按钮；
+// ≥2 个标签时显示，单标签省一排空间不打扰游戏）
+// ======================================================================
+
+@Composable
+private fun BrowserTabStrip(
+    tabs: List<BrowserTabInfo>,
+    activeTabId: Int,
+    titles: Map<Int, String>,
+    onSelect: (Int) -> Unit,
+    onClose: (Int) -> Unit,
+    onNew: () -> Unit
+) {
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xF0101218))
+            .padding(horizontal = 2.dp, vertical = 2.dp),
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)
+    ) {
+        items(tabs, key = { it.id }) { tab ->
+            val title = titles[tab.id].orEmpty().ifBlank { "标签" }
+            val isActive = tab.id == activeTabId
+            Row(
+                modifier = Modifier
+                    .height(30.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .background(if (isActive) Color(0xFF232736) else Color(0x1AFFFFFF))
+                    .clickable { onSelect(tab.id) }
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    title.take(12),
+                    color = if (isActive) Color.White else Color(0xFF8899AA),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.width(96.dp)
+                )
+                Icon(
+                    Icons.Rounded.Close, "关闭标签",
+                    tint = Color(0xFF8899AA),
+                    modifier = Modifier
+                        .padding(start = 4.dp)
+                        .size(14.dp)
+                        .clickable { onClose(tab.id) }
+                )
+            }
+        }
+        item {
+            IconButton(onClick = onNew, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Rounded.Add, "新建标签", tint = Color(0xFF8A7BFF), modifier = Modifier.size(18.dp))
+            }
         }
     }
 }
