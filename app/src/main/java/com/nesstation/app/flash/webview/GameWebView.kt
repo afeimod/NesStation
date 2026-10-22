@@ -140,6 +140,31 @@ open class GameWebView @JvmOverloads constructor(
                 }
             }
         }, "NativeIme")
+        // ★ v19: 下载桥接接口 —— blob:/data: 链接经页面 JS 取回内容后回传落盘
+        //   （与 NativeIme 同款双通道模式；JS 侧即 window.NativeDownload.*）。
+        //   根因：DownloadManager 只认 http/https，弹窗下载页最常见的 blob:
+        //   （JS 生成文件再 window.open/location 跳转）与 data:（base64 内联）
+        //   喂给 DownloadManager 必抛"Unsupported scheme" → 此前"跳出弹窗
+        //   下载的都无法下载"。桥接 = 页面内 fetch(blob) → FileReader base64
+        //   → 本接口落盘，DownloadManager 无法企及的场景全部兜住。
+        addJavascriptInterface(object {
+            @JavascriptInterface
+            fun saveBase64(name: String, mime: String, base64: String) {
+                Thread {
+                    try {
+                        val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                        val saved = saveBytesToDownloads(name, mime, bytes)
+                        post { android.widget.Toast.makeText(context, "已保存：$saved", android.widget.Toast.LENGTH_LONG).show() }
+                    } catch (e: Exception) {
+                        post { android.widget.Toast.makeText(context, "下载失败：${e.message ?: "保存文件失败"}", android.widget.Toast.LENGTH_SHORT).show() }
+                    }
+                }.start()
+            }
+            @JavascriptInterface
+            fun fail(reason: String) {
+                post { android.widget.Toast.makeText(context, "下载失败：$reason", android.widget.Toast.LENGTH_SHORT).show() }
+            }
+        }, "NativeDownload")
     }
 
     @Suppress("DEPRECATION")
@@ -192,23 +217,153 @@ open class GameWebView @JvmOverloads constructor(
      * contentDisposition（含 RFC 5987 filename*=UTF-8'' 形式）→ 落公共
      * Downloads/，系统通知进度；APK 完成后允许媒体扫描。SWF 直链不会到这里
      * （shouldOverrideUrlLoading 先行拦截进 Ruffle/WAFlash 播放器）。
+     *
+     * ★ v19: 修复"下载文件报错、弹窗下载全失败"——
+     *   1) http/https：补 Cookie/Referer 转发（登录态/防盗链下载此前 403 报错）；
+     *      公共 Downloads 落盘失败（个别设备 SecurityException）自动回退应用
+     *      外部目录；DownloadManager 全链路失败的最后一搏 = ACTION_VIEW 转系统；
+     *   2) data:（base64 内联文件）：DownloadManager 不认 → 直接解码落盘；
+     *   3) blob:（JS 生成文件对象、弹窗下载页最常见形态）：DownloadManager
+     *      完全不支持 → 在创建该 blob 的本 WebView 页面上下文注入 fetch 脚本，
+     *      FileReader 转 base64 经 NativeDownload 桥接落盘；
+     *   4) 文件名清洗（剥路径分隔符/控制字符），防非法名导致 enqueue 失败。
      */
     private fun handleExternalDownload(url: String, userAgent: String, contentDisposition: String?, mimetype: String?) {
-        try {
-            val fileName = parseDownloadFileName(contentDisposition, url)
-            val request = android.app.DownloadManager.Request(android.net.Uri.parse(url)).apply {
-                try { setMimeType(mimetype) } catch (_: Exception) {}
-                addRequestHeader("User-Agent", userAgent)
-                setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
-                setTitle(fileName)
-                setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                try { allowScanningByMediaScanner() } catch (_: Exception) {}
+        val fileName = sanitizeDownloadFileName(parseDownloadFileName(contentDisposition, url))
+        val scheme = try { android.net.Uri.parse(url).scheme?.lowercase() } catch (_: Exception) { null }
+        when (scheme) {
+            "http", "https" -> {
+                try {
+                    val request = android.app.DownloadManager.Request(android.net.Uri.parse(url)).apply {
+                        try { setMimeType(mimetype) } catch (_: Exception) {}
+                        addRequestHeader("User-Agent", userAgent)
+                        // ★ v19: 会话 Cookie 转发 —— 登录后才能下载的文件此前 403
+                        try {
+                            android.webkit.CookieManager.getInstance().getCookie(url)?.let {
+                                addRequestHeader("Cookie", it)
+                            }
+                        } catch (_: Exception) {}
+                        // ★ v19: Referer 转发 —— 防盗链站点此前直接拒绝
+                        try {
+                            this@GameWebView.url?.takeIf { it.isNotBlank() }?.let {
+                                addRequestHeader("Referer", it)
+                            }
+                        } catch (_: Exception) {}
+                        setTitle(fileName)
+                        setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                        try { allowScanningByMediaScanner() } catch (_: Exception) {}
+                        // 公共 Downloads 优先；个别设备/旧系统抛异常 → 回退应用外部目录（免权限）
+                        try {
+                            setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
+                        } catch (se: Exception) {
+                            setDestinationInExternalFilesDir(context, android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
+                        }
+                    }
+                    val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
+                    dm.enqueue(request)
+                    post { android.widget.Toast.makeText(context, "开始下载：$fileName", android.widget.Toast.LENGTH_SHORT).show() }
+                } catch (e: Exception) {
+                    // ★ v19: DownloadManager 建任务失败的最后一搏 —— 转交系统应用处理
+                    try {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                        post { android.widget.Toast.makeText(context, "已转交系统下载：$fileName", android.widget.Toast.LENGTH_SHORT).show() }
+                    } catch (e2: Exception) {
+                        post { android.widget.Toast.makeText(context, "下载失败：${e2.message ?: e.message ?: "无法创建下载"}", android.widget.Toast.LENGTH_SHORT).show() }
+                    }
+                }
             }
-            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
-            dm.enqueue(request)
-            post { android.widget.Toast.makeText(context, "开始下载：$fileName", android.widget.Toast.LENGTH_SHORT).show() }
+            "data" -> {
+                // ★ v19: data: URI（base64/URL 编码内联文件）—— 直接解码落盘
+                try {
+                    val comma = url.indexOf(',')
+                    if (comma > 4) {
+                        val header = url.substring(5, comma)
+                        val payload = url.substring(comma + 1)
+                        val isBase64 = header.contains("base64", ignoreCase = true)
+                        val bytes = if (isBase64) android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                                    else java.net.URLDecoder.decode(payload, "UTF-8").toByteArray(Charsets.UTF_8)
+                        val mime = header.substringBefore(';').ifBlank { mimetype ?: "application/octet-stream" }
+                        val saved = saveBytesToDownloads(fileName, mime, bytes)
+                        post { android.widget.Toast.makeText(context, "已保存：$saved", android.widget.Toast.LENGTH_LONG).show() }
+                    } else {
+                        post { android.widget.Toast.makeText(context, "下载失败：data 链接格式无效", android.widget.Toast.LENGTH_SHORT).show() }
+                    }
+                } catch (e: Exception) {
+                    post { android.widget.Toast.makeText(context, "下载失败：${e.message ?: "data 解码失败"}", android.widget.Toast.LENGTH_SHORT).show() }
+                }
+            }
+            "blob" -> {
+                // ★ v19: blob: URL —— 弹窗下载页最常见的形态（JS 生成的文件对象）。
+                //   必须在创建该 blob 的同一个 WebView 页面里 fetch（本实例），
+                //   FileReader 转 base64 → NativeDownload 桥接落盘。
+                post { android.widget.Toast.makeText(context, "正在获取下载内容…", android.widget.Toast.LENGTH_SHORT).show() }
+                val urlJson = org.json.JSONObject(url).toString()
+                val nameJson = org.json.JSONObject(fileName).toString()
+                val script = """
+                    (function(){
+                      if (window.__nsDlBusy) return; window.__nsDlBusy = 1;
+                      try {
+                        fetch($urlJson).then(function(r){ return r.blob(); }).then(function(b){
+                          var fr = new FileReader();
+                          fr.onload = function(){
+                            try {
+                              var d = String(fr.result);
+                              var i = d.indexOf(',');
+                              var head = d.slice(5, i);
+                              var mime = head.split(';')[0] || 'application/octet-stream';
+                              window.NativeDownload.saveBase64($nameJson, mime, d.slice(i + 1));
+                            } catch (e) { window.NativeDownload.fail(String(e)); }
+                            window.__nsDlBusy = 0;
+                          };
+                          fr.onerror = function(){ window.NativeDownload.fail('read blob failed'); window.__nsDlBusy = 0; };
+                          fr.readAsDataURL(b);
+                        }).catch(function(e){ window.NativeDownload.fail(String(e)); window.__nsDlBusy = 0; });
+                      } catch (e) { window.NativeDownload.fail(String(e)); window.__nsDlBusy = 0; }
+                    })();
+                """.trimIndent()
+                evaluateJavascript(script, null)
+            }
+            else -> {
+                post { android.widget.Toast.makeText(context, "暂不支持该类型下载链接（$scheme）", android.widget.Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+
+    /** ★ v19: 下载文件名清洗 —— 剥离路径分隔符与控制/非法字符，空名兑底时间戳名 */
+    private fun sanitizeDownloadFileName(raw: String): String {
+        val cleaned = raw.substringAfterLast('/').substringAfterLast('\\')
+            .replace(Regex("[\\x00-\\x1F\"<>|:?*]"), "").trim()
+        return cleaned.ifBlank { "download_${System.currentTimeMillis()}.bin" }
+    }
+
+    /** ★ v19: 字节流落 Downloads —— API 29+ 走 MediaStore（系统下载目录、
+     *  文件应用可见），以下走应用外部私有目录（免权限）；均失败再兑底应用
+     *  私有 files 目录（100% 可写），保证下载结果永不为空。 */
+    private fun saveBytesToDownloads(fileName: String, mimeType: String, data: ByteArray): String {
+        return try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeType.ifBlank { "application/octet-stream" })
+                    put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                }
+                val uri = context.contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw java.io.IOException("MediaStore 写入失败")
+                context.contentResolver.openOutputStream(uri)?.use { it.write(data) }
+                    ?: throw java.io.IOException("打开输出流失败")
+                "Download/$fileName"
+            } else {
+                val dir = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+                val file = java.io.File(dir, fileName)
+                java.io.FileOutputStream(file).use { it.write(data) }
+                file.absolutePath
+            }
         } catch (e: Exception) {
-            post { android.widget.Toast.makeText(context, "下载失败：${e.message ?: "无法创建下载"}", android.widget.Toast.LENGTH_SHORT).show() }
+            val file = java.io.File(context.filesDir, fileName)
+            java.io.FileOutputStream(file).use { it.write(data) }
+            file.absolutePath
         }
     }
 

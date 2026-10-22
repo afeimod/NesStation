@@ -45,6 +45,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.MoreVert
@@ -829,7 +830,9 @@ fun WebGameScreen(
                         favorites = favorites,
                         onNavigate = { entry -> openInBrowser(entry.url, entry.uaMode) },
                         onOpenMenu = { entry -> menuFavGame = entry },
-                        onAdd = { showAddFavoriteDialog = true }
+                        onAdd = { showAddFavoriteDialog = true },
+                        // ★ v19: 主页搜索（引擎 URL + 关键词）走当前标签导航
+                        onSearch = { url -> openInBrowser(url, PrefsManager.uaMode) }
                     )
                 }
 
@@ -1676,221 +1679,289 @@ private fun KeyMappingDialog(
     val keyCount = PrefsManager.gamepadKeyCount
     val keys = arrayOf("J","K","L","U","I","O","A","B","C","D","E","F","G","H","M","N","P","Q","R","S","T","W","X","Y","Z","SPACE","ENTER","TAB","ESC","0","1","2","3","4","5","6","7","8","9")
 
-    val menuItems = arrayOf(
-        "按键映射 (选择按键修改)",
-        "添加按键 (当前: $keyCount)",
-        "删除按键 (当前: $keyCount)",
-        "Start/Select 映射",
-        "方向键模式 (DPAD/WASD/摇杆)",
-        "摇杆 WASD 映射 (默认W/S/A/D)",   // ★ v17 新增
-        "方向键大小",
-        "动作按键大小",
-        "显示/隐藏按键",
-        "添加/隐藏鼠标按钮",
-        "位置编辑模式 (拖动调整)" + if (isPositionEditMode) " [已开启]" else "",
-        "视角旋转 (3D游戏)",
-        "恢复默认"
-    )
+    // ---------- ★ v19: 分区设置面板（v17 的 0-12 平铺列表重排，用户反馈"非常乱"） ----------
+    // 13 项操作全部保留，按【方向控制 / 动作按键 / 功能键 / 布局与其他】四区归组，
+    // 行尾显示当前值（黄色），恢复默认移到底部按钮。
+
+    fun showKeyRemap() {
+        // 按键映射（选择按键修改）
+        val gameKeys = PrefsManager.gamepadKeys
+        val labels = gameKeys.mapIndexed { i, k -> "按键 ${i + 1} ($k)" }.toTypedArray()
+        android.app.AlertDialog.Builder(context)
+            .setTitle("选择要修改的按键")
+            .setItems(labels) { _, idx ->
+                val current = gameKeys.getOrElse(idx) { "J" }
+                android.app.AlertDialog.Builder(context)
+                    .setTitle("按键 ${idx + 1} 映射")
+                    .setSingleChoiceItems(keys, keys.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
+                        PrefsManager.sp.edit().putString("gamepad_key_${idx + 1}", keys[w2]).apply()
+                        d2.dismiss()
+                        onReload()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    fun showStartSelect() {
+        // Start/Select 映射
+        val startKey = PrefsManager.startKey
+        val selectKey = PrefsManager.selectKey
+        android.app.AlertDialog.Builder(context)
+            .setTitle("Start/Select 映射")
+            .setItems(arrayOf("Start 键 (当前: $startKey)", "Select 键 (当前: $selectKey)")) { _, idx ->
+                val current = if (idx == 0) startKey else selectKey
+                android.app.AlertDialog.Builder(context)
+                    .setTitle(if (idx == 0) "Start 键映射" else "Select 键映射")
+                    .setSingleChoiceItems(keys, keys.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
+                        if (idx == 0) {
+                            PrefsManager.sp.edit().putString("start_key", keys[w2]).apply()
+                        } else {
+                            PrefsManager.sp.edit().putString("select_key", keys[w2]).apply()
+                        }
+                        d2.dismiss()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    fun showDpadMode() {
+        // ★ v19: 摇杆 WASD 提到第一位并加说明（此前藏在第 4 项不显眼）；
+        //   4 种模式语义全部保留（stick_wasd/dpad/wasd/joystick）。
+        val modes = arrayOf(
+            "摇杆 WASD（推荐 · 可拖动 · 斜向双键 · 四向可改键）",
+            "十字键（方向箭头）",
+            "十字键 WASD（十字键发出 W/A/S/D）",
+            "原生摇杆（旧版摇杆布局）"
+        )
+        val values = arrayOf("stick_wasd", "dpad", "wasd", "joystick")
+        val current = PrefsManager.dpadMode
+        android.app.AlertDialog.Builder(context)
+            .setTitle("方向键模式")
+            .setSingleChoiceItems(modes, values.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
+                PrefsManager.sp.edit().putString("dpad_mode", values[w2]).apply()
+                d2.dismiss()
+                onReload()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    fun showStickMap() {
+        // 摇杆 WASD 映射（上/下/左/右四向键位，默认 W/S/A/D）
+        val dirNames = arrayOf("上", "下", "左", "右")
+        val dirPrefKeys = arrayOf("web_stick_key_up", "web_stick_key_down", "web_stick_key_left", "web_stick_key_right")
+        val dirDefaults = arrayOf("W", "S", "A", "D")
+        val dirKeys = dirPrefKeys.mapIndexed { i, k -> PrefsManager.sp.getString(k, dirDefaults[i]) ?: dirDefaults[i] }
+        android.app.AlertDialog.Builder(context)
+            .setTitle("摇杆 WASD 映射")
+            // 注意：模板里变量名后紧跟 CJK 字符必须用显式花括号（v18 编译事故教训）
+            .setItems(dirNames.mapIndexed { i, d -> "${d}方向 (当前: ${dirKeys[i]})" }.toTypedArray()) { _, idx ->
+                android.app.AlertDialog.Builder(context)
+                    .setTitle("摇杆「${dirNames[idx]}」方向映射")
+                    .setSingleChoiceItems(keys, keys.indexOf(dirKeys[idx]).coerceAtLeast(0)) { d2, w2 ->
+                        PrefsManager.sp.edit().putString(dirPrefKeys[idx], keys[w2]).apply()
+                        d2.dismiss()
+                        onReload()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    fun showDpadSize() {
+        // 方向键大小
+        val sizes = arrayOf("小 (80)", "中 (100)", "大 (120)", "超大 (150)")
+        val values = intArrayOf(80, 100, 120, 150)
+        val current = (PrefsManager.dpadScale * 100).toInt()
+        android.app.AlertDialog.Builder(context)
+            .setTitle("方向键大小")
+            .setSingleChoiceItems(sizes, values.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
+                PrefsManager.sp.edit().putInt("dpad_scale", values[w2]).apply()
+                d2.dismiss()
+                onReload()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    fun showActionSize() {
+        // 动作按键大小
+        val sizes = arrayOf("小 (80)", "中 (100)", "大 (120)", "超大 (150)")
+        val values = intArrayOf(80, 100, 120, 150)
+        val current = (PrefsManager.gamepadScale * 100).toInt()
+        android.app.AlertDialog.Builder(context)
+            .setTitle("动作按键大小")
+            .setSingleChoiceItems(sizes, values.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
+                PrefsManager.sp.edit().putInt("gamepad_scale", values[w2]).apply()
+                d2.dismiss()
+                onReload()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    fun showKeyVisibility() {
+        // 显示/隐藏按键
+        val gameKeys = PrefsManager.gamepadKeys
+        val visible = PrefsManager.gamepadKeyVisible
+        val checked = visible.toBooleanArray()
+        val labels = gameKeys.mapIndexed { i, k -> "按键 ${i + 1} ($k)" }.toTypedArray()
+        android.app.AlertDialog.Builder(context)
+            .setTitle("显示/隐藏按键")
+            .setMultiChoiceItems(labels, checked) { _, which2, isChecked ->
+                checked[which2] = isChecked
+            }
+            .setPositiveButton("确定") { _, _ ->
+                val editor = PrefsManager.sp.edit()
+                checked.forEachIndexed { i, c -> editor.putBoolean("gamepad_key_${i + 1}_visible", c) }
+                editor.apply()
+                onReload()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    fun restoreDefaults() {
+        // 恢复默认（★ v17 增摇杆四向键位与位置重置，v19 迁移为底部按钮）
+        PrefsManager.sp.edit()
+            .putInt("gamepad_key_count", 6)
+            .putString("gamepad_key_1", "J")
+            .putString("gamepad_key_2", "K")
+            .putString("gamepad_key_3", "L")
+            .putString("gamepad_key_4", "U")
+            .putString("gamepad_key_5", "I")
+            .putString("gamepad_key_6", "O")
+            .putString("select_key", "TAB")
+            .putString("start_key", "ENTER")
+            .putString("dpad_mode", "joystick")
+            .putInt("dpad_scale", 100)
+            .putInt("gamepad_scale", 100)
+            .putFloat("dpad_pos_x", -1f)
+            .putFloat("dpad_pos_y", -1f)
+            .putFloat("action_pos_x", -1f)
+            .putFloat("action_pos_y", -1f)
+            .putFloat("system_pos_x", -1f)
+            .putFloat("system_pos_y", -1f)
+            .putString("web_stick_key_up", "W")
+            .putString("web_stick_key_down", "S")
+            .putString("web_stick_key_left", "A")
+            .putString("web_stick_key_right", "D")
+            .putFloat("web_stick_pos_x", -1f)
+            .putFloat("web_stick_pos_y", -1f)
+            .apply()
+        onReload()
+    }
+
+    fun dpadModeLabel(mode: String): String = when (mode) {
+        "dpad" -> "十字键"
+        "wasd" -> "十字键 WASD"
+        "stick_wasd" -> "摇杆 WASD"
+        else -> "原生摇杆"
+    }
+
+    // ---------- 自绘分区面板（android.widget，深色底 + 紫罗兰分区头 + 黄色当前值） ----------
+    val density = context.resources.displayMetrics.density
+    fun dp(v: Int) = (v * density).toInt()
+    val rippleId = android.util.TypedValue().let { tv ->
+        context.theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
+        tv.resourceId
+    }
+    val list = android.widget.LinearLayout(context).apply {
+        orientation = android.widget.LinearLayout.VERTICAL
+        setBackgroundColor(android.graphics.Color.parseColor("#10121C"))
+    }
+    val scroll = android.widget.ScrollView(context).apply { addView(list) }
+
+    fun header(title: String) {
+        list.addView(android.widget.TextView(context).apply {
+            // 注意：参数不可叫 text —— apply 内 $text 会解析到 TextView 的同名属性
+            text = "  $title"
+            textSize = 13f
+            setTextColor(android.graphics.Color.parseColor("#8A7BFF"))
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(dp(4), dp(12), dp(4), dp(2))
+        }, android.widget.LinearLayout.LayoutParams(
+            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+    }
+
+    fun row(title: String, value: String, onClick: () -> Unit) {
+        val rowLayout = android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setBackgroundResource(rippleId)
+            setPadding(dp(14), dp(13), dp(14), dp(13))
+        }
+        val titleView = android.widget.TextView(context).apply {
+            text = title
+            textSize = 15f
+            setTextColor(android.graphics.Color.WHITE)
+        }
+        val valueView = android.widget.TextView(context).apply {
+            text = value
+            textSize = 12f
+            setTextColor(android.graphics.Color.parseColor("#FDD835"))
+        }
+        rowLayout.addView(titleView, android.widget.LinearLayout.LayoutParams(
+            0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+        ))
+        rowLayout.addView(valueView, android.widget.LinearLayout.LayoutParams(
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        rowLayout.setOnClickListener { onClick() }
+        list.addView(rowLayout, android.widget.LinearLayout.LayoutParams(
+            android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+    }
+
+    header("方向控制")
+    row("方向键模式", dpadModeLabel(PrefsManager.dpadMode)) { showDpadMode() }
+    row("摇杆按键映射", "四向可改 (W/S/A/D)") { showStickMap() }
+    row("方向键大小", "${(PrefsManager.dpadScale * 100).toInt()}%") { showDpadSize() }
+
+    header("动作按键（共 $keyCount 个）")
+    row("按键映射", "选择按键修改") { showKeyRemap() }
+    row("添加按键", "最多 18 个") {
+        val c = PrefsManager.gamepadKeyCount
+        if (c < 18) PrefsManager.sp.edit().putInt("gamepad_key_count", c + 1).apply()
+        onReload()
+    }
+    row("删除按键", "至少保留 2 个") {
+        val c = PrefsManager.gamepadKeyCount
+        if (c > 2) PrefsManager.sp.edit().putInt("gamepad_key_count", c - 1).apply()
+        onReload()
+    }
+    row("动作按键大小", "${(PrefsManager.gamepadScale * 100).toInt()}%") { showActionSize() }
+
+    header("功能键")
+    row("Start / Select", "当前 ${PrefsManager.startKey} / ${PrefsManager.selectKey}") { showStartSelect() }
+
+    header("布局与其他")
+    row("显示/隐藏按键", "勾选要显示的按键") { showKeyVisibility() }
+    row("鼠标按钮", if (PrefsManager.sp.getBoolean("mouse_buttons_visible", false)) "已显示" else "已隐藏") { onToggleMouseButtons() }
+    row("位置编辑模式", if (isPositionEditMode) "已开启 · 拖动调整" else "已关闭") { onTogglePositionEdit() }
+    row("视角旋转", "3D 游戏") { onToggleCameraRotation() }
 
     android.app.AlertDialog.Builder(context)
-        .setTitle("按键设置（共 $keyCount 个）")
-        .setItems(menuItems) { _, which ->
-            when (which) {
-                0 -> {
-                    // 按键映射 (选择按键修改)
-                    val gameKeys = PrefsManager.gamepadKeys
-                    val labels = gameKeys.mapIndexed { i, k -> "按键 ${i + 1} ($k)" }.toTypedArray()
-                    android.app.AlertDialog.Builder(context)
-                        .setTitle("选择要修改的按键")
-                        .setItems(labels) { _, idx ->
-                            val current = gameKeys.getOrElse(idx) { "J" }
-                            android.app.AlertDialog.Builder(context)
-                                .setTitle("按键 ${idx + 1} 映射")
-                                .setSingleChoiceItems(keys, keys.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
-                                    PrefsManager.sp.edit().putString("gamepad_key_${idx + 1}", keys[w2]).apply()
-                                    d2.dismiss()
-                                    onReload()
-                                }
-                                .setNegativeButton("取消", null)
-                                .show()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                }
-                1 -> {
-                    // 添加按键
-                    val c = PrefsManager.gamepadKeyCount
-                    if (c < 18) PrefsManager.sp.edit().putInt("gamepad_key_count", c + 1).apply()
-                    onReload()
-                }
-                2 -> {
-                    // 删除按键
-                    val c = PrefsManager.gamepadKeyCount
-                    if (c > 2) PrefsManager.sp.edit().putInt("gamepad_key_count", c - 1).apply()
-                    onReload()
-                }
-                3 -> {
-                    // Start/Select 映射
-                    val startKey = PrefsManager.startKey
-                    val selectKey = PrefsManager.selectKey
-                    android.app.AlertDialog.Builder(context)
-                        .setTitle("Start/Select 映射")
-                        .setItems(arrayOf("Start 键 (当前: $startKey)", "Select 键 (当前: $selectKey)")) { _, idx ->
-                            val current = if (idx == 0) startKey else selectKey
-                            android.app.AlertDialog.Builder(context)
-                                .setTitle(if (idx == 0) "Start 键映射" else "Select 键映射")
-                                .setSingleChoiceItems(keys, keys.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
-                                    if (idx == 0) {
-                                        PrefsManager.sp.edit().putString("start_key", keys[w2]).apply()
-                                    } else {
-                                        PrefsManager.sp.edit().putString("select_key", keys[w2]).apply()
-                                    }
-                                    d2.dismiss()
-                                }
-                                .setNegativeButton("取消", null)
-                                .show()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                }
-                4 -> {
-                    // 方向键模式 (DPAD/WASD/摇杆/★v17 摇杆WASD)
-                    val modes = arrayOf("摇杆 (joystick)", "十字键 (dpad)", "WASD (wasd)", "摇杆+WASD (stick_wasd)")
-                    val values = arrayOf("joystick", "dpad", "wasd", "stick_wasd")
-                    val current = PrefsManager.dpadMode
-                    android.app.AlertDialog.Builder(context)
-                        .setTitle("方向键模式")
-                        .setSingleChoiceItems(modes, values.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
-                            PrefsManager.sp.edit().putString("dpad_mode", values[w2]).apply()
-                            d2.dismiss()
-                            onReload()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                }
-                5 -> {
-                    // ★ v17: 摇杆 WASD 映射（上/下/左/右四向键位，默认 W/S/A/D）
-                    val dirNames = arrayOf("上", "下", "左", "右")
-                    val dirPrefKeys = arrayOf("web_stick_key_up", "web_stick_key_down", "web_stick_key_left", "web_stick_key_right")
-                    val dirDefaults = arrayOf("W", "S", "A", "D")
-                    val dirKeys = dirPrefKeys.mapIndexed { i, k -> PrefsManager.sp.getString(k, dirDefaults[i]) ?: dirDefaults[i] }
-                    android.app.AlertDialog.Builder(context)
-                        .setTitle("摇杆 WASD 映射")
-                        // ★ v17.1: 模板短写法在变量名后紧跟 CJK 字符时，词法分析会把
-                        //   方向字并入标识符（CJK 是合法标识符字符）导致 Unresolved
-                        //   reference 编译失败，必须用显式花括号形式。
-                        .setItems(dirNames.mapIndexed { i, d -> "${d}方向 (当前: ${dirKeys[i]})" }.toTypedArray()) { _, idx ->
-                            android.app.AlertDialog.Builder(context)
-                                .setTitle("摇杆「${dirNames[idx]}」方向映射")
-                                .setSingleChoiceItems(keys, keys.indexOf(dirKeys[idx]).coerceAtLeast(0)) { d2, w2 ->
-                                    PrefsManager.sp.edit().putString(dirPrefKeys[idx], keys[w2]).apply()
-                                    d2.dismiss()
-                                    onReload()
-                                }
-                                .setNegativeButton("取消", null)
-                                .show()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                }
-                6 -> {
-                    // 方向键大小
-                    val sizes = arrayOf("小 (80)", "中 (100)", "大 (120)", "超大 (150)")
-                    val values = intArrayOf(80, 100, 120, 150)
-                    val current = (PrefsManager.dpadScale * 100).toInt()
-                    android.app.AlertDialog.Builder(context)
-                        .setTitle("方向键大小")
-                        .setSingleChoiceItems(sizes, values.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
-                            PrefsManager.sp.edit().putInt("dpad_scale", values[w2]).apply()
-                            d2.dismiss()
-                            onReload()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                }
-                7 -> {
-                    // 动作按键大小
-                    val sizes = arrayOf("小 (80)", "中 (100)", "大 (120)", "超大 (150)")
-                    val values = intArrayOf(80, 100, 120, 150)
-                    val current = (PrefsManager.gamepadScale * 100).toInt()
-                    android.app.AlertDialog.Builder(context)
-                        .setTitle("动作按键大小")
-                        .setSingleChoiceItems(sizes, values.indexOf(current).coerceAtLeast(0)) { d2, w2 ->
-                            PrefsManager.sp.edit().putInt("gamepad_scale", values[w2]).apply()
-                            d2.dismiss()
-                            onReload()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                }
-                8 -> {
-                    // 显示/隐藏按键
-                    val gameKeys = PrefsManager.gamepadKeys
-                    val visible = PrefsManager.gamepadKeyVisible
-                    val checked = visible.toBooleanArray()
-                    val labels = gameKeys.mapIndexed { i, k -> "按键 ${i + 1} ($k)" }.toTypedArray()
-                    android.app.AlertDialog.Builder(context)
-                        .setTitle("显示/隐藏按键")
-                        .setMultiChoiceItems(labels, checked) { _, which2, isChecked ->
-                            checked[which2] = isChecked
-                        }
-                        .setPositiveButton("确定") { _, _ ->
-                            val editor = PrefsManager.sp.edit()
-                            checked.forEachIndexed { i, c -> editor.putBoolean("gamepad_key_${i + 1}_visible", c) }
-                            editor.apply()
-                            onReload()
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
-                }
-                9 -> {
-                    // 添加/隐藏鼠标按钮
-                    onToggleMouseButtons()
-                }
-                10 -> {
-                    // 位置编辑模式 (拖动调整)
-                    onTogglePositionEdit()
-                }
-                11 -> {
-                    // 视角旋转 (3D游戏)
-                    onToggleCameraRotation()
-                }
-                12 -> {
-                    // 恢复默认（★ v17 增摇杆四向键位与位置重置）
-                    PrefsManager.sp.edit()
-                        .putInt("gamepad_key_count", 6)
-                        .putString("gamepad_key_1", "J")
-                        .putString("gamepad_key_2", "K")
-                        .putString("gamepad_key_3", "L")
-                        .putString("gamepad_key_4", "U")
-                        .putString("gamepad_key_5", "I")
-                        .putString("gamepad_key_6", "O")
-                        .putString("select_key", "TAB")
-                        .putString("start_key", "ENTER")
-                        .putString("dpad_mode", "joystick")
-                        .putInt("dpad_scale", 100)
-                        .putInt("gamepad_scale", 100)
-                        .putFloat("dpad_pos_x", -1f)
-                        .putFloat("dpad_pos_y", -1f)
-                        .putFloat("action_pos_x", -1f)
-                        .putFloat("action_pos_y", -1f)
-                        .putFloat("system_pos_x", -1f)
-                        .putFloat("system_pos_y", -1f)
-                        .putString("web_stick_key_up", "W")
-                        .putString("web_stick_key_down", "S")
-                        .putString("web_stick_key_left", "A")
-                        .putString("web_stick_key_right", "D")
-                        .putFloat("web_stick_pos_x", -1f)
-                        .putFloat("web_stick_pos_y", -1f)
-                        .apply()
-                    onReload()
-                }
-            }
-        }
+        .setTitle("按键设置")
+        .setView(scroll)
+        .setPositiveButton("恢复默认") { _, _ -> restoreDefaults() }
         .setNegativeButton("关闭", null)
         .setOnDismissListener { onDismiss() }
         .show()
 }
+
 
 // ============== 内部脚本（SWF + 资源文件嗅探器） ==============
 
@@ -2308,13 +2379,19 @@ private val BgPresetGradients = listOf(
     listOf(Color(0xFF17181C), Color(0xFF3A3F4B).copy(alpha = 0.42f), Color(0xFF0B0C0F))
 )
 
+/** ★ v19: 主页搜索引擎条目（id 持久化键 / 显示名 / 徽标字符 / 搜索 URL 前缀） */
+private data class SearchEngine(val id: String, val label: String, val glyph: String, val urlPrefix: String)
+
 /**
  * ★ v13: 浏览器主页现代化 —— 主页背景可自定义（相册图片 / 内置渐变预设 /
- *   默认深色，顶栏"背景"入口）。
+ *   默认深色，顶栏齿轮入口）。
  *   ★ v14: 卡片紧凑化（64x78 小卡，单行 LazyRow 轮播）。
- *   ★ v17: 排列仿 AnWind（复刻 Windows 桌面的安卓启动器）—— 桌面快捷方式
- *   网格：图标在上、标签在下，纵向优先填列（列满换下一列），超宽横向滑动。
- *   语义不变：点击收藏打开站点；长按弹管理菜单；尾部"+"图标添加收藏。
+ *   ★ v17: 排列仿 AnWind 桌面网格（图标在上、标签在下，纵向填列）。
+ *   ★ v19: 按用户截图（jianfast 式搜索主页）重排 —— 中央白底搜索框 +
+ *   引擎徽标（百度/Google/必应/搜狗/360，点击切换，选择持久化）+ 引擎
+ *   快捷切换行 + 4 列快捷方式网格（图标上/标签下，竖向滚动）；顶栏"背景"
+ *   文字胶囊换设置齿轮图标。语义不变：点击收藏打开站点；长按弹管理菜单；
+ *   尾部"+"图标添加收藏；搜索 = 当前引擎 + 关键词在当前标签导航。
  *   覆盖整个内容区 —— 底层 about:blank 载体完全不可见。
  */
 @Composable
@@ -2322,7 +2399,8 @@ private fun BrowserHomeOverlay(
     favorites: List<WebGameEntry>,
     onNavigate: (WebGameEntry) -> Unit,
     onOpenMenu: (WebGameEntry) -> Unit,
-    onAdd: () -> Unit
+    onAdd: () -> Unit,
+    onSearch: (String) -> Unit
 ) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     // 背景偏好（SharedPreferences 持久化；对话框操作后本地 state 即时刷新）
@@ -2354,8 +2432,30 @@ private fun BrowserHomeOverlay(
         } catch (_: Exception) { null }
     }
 
-    // 展示层去重（LazyRow key 需 url 唯一，防异常种子数据导致重复 key）
+    // 展示层去重（网格 key 需 url 唯一，防异常种子数据导致重复 key）
     val shownFavorites = remember(favorites) { favorites.distinctBy { it.url } }
+
+    // ---- ★ v19: 搜索引擎（仿图中主页：中央搜索框 + 引擎切换） ----
+    val searchEngines = remember {
+        listOf(
+            SearchEngine("baidu", "百度", "百", "https://www.baidu.com/s?wd="),
+            SearchEngine("google", "Google", "G", "https://www.google.com/search?q="),
+            SearchEngine("bing", "必应", "必", "https://www.bing.com/search?q="),
+            SearchEngine("sogou", "搜狗", "搜", "https://www.sogou.com/web?query="),
+            SearchEngine("so360", "360", "3", "https://www.so.com/s?q=")
+        )
+    }
+    var engineId by remember { mutableStateOf(PrefsManager.sp.getString("web_search_engine", "baidu") ?: "baidu") }
+    val engineGlyph = searchEngines.firstOrNull { it.id == engineId }?.glyph ?: "百"
+    var query by remember { mutableStateOf("") }
+    var showEngineDialog by remember { mutableStateOf(false) }
+    fun doSearch() {
+        val q = query.trim()
+        if (q.isEmpty()) return
+        val prefix = searchEngines.firstOrNull { it.id == engineId }?.urlPrefix
+            ?: "https://www.baidu.com/s?wd="
+        onSearch(prefix + java.net.URLEncoder.encode(q, "UTF-8"))
+    }
 
     Box(
         modifier = Modifier
@@ -2395,7 +2495,7 @@ private fun BrowserHomeOverlay(
 
         Column(modifier = Modifier.fillMaxSize()) {
             androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
-            // ---- 顶栏：标题区 + 背景自定义入口 ----
+            // ---- 顶栏：标题区 + ★ v19 设置入口（原"背景"文字胶囊 → 齿轮图标） ----
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -2417,64 +2517,211 @@ private fun BrowserHomeOverlay(
                     )
                 }
                 androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
-                androidx.compose.material3.TextButton(
-                    onClick = { showBgDialog = true },
+                // ★ v19: 齿轮设置图标（同一点击行为 = 打开背景/主页设置）
+                Box(
                     modifier = Modifier
+                        .size(36.dp)
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                         .background(Color(0x2EFFFFFF))
+                        .clickable { showBgDialog = true },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text("背景", color = Color(0xE6FFFFFF), fontSize = 10.sp)
+                    Icon(Icons.Rounded.Settings, null, tint = Color(0xE6FFFFFF), modifier = Modifier.size(18.dp))
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-            // ---- ★ v17: AnWind 式主页排列（仿 Windows 桌面快捷方式网格） ----
-            //   AnWind = 复刻 Windows 桌面的安卓启动器：桌面快捷方式"图标在上、
-            //   标签在下"，纵向优先填列（一列从上往下排满再排下一列），列数超出
-            //   屏幕宽度可横向滑动。收藏 = 桌面快捷方式：点击打开、长按管理，
-            //   尾部"+" = 新建快捷方式图标。取代 v13/v14 的单行卡片轮播（用户
-            //   反馈"死板"——单一行、全部同尺寸、排不满一屏）。
-            BoxWithConstraints(modifier = Modifier.weight(1f)) {
-                val cellPitch = 70.dp   // 单元高：44 图标 + 3 间距 + ~13 标签 + 8 列内间距
-                val rowsPerColumn = ((maxHeight - 12.dp) / cellPitch).toInt().coerceAtLeast(2)
-                val desktopItems: List<WebGameEntry?> = shownFavorites + listOf(null)
-                val columns = desktopItems.chunked(rowsPerColumn)
-                Row(
+            androidx.compose.foundation.layout.Spacer(Modifier.size(20.dp))
+            // ---- ★ v19: 中央搜索框（仿图中主页：白底圆角长条 + 引擎徽标 + 搜索按钮） ----
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .height(46.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+                    .background(Color(0xF2FFFFFF))
+                    .padding(horizontal = 6.dp)
+            ) {
+                // 引擎徽标（点击弹出引擎选择列表）
+                Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 14.dp),
-                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)
+                        .size(34.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+                        .background(
+                            androidx.compose.ui.graphics.Brush.linearGradient(
+                                listOf(Color(0xFF8A7BFF), Color(0xFF6C5CE7))
+                            )
+                        )
+                        .clickable { showEngineDialog = true },
+                    contentAlignment = Alignment.Center
                 ) {
-                    columns.forEach { columnItems ->
-                        Column(
-                            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
-                        ) {
-                            columnItems.forEach { fav ->
-                                if (fav == null) {
-                                    DesktopAddShortcut(onClick = onAdd)
-                                } else {
-                                    DesktopShortcut(
-                                        fav = fav,
-                                        onClick = { onNavigate(fav) },
-                                        onLongClick = { onOpenMenu(fav) }
-                                    )
-                                }
-                            }
-                        }
+                    Text(
+                        engineGlyph,
+                        color = Color.White,
+                        fontSize = if (engineGlyph.length > 1) 11.sp else 15.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                }
+                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+                // 关键词输入（BasicTextField 紧凑容器，与地址栏同款手法）
+                Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = Color(0xFF20232F),
+                            fontSize = 14.sp
+                        ),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF8A7BFF)),
+                        keyboardOptions = KeyboardOptions(
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Search
+                        ),
+                        keyboardActions = KeyboardActions(onSearch = { doSearch() }),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (query.isEmpty()) {
+                        Text(
+                            "输入关键词，搜索整个网络",
+                            color = Color(0xFF98A0B3),
+                            fontSize = 13.sp
+                        )
                     }
+                }
+                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+                // 搜索按钮
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+                        .background(Color(0xFF8A7BFF))
+                        .clickable { doSearch() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Rounded.Search, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                }
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+            // ---- 引擎快捷切换行（仿图中引擎列表：当前引擎高亮，其余半透明白） ----
+            Row(
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                searchEngines.forEach { eng ->
+                    Box(
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+                            .background(if (eng.id == engineId) Color(0xFF8A7BFF) else Color(0x3DFFFFFF))
+                            .clickable {
+                                engineId = eng.id
+                                PrefsManager.sp.edit().putString("web_search_engine", eng.id).apply()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            eng.label,
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.size(20.dp))
+            // ---- ★ v19: 快捷方式网格（仿图中主页：图标上/标签下，4 列横排） ----
+            //   复用 v17 DesktopShortcut 单元（白字描边阴影，任意壁纸可读），
+            //   LazyVerticalGrid 行优先流动 + 竖向滚动，取代 v17 纵向填列桌面排布
+            //   （用户反馈"太难看"，按图中搜索主页样式重排）。
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(4),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)
+            ) {
+                gridItems(shownFavorites.size, key = { i -> shownFavorites[i].url }) { i ->
+                    val fav = shownFavorites[i]
+                    DesktopShortcut(
+                        fav = fav,
+                        onClick = { onNavigate(fav) },
+                        onLongClick = { onOpenMenu(fav) }
+                    )
+                }
+                gridItems(1, key = { "add_shortcut" }) {
+                    DesktopAddShortcut(onClick = onAdd)
                 }
             }
             Text(
-                "仿桌面排列 · 纵向排满自动换列 · 左右滑动查看更多",
+                "点击打开 · 长按管理 · 齿轮设置背景",
                 color = Color(0xFF8FA2B8),
                 fontSize = 8.sp,
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.CenterHorizontally)
-                    .padding(bottom = 6.dp)
+                    .padding(bottom = 8.dp)
             )
         }
     }
+
+    // ---- ★ v19: 搜索引擎选择对话框（仿图中引擎下拉列表，m3 同款安全弹窗） ----
+    if (showEngineDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showEngineDialog = false },
+            title = { Text("选择搜索引擎") },
+            text = {
+                Column {
+                    searchEngines.forEach { eng ->
+                        androidx.compose.material3.TextButton(
+                            onClick = {
+                                engineId = eng.id
+                                PrefsManager.sp.edit().putString("web_search_engine", eng.id).apply()
+                                showEngineDialog = false
+                            }
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+                                        .background(
+                                            androidx.compose.ui.graphics.Brush.linearGradient(
+                                                listOf(Color(0xFF8A7BFF), Color(0xFF6C5CE7))
+                                            )
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        eng.glyph,
+                                        color = Color.White,
+                                        fontSize = if (eng.glyph.length > 1) 10.sp else 12.sp,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                    )
+                                }
+                                androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+                                Text(
+                                    eng.label,
+                                    color = if (eng.id == engineId) Color(0xFF8A7BFF) else Color(0xFFC7D0DE),
+                                    fontSize = 14.sp
+                                )
+                                if (eng.id == engineId) {
+                                    androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+                                    Text("✓", color = Color(0xFF8A7BFF), fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { showEngineDialog = false }) { Text("取消") }
+            },
+            dismissButton = {}
+        )
+    }
+
 
     // ---- 背景选择对话框 ----
     if (showBgDialog) {
