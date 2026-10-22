@@ -2642,15 +2642,16 @@ private fun BrowserHomeOverlay(
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)
             ) {
-                gridItems(shownFavorites.size, key = { i -> shownFavorites[i].url }) { i ->
-                    val fav = shownFavorites[i]
+                // ★ v20: gridItems 是 LazyGridScope 的 List 扩展（同 2333 行标签栏 items 用法），
+                //   原误传数量 Int 导致 CI 六连错（重载不匹配→lambda 类型不可推断→Composable 上下文丢失）。
+                gridItems(shownFavorites, key = { it.url }) { fav ->
                     DesktopShortcut(
                         fav = fav,
                         onClick = { onNavigate(fav) },
                         onLongClick = { onOpenMenu(fav) }
                     )
                 }
-                gridItems(1, key = { "add_shortcut" }) {
+                item(key = "add_shortcut") {
                     DesktopAddShortcut(onClick = onAdd)
                 }
             }
