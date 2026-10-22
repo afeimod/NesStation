@@ -23,6 +23,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.items
 // ★ v12: 标签栏所需
 import androidx.compose.foundation.lazy.LazyRow
+// ★ v17: 主页桌面网格横向滚动 + 紧凑地址栏光标所需
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 // ★ v11 浏览器化：工具栏/收藏夹主页所需
@@ -166,7 +169,10 @@ fun WebGameScreen(
     // 确保 PrefsManager 已初始化（应用启动时也应该调用一次）
     remember { PrefsManager.init(context) }
 
-    var gamepadVisible by remember { mutableStateOf(PrefsManager.isGamepadEnabled) }
+    // ★ v17: 在线游戏手柄默认不显示（用户反馈）—— 不再读 PrefsManager.isGamepadEnabled
+    //   （全局开关默认开），改读本屏专属偏好 web_gamepad_visible（默认 false）。
+    //   toggleGamepad() 同步持久化 → 用户打开过就一直记住，首次进入不再默认铺手柄。
+    var gamepadVisible by remember { mutableStateOf(PrefsManager.sp.getBoolean("web_gamepad_visible", false)) }
     var isMouseEnabled by remember { mutableStateOf(PrefsManager.isMouseEnabled) }
     var isFullscreen by remember { mutableStateOf(false) }
     var isLandscape by remember { mutableStateOf(true) }
@@ -186,6 +192,8 @@ fun WebGameScreen(
     // 持有各 view 的引用
     val webViewRef = remember { mutableStateOf<GameWebView?>(null) }
     val dpadRef = remember { mutableStateOf<DPadView?>(null) }
+    // ★ v17: 模拟摇杆（方向键模式 = stick_wasd 时取代十字键）
+    val stickRef = remember { mutableStateOf<WebStickView?>(null) }
     val actionRef = remember { mutableStateOf<ActionButtonView?>(null) }
     val mouseRef = remember { mutableStateOf<MouseControlView?>(null) }
     val floatingMenuRef = remember { mutableStateOf<FloatingMenuView?>(null) }
@@ -340,6 +348,7 @@ fun WebGameScreen(
         attachTab(tab)
         dpadRef.value?.targetWebView = tab.webView
         actionRef.value?.targetWebView = tab.webView
+        stickRef.value?.targetWebView = tab.webView
         mouseRef.value?.targetWebView = tab.webView
         // UI 状态随标签同步（缩放/地址栏/主页）
         pinchZoom.value = tab.pinch.currentZoom()
@@ -576,6 +585,8 @@ fun WebGameScreen(
 
     fun toggleGamepad() {
         gamepadVisible = !gamepadVisible
+        // ★ v17: 持久化到本屏专属键（与上方初始读取同源），切换跨会话保留
+        PrefsManager.sp.edit().putBoolean("web_gamepad_visible", gamepadVisible).apply()
     }
 
     fun rebuildGamepad() {
@@ -1116,9 +1127,19 @@ fun WebGameScreen(
 
         // 清掉旧手柄控件
         listOfNotNull(
-            dpadRef.value, actionRef.value, mouseRef.value,
+            dpadRef.value, stickRef.value, actionRef.value, mouseRef.value,
             systemButtonsRef.value, floatingMenuRef.value
         ).forEach { container.removeView(it) }
+
+        // ★ v17: 重建时清一次页面按键状态 —— 控件被移除瞬间若仍有按住的方向/
+        //   动作键，页面端会残留 keydown（角色持续移动）。releaseAllKeys 幂等，
+        //   与 WebStickView.onDetachedFromWindow 兜底构成双保险。
+        try { webViewRef.value?.releaseAllKeys() } catch (_: Exception) { }
+
+        // ★ v17: 方向键模式 = stick_wasd（摇杆+WASD）时，十字键不再上屏，
+        //   由 WebStickView 摇杆取代（底部同一位置）。DPadView 仍构造（引用
+        //   链/切换标签同步保持原状），只是不 addView。
+        val useStickMode = PrefsManager.dpadMode == "stick_wasd"
 
         // 创建 DPad
         val dpad = DPadView(container.context).apply {
@@ -1133,7 +1154,23 @@ fun WebGameScreen(
             bottomMargin = (24 * density).toInt()
             marginStart = (16 * density).toInt()
         }
-        if (gamepadVisible) container.addView(dpad, dpadLp)
+        if (gamepadVisible && !useStickMode) container.addView(dpad, dpadLp)
+
+        // ★ v17: 创建模拟摇杆（WebStickView，仿原生摇杆手感：斜向 = 双键并按，
+        //   摇杆外环四向标注当前映射键名，方向键大小设置同 dpad_scale 生效）
+        val stick = WebStickView(container.context).apply {
+            targetWebView = webViewRef.value
+            overlayAlpha = PrefsManager.gamepadAlpha
+            isDragMode = isPositionEditMode
+        }
+        stickRef.value = stick
+        val stickSize = (140 * density * PrefsManager.dpadScale).toInt()
+        val stickLp = android.widget.FrameLayout.LayoutParams(stickSize, stickSize).apply {
+            gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+            bottomMargin = (24 * density).toInt()
+            marginStart = (16 * density).toInt()
+        }
+        if (gamepadVisible && useStickMode) container.addView(stick, stickLp)
 
         // 创建 Action Buttons
         val action = ActionButtonView(container.context).apply {
@@ -1637,6 +1674,7 @@ private fun KeyMappingDialog(
         "删除按键 (当前: $keyCount)",
         "Start/Select 映射",
         "方向键模式 (DPAD/WASD/摇杆)",
+        "摇杆 WASD 映射 (默认W/S/A/D)",   // ★ v17 新增
         "方向键大小",
         "动作按键大小",
         "显示/隐藏按键",
@@ -1708,9 +1746,9 @@ private fun KeyMappingDialog(
                         .show()
                 }
                 4 -> {
-                    // 方向键模式 (DPAD/WASD/摇杆)
-                    val modes = arrayOf("摇杆 (joystick)", "十字键 (dpad)", "WASD (wasd)")
-                    val values = arrayOf("joystick", "dpad", "wasd")
+                    // 方向键模式 (DPAD/WASD/摇杆/★v17 摇杆WASD)
+                    val modes = arrayOf("摇杆 (joystick)", "十字键 (dpad)", "WASD (wasd)", "摇杆+WASD (stick_wasd)")
+                    val values = arrayOf("joystick", "dpad", "wasd", "stick_wasd")
                     val current = PrefsManager.dpadMode
                     android.app.AlertDialog.Builder(context)
                         .setTitle("方向键模式")
@@ -1723,6 +1761,28 @@ private fun KeyMappingDialog(
                         .show()
                 }
                 5 -> {
+                    // ★ v17: 摇杆 WASD 映射（上/下/左/右四向键位，默认 W/S/A/D）
+                    val dirNames = arrayOf("上", "下", "左", "右")
+                    val dirPrefKeys = arrayOf("web_stick_key_up", "web_stick_key_down", "web_stick_key_left", "web_stick_key_right")
+                    val dirDefaults = arrayOf("W", "S", "A", "D")
+                    val dirKeys = dirPrefKeys.mapIndexed { i, k -> PrefsManager.sp.getString(k, dirDefaults[i]) ?: dirDefaults[i] }
+                    android.app.AlertDialog.Builder(context)
+                        .setTitle("摇杆 WASD 映射")
+                        .setItems(dirNames.mapIndexed { i, d -> "$d方向 (当前: ${dirKeys[i]})" }.toTypedArray()) { _, idx ->
+                            android.app.AlertDialog.Builder(context)
+                                .setTitle("摇杆「${dirNames[idx]}」方向映射")
+                                .setSingleChoiceItems(keys, keys.indexOf(dirKeys[idx]).coerceAtLeast(0)) { d2, w2 ->
+                                    PrefsManager.sp.edit().putString(dirPrefKeys[idx], keys[w2]).apply()
+                                    d2.dismiss()
+                                    onReload()
+                                }
+                                .setNegativeButton("取消", null)
+                                .show()
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+                6 -> {
                     // 方向键大小
                     val sizes = arrayOf("小 (80)", "中 (100)", "大 (120)", "超大 (150)")
                     val values = intArrayOf(80, 100, 120, 150)
@@ -1737,7 +1797,7 @@ private fun KeyMappingDialog(
                         .setNegativeButton("取消", null)
                         .show()
                 }
-                6 -> {
+                7 -> {
                     // 动作按键大小
                     val sizes = arrayOf("小 (80)", "中 (100)", "大 (120)", "超大 (150)")
                     val values = intArrayOf(80, 100, 120, 150)
@@ -1752,7 +1812,7 @@ private fun KeyMappingDialog(
                         .setNegativeButton("取消", null)
                         .show()
                 }
-                7 -> {
+                8 -> {
                     // 显示/隐藏按键
                     val gameKeys = PrefsManager.gamepadKeys
                     val visible = PrefsManager.gamepadKeyVisible
@@ -1772,20 +1832,20 @@ private fun KeyMappingDialog(
                         .setNegativeButton("取消", null)
                         .show()
                 }
-                8 -> {
+                9 -> {
                     // 添加/隐藏鼠标按钮
                     onToggleMouseButtons()
                 }
-                9 -> {
+                10 -> {
                     // 位置编辑模式 (拖动调整)
                     onTogglePositionEdit()
                 }
-                10 -> {
+                11 -> {
                     // 视角旋转 (3D游戏)
                     onToggleCameraRotation()
                 }
-                11 -> {
-                    // 恢复默认
+                12 -> {
+                    // 恢复默认（★ v17 增摇杆四向键位与位置重置）
                     PrefsManager.sp.edit()
                         .putInt("gamepad_key_count", 6)
                         .putString("gamepad_key_1", "J")
@@ -1805,6 +1865,12 @@ private fun KeyMappingDialog(
                         .putFloat("action_pos_y", -1f)
                         .putFloat("system_pos_x", -1f)
                         .putFloat("system_pos_y", -1f)
+                        .putString("web_stick_key_up", "W")
+                        .putString("web_stick_key_down", "S")
+                        .putString("web_stick_key_left", "A")
+                        .putString("web_stick_key_right", "D")
+                        .putFloat("web_stick_pos_x", -1f)
+                        .putFloat("web_stick_pos_y", -1f)
                         .apply()
                     onReload()
                 }
@@ -2092,30 +2158,60 @@ private fun BrowserToolbar(
         IconButton(onClick = onHome, modifier = Modifier.size(26.dp)) {
             Icon(Icons.Rounded.Home, "主页", tint = Color.White, modifier = Modifier.size(14.dp))
         }
-        OutlinedTextField(
-            value = address,
-            onValueChange = onAddressChange,
+        // ★ v17 修复：网址文本不显示 —— v14 用 M3 OutlinedTextField 强制定高 32dp，
+        //   其内部装饰布局按 56dp 最小高度设计（label/内边距占位后文本被垂直裁出可视区），
+        //   网址怎么都看不见。改用 BasicTextField 自绘紧凑容器：文本在 32dp 内垂直居中，
+        //   尺寸观感与 v14 一致，文本保证可见。
+        var urlFieldFocused by remember { mutableStateOf(false) }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .weight(1f)
                 .height(32.dp)
-                .onFocusChanged { onAddressFocusChange(it.isFocused) },
-            singleLine = true,
-            placeholder = { Text("搜索或输入网址", color = Color(0xFF8899AA), fontSize = 11.sp) },
-            leadingIcon = {
-                Icon(Icons.Rounded.Search, null, tint = Color(0xFF8899AA), modifier = Modifier.size(12.dp))
-            },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-            keyboardActions = KeyboardActions(onGo = { onGo() }),
-            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 11.sp),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Color(0xFF8A7BFF),
-                unfocusedBorderColor = Color(0x33FFFFFF),
-                focusedContainerColor = Color(0x14FFFFFF),
-                unfocusedContainerColor = Color(0x14FFFFFF),
-                cursorColor = Color(0xFF8A7BFF)
-            )
-        )
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(14.dp))
+                .background(Color(0x14FFFFFF))
+                .border(
+                    width = 1.dp,
+                    color = if (urlFieldFocused) Color(0xFF8A7BFF) else Color(0x33FFFFFF),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp)
+                )
+                .padding(horizontal = 8.dp)
+        ) {
+            Icon(Icons.Rounded.Search, null, tint = Color(0xFF8899AA), modifier = Modifier.size(12.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.size(4.dp))
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                // 占位提示（仅空值时可见）
+                if (address.isEmpty()) {
+                    Text(
+                        "搜索或输入网址",
+                        color = Color(0xFF8899AA),
+                        fontSize = 11.sp,
+                        maxLines = 1
+                    )
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = address,
+                    onValueChange = onAddressChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged {
+                            urlFieldFocused = it.isFocused
+                            onAddressFocusChange(it.isFocused)
+                        },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        color = Color.White,
+                        fontSize = 11.sp
+                    ),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF8A7BFF)),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { onGo() })
+                )
+            }
+        }
         IconButton(onClick = onFavorite, modifier = Modifier.size(26.dp)) {
             Icon(
                 if (isFavorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
@@ -2202,10 +2298,12 @@ private val BgPresetGradients = listOf(
 )
 
 /**
- * ★ v13: 浏览器主页现代化 —— 收藏改为横向滑动卡片轮播（LazyRow），
- *   主页背景可自定义（相册图片 / 内置渐变预设 / 默认深色，顶栏"背景"入口）。
- *   ★ v14: 卡片按用户反馈全面紧凑化（64x78 小卡）。
- *   语义不变：点击收藏打开站点；长按弹管理菜单；尾部"+"卡片添加收藏。
+ * ★ v13: 浏览器主页现代化 —— 主页背景可自定义（相册图片 / 内置渐变预设 /
+ *   默认深色，顶栏"背景"入口）。
+ *   ★ v14: 卡片紧凑化（64x78 小卡，单行 LazyRow 轮播）。
+ *   ★ v17: 排列仿 AnWind（复刻 Windows 桌面的安卓启动器）—— 桌面快捷方式
+ *   网格：图标在上、标签在下，纵向优先填列（列满换下一列），超宽横向滑动。
+ *   语义不变：点击收藏打开站点；长按弹管理菜单；尾部"+"图标添加收藏。
  *   覆盖整个内容区 —— 底层 about:blank 载体完全不可见。
  */
 @Composable
@@ -2317,32 +2415,52 @@ private fun BrowserHomeOverlay(
                     Text("背景", color = Color(0xE6FFFFFF), fontSize = 10.sp)
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
-            // ---- ★ 收藏横滑轮播（v14 紧凑小卡，现代排列） ----
-            LazyRow(
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                items(shownFavorites.size, key = { i -> shownFavorites[i].url }) { i ->
-                    FavoriteCard(
-                        fav = shownFavorites[i],
-                        onClick = { onNavigate(shownFavorites[i]) },
-                        onLongClick = { onOpenMenu(shownFavorites[i]) }
-                    )
-                }
-                item {
-                    AddFavoriteCard(onClick = onAdd)
+            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+            // ---- ★ v17: AnWind 式主页排列（仿 Windows 桌面快捷方式网格） ----
+            //   AnWind = 复刻 Windows 桌面的安卓启动器：桌面快捷方式"图标在上、
+            //   标签在下"，纵向优先填列（一列从上往下排满再排下一列），列数超出
+            //   屏幕宽度可横向滑动。收藏 = 桌面快捷方式：点击打开、长按管理，
+            //   尾部"+" = 新建快捷方式图标。取代 v13/v14 的单行卡片轮播（用户
+            //   反馈"死板"——单一行、全部同尺寸、排不满一屏）。
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                val cellPitch = 70.dp   // 单元高：44 图标 + 3 间距 + ~13 标签 + 8 列内间距
+                val rowsPerColumn = ((maxHeight - 12.dp) / cellPitch).toInt().coerceAtLeast(2)
+                val desktopItems: List<WebGameEntry?> = shownFavorites + listOf(null)
+                val columns = desktopItems.chunked(rowsPerColumn)
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 14.dp),
+                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)
+                ) {
+                    columns.forEach { columnItems ->
+                        Column(
+                            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+                        ) {
+                            columnItems.forEach { fav ->
+                                if (fav == null) {
+                                    DesktopAddShortcut(onClick = onAdd)
+                                } else {
+                                    DesktopShortcut(
+                                        fav = fav,
+                                        onClick = { onNavigate(fav) },
+                                        onLongClick = { onOpenMenu(fav) }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
             Text(
-                "← 左右滑动浏览全部收藏 →",
+                "仿桌面排列 · 纵向排满自动换列 · 左右滑动查看更多",
                 color = Color(0xFF8FA2B8),
                 fontSize = 8.sp,
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.CenterHorizontally)
+                    .padding(bottom = 6.dp)
             )
         }
     }
@@ -2373,10 +2491,11 @@ private fun BrowserHomeOverlay(
     }
 }
 
-/** 单个收藏卡片（v14 紧凑样式）：64x78 圆角小卡，图标/首字母 + 卡内底部渐变标题区。 */
+/** ★ v17: AnWind 式桌面快捷方式单元（仿 Windows 桌面图标）—— 图标在上、
+ *  标签在下（带描边阴影，任何壁纸/背景上可读）。点击打开、长按管理。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FavoriteCard(
+private fun DesktopShortcut(
     fav: WebGameEntry,
     onClick: () -> Unit,
     onLongClick: () -> Unit
@@ -2390,99 +2509,99 @@ private fun FavoriteCard(
         } catch (_: Exception) { null }
     }
     val accent = FavAccentPalette[displayTitle.hashCode().mod(FavAccentPalette.size)]
-    val host = remember(fav.url) {
-        try { android.net.Uri.parse(fav.url).host ?: fav.url } catch (_: Exception) { fav.url }
-    }
-    Box(
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .size(64.dp, 78.dp)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-            .background(
-                androidx.compose.ui.graphics.Brush.linearGradient(
-                    listOf(accent.copy(alpha = 0.85f), Color(0xFF171A2E))
-                )
-            )
+            .width(64.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 2.dp, vertical = 2.dp)
     ) {
-        if (icon != null) {
-            androidx.compose.foundation.Image(
-                bitmap = icon.asImageBitmap(),
-                contentDescription = displayTitle,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = androidx.compose.ui.layout.ContentScale.Crop
-            )
-        } else {
-            Text(
-                displayTitle.take(1).ifBlank { "?" },
-                color = Color.White.copy(alpha = 0.94f),
-                fontSize = 20.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(bottom = 8.dp)
-            )
-        }
-        // 卡内底部渐变标题区（铺在图标上也保证可读）
+        // ---- 图标瓦片（44dp 圆角方块，站点 favicon 或首字母） ----
         Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(26.dp)
-                .align(Alignment.BottomCenter)
+                .size(44.dp)
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
                 .background(
-                    androidx.compose.ui.graphics.Brush.verticalGradient(
-                        listOf(Color(0x00000000), Color(0xD90B0D14))
+                    androidx.compose.ui.graphics.Brush.linearGradient(
+                        listOf(accent.copy(alpha = 0.92f), Color(0xFF1C2032))
                     )
-                )
-        )
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 5.dp, vertical = 4.dp)
+                ),
+            contentAlignment = Alignment.Center
         ) {
-            Text(
-                displayTitle,
-                color = Color.White,
-                fontSize = 9.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-            )
-            Text(
-                host,
-                color = Color(0xFF9FADC0),
-                fontSize = 7.sp,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-            )
+            if (icon != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = icon.asImageBitmap(),
+                    contentDescription = displayTitle,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                )
+            } else {
+                Text(
+                    displayTitle.take(1).ifBlank { "?" },
+                    color = Color.White.copy(alpha = 0.94f),
+                    fontSize = 20.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                )
+            }
         }
+        androidx.compose.foundation.layout.Spacer(Modifier.size(3.dp))
+        // ---- 桌面标签（Windows 桌面同款：白字 + 深色阴影，壁纸上保证可读） ----
+        Text(
+            displayTitle,
+            color = Color.White,
+            fontSize = 9.sp,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            style = androidx.compose.ui.text.TextStyle(
+                shadow = androidx.compose.ui.graphics.Shadow(
+                    color = Color(0xCC000000), blurRadius = 8f
+                )
+            )
+        )
     }
 }
 
-/** 尾部"+"添加卡片（v14：与收藏小卡同尺寸同圆角） */
+/** ★ v17: 桌面"新建快捷方式"图标（尾部"+"，与桌面图标同规格：图标上标签下） */
 @Composable
-private fun AddFavoriteCard(onClick: () -> Unit) {
-    Box(
+private fun DesktopAddShortcut(onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .size(64.dp, 78.dp)
-            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-            .background(Color(0x1FFFFFFF))
-            .border(
-                width = 1.dp,
-                color = Color(0x40FFFFFF),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)
-            )
+            .width(64.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
+            .padding(horizontal = 2.dp, vertical = 2.dp)
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
-            modifier = Modifier.align(Alignment.Center)
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                .background(Color(0x1FFFFFFF))
+                .border(
+                    width = 1.dp,
+                    color = Color(0x40FFFFFF),
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)
+                ),
+            contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(16.dp))
-            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-            Text("添加收藏", color = Color(0xFF8899AA), fontSize = 8.sp)
+            Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(18.dp))
         }
+        androidx.compose.foundation.layout.Spacer(Modifier.size(3.dp))
+        Text(
+            "添加收藏",
+            color = Color(0xFFDDE4F0),
+            fontSize = 9.sp,
+            maxLines = 1,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            style = androidx.compose.ui.text.TextStyle(
+                shadow = androidx.compose.ui.graphics.Shadow(
+                    color = Color(0xCC000000), blurRadius = 8f
+                )
+            )
+        )
     }
 }
 
@@ -2629,4 +2748,220 @@ private fun RenameFavoriteDialog(
             androidx.compose.material3.TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
+}
+
+// ===========================================================================
+// ★★ v17: 在线游戏模拟摇杆（WebStickView）★★
+//   用户反馈"按键映射处缺少摇杆的 wsad"—— 原 DPadView 三模式（joystick/
+//   dpad/wasd）不可改键、且摇杆模式不含 WASD 组合。本控件补齐：
+//   - 仿游戏手柄左摇杆：拖动拇指块滑向任意方向，含斜向（双键并按，如 W+D）；
+//   - 四向键位可映射（默认 W/S/A/D，按键映射面板"摇杆 WASD 映射"可改）；
+//   - 外环四向标注当前映射键名，所见即所得；
+//   - 方向键模式 = stick_wasd 时取代十字键上屏（同位置同 dpad_scale 大小）；
+//   - 位置编辑模式：拖动整块调整位置（web_stick_pos_x/y 比例持久化），
+//     语义与 DPadView 的拖动调整一致。
+//   按键注入走 GameWebView.injectKeyDown/Up（JS 按键状态管理器分发，
+//   Ruffle/Flash 网游可靠收键；漏 up 由页面级 releaseAllKeys 兜底）。
+// ===========================================================================
+private class WebStickView(context: android.content.Context) : android.view.View(context) {
+
+    /** 目标 WebView（切换标签时宿主同步）。 */
+    var targetWebView: GameWebView? = null
+
+    /** 与其他手柄控件一致的透明度（gamepadAlpha）。 */
+    var overlayAlpha: Float = 1f
+
+    /** 位置编辑模式：触摸 = 拖动整块（不发键），同 DPadView 语义。 */
+    var isDragMode: Boolean = false
+
+    // ---- 四向键位映射（web_stick_key_*，默认 WASD；按键映射面板可改） ----
+    private fun keyFor(dir: Int): String = when (dir) {
+        0 -> PrefsManager.sp.getString("web_stick_key_up", "W") ?: "W"
+        1 -> PrefsManager.sp.getString("web_stick_key_down", "S") ?: "S"
+        2 -> PrefsManager.sp.getString("web_stick_key_left", "A") ?: "A"
+        else -> PrefsManager.sp.getString("web_stick_key_right", "D") ?: "D"
+    }
+
+    /** 四方向激活状态（0=上 1=下 2=左 3=右；斜向 = 双激活）。 */
+    private val activeDirs = BooleanArray(4)
+
+    /** 摇杆头偏移（相对中心，px；松手归零）。 */
+    private var knobX = 0f
+    private var knobY = 0f
+
+    /** 拖动是否进行中（摇杆模式）。 */
+    private var stickHeld = false
+
+    // ---- 位置编辑（拖动整块 + web_stick_pos_x/y 比例持久化） ----
+    private var dragAnchorX = 0f
+    private var dragAnchorY = 0f
+
+    private val ringPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        color = android.graphics.Color.WHITE
+    }
+    private val knobPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.FILL
+        color = 0xFF8A7BFF.toInt()   // 与工具栏/悬浮球同款紫罗兰（注意 Long 字面量 toInt）
+    }
+    private val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+
+    init {
+        labelPaint.textSize = 11f * resources.displayMetrics.scaledDensity
+    }
+
+    /** 摇杆外环半径（占短边一半的 86%，留出键名标注空间）。 */
+    private fun ringRadius(): Float = minOf(width, height) / 2f * 0.86f
+
+    /** 摇杆头最大行程半径。 */
+    private fun travelRadius(): Float = ringRadius() * 0.62f
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        val cx = width / 2f
+        val cy = height / 2f
+        val r = ringRadius()
+        val density = resources.displayMetrics.density
+        val a = overlayAlpha.coerceIn(0f, 1f)
+        // ---- 外环 ----
+        ringPaint.strokeWidth = 3f * density
+        ringPaint.alpha = (72f * a).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, r, ringPaint)
+        // ---- 内十字参考线（极浅） ----
+        ringPaint.strokeWidth = 1.5f * density
+        ringPaint.alpha = (30f * a).toInt().coerceIn(0, 255)
+        canvas.drawLine(cx - r * 0.55f, cy, cx + r * 0.55f, cy, ringPaint)
+        canvas.drawLine(cx, cy - r * 0.55f, cx, cy + r * 0.55f, ringPaint)
+        // ---- 摇杆头（拖动到哪里画到哪里，松手回中心） ----
+        knobPaint.alpha = (235f * a).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx + knobX, cy + knobY, r * 0.34f, knobPaint)
+        // ---- 四向键名标注（当前映射，所见即所得） ----
+        labelPaint.alpha = (160f * a).toInt().coerceIn(0, 255)
+        val tx = labelPaint.textSize * 0.35f   // drawText y 为基线的竖直居中修正
+        canvas.drawText(keyFor(0), cx, cy - r * 0.72f + tx, labelPaint)
+        canvas.drawText(keyFor(1), cx, cy + r * 0.72f + tx, labelPaint)
+        canvas.drawText(keyFor(2), cx - r * 0.72f, cy + tx, labelPaint)
+        canvas.drawText(keyFor(3), cx + r * 0.72f, cy + tx, labelPaint)
+    }
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                if (isDragMode) {
+                    dragAnchorX = event.rawX
+                    dragAnchorY = event.rawY
+                    return true
+                }
+                stickHeld = true
+                updateKnob(event.x, event.y)
+                return true
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                if (isDragMode) {
+                    val dx = event.rawX - dragAnchorX
+                    val dy = event.rawY - dragAnchorY
+                    dragAnchorX = event.rawX
+                    dragAnchorY = event.rawY
+                    moveSelfBy(dx, dy)
+                    return true
+                }
+                if (stickHeld) updateKnob(event.x, event.y)
+                return true
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                if (isDragMode) {
+                    saveSelfPosition()
+                    return true
+                }
+                stickHeld = false
+                knobX = 0f
+                knobY = 0f
+                for (d in 0..3) setDir(d, false)
+                invalidate()
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    /** 归一化方向判定（阈值 0.34；斜向区间自然产生双激活）。 */
+    private fun updateKnob(x: Float, y: Float) {
+        val cx = width / 2f
+        val cy = height / 2f
+        val max = travelRadius()
+        if (max <= 0f) return
+        var dx = x - cx
+        var dy = y - cy
+        val dist = kotlin.math.hypot(dx, dy)
+        if (dist > max) { dx = dx / dist * max; dy = dy / dist * max }
+        knobX = dx
+        knobY = dy
+        val nx = dx / max
+        val ny = dy / max
+        val th = 0.34f
+        setDir(2, nx < -th)   // 左
+        setDir(3, nx > th)    // 右
+        setDir(0, ny < -th)   // 上（屏幕 y 向下）
+        setDir(1, ny > th)    // 下
+        invalidate()
+    }
+
+    /** 方向边沿 → 按键注入（仅状态变化时发，长按不重发）。 */
+    private fun setDir(dir: Int, on: Boolean) {
+        if (activeDirs[dir] == on) return
+        activeDirs[dir] = on
+        val wv = targetWebView ?: return
+        val keyCode = try { KeyMapper.toKeyCode(keyFor(dir)) } catch (_: Throwable) { return }
+        try {
+            if (on) wv.injectKeyDown(keyCode) else wv.injectKeyUp(keyCode)
+        } catch (_: Exception) { }
+    }
+
+    /** 位置编辑：按拖动量平移自身（marginStart/bottomMargin，屏幕 y 向下取反）。 */
+    private fun moveSelfBy(dx: Float, dy: Float) {
+        val lp = layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+        lp.marginStart = (lp.marginStart + dx.toInt()).coerceAtLeast(0)
+        lp.bottomMargin = (lp.bottomMargin - dy.toInt()).coerceAtLeast(0)
+        requestLayout()
+    }
+
+    /** 位置编辑松手：以"父容器内可用空间比例"持久化（与设备分辨率无关）。 */
+    private fun saveSelfPosition() {
+        val lp = layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+        val parent = parent as? android.view.ViewGroup ?: return
+        val freeW = (parent.width - width).coerceAtLeast(1)
+        val freeH = (parent.height - height).coerceAtLeast(1)
+        val fx = lp.marginStart.toFloat() / freeW
+        val fy = lp.bottomMargin.toFloat() / freeH
+        PrefsManager.sp.edit()
+            .putFloat("web_stick_pos_x", fx.coerceIn(0f, 1f))
+            .putFloat("web_stick_pos_y", fy.coerceIn(0f, 1f))
+            .apply()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        // 恢复上次编辑的位置（-1/未写 = 默认左下角）
+        val px = PrefsManager.sp.getFloat("web_stick_pos_x", -1f)
+        val py = PrefsManager.sp.getFloat("web_stick_pos_y", -1f)
+        if (px in 0f..1f && py in 0f..1f) {
+            val parent = parent as? android.view.ViewGroup ?: return
+            val lp = layoutParams as? android.widget.FrameLayout.LayoutParams ?: return
+            val freeW = (parent.width - width).coerceAtLeast(1)
+            val freeH = (parent.height - height).coerceAtLeast(1)
+            lp.marginStart = (px * freeW).toInt()
+            lp.bottomMargin = (py * freeH).toInt()
+            requestLayout()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        // 兜底：控件被移除（隐藏手柄/改模式/重建）时若仍有方向按住，立即补发 keyup，
+        // 防止摇杆半路消失导致游戏角色持续移动（页面级 releaseAllKeys 的双保险）。
+        for (d in 0..3) if (activeDirs[d]) setDir(d, false)
+        super.onDetachedFromWindow()
+    }
 }

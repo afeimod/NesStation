@@ -1493,7 +1493,8 @@ fun CoreSettingsPanel(
                         "ps2/pcsx2/bios/ 目录 (旧版 ps2/bios/ 的文件会自动迁移)。\n" +
                         "支持镜像: .iso / .chd / .cso / .zso / .cue+bin / .gz / .mdf / .mds / " +
                         ".nrg / .elf；MDF/MDS 组合镜像在 PS2 平台页导入会自动识别。",
-                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568), fontSize = 10.sp, lineHeight = 14.sp)
+                        // ★ v17: 安装区提示改亮色（用户反馈“灰色看不清”）
+                        color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent else Color(0xFF27AE60), fontSize = 10.sp, lineHeight = 14.sp)
                     Psx2BiosImportSection()
                 }
             }
@@ -2903,9 +2904,10 @@ fun CemuDriverSection(
                 "自定义驱动经 adrenotools 在核心渲染器初始化时加载 —— " +
                 "切换驱动后需重启游戏生效。驱动 zip 需含 meta.json（schemaVersion=1）与对应的 .so 库。" +
                 (if (!driverSupported) "\n当前环境不支持加载自定义驱动。" else ""),
-                color = if (dark) Color(0xFF8899AA)
-                        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
-                        else Color(0xFF4A5568),
+                // ★ v17: 安装区提示改亮色（用户反馈“灰色看不清”）
+                color = if (dark) Color(0xFF6FCF97)
+                        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+                        else Color(0xFF27AE60),
                 fontSize = 10.sp, lineHeight = 15.sp)
 
             // 系统驱动（默认项）
@@ -3026,7 +3028,12 @@ private fun TextButtonRow(
             }
         }
         Text(sub,
-            color = if (dark) Color(0xFF8899AA) else Color(0xFF667788),
+            // ★ v17: 安装/管理按钮说明改亮色（用户反馈“灰色看不清”）
+            color = when {
+                dark -> Color(0xFF6FCF97)
+                com.nesstation.app.ui.neon.NeonUi.isNeon -> com.nesstation.app.ui.neon.Neon.Accent
+                else -> Color(0xFF27AE60)
+            },
             fontSize = 10.sp, lineHeight = 13.sp)
     }
 }
@@ -3130,7 +3137,8 @@ private fun LsfgDllSection(
             "· 内置：把 Lossless.dll 放进 APK 的 assets（cemu/lsfg/ 或根目录），" +
             "应用启动时自动读取；\n" +
             "· 导入的 DLL 覆盖内置版本；移除后帧生成自动关闭。",
-            color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim else Color(0xFF4A5568),
+            // ★ v17: 安装区提示改亮色（用户反馈“灰色看不清”）
+            color = if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent else Color(0xFF27AE60),
             fontSize = 10.sp, lineHeight = 15.sp)
 
         TextButtonRow(
@@ -3165,7 +3173,7 @@ private fun LsfgDllSection(
                 color = when {
                     it.contains("就绪") -> Color(0xFF27AE60)
                     it.contains("失败") || it.contains("清空") -> Color(0xFFB00020)
-                    else -> Color(0xFF667788)
+                    else -> Color(0xFFFFB300)   // ★ v17: 中性/待校验状态改亮琥珀色（原灰 0xFF667788）
                 },
                 fontSize = 10.sp, lineHeight = 14.sp,
                 modifier = Modifier.padding(start = 16.dp, bottom = 4.dp))
@@ -3210,9 +3218,11 @@ fun EdenKeysFirmwareSection(dark: Boolean = false) {
     }
     LaunchedEffect(Unit) { refresh() }
 
-    val dimColor = if (dark) Color(0xFF8899AA)
-        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
-        else Color(0xFF4A5568)
+    // ★ v17: 安装/管理区提示改亮色（用户反馈“灰色看不清”）：深色面板 = 亮薄荷绿、
+    //   Neon 主题 = 主题强调色（与选项同款）、浅色 = 选项绿（与“已安装/就绪”同色）。
+    val dimColor = if (dark) Color(0xFF6FCF97)
+        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+        else Color(0xFF27AE60)
 
     if (!com.nesstation.app.core.jni.EdenNative.ensureLoaded()) {
         Text("Eden 核心未加载（需要 arm64-v8a + Android 9+），密钥/固件管理不可用。",
@@ -3263,7 +3273,7 @@ fun EdenKeysFirmwareSection(dark: Boolean = false) {
     Text(
         if (fwAvailable) "固件：已安装${if (fwVersion.isNotBlank()) "（$fwVersion）" else ""}"
         else "固件：未安装（部分游戏与系统字体需要）",
-        color = if (fwAvailable) Color(0xFF27AE60) else Color(0xFF667788),
+        color = if (fwAvailable) Color(0xFF27AE60) else Color(0xFFFFB300),   // ★ v17: 未安装提示改亮琥珀色（原灰 0xFF667788 看不清）
         fontSize = 11.sp, lineHeight = 15.sp)
 
     val fwLauncher = rememberLauncherForActivityResult(
@@ -3336,9 +3346,10 @@ fun EdenSaveDataSection(dark: Boolean = false) {
     var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var saveSummary by remember { mutableStateOf("") }
 
-    val dimColor = if (dark) Color(0xFF8899AA)
-        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
-        else Color(0xFF4A5568)
+    // ★ v17: 存档管理区提示改亮色（同 EdenKeysFirmwareSection）
+    val dimColor = if (dark) Color(0xFF6FCF97)
+        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+        else Color(0xFF27AE60)
 
     // 存档概览（纯文件扫描；busy 变化后刷新）
     LaunchedEffect(busy) {
@@ -3538,9 +3549,10 @@ fun EdenContentInstallSection(dark: Boolean = false) {
     var resultMsg by remember { mutableStateOf<String?>(null) }
     var keysPresent by remember { mutableStateOf<Boolean?>(null) }
 
-    val dimColor = if (dark) Color(0xFF8899AA)
-        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
-        else Color(0xFF4A5568)
+    // ★ v17: 升级包/DLC 安装区提示改亮色（同 EdenKeysFirmwareSection）
+    val dimColor = if (dark) Color(0xFF6FCF97)
+        else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+        else Color(0xFF27AE60)
 
     if (!com.nesstation.app.core.jni.EdenNative.ensureLoaded()) {
         Text("Eden 核心未加载（需要 arm64-v8a + Android 9+），内容安装不可用。",
@@ -3711,9 +3723,9 @@ fun EdenDriverSection(
             return@SettingsSection
         }
 
-        val dimColor = if (dark) Color(0xFF8899AA)
-            else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.TextDim
-            else Color(0xFF4A5568)
+        val dimColor = if (dark) Color(0xFF6FCF97)
+            else if (com.nesstation.app.ui.neon.NeonUi.isNeon) com.nesstation.app.ui.neon.Neon.Accent
+            else Color(0xFF27AE60)   // ★ v17: 亮色化（同上）
 
         if (infoLine.isNotBlank()) {
             Text(infoLine, color = dimColor, fontSize = 10.sp, lineHeight = 15.sp)
