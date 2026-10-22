@@ -1160,7 +1160,15 @@ fun WebGameScreen(
         //   摇杆外环四向标注当前映射键名，方向键大小设置同 dpad_scale 生效）
         val stick = WebStickView(container.context).apply {
             targetWebView = webViewRef.value
-            overlayAlpha = PrefsManager.gamepadAlpha
+            // ★ v17.1: gamepadAlpha（Int，隐藏 PrefsManager）取值语义无法从可见代码确认
+            //   （0-255 Paint alpha 或 0-100 百分比），按数值自适应换算，两种语义下均
+            //   不失真：>100 必为 0-255 语义 → /255f；≤100 按 /100f（0-100 语义全档
+            //   精确；0-255 语义低透明档下摇杆偏亮但永不消失，优于固定单边猜测）。
+            overlayAlpha = if (PrefsManager.gamepadAlpha > 100) {
+                PrefsManager.gamepadAlpha / 255f
+            } else {
+                PrefsManager.gamepadAlpha / 100f
+            }
             isDragMode = isPositionEditMode
         }
         stickRef.value = stick
@@ -1768,7 +1776,10 @@ private fun KeyMappingDialog(
                     val dirKeys = dirPrefKeys.mapIndexed { i, k -> PrefsManager.sp.getString(k, dirDefaults[i]) ?: dirDefaults[i] }
                     android.app.AlertDialog.Builder(context)
                         .setTitle("摇杆 WASD 映射")
-                        .setItems(dirNames.mapIndexed { i, d -> "$d方向 (当前: ${dirKeys[i]})" }.toTypedArray()) { _, idx ->
+                        // ★ v17.1: 模板短写法在变量名后紧跟 CJK 字符时，词法分析会把
+                        //   方向字并入标识符（CJK 是合法标识符字符）导致 Unresolved
+                        //   reference 编译失败，必须用显式花括号形式。
+                        .setItems(dirNames.mapIndexed { i, d -> "${d}方向 (当前: ${dirKeys[i]})" }.toTypedArray()) { _, idx ->
                             android.app.AlertDialog.Builder(context)
                                 .setTitle("摇杆「${dirNames[idx]}」方向映射")
                                 .setSingleChoiceItems(keys, keys.indexOf(dirKeys[idx]).coerceAtLeast(0)) { d2, w2 ->
