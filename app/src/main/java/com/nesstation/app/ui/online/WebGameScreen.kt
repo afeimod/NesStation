@@ -26,6 +26,8 @@ import androidx.compose.foundation.lazy.LazyRow
 // ★ v17: 主页桌面网格横向滚动 + 紧凑地址栏光标所需
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+// ★ v21: 背景设置对话框横屏可滚动（内容超出小高度不再被裁）
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 // ★ v11 浏览器化：工具栏/收藏夹主页所需
@@ -686,7 +688,21 @@ fun WebGameScreen(
     }
 
     fun applyAspectRatio(ratio: String) {
-        PrefsManager.sp.edit().putString("game_aspect_ratio", ratio).apply()
+        // ★ v21: 联动 Flash 引擎缩放 —— 隐藏的 RuffleInjector 与可见的
+        //   buildFlashInjectScript 都读 flash_scale/flash_letterbox（此前无任何
+        //   UI 写入这两个键 = 引擎永远 showAll 保持原比例不拉伸，即用户反馈
+        //   "一些游戏没有被拉伸"的根因）：
+        //   · 选具体比例（4:3/16:9/…）= 引擎 exactFit 拉伸填满外层比例容器；
+        //   · auto = 引擎默认 showAll 不变形。
+        //   注意：scale 级变更对"已在游戏中"的实例要重新进入才完全生效
+        //   （config 是页面加载时注入的），外层 letterbox 容器即时生效。
+        val spEdit = PrefsManager.sp.edit().putString("game_aspect_ratio", ratio)
+        if (ratio == "auto") {
+            spEdit.putString("flash_scale", "showAll").putString("flash_letterbox", "on")
+        } else {
+            spEdit.putString("flash_scale", "exactFit").putString("flash_letterbox", "off")
+        }
+        spEdit.apply()
         val wv = webViewRef.value
         if (wv != null) {
             // 按当前引擎选择正确的 letterbox 脚本。
@@ -699,6 +715,9 @@ fun WebGameScreen(
             }
             wv.evaluateJavascript(script, null)
         }
+        val modeText = if (ratio == "auto") "全屏自适应（保持原比例不拉伸）"
+            else "按 $ratio 拉伸显示（已在游戏中的重新进入后完全生效）"
+        Toast.makeText(context, "画面比例：$modeText", Toast.LENGTH_SHORT).show()
     }
 
     fun showSwfActions(swfUrl: String) {
@@ -2633,14 +2652,17 @@ private fun BrowserHomeOverlay(
             //   复用 v17 DesktopShortcut 单元（白字描边阴影，任意壁纸可读），
             //   LazyVerticalGrid 行优先流动 + 竖向滚动，取代 v17 纵向填列桌面排布
             //   （用户反馈"太难看"，按图中搜索主页样式重排）。
+            //   ★ v21: Fixed(4) → Adaptive(80dp) —— 横屏下 4 列均分宽屏会把内容
+            //   摊成稀疏大方格（用户反馈"横屏时间隔非常大"），改自适应列数后
+            //   竖屏 4 列 / 横屏自动 7-9 列紧凑排布，同图中导航站样式。
             LazyVerticalGrid(
-                columns = GridCells.Fixed(4),
+                columns = GridCells.Adaptive(minSize = 80.dp),
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = 10.dp),
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)
             ) {
                 // ★ v20: gridItems 是 LazyGridScope 的 List 扩展（同 2333 行标签栏 items 用法），
                 //   原误传数量 Int 导致 CI 六连错（重载不匹配→lambda 类型不可推断→Composable 上下文丢失）。
@@ -2771,16 +2793,18 @@ private fun DesktopShortcut(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(64.dp)
+            // ★ v21: width(64.dp) → fillMaxWidth() —— 网格槽位变宽（Adaptive 列）
+            //   后内容在槽内居中，不再贴左留大片空白。
+            .fillMaxWidth()
             .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 2.dp, vertical = 2.dp)
     ) {
-        // ---- 图标瓦片（44dp 圆角方块，站点 favicon 或首字母） ----
+        // ---- 图标瓦片（44dp 圆形，站点 favicon 或首字母；★ v21 方块改圆去“方格”感） ----
         Box(
             modifier = Modifier
                 .size(44.dp)
-                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                 .background(
                     androidx.compose.ui.graphics.Brush.linearGradient(
                         listOf(accent.copy(alpha = 0.92f), Color(0xFF1C2032))
@@ -2829,7 +2853,8 @@ private fun DesktopAddShortcut(onClick: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(64.dp)
+            // ★ v21: width(64.dp) → fillMaxWidth()（与 DesktopShortcut 同款槽内居中）
+            .fillMaxWidth()
             .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 2.dp, vertical = 2.dp)
@@ -2837,12 +2862,12 @@ private fun DesktopAddShortcut(onClick: () -> Unit) {
         Box(
             modifier = Modifier
                 .size(44.dp)
-                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                 .background(Color(0x1FFFFFFF))
                 .border(
                     width = 1.dp,
                     color = Color(0x40FFFFFF),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(10.dp)
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(50)
                 ),
             contentAlignment = Alignment.Center
         ) {
@@ -2880,7 +2905,9 @@ private fun BackgroundChooserDialog(
         onDismissRequest = onDismiss,
         title = { Text("自定义主页背景") },
         text = {
-            Column {
+            // ★ v21: verticalScroll —— 横屏可用高度小，7-8 行选项超出即被裁
+            //   （用户反馈“横屏时设置背景菜单页显示不全”）。
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 BgOptionRow("默认深色", currentMode == "none", null) {
                     onUseDefault(); onDismiss()
                 }
@@ -2891,11 +2918,11 @@ private fun BackgroundChooserDialog(
                 }
                 androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
                 androidx.compose.material3.TextButton(onClick = { onPickImage(); onDismiss() }) {
-                    Text("从相册选择图片…", color = Color(0xFF8A7BFF), fontSize = 13.sp)
+                    Text("从相册选择图片…", color = Color(0xFF8A7BFF), fontSize = 15.sp)
                 }
                 if (hasImage) {
                     androidx.compose.material3.TextButton(onClick = { onClearImage(); onDismiss() }) {
-                        Text("清除自定义图片", color = Color(0xFFE2707C), fontSize = 13.sp)
+                        Text("清除自定义图片", color = Color(0xFFE2707C), fontSize = 15.sp)
                     }
                 }
             }
@@ -2926,10 +2953,20 @@ private fun BgOptionRow(
                 )
                 androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
             }
-            Text(label, color = if (selected) Color(0xFF8A7BFF) else Color(0xFFC7D0DE), fontSize = 13.sp)
+            // ★ v21: 未选中色改 MaterialTheme.colorScheme.onSurface（主题自适应，
+            //   浅灰蓝 0xFFC7D0DE 在浅色对话框底上对比度不足 = “字体不清晰”）；
+            //   字号 13 → 15sp 提高可读性，选中加粗。
+            Text(
+                label,
+                color = if (selected) Color(0xFF8A7BFF)
+                        else androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+                fontSize = 15.sp,
+                fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.Bold else null
+            )
             if (selected) {
                 androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-                Text("✓", color = Color(0xFF8A7BFF), fontSize = 13.sp)
+                Text("✓", color = Color(0xFF8A7BFF), fontSize = 15.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
             }
         }
     }

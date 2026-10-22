@@ -1,5 +1,12 @@
 package com.nesstation.app.ui.settings
 
+// ★ v21: 核心设置可读性三阶段 —— 用户 NEON 主题截图反馈：安装驱动/选择密钥等
+//   按钮行主体文本（TextButtonRow label）仍是灰字体"一直没有高亮"。根因 =
+//   label 颜色分支只有 !enabled/dark/else 三支，Neon 深色主题下落入为浅色
+//   面板设计的 0xFF1E2A3A 深灰蓝（深底上即灰暗看不清）。本轮补 Neon 分支
+//   （Neon.TextHi），一次覆盖驱动列表/安装/删除/选择密钥/安装固件/
+//   导入 Lossless.dll 等全部按钮行 label。
+
 // ★ v19: 核心设置可读性二阶段 —— v17 只亮了各区介绍段落（用户反馈"高亮了个
 //   寂寞"），本轮把剩余全部灰色说明文字统一亮黄化（0xFFFDD835）：
 //   · 18 处 `if (Neon) Neon.TextDim else Color(0xFF4A5568)` 选项/提示行说明
@@ -3027,6 +3034,10 @@ private fun TextButtonRow(
                 color = when {
                     !enabled -> Color(0xFF8899AA)
                     dark -> Color.White
+                    // ★ v21: Neon 主题下 label 不再落入浅色面板的深灰蓝
+                    //   （深底上灰暗看不清 = 用户反馈安装驱动/选择密钥都是灰字体
+                    //   的根因），改用主题高亮文本色（与 PSP 区 PRO 地址行同款）。
+                    com.nesstation.app.ui.neon.NeonUi.isNeon -> com.nesstation.app.ui.neon.Neon.TextHi
                     else -> Color(0xFF1E2A3A)
                 },
                 fontSize = 14.sp, fontWeight = FontWeight.Medium

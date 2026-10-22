@@ -1488,36 +1488,38 @@ open class GameWebViewClient(
               var targetRatio = $targetRatio;
               var style = document.createElement('style');
               style.id = '__aspectRatioStyle';
-              style.textContent = [
-                'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;background:#000!important;overflow:hidden!important;}',
-                // WAFlash: #waflashContainer flex 居中,canvas margin auto
-                '#waflashContainer{display:flex!important;align-items:center!important;justify-content:center!important;width:100vw!important;height:100vh!important;}',
-                'canvas.waflashCanvas{margin:0 auto!important;display:block!important;}'
-              ].join('\n');
               document.head.appendChild(style);
 
+              // ★ v21: canvas 三级兜底 + 全 CSS 强制 —— waflash.html 的真实 DOM 不可见,
+              //   旧版只试 waflashCanvas/#canvas 两个类名,不匹配时整个脚本空转
+              //   (= 用户反馈"游戏没有被拉伸,拉伸的全是文本和引擎背景");
+              //   inline style 赋值也会被引擎自身 resize 重设压掉,改 !important CSS 规则。
               function applyLetterbox() {
                 var sw = window.innerWidth;
                 var sh = window.innerHeight;
-                var screenRatio = sw / sh;
-
-                var waflashCanvas = document.querySelector('canvas.waflashCanvas') ||
-                                    document.querySelector('#canvas');
-                if (waflashCanvas) {
-                  if (screenRatio > targetRatio) {
-                    var newW = Math.round(sh * targetRatio);
-                    waflashCanvas.style.width = newW + 'px';
-                    waflashCanvas.style.height = sh + 'px';
-                    waflashCanvas.style.marginLeft = 'auto';
-                    waflashCanvas.style.marginRight = 'auto';
-                  } else {
-                    var newH = Math.round(sw / targetRatio);
-                    waflashCanvas.style.width = sw + 'px';
-                    waflashCanvas.style.height = newH + 'px';
-                    waflashCanvas.style.marginTop = 'auto';
-                    waflashCanvas.style.marginBottom = 'auto';
+                if (sw <= 0 || sh <= 0) return;
+                var c = document.querySelector('canvas.waflashCanvas') ||
+                        document.querySelector('canvas#canvas') ||
+                        document.querySelector('canvas');
+                var sel = 'canvas';
+                if (c) {
+                  if (c.id) sel = '#' + c.id;
+                  else if (c.className) {
+                    var cls = String(c.className).trim().split(/\s+/).join('.');
+                    if (cls) sel = 'canvas.' + cls;
                   }
                 }
+                var w, h;
+                if (sw / sh > targetRatio) {
+                  h = sh; w = Math.round(sh * targetRatio);
+                } else {
+                  w = sw; h = Math.round(sw / targetRatio);
+                }
+                style.textContent = [
+                  'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;background:#000!important;overflow:hidden!important;}',
+                  '#waflashContainer{display:flex!important;align-items:center!important;justify-content:center!important;width:100vw!important;height:100vh!important;}',
+                  sel + '{position:fixed!important;left:50%!important;top:50%!important;transform:translate(-50%,-50%)!important;width:' + w + 'px!important;height:' + h + 'px!important;margin:0!important;}'
+                ].join('\n');
               }
               applyLetterbox();
               window.addEventListener('resize', applyLetterbox);
@@ -1573,8 +1575,16 @@ open class GameWebViewClient(
                 var sw = window.innerWidth;
                 var sh = window.innerHeight;
                 if (sw <= 0 || sh <= 0) return;
+                // ★ v21: #stage 不存在时(player.html 版本差异/改版)直接以
+                //   ruffle-player 元素为 letterbox 容器兜底 —— 旧版在此 return,
+                //   只剩黑底 CSS 生效("游戏没有被拉伸,拉伸的全是文本和引擎背景")。
                 var stage = document.getElementById('stage');
-                if (!stage) return;
+                var stageIsPlayer = false;
+                if (!stage) {
+                  stage = document.querySelector('ruffle-player');
+                  if (!stage) return;
+                  stageIsPlayer = true;
+                }
                 if (stage.classList.contains('box-custom')) return;
 
                 // 注入或更新 CSS
@@ -1603,6 +1613,14 @@ open class GameWebViewClient(
                 }
                 stage.style.width = boxW + 'px';
                 stage.style.height = boxH + 'px';
+                if (stageIsPlayer) {
+                  // ruffle-player 直接做容器时,#stage 的 CSS 规则够不到它,
+                  // 需要 inline fixed 居中定位
+                  stage.style.position = 'fixed';
+                  stage.style.left = '50%';
+                  stage.style.top = '50%';
+                  stage.style.transform = 'translate(-50%,-50%)';
+                }
                 // 触发 ruffle-player 元素 resize 回调,让 Ruffle 下一帧用新 viewport
                 window.dispatchEvent(new Event('resize'));
               }

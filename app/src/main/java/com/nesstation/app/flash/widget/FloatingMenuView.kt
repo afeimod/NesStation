@@ -30,6 +30,12 @@ import android.widget.Toast
  * - 菜单：横屏 5 列 / 竖屏 4 列紧凑网格（56dp 单元 + 26dp 徽章 + 9sp 标签），
  *   彻底去掉深色容器背景与单元格底色 —— 只留彩色徽章 + 文字 + 涟漪，
  *   透明 PopupWindow 悬浮在页面上。
+ * ★ v21: 半透明 + 闲置自动隐藏（用户反馈：悬浮球应该半透明，并支持自动
+ * 隐藏到边角，点击再回来）：
+ * - 球体常态半透明（alpha 0.55，原 0.96），按下时暂时恢复全实方便看清；
+ * - 闲置 5 秒无交互 → 自动滑到最近的屏幕边角 + 变极淡（alpha 0.30）；
+ * - 点击隐藏态的球 → 动画回原位置（本次点击不弹菜单），拖动/菜单开合/
+ *   全屏切换都会重置计时；菜单打开与全屏视频期间不自动隐藏。
  * ★ v15 可见性修复（用户反馈："悬浮菜单看不见了，颜色弄好点"）：
  * v14 全透明悬浮在浅色/噪点网页上被淹没（徽章底仅 26% alpha、标签浅灰蓝
  * DDE3EE）。本次：尺寸不动（38dp 球 / 56dp 单元 / 26dp 徽章 / 9sp），每个
@@ -67,6 +73,25 @@ class FloatingMenuView @JvmOverloads constructor(
 
     private var isMenuOpen = false
 
+    // ============================ ★ v21: 半透明 + 自动隐藏到边角 ============================
+    companion object {
+        /** 闲置多久后自动滑到最近屏幕边角（毫秒） */
+        private const val AUTO_HIDE_MS = 5000L
+        /** 常态半透明（用户反馈：球“应该半透明”） */
+        private const val BALL_ALPHA_NORMAL = 0.55f
+        /** 边角隐藏态极淡（点击恢复） */
+        private const val BALL_ALPHA_HIDDEN = 0.30f
+    }
+
+    private val autoHideHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val hideRunnable = Runnable { hideToNearestEdge() }
+    private var autoHidden = false
+    private var savedTX = 0f
+    private var savedTY = 0f
+    private var edgeAnim: android.animation.ValueAnimator? = null
+    /** 点击隐藏球恢复原位时，消费本次点击（不弹菜单） */
+    private var suppressRestoreClick = false
+
     /** 每个功能的徽章强调色（与浏览器收藏卡片同一色系） */
     private val menuAccents = intArrayOf(
         0xFF8A7BFF.toInt(), 0xFFE74C3C.toInt(), 0xFF27AE60.toInt(), 0xFF3498DB.toInt(),
@@ -82,6 +107,8 @@ class FloatingMenuView @JvmOverloads constructor(
                 popup?.dismiss()
                 isMenuOpen = false
             }
+            // ★ v21: GONE（球不可见）期间挂起自动隐藏计时，恢复可见后重新计起
+            if (value) autoHideHandler.removeCallbacks(hideRunnable) else scheduleAutoHide()
         }
 
     var isLandscape = true
@@ -93,11 +120,14 @@ class FloatingMenuView @JvmOverloads constructor(
             setImageDrawable(MenuGlyphDrawable(resources.displayMetrics.density))
             setPadding(0, 0, 0, 0)
             elevation = dp(6).toFloat()
-            alpha = 0.96f
+            // ★ v21: 常态半透明（0.96 → 0.55），按下时暂时全实方便看清
+            alpha = BALL_ALPHA_NORMAL
             contentDescription = "菜单"
         }
         addView(triggerBtn, LayoutParams(dp(38), dp(38)).apply { gravity = Gravity.CENTER })
         setupDrag()
+        // ★ v21: attach 后开始闲置计时（5s 无交互 → 滑到屏幕边角变极淡）
+        scheduleAutoHide()
     }
 
     fun setCallbacks(cb: Callbacks) {
@@ -116,6 +146,66 @@ class FloatingMenuView @JvmOverloads constructor(
                 marginEnd = dp(12)
             })
         }
+        // ★ v21: 重新挂载（切标签/重建 WebView 容器）后位置归零，重启闲置计时
+        autoHidden = false
+        suppressRestoreClick = false
+        scheduleAutoHide()
+    }
+
+    // ============================ ★ v21: 自动隐藏到边角 ============================
+
+    /** 重启闲置计时（5s 无交互 → 滑到最近屏幕边角 + 变极淡） */
+    private fun scheduleAutoHide() {
+        autoHideHandler.removeCallbacks(hideRunnable)
+        if (isFullscreen || isMenuOpen || autoHidden) return
+        autoHideHandler.postDelayed(hideRunnable, AUTO_HIDE_MS)
+    }
+
+    /** 滑到最近的屏幕边角 + 变极淡（点击球后动画回原位） */
+    private fun hideToNearestEdge() {
+        if (autoHidden || isFullscreen || isMenuOpen) return
+        val parentView = parent as? ViewGroup ?: return
+        val w = if (width > 0) width else dp(38)
+        val h = if (height > 0) height else dp(38)
+        val inset = dp(6).toFloat()
+        // 当前视觉位置（parent 坐标系：布局锚点 + 平移量）
+        val cx = left + translationX + w / 2f
+        val cy = top + translationY + h / 2f
+        val xs = floatArrayOf(inset, (parentView.width - w - inset).coerceAtLeast(inset))
+        val ys = floatArrayOf(inset, (parentView.height - h - inset).coerceAtLeast(inset))
+        var bestX = xs[0]; var bestY = ys[0]; var bestD = Float.MAX_VALUE
+        for (x in xs) for (y in ys) {
+            val d = (x + w / 2f - cx) * (x + w / 2f - cx) + (y + h / 2f - cy) * (y + h / 2f - cy)
+            if (d < bestD) { bestD = d; bestX = x; bestY = y }
+        }
+        savedTX = translationX
+        savedTY = translationY
+        autoHidden = true
+        animateBallTo(bestX - left, bestY - top, BALL_ALPHA_HIDDEN)
+    }
+
+    /** 点击隐藏态的球 → 回到隐藏前位置 + 常态半透明（本次点击不弹菜单） */
+    private fun restoreFromEdge() {
+        if (!autoHidden) return
+        autoHidden = false
+        animateBallTo(savedTX, savedTY, BALL_ALPHA_NORMAL)
+        scheduleAutoHide()
+    }
+
+    /** 整个视图平移滑动动画 + 球体 alpha 过渡（ViewPropertyAnimator 不便同时插值两目标） */
+    private fun animateBallTo(tx: Float, ty: Float, targetAlpha: Float) {
+        edgeAnim?.cancel()
+        val sx = translationX; val sy = translationY; val sa = triggerBtn.alpha
+        edgeAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 320
+            addUpdateListener { a ->
+                val f = a.animatedValue as Float
+                translationX = sx + (tx - sx) * f
+                translationY = sy + (ty - sy) * f
+                triggerBtn.alpha = sa + (targetAlpha - sa) * f
+            }
+            start()
+        }
     }
 
     private fun setupDrag() {
@@ -131,6 +221,17 @@ class FloatingMenuView @JvmOverloads constructor(
             override fun onTouch(v: View, e: MotionEvent): Boolean {
                 when (e.action) {
                     MotionEvent.ACTION_DOWN -> {
+                        // ★ v21: 任何触摸都重启闲置计时；点击隐藏态的球先恢复原位
+                        //   （本次点击被消费，不弹菜单）。
+                        scheduleAutoHide()
+                        if (autoHidden) {
+                            suppressRestoreClick = true
+                            restoreFromEdge()
+                        } else {
+                            suppressRestoreClick = false
+                            // 按下时暂时恢复全实，方便看清拖动位置
+                            triggerBtn.alpha = 0.9f
+                        }
                         startX = e.rawX
                         startY = e.rawY
                         startTransX = translationX
@@ -148,7 +249,11 @@ class FloatingMenuView @JvmOverloads constructor(
                         }
                     }
                     MotionEvent.ACTION_UP -> {
-                        if (!moved && System.currentTimeMillis() - downTime < 300) {
+                        // ★ v21: 松手回落常态半透明；恢复点击在此消费（不弹菜单）
+                        if (triggerBtn.alpha > BALL_ALPHA_NORMAL) triggerBtn.alpha = BALL_ALPHA_NORMAL
+                        if (suppressRestoreClick) {
+                            suppressRestoreClick = false
+                        } else if (!moved && System.currentTimeMillis() - downTime < 300) {
                             toggleMenu()
                         }
                     }
@@ -205,6 +310,9 @@ class FloatingMenuView @JvmOverloads constructor(
     )
 
     private fun showMenu() {
+        // ★ v21: 菜单打开期间不自动隐藏；球体全实方便定位
+        autoHideHandler.removeCallbacks(hideRunnable)
+        triggerBtn.alpha = 1f
         val isLandscapeRes = resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
         // ★ v14: 横屏 5 列 / 竖屏 4 列（单元从 78dp 缩到 56dp，列数加密）
@@ -299,7 +407,12 @@ class FloatingMenuView @JvmOverloads constructor(
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             isOutsideTouchable = true
             elevation = dp(6).toFloat()
-            setOnDismissListener { isMenuOpen = false }
+            setOnDismissListener {
+                isMenuOpen = false
+                // ★ v21: 菜单关闭后球回落常态半透明，重新开始闲置计时
+                triggerBtn.alpha = BALL_ALPHA_NORMAL
+                scheduleAutoHide()
+            }
             // 让菜单右边对齐到球的右缘（球贴右缘时菜单不出屏；v14 球缩至 38dp）
             val xoff = -(menuWidth - dp(38) + dp(6))
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {

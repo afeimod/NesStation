@@ -1152,6 +1152,12 @@ open class GameWebView @JvmOverloads constructor(
         const val UA_DESKTOP_SPOOF_SCRIPT = """
             (function(){
               if (window.__uaDesk) return; window.__uaDesk = true;
+              // ★ v21: 内置播放页（flash.local/player.html、waflash.html）是游戏画布的
+              //   舞台，视口必须保持真实屏幕尺寸 —— 桌面伪装把 viewport 拉到 1280 宽时，
+              //   加载文本/引擎背景被整体缩放而游戏画布不拉伸（用户反馈"拉伸的全是
+              //   文本和引擎背景"的根因之一），且 letterbox 脚本的 window.innerWidth
+              //   基准被带偏。播放页是自有页面，无需任何伪装，直接跳过。
+              try { if (location.hostname === 'flash.local') return; } catch(e) {}
               var ua = '';
               try { ua = navigator.userAgent || ''; } catch(e) {}
               var isDesk = /Windows NT/.test(ua) || /Trident\/7/.test(ua) ||
