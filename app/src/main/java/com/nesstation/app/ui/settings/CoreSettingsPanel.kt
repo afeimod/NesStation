@@ -1377,11 +1377,12 @@ fun CoreSettingsPanel(
                 // 键名/取值已对照 pcee2-libretro 源码 Libretro.cpp definitions[] 表验证
                 // (WizzardSK/pcee2-libretro, 与预编译 libpcee2_libretro_android.so 同源)。
                 SettingsSection("PS2 (PCSX2) · 画面") {
-                    // ARMSX2 核心已启用 Vulkan (USE_VULKAN=ON)。auto 由核心按设备
-                    // 支持选择（Vulkan 优先），opengl 用 OpenGL ES，vulkan 强制 Vulkan，
-                    // software 用 CPU 软渲染。均可即时切换。
+                    // ARMSX2 核心已启用 Vulkan (USE_VULKAN=ON)。★ v22: 官方
+                    // pcsx2_renderer 无 "auto" 值（默认 vulkan，上游选项表实证）
+                    // —— applyCoreOptions 发送侧已归一 auto→vulkan；opengl 用
+                    // OpenGL ES，vulkan 强制 Vulkan，software 用 CPU 软渲染。均可即时切换。
                     DropdownRow("渲染器",
-                        listOf("auto" to "Auto (按设备选择)",
+                        listOf("auto" to "自动 (Vulkan 优先)",
                                "vulkan" to "Vulkan (硬件加速)",
                                "opengl" to "OpenGL (硬件加速)",
                                "software" to "Software (软渲染)"),
@@ -1447,14 +1448,21 @@ fun CoreSettingsPanel(
                         listOf("auto" to "跟随全局画面缩放", "4:3" to "4:3 (锁定)", "16:9" to "16:9 (锁定)"),
                         padLayout.ps2AspectRatio
                     ) { updateLayout(padLayout.copy {ps2AspectRatio = it}) }
+                    // ★ v22: PCSX2/pcee2 核心无自定义 HD 贴图选项（上游
+                    //   libretro_core_options.h 全表实证）—— 明示等效增强路径，
+                    //   避免在不存在的能力上反复试错。
+                    Text("PS2 核心不支持自定义 HD 贴图包；等效画面增强 = 分辨率倍数 / 双线性·三线性·各向异性过滤 / 纹理预加载（个别项重进游戏生效）。",
+                        color = Color(0xFFFDD835),
+                        fontSize = 10.sp, lineHeight = 14.sp)
                 }
 
                 SettingsSection("PS2 · 性能 (速度作弊)") {
                     DropdownRow("GPU 回读模式",
+                        // ★ v22: 移除 no_readbacks/async —— 官方 pcsx2_hw_download_mode
+                        //   仅 accurate|unsynchronized|disabled 三值，旧选项是无效值
+                        //   （选了被核心静默忽略 = "没有正确生效"）；apply 侧已归一存量脏值
                         listOf("accurate" to "精准 (慢, 特效完整)",
-                               "no_readbacks" to "禁用回读 (同步GS线程, 加速)",
                                "unsynchronized" to "非同步 (快)",
-                               "async" to "异步 (实验性, 最快, 滞后1帧)",
                                "disabled" to "禁用/忽略 (最快, 部分特效异常)"),
                         padLayout.ps2HwDownloadMode
                     ) { updateLayout(padLayout.copy {ps2HwDownloadMode = it}) }
@@ -1746,6 +1754,11 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
                         padLayout.azPreloadTextures
                     ) { updateLayout(padLayout.copy {azPreloadTextures = it}) }
+                    // ★ v22: 自定义纹理包目录指引 —— 无包时开启无任何画面变化
+                    //   （用户反馈 HD 类选项"没有正确生效"的同类主因）
+                    Text("「自定义纹理 (HD 包)」需纹理包：解压到 Azahar 数据目录 load/textures/<游戏TitleID>/；无包时开启无画面变化。",
+                        color = Color(0xFFFDD835),
+                        fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 SettingsSection("3DS (Azahar) · 系统 / 音频") {
                     DropdownRow("CPU 时钟",
@@ -2209,6 +2222,8 @@ fun CoreSettingsPanel(
                 }
                 SettingsSection("PSP · 纹理") {
                     PspCoreOptions.group(PspCoreOptions.G_TEX).forEach { def -> PspCoreOptionRow(def) }
+                    // ★ v22: 高清纹理替换需纹理包 —— 状态检测 + 目录指引
+                    PspTexturePackStatus()
                 }
                 SettingsSection("PSP · 性能 / CPU（满速 = JIT + 快速内存 + 1x）") {
                     PspCoreOptions.group(PspCoreOptions.G_PERF).forEach { def -> PspCoreOptionRow(def) }
@@ -2810,8 +2825,58 @@ private fun PspCoreOptionRow(def: PspCoreOptions.Def) {
         onSelect = { v ->
             state.value = v
             com.nesstation.app.core.engine.PspEngine.get().setCoreOption(def.key, v)
+            // ★ v22: 「高清纹理替换」开启时的纹理包状态反馈 —— 该选项是
+            //   官方核心选项（PPSSPP v1.20.4 libretro_core_options.h 实证），
+            //   但 PSP/textures/<游戏ID>/ 无包时开启不会产生任何画面变化，
+            //   此前零提示 = 用户反馈"没有正确生效"的主因。
+            if (def.key == "ppsspp_texture_replacement" && v == "enabled") {
+                val (packCount, packPath) = scanPspTexturePacks(ctx)
+                if (packCount > 0) {
+                    android.widget.Toast.makeText(ctx,
+                        "已开启高清纹理替换：检测到 ${packCount} 个纹理包（${packPath}），重进游戏后生效",
+                        android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    android.widget.Toast.makeText(ctx,
+                        "已开启，但未检测到 HD 纹理包 —— 不会有画面变化。请把纹理包解压到 PSP/textures/<游戏ID>/（见下方说明）",
+                        android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
         }
     )
+}
+
+/** ★ v22: PSP HD 纹理包扫描 —— 核心 memstick 根由引擎传入的系统目录决定，
+ *  按常见布局扫描内置/外置 files 两类根，返回 (包目录数, 命中的纹理目录)。 */
+private fun scanPspTexturePacks(ctx: android.content.Context): Pair<Int, String> {
+    val roots = listOfNotNull(
+        ctx.getExternalFilesDir(null), ctx.filesDir)
+    val candidates = roots.flatMap { r ->
+        listOf(
+            java.io.File(r, "PSP/textures"),
+            java.io.File(r, "psp/PSP/textures"),
+            java.io.File(r, "psp/textures"),
+            java.io.File(r, "PPSSPP/PSP/textures"))
+    }.distinctBy { it.absolutePath }
+    for (dir in candidates) {
+        val packs = dir.listFiles { f -> f.isDirectory } ?: continue
+        if (packs.isNotEmpty()) return Pair(packs.size, dir.absolutePath)
+    }
+    return Pair(0, "")
+}
+
+/** ★ v22: PSP HD 纹理包状态行 —— 给出真实检测状态与放置目录，
+ *  把"静默无效"变成可行动的提示。 */
+@Composable
+private fun PspTexturePackStatus() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val (packCount, packPath) = remember { scanPspTexturePacks(ctx) }
+    Text(
+        if (packCount > 0)
+            "已检测到 ${packCount} 个 HD 纹理包（${packPath}）—— 开启「高清纹理替换」并重进游戏即生效。"
+        else
+            "「高清纹理替换」需要 HD 纹理包才会改变画面：把包解压到 Android/data/com.nesstation.app/files/PSP/textures/<游戏ID>/（无包时开启没有任何效果）。",
+        color = Color(0xFFFDD835),
+        fontSize = 10.sp, lineHeight = 14.sp)
 }
 
 /** PRO ad-hoc 服务器地址（自由文本 —— 接受主机名或 IP；留空 = 不下发）。 */

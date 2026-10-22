@@ -6046,7 +6046,12 @@ private fun applyCoreOptionsInner(
             // (WizzardSK/pcee2-libretro, 与预编译 libpcee2_libretro_android.so 同源)。
             // 分辨率倍数/渲染器改后即时生效；需要重启的项(fast_boot/bios/multitap)
             // 在 applyCoreOptions 先于 loadRom 运行，故下次进游戏即生效。
-            engine.setCoreOption("pcsx2_renderer", layout.ps2Renderer)
+            // ★ v22: pcee2 官方 pcsx2_renderer 无 "auto" 值（vulkan/parallel-gs/
+            //   opengl/software，默认 vulkan，上游 libretro_core_options.h 实证）
+            //   —— 旧版直发 "auto" 被核心静默忽略。发送侧归一：auto → vulkan
+            //   （核心默认；构建已启用 USE_VULKAN=ON）；显式 opengl/software 原样透传。
+            engine.setCoreOption("pcsx2_renderer",
+                if (layout.ps2Renderer == "opengl" || layout.ps2Renderer == "software") layout.ps2Renderer else "vulkan")
             engine.setCoreOption("pcsx2_upscale_multiplier", layout.ps2ResMulti)
             engine.setCoreOption(
                 "pcsx2_texture_filtering",
@@ -6056,7 +6061,16 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("pcsx2_fast_boot", layout.ps2FastBoot)
             engine.setCoreOption("pcsx2_rumble", layout.ps2Rumble)
             // Graphics — 性能关键(移动 GPU 是 tiler 架构, 回读模式提速明显)
-            engine.setCoreOption("pcsx2_hw_download_mode", layout.ps2HwDownloadMode)
+            // ★ v22: 官方 pcsx2_hw_download_mode 仅 accurate|unsynchronized|disabled
+            //   三值（上游 libretro_core_options.h 实证）—— 旧 UI 的 no_readbacks/
+            //   async 为无效值，选了被核心静默忽略（"没有正确生效"反馈的实锤）。
+            //   发送侧归一存量脏值：no_readbacks→disabled、async→unsynchronized
+            //   （语义最近），UI 选项已同步移除。
+            engine.setCoreOption("pcsx2_hw_download_mode", when (layout.ps2HwDownloadMode) {
+                "unsynchronized", "async" -> "unsynchronized"
+                "disabled", "no_readbacks" -> "disabled"
+                else -> "accurate"
+            })
             engine.setCoreOption("pcsx2_blending_accuracy", layout.ps2BlendingAccuracy)
             engine.setCoreOption("pcsx2_trilinear_filtering", layout.ps2Trilinear)
             engine.setCoreOption("pcsx2_anisotropic_filtering", layout.ps2Anisotropic)
@@ -6098,6 +6112,10 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("pcsx2_mtvu", layout.ps2Mtvu)
             engine.setCoreOption("pcsx2_instant_vu1", layout.ps2InstantVu1)
             engine.setCoreOption("pcsx2_ee_cycle_rate", layout.ps2EeCycleRate)
+            // ★ v22: 补发 pcsx2_ee_cycle_skip —— "EE 周期跳过"的 UI/持久化/
+            //   applyCoreOptions 触发键列表一直在，但下发函数漏发该键
+            //   （改了永远不生效）。官方值 "0".."3" 与 UI 完全一致。
+            engine.setCoreOption("pcsx2_ee_cycle_skip", layout.ps2EeCycleSkip)
         }
         GamePlatform.JAVA -> {
             // J2ME settings are applied via Canvas static methods, not libretro core options.
@@ -6423,6 +6441,28 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("EdenEngine/patchOldQcom", layout.edPatchOldQcom)
         }
     }
+}
+
+// ★ v22: PSP HD 纹理包扫描 —— 「高清纹理替换」(ppsspp_texture_replacement) 是
+//   官方核心选项（PPSSPP v1.20.4 libretro_core_options.h 实证存在），但只有
+//   memstick 下 PSP/textures/<游戏ID>/ 放了纹理包才有可见效果；核心 memstick
+//   根由引擎传入的系统目录决定，此处按常见布局扫描内置/外置 files 两类根，
+//   返回 (包目录数, 命中的纹理目录)。供主设置页与游戏内快捷面板共用。
+private fun scanPspTexturePacks(context: android.content.Context): Pair<Int, String> {
+    val roots = listOfNotNull(
+        context.getExternalFilesDir(null), context.filesDir)
+    val candidates = roots.flatMap { r ->
+        listOf(
+            java.io.File(r, "PSP/textures"),
+            java.io.File(r, "psp/PSP/textures"),
+            java.io.File(r, "psp/textures"),
+            java.io.File(r, "PPSSPP/PSP/textures"))
+    }.distinctBy { it.absolutePath }
+    for (dir in candidates) {
+        val packs = dir.listFiles { f -> f.isDirectory } ?: continue
+        if (packs.isNotEmpty()) return Pair(packs.size, dir.absolutePath)
+    }
+    return Pair(0, "")
 }
 
 // ---------------------------------------------------------------------------
@@ -15186,11 +15226,12 @@ private fun SettingsPanel(
 
                 Spacer(Modifier.size(4.dp))
                 Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
-                // 渲染器：auto = 核心按设备支持选择（Vulkan 优先）；Vulkan/OpenGL
+                // 渲染器：★ v22 官方 pcsx2_renderer 无 "auto" 值（默认 vulkan）——
+                // 前端在 applyCoreOptions 归一 auto→vulkan；显式 Vulkan/OpenGL
                 // = GPU 硬件渲染；Software = CPU 软渲染。核心已编译 Vulkan
                 // (USE_VULKAN=ON)，所有选项都可在游戏中途切换。
                 DropdownSetting("渲染器",
-                    listOf("auto" to "Auto (按设备选择)",
+                    listOf("auto" to "自动 (Vulkan 优先)",
                            "vulkan" to "Vulkan (硬件加速)",
                            "opengl" to "OpenGL (硬件加速)",
                            "software" to "Software (软渲染)"),
@@ -15260,13 +15301,17 @@ private fun SettingsPanel(
                     padLayout.ps2AspectRatio
                 ) { onLayoutChange(padLayout.copy {ps2AspectRatio = it}) }
 
+                // ★ v22: PCSX2/pcee2 核心无自定义 HD 贴图能力（上游选项表实证）——
+                //   明示等效增强路径，避免在不存在的能力上反复试错。
+                Text("PS2 核心不支持自定义 HD 贴图包；等效画面增强 = 分辨率倍数 / 双线性·三线性·各向异性过滤 / 纹理预加载。",
+                    color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
+
                 Spacer(Modifier.size(4.dp))
                 Text("性能 (速度作弊)", color = Color(0xFF8899AA), fontSize = 11.sp)
                 DropdownSetting("GPU 回读模式",
+                    // ★ v22: 移除 no_readbacks/async —— 官方仅三值，旧选项是无效值
                     listOf("accurate" to "精准 (慢, 特效完整)",
-                           "no_readbacks" to "禁用回读 (同步GS线程, 加速)",
                            "unsynchronized" to "非同步 (快)",
-                           "async" to "异步 (实验性, 最快, 滞后1帧)",
                            "disabled" to "禁用/忽略 (最快, 部分特效异常)"),
                     padLayout.ps2HwDownloadMode
                 ) { onLayoutChange(padLayout.copy {ps2HwDownloadMode = it}) }
@@ -15294,6 +15339,13 @@ private fun SettingsPanel(
                            "3" to "300% (超频)"),
                     padLayout.ps2EeCycleRate
                 ) { onLayoutChange(padLayout.copy {ps2EeCycleRate = it}) }
+
+                // ★ v22: 补齐游戏内入口 —— 与主设置页同款（此前只在主设置页有，
+                //   且下发函数漏发；两处均已修）
+                DropdownSetting("EE 周期跳过",
+                    listOf("0" to "关闭 (默认)", "1" to "轻度", "2" to "中度", "3" to "最大"),
+                    padLayout.ps2EeCycleSkip
+                ) { onLayoutChange(padLayout.copy {ps2EeCycleSkip = it}) }
 
                 DropdownSetting("快速启动 (跳过 BIOS 动画)",
                     listOf("enabled" to "开启 (推荐)", "disabled" to "关闭 (看 BIOS 画面)"),
@@ -15928,7 +15980,8 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {azAudioStretching = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("实时音频", "低延迟 (可能卡顿)", padLayout.azRealtimeAudio == "enabled"
                 ) { onLayoutChange(padLayout.copy {azRealtimeAudio = if (it) "enabled" else "disabled"}) }
-                SwitchSetting("自定义纹理", "加载 HD 纹理包", padLayout.azCustomTextures == "enabled"
+                // ★ v22: 副文案补目录指引 —— 无纹理包时开启自定义纹理无任何画面变化
+                SwitchSetting("自定义纹理", "加载 HD 纹理包（放 load/textures/<游戏TitleID>/，无包时无效果）", padLayout.azCustomTextures == "enabled"
                 ) { onLayoutChange(padLayout.copy {azCustomTextures = if (it) "enabled" else "disabled"}) }
                 SwitchSetting("预加载纹理", "启动时预载纹理到显存，减少卡顿", padLayout.azPreloadTextures == "enabled"
                 ) { onLayoutChange(padLayout.copy {azPreloadTextures = if (it) "enabled" else "disabled"}) }
@@ -16155,6 +16208,17 @@ private fun SettingsPanel(
                             pspVal = v
                             pspPush(key, v)
                         }
+                    }
+                    if (groupTitle == "纹理") {
+                        // ★ v22: 高清纹理替换需纹理包才有效 —— 检测提示
+                        //   （完整目录指引见主设置页 PSP 分区）
+                        val pspPacks = remember(platform) { scanPspTexturePacks(context) }
+                        Text(
+                            if (pspPacks.first > 0)
+                                "已检测到 ${pspPacks.first} 个 HD 纹理包 —— 开启「高清纹理替换」并重进游戏即生效。"
+                            else
+                                "「高清纹理替换」需 HD 纹理包才有效（解压到 PSP/textures/<游戏ID>/，目录详见 主设置页 → 核心设置 → PSP）；无包时开启无画面变化。",
+                            color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     }
                     Spacer(Modifier.size(4.dp))
                 }

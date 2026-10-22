@@ -2513,57 +2513,59 @@ private fun BrowserHomeOverlay(
         )
 
         Column(modifier = Modifier.fillMaxSize()) {
-            androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+            // ★ v22: 仿图二「简洁主页」紧凑化 —— 顶栏/搜索框/引擎行/图标全元素缩小
+            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
             // ---- 顶栏：标题区 + ★ v19 设置入口（原"背景"文字胶囊 → 齿轮图标） ----
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
+                    .padding(horizontal = 16.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         "在线游戏",
                         color = Color.White,
-                        fontSize = 16.sp,
+                        fontSize = 14.sp,
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                     )
                     androidx.compose.foundation.layout.Spacer(Modifier.size(2.dp))
                     Text(
                         "共 ${shownFavorites.size} 个收藏 · 点击打开 · 长按管理 · 工具栏★收藏当前页",
                         color = Color(0xFFAAB6C6),
-                        fontSize = 9.sp
+                        fontSize = 8.sp
                     )
                 }
                 androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
                 // ★ v19: 齿轮设置图标（同一点击行为 = 打开背景/主页设置）
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(30.dp)
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                         .background(Color(0x2EFFFFFF))
                         .clickable { showBgDialog = true },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Rounded.Settings, null, tint = Color(0xE6FFFFFF), modifier = Modifier.size(18.dp))
+                    Icon(Icons.Rounded.Settings, null, tint = Color(0xE6FFFFFF), modifier = Modifier.size(16.dp))
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(20.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
             // ---- ★ v19: 中央搜索框（仿图中主页：白底圆角长条 + 引擎徽标 + 搜索按钮） ----
+            //   ★ v22: 46dp → 38dp 紧凑瘦身（用户反馈对比图二"差的太多，都缩小点"）
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .height(46.dp)
+                    .padding(horizontal = 20.dp)
+                    .height(38.dp)
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                     .background(Color(0xF2FFFFFF))
-                    .padding(horizontal = 6.dp)
+                    .padding(horizontal = 4.dp)
             ) {
                 // 引擎徽标（点击弹出引擎选择列表）
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(28.dp)
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                         .background(
                             androidx.compose.ui.graphics.Brush.linearGradient(
@@ -2576,11 +2578,11 @@ private fun BrowserHomeOverlay(
                     Text(
                         engineGlyph,
                         color = Color.White,
-                        fontSize = if (engineGlyph.length > 1) 11.sp else 15.sp,
+                        fontSize = if (engineGlyph.length > 1) 9.sp else 12.sp,
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                     )
                 }
-                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
                 // 关键词输入（BasicTextField 紧凑容器，与地址栏同款手法）
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     androidx.compose.foundation.text.BasicTextField(
@@ -2589,7 +2591,7 @@ private fun BrowserHomeOverlay(
                         singleLine = true,
                         textStyle = androidx.compose.ui.text.TextStyle(
                             color = Color(0xFF20232F),
-                            fontSize = 14.sp
+                            fontSize = 13.sp
                         ),
                         cursorBrush = androidx.compose.ui.graphics.SolidColor(Color(0xFF8A7BFF)),
                         keyboardOptions = KeyboardOptions(
@@ -2602,27 +2604,27 @@ private fun BrowserHomeOverlay(
                         Text(
                             "输入关键词，搜索整个网络",
                             color = Color(0xFF98A0B3),
-                            fontSize = 13.sp
+                            fontSize = 12.sp
                         )
                     }
                 }
-                androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
                 // 搜索按钮
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(28.dp)
                         .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                         .background(Color(0xFF8A7BFF))
                         .clickable { doSearch() },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Rounded.Search, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Rounded.Search, null, tint = Color.White, modifier = Modifier.size(15.dp))
                 }
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
             // ---- 引擎快捷切换行（仿图中引擎列表：当前引擎高亮，其余半透明白） ----
             Row(
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
@@ -2640,14 +2642,14 @@ private fun BrowserHomeOverlay(
                         Text(
                             eng.label,
                             color = Color.White,
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            fontSize = 9.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
                 }
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             }
-            androidx.compose.foundation.layout.Spacer(Modifier.size(20.dp))
+            androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
             // ---- ★ v19: 快捷方式网格（仿图中主页：图标上/标签下，4 列横排） ----
             //   复用 v17 DesktopShortcut 单元（白字描边阴影，任意壁纸可读），
             //   LazyVerticalGrid 行优先流动 + 竖向滚动，取代 v17 纵向填列桌面排布
@@ -2655,14 +2657,16 @@ private fun BrowserHomeOverlay(
             //   ★ v21: Fixed(4) → Adaptive(80dp) —— 横屏下 4 列均分宽屏会把内容
             //   摊成稀疏大方格（用户反馈"横屏时间隔非常大"），改自适应列数后
             //   竖屏 4 列 / 横屏自动 7-9 列紧凑排布，同图中导航站样式。
+            //   ★ v22: Adaptive(80→60dp) + 瓦片 44→40dp + 标签 9→8sp —— 仿图二
+            //   「简洁主页」小图标多列紧凑观感（竖屏 5-6 列，间距均匀不空旷）。
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 80.dp),
+                columns = GridCells.Adaptive(minSize = 60.dp),
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp),
+                    .padding(horizontal = 8.dp),
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
             ) {
                 // ★ v20: gridItems 是 LazyGridScope 的 List 扩展（同 2333 行标签栏 items 用法），
                 //   原误传数量 Int 导致 CI 六连错（重载不匹配→lambda 类型不可推断→Composable 上下文丢失）。
@@ -2684,7 +2688,7 @@ private fun BrowserHomeOverlay(
                 modifier = Modifier
                     .fillMaxWidth()
                     .align(Alignment.CenterHorizontally)
-                    .padding(bottom = 8.dp)
+                    .padding(bottom = 6.dp)
             )
         }
     }
@@ -2800,10 +2804,11 @@ private fun DesktopShortcut(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 2.dp, vertical = 2.dp)
     ) {
-        // ---- 图标瓦片（44dp 圆形，站点 favicon 或首字母；★ v21 方块改圆去“方格”感） ----
+        // ---- 图标瓦片（40dp 圆形，站点 favicon 或首字母；★ v21 方块改圆去“方格”感，
+        //      ★ v22 44→40dp 随网格槽位缩小） ----
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(40.dp)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                 .background(
                     androidx.compose.ui.graphics.Brush.linearGradient(
@@ -2823,17 +2828,17 @@ private fun DesktopShortcut(
                 Text(
                     displayTitle.take(1).ifBlank { "?" },
                     color = Color.White.copy(alpha = 0.94f),
-                    fontSize = 20.sp,
+                    fontSize = 18.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                 )
             }
         }
-        androidx.compose.foundation.layout.Spacer(Modifier.size(3.dp))
+        androidx.compose.foundation.layout.Spacer(Modifier.size(2.dp))
         // ---- 桌面标签（Windows 桌面同款：白字 + 深色阴影，壁纸上保证可读） ----
         Text(
             displayTitle,
             color = Color.White,
-            fontSize = 9.sp,
+            fontSize = 8.sp,
             fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
             maxLines = 1,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -2861,7 +2866,7 @@ private fun DesktopAddShortcut(onClick: () -> Unit) {
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(40.dp)
                 .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                 .background(Color(0x1FFFFFFF))
                 .border(
@@ -2871,13 +2876,13 @@ private fun DesktopAddShortcut(onClick: () -> Unit) {
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(18.dp))
+            Icon(Icons.Rounded.Add, null, tint = Color(0xFF8A7BFF), modifier = Modifier.size(16.dp))
         }
-        androidx.compose.foundation.layout.Spacer(Modifier.size(3.dp))
+        androidx.compose.foundation.layout.Spacer(Modifier.size(2.dp))
         Text(
             "添加收藏",
             color = Color(0xFFDDE4F0),
-            fontSize = 9.sp,
+            fontSize = 8.sp,
             maxLines = 1,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             style = androidx.compose.ui.text.TextStyle(
@@ -2903,7 +2908,8 @@ private fun BackgroundChooserDialog(
 ) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("自定义主页背景") },
+        // ★ v22: 标题显式 15sp 加粗 —— 默认 headlineSmall(24sp) 占高过大
+        title = { Text("自定义主页背景", fontSize = 15.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) },
         text = {
             // ★ v21: verticalScroll —— 横屏可用高度小，7-8 行选项超出即被裁
             //   （用户反馈“横屏时设置背景菜单页显示不全”）。
@@ -2917,12 +2923,32 @@ private fun BackgroundChooserDialog(
                     }
                 }
                 androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-                androidx.compose.material3.TextButton(onClick = { onPickImage(); onDismiss() }) {
-                    Text("从相册选择图片…", color = Color(0xFF8A7BFF), fontSize = 15.sp)
+                // ★ v22: 相册/清除按钮 TextButton → 紧凑自绘行 —— TextButton
+                //   最小交互尺寸强制 ≥48dp，是对话框超高、"从相册里选择按钮
+                //   都显示不出来"的根因之一。34dp 行 + 13sp，横屏也完整可见。
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(34.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .clickable { onPickImage(); onDismiss() }
+                        .padding(horizontal = 8.dp)
+                ) {
+                    Text("从相册选择图片…", color = Color(0xFF8A7BFF), fontSize = 13.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                 }
                 if (hasImage) {
-                    androidx.compose.material3.TextButton(onClick = { onClearImage(); onDismiss() }) {
-                        Text("清除自定义图片", color = Color(0xFFE2707C), fontSize = 15.sp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(34.dp)
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                            .clickable { onClearImage(); onDismiss() }
+                            .padding(horizontal = 8.dp)
+                    ) {
+                        Text("清除自定义图片", color = Color(0xFFE2707C), fontSize = 13.sp)
                     }
                 }
             }
@@ -2942,32 +2968,39 @@ private fun BgOptionRow(
     swatch: List<Color>?,
     onClick: () -> Unit
 ) {
-    androidx.compose.material3.TextButton(onClick = onClick) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (swatch != null) {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp, 22.dp)
-                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                        .background(androidx.compose.ui.graphics.Brush.horizontalGradient(swatch))
-                )
-                androidx.compose.foundation.layout.Spacer(Modifier.size(10.dp))
-            }
-            // ★ v21: 未选中色改 MaterialTheme.colorScheme.onSurface（主题自适应，
-            //   浅灰蓝 0xFFC7D0DE 在浅色对话框底上对比度不足 = “字体不清晰”）；
-            //   字号 13 → 15sp 提高可读性，选中加粗。
-            Text(
-                label,
-                color = if (selected) Color(0xFF8A7BFF)
-                        else androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
-                fontSize = 15.sp,
-                fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.Bold else null
+    // ★ v22: TextButton → 紧凑自绘行（34dp + 13sp + 色卡 28×16）—— TextButton
+    //   的最小交互尺寸把每行顶到 ≥48dp，6 行选项 + 标题 + 按钮轻松超过横屏
+    //   可用高度（用户反馈"这也太大了吧，从相册里选择按钮都显示不出来"）。
+    //   v21 的选中紫色/onSurface/加粗语义全部保留，verticalScroll 保留兜底。
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(34.dp)
+            .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp)
+    ) {
+        if (swatch != null) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp, 16.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
+                    .background(androidx.compose.ui.graphics.Brush.horizontalGradient(swatch))
             )
-            if (selected) {
-                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-                Text("✓", color = Color(0xFF8A7BFF), fontSize = 15.sp,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-            }
+            androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+        }
+        Text(
+            label,
+            color = if (selected) Color(0xFF8A7BFF)
+                    else androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+            fontSize = 13.sp,
+            fontWeight = if (selected) androidx.compose.ui.text.font.FontWeight.Bold else null
+        )
+        if (selected) {
+            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+            Text("✓", color = Color(0xFF8A7BFF), fontSize = 13.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         }
     }
 }
