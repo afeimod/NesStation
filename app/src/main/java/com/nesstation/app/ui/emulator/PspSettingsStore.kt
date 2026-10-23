@@ -318,8 +318,13 @@ object PspSettingsStore {
      * 确保 memstick 目录树存在并完成一次性迁移，返回 memstick 根。
      * 上游 CreateSysDirectories 同款目录集（含 .nomedia），由前端预建 ——
      * libretro 版 PPSSPP 永远不会自建这些目录。
-     * 一次性迁移：旧内部 memstick（<filesDir>/saves/PSP/**）递归拷贝到新根
-     * （跳过已存在，绝不覆盖；源保留作备份）。幂等 —— 标记文件存在即跳过。
+     * 一次性迁移：旧内部 memstick（&lt;filesDir&gt;/saves 下的 PSP 子树）递归
+     * 拷贝到新根（跳过已存在，绝不覆盖；源保留作备份）。
+     * 幂等 —— 标记文件存在即跳过。
+     *
+     * ⚠ 注释书写注意：Kotlin 块注释支持嵌套，正文中禁止出现字面 "PSP/"
+     * 紧跟星号的写法（会被词法器当作嵌套注释开括号，导致本文件 317 行起
+     * 全部代码被吞进注释、编译报 Missing '}' / Unclosed comment）。
      */
     fun ensureMemstick(context: Context): java.io.File {
         val root = memstickRoot(context)

@@ -30,6 +30,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+// ★ 主页优化版：横屏/平板下搜索框、引擎行、收藏网格限宽居中所需
+import androidx.compose.foundation.layout.widthIn
 // ★ v11 浏览器化：工具栏/收藏夹主页所需
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -1292,6 +1294,15 @@ fun WebGameScreen(
             override fun onExtractSwf() = extractSwfFromPage()
             override fun onToggleCameraRotation() = toggleCameraRotation()
             override fun onOpenAspectRatio() { showAspectRatioDialog.value = true }
+            // ★ 菜单优化版：悬浮球菜单「主页」—— 直达浏览器主页（收藏夹网格）。
+            //   与工具栏主页按钮同一 goHome() 通道；已在主页时轻提示不重复跳转。
+            override fun onGoHome() {
+                if (homeVisible) {
+                    Toast.makeText(context, "已在主页", Toast.LENGTH_SHORT).show()
+                } else {
+                    goHome()
+                }
+            }
         })
         // ★ v11: 菜单触发器不再随工具栏全屏隐藏（v10 全屏后无路可退）；
         //   仅视频全屏（customView 盖住触发器）时由 onShow/onHideFullscreen 驱动隐藏。
@@ -2583,10 +2594,14 @@ private fun BrowserHomeOverlay(
             // ★ v22: 仿图二「简洁主页」紧凑化 —— 顶栏/搜索框/引擎行/图标全元素缩小
             androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
             // ---- 顶栏：标题区 + ★ v19 设置入口（原"背景"文字胶囊 → 齿轮图标） ----
+            // ★ 主页优化版：限宽 680dp 居中 —— 横屏/平板上顶栏不再拉满整屏宽度，
+            //   与下方限宽的搜索区/收藏网格对齐成统一内容列，视觉更聚焦。
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .widthIn(max = 680.dp)
+                    .align(Alignment.CenterHorizontally)
                     .padding(horizontal = 16.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -2619,10 +2634,14 @@ private fun BrowserHomeOverlay(
             androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
             // ---- ★ v19: 中央搜索框（仿图中主页：白底圆角长条 + 引擎徽标 + 搜索按钮） ----
             //   ★ v22: 46dp → 38dp 紧凑瘦身（用户反馈对比图二"差的太多，都缩小点"）
+            //   ★ 主页优化版：限宽 520dp 居中 —— 横屏/平板不再拉成超长搜索条，
+            //      保持仿图二"简洁主页"的紧凑观感。
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .widthIn(max = 520.dp)
+                    .align(Alignment.CenterHorizontally)
                     .padding(horizontal = 20.dp)
                     .height(38.dp)
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
@@ -2690,9 +2709,13 @@ private fun BrowserHomeOverlay(
             }
             androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
             // ---- 引擎快捷切换行（仿图中引擎列表：当前引擎高亮，其余半透明白） ----
+            //   ★ 主页优化版：与搜索框同宽限宽 520dp 居中，两者对齐成一体。
             Row(
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp)
+                    .align(Alignment.CenterHorizontally)
             ) {
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                 searchEngines.forEach { eng ->
@@ -2717,6 +2740,38 @@ private fun BrowserHomeOverlay(
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             }
             androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
+            // ---- ★ 主页优化版：「收藏站点」分区标题（小标签 + 发丝分隔线 + 计数） ----
+            //   原顶栏一行小字塞了全部提示信息，结构不清晰；拆出分区标题后
+            //   主页层级 = 标题栏 → 搜索区 → 收藏网格，排列一目了然。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 640.dp)
+                    .align(Alignment.CenterHorizontally)
+                    .padding(horizontal = 16.dp)
+            ) {
+                Text(
+                    "收藏站点",
+                    color = Color(0xFFDDE4F0),
+                    fontSize = 9.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                )
+                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.dp)
+                        .background(Color(0x26FFFFFF))
+                )
+                androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+                Text(
+                    "${shownFavorites.size} 个",
+                    color = Color(0xFF8FA2B8),
+                    fontSize = 8.sp
+                )
+            }
+            androidx.compose.foundation.layout.Spacer(Modifier.size(4.dp))
             // ---- ★ v19: 快捷方式网格（仿图中主页：图标上/标签下，4 列横排） ----
             //   复用 v17 DesktopShortcut 单元（白字描边阴影，任意壁纸可读），
             //   LazyVerticalGrid 行优先流动 + 竖向滚动，取代 v17 纵向填列桌面排布
@@ -2726,11 +2781,15 @@ private fun BrowserHomeOverlay(
             //   竖屏 4 列 / 横屏自动 7-9 列紧凑排布，同图中导航站样式。
             //   ★ v22: Adaptive(80→60dp) + 瓦片 44→40dp + 标签 9→8sp —— 仿图二
             //   「简洁主页」小图标多列紧凑观感（竖屏 5-6 列，间距均匀不空旷）。
+            //   ★ 主页优化版：网格限宽 640dp 居中 —— 横屏/平板上收藏图标不再
+            //      摊满整屏宽度，与搜索区同轴对齐；单元密度维持 v22 紧凑口径。
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 60.dp),
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .widthIn(max = 640.dp)
+                    .align(Alignment.CenterHorizontally)
                     .padding(horizontal = 8.dp),
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)

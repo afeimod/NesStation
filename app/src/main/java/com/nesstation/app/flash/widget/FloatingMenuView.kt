@@ -72,6 +72,9 @@ class FloatingMenuView @JvmOverloads constructor(
         fun onExtractSwf()
         fun onToggleCameraRotation()
         fun onOpenAspectRatio()
+        /** ★ 菜单优化版：回浏览器主页（收藏夹网格）。带默认空实现 ——
+         *  SwfPlayerScreen 等无主页概念的宿主零改动不受影响。 */
+        fun onGoHome() {}
     }
 
     private val triggerBtn: ImageButton
@@ -290,7 +293,7 @@ class FloatingMenuView @JvmOverloads constructor(
         popup?.dismiss()
     }
 
-    // ============================ ★ v12 现代菜单 ============================
+    // ============================ ★ 菜单优化版：功能分组 ============================
 
     private class MenuItem(
         val title: String,
@@ -299,21 +302,47 @@ class FloatingMenuView @JvmOverloads constructor(
         val action: () -> Unit
     )
 
-    private fun menuItems(): List<MenuItem> = listOf(
-        MenuItem("全屏切换", "全") { callbacks?.onToggleFullscreen() },
-        MenuItem("横竖屏", "转") { callbacks?.onToggleOrientation() },
-        MenuItem("手柄", "柄") { callbacks?.onToggleGamepad() },
-        MenuItem("鼠标", "鼠") { callbacks?.onToggleMouse() },
-        MenuItem("按键映射", "键") { callbacks?.onOpenKeyMapping() },
-        MenuItem("Flash引擎", "F") { callbacks?.onOpenFlashSettings() },
-        MenuItem("页面缩放", "缩") { callbacks?.onOpenPageZoom() },
-        MenuItem("画面比例", "比") { callbacks?.onOpenAspectRatio() },
-        MenuItem("兼容模式", "UA") { callbacks?.onOpenUaMode() },
-        MenuItem("视角旋转", "视") { callbacks?.onToggleCameraRotation() },
-        MenuItem("提取SWF", "取") { callbacks?.onExtractSwf() },
-        MenuItem("刷新", "刷") { callbacks?.onRefresh() },
-        MenuItem("返回", "退") { callbacks?.onBack() },
-        MenuItem("关闭", "关") { callbacks?.onClose() }
+    /** ★ 菜单优化版：功能分组节（节标签 + 该组的功能项）。 */
+    private class MenuSection(
+        val label: String,
+        val items: List<MenuItem>
+    )
+
+    /**
+     * ★ 菜单优化版（用户需求：优化悬浮球菜单排列）：
+     * 原 14 项平铺网格在横屏 6 列下排成 6+6+2 —— 末行孤零零 2 项，且功能
+     * 无任何归类（全屏与刷新相邻、手柄与提取 SWF 混排）。现按语义分 4 组，
+     * 每组独立一行并带节标签，新增「主页」项与浏览器主页联动：
+     *   网页：主页 / 刷新 / 返回 / 关闭      （导航四件套，最常用排最前）
+     *   显示：全屏切换 / 横竖屏 / 画面比例 / 页面缩放
+     *   输入：手柄 / 鼠标 / 按键映射
+     *   引擎：Flash引擎 / 兼容模式 / 提取SWF / 视角旋转
+     * 横屏 2×2 分区并排（高度反比旧版矮）、竖屏四节堆叠 —— 任意方向都不出孤行。
+     */
+    private fun menuSections(): List<MenuSection> = listOf(
+        MenuSection("网页", listOf(
+            MenuItem("主页", "主") { callbacks?.onGoHome() },
+            MenuItem("刷新", "刷") { callbacks?.onRefresh() },
+            MenuItem("返回", "退") { callbacks?.onBack() },
+            MenuItem("关闭", "关") { callbacks?.onClose() }
+        )),
+        MenuSection("显示", listOf(
+            MenuItem("全屏切换", "全") { callbacks?.onToggleFullscreen() },
+            MenuItem("横竖屏", "转") { callbacks?.onToggleOrientation() },
+            MenuItem("画面比例", "比") { callbacks?.onOpenAspectRatio() },
+            MenuItem("页面缩放", "缩") { callbacks?.onOpenPageZoom() }
+        )),
+        MenuSection("输入", listOf(
+            MenuItem("手柄", "柄") { callbacks?.onToggleGamepad() },
+            MenuItem("鼠标", "鼠") { callbacks?.onToggleMouse() },
+            MenuItem("按键映射", "键") { callbacks?.onOpenKeyMapping() }
+        )),
+        MenuSection("引擎", listOf(
+            MenuItem("Flash引擎", "F") { callbacks?.onOpenFlashSettings() },
+            MenuItem("兼容模式", "UA") { callbacks?.onOpenUaMode() },
+            MenuItem("提取SWF", "取") { callbacks?.onExtractSwf() },
+            MenuItem("视角旋转", "视") { callbacks?.onToggleCameraRotation() }
+        ))
     )
 
     private fun showMenu() {
@@ -322,11 +351,9 @@ class FloatingMenuView @JvmOverloads constructor(
         triggerBtn.alpha = 1f
         val isLandscapeRes = resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        // ★ v23: 横屏 6 列 / 竖屏 5 列（单元 56dp → 48dp，列数再加密、菜单更小）
-        val columns = if (isLandscapeRes) 6 else 5
-        val items = menuItems()
+        // ★ 菜单优化版：单元规格沿用 v23 紧凑口径（48dp 单元 / 22dp 徽章 / 10sp 字形 / 8sp 标签）
+        val sections = menuSections()
         val cell = dp(48)
-        val menuWidth = columns * cell + dp(2)
 
         // ★ v14: 无背景容器 —— 徽章+文字直接悬浮在页面上（用户"不要背景"）
         val menuContainer = LinearLayout(context).apply {
@@ -389,25 +416,93 @@ class FloatingMenuView @JvmOverloads constructor(
             }
         }
 
-        var row: LinearLayout? = null
-        items.forEachIndexed { index, item ->
-            if (index % columns == 0) {
-                row = LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER
-                }
-                menuContainer.addView(row)
+        // ---- ★ 菜单优化版：节（标签行 + 单行功能项） ----
+        //   accentStart：该节第一项的全局序号 —— 彩色徽章仍按全局序轮转取色，
+        //   与浏览器收藏卡片同一视觉语言；节标签独立小字 + 阴影保证可读。
+        fun buildSection(section: MenuSection, accentStart: Int): View {
+            val sectionView = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
             }
-            row?.addView(buildCell(item, index))
+            sectionView.addView(TextView(context).apply {
+                text = section.label
+                setTextColor(Color(0xB8E6ECF5))
+                textSize = 7f
+                typeface = android.graphics.Typeface.create(
+                    android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD
+                )
+                setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(), 0xCC000000.toInt())
+                letterSpacing = 0.12f
+                setPadding(dp(6), 0, dp(6), dp(1))
+            })
+            val itemRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            section.items.forEachIndexed { i, item ->
+                itemRow.addView(buildCell(item, accentStart + i))
+            }
+            sectionView.addView(itemRow)
+            return sectionView
         }
 
-        // 网格行之间的窄间距
-        for (i in 0 until menuContainer.childCount) {
-            val r = menuContainer.getChildAt(i) as? LinearLayout ?: continue
-            val lp = r.layoutParams as? LinearLayout.LayoutParams
-            lp?.bottomMargin = dp(3)
-            r.layoutParams = lp
+        // ---- ★ 菜单优化版：布局排布 ----
+        //   横屏：2×2 分区并排（[网页|显示] / [输入|引擎]）—— 宽屏横向利用空间，
+        //          总高度 ~2 节（比旧版 3 行网格更矮），横屏矮屏/游戏中更不挡视线；
+        //   竖屏：四节自上而下堆叠 —— 每节 ≤4 项占满一行，绝无孤行残项。
+        if (isLandscapeRes) {
+            fun sectionRow(pair: List<Pair<MenuSection, Int>>): LinearLayout {
+                return LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    pair.forEachIndexed { i, (sec, start) ->
+                        if (i > 0) {
+                            // 分区间窄分隔（纯空隙，无背景，保持"透明悬浮"风格）
+                            addView(View(context), LinearLayout.LayoutParams(dp(12), 1).apply {
+                                gravity = Gravity.CENTER_VERTICAL
+                            })
+                        }
+                        addView(buildSection(sec, start))
+                    }
+                }
+            }
+            var idx = 0
+            val starts = mutableListOf<Int>()
+            sections.forEach { starts.add(idx); idx += it.items.size }
+            val top = sectionRow(listOf(sections[0] to starts[0], sections[1] to starts[1]))
+            val bottom = sectionRow(listOf(sections[2] to starts[2], sections[3] to starts[3]))
+            top.setPadding(0, 0, 0, dp(4))
+            menuContainer.addView(top)
+            menuContainer.addView(bottom)
+        } else {
+            var accent = 0
+            sections.forEachIndexed { si, sec ->
+                val v = buildSection(sec, accent)
+                accent += sec.items.size
+                if (si < sections.lastIndex) v.setPadding(0, 0, 0, dp(4))
+                menuContainer.addView(v)
+            }
         }
+
+        // ---- ★ 菜单优化版：先测量再定位（防出屏） ----
+        //   旧版 xoff 按估算列宽硬算、不看实际高度 —— 球被拖到屏幕下半部时
+        //   菜单溢出屏底。现在 measure 后按球的实际屏位决定：
+        //     横向：菜单右缘对齐球右缘；球在左半屏时改为贴屏幕左缘（不出左屏）；
+        //     纵向：下方放得下就下弹；放不下翻到球上方弹出。
+        menuContainer.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        val menuW = menuContainer.measuredWidth
+        val menuH = menuContainer.measuredHeight
+        val loc = IntArray(2)
+        triggerBtn.getLocationOnScreen(loc)
+        val screenH = resources.displayMetrics.heightPixels
+        val ballW = dp(38)
+        var xoff = -(menuW - ballW + dp(6))
+        if (loc[0] + xoff < dp(4)) xoff = dp(4) - loc[0]
+        val spaceBelow = screenH - (loc[1] + ballW)
+        val yoff = if (menuH + dp(10) <= spaceBelow) dp(4)
+                   else -(menuH + ballW + dp(6))
 
         popup = PopupWindow(menuContainer, ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
@@ -420,13 +515,11 @@ class FloatingMenuView @JvmOverloads constructor(
                 triggerBtn.alpha = BALL_ALPHA_NORMAL
                 scheduleAutoHide()
             }
-            // 让菜单右边对齐到球的右缘（球贴右缘时菜单不出屏；v14 球缩至 38dp）
-            val xoff = -(menuWidth - dp(38) + dp(6))
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                showAsDropDown(triggerBtn, xoff, dp(4), Gravity.END)
+                showAsDropDown(triggerBtn, xoff, yoff, Gravity.END)
             } else {
                 @Suppress("DEPRECATION")
-                showAsDropDown(triggerBtn, xoff, dp(4))
+                showAsDropDown(triggerBtn, xoff, yoff)
             }
         }
         isMenuOpen = true
