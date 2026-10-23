@@ -1348,12 +1348,12 @@ fun CoreSettingsPanel(
                         listOf("auto" to "自动", "enabled" to "开启", "disabled" to "关闭"),
                         padLayout.pscxNeonInterlace
                     ) { updateLayout(padLayout.copy {pscxNeonInterlace = it}) }
-                    DropdownRow("高清分辨率增强 (2倍)",
+                    DropdownRow("高清分辨率增强 (2倍·需重进游戏)",
                         listOf("disabled" to "关闭 (默认·最快)",
-                               "enabled" to "2倍渲染 (更清晰·更吃性能)"),
+                               "enabled" to "2倍渲染 (仅3D·更清晰·更吃性能)"),
                         padLayout.pscxNeonEnhance
                     ) { updateLayout(padLayout.copy {pscxNeonEnhance = it}) }
-                    DropdownRow("2倍增强·提速Hack",
+                    DropdownRow("2倍增强·提速Hack (需重进游戏)",
                         listOf("disabled" to "关闭 (默认·稳)", "enabled" to "开启 (提速·兼容风险)"),
                         padLayout.pscxNeonEnhanceNoMain
                     ) { updateLayout(padLayout.copy {pscxNeonEnhanceNoMain = it}) }
@@ -1362,8 +1362,12 @@ fun CoreSettingsPanel(
                         padLayout.pscxNeonEnhanceTexAdj
                     ) { updateLayout(padLayout.copy {pscxNeonEnhanceTexAdj = it}) }
                     Text(
-                        "分辨率说明：此核心(PCSX-ReARMed)的 2倍增强 = NEON 内部 2x 渲染；" +
-                        "3x/4x 及 Vulkan/OpenGL 硬件渲染需换预编译核心 .so，前端无法注入。",
+                        "分辨率说明（上游 notaz/pcsx_rearmed 实证）：① 2倍增强 = NEON 内部 2x 渲染，" +
+                        "仅对 3D 画面且游戏为标准分辨率(≤512x256)模式时生效（480i/512i 高分辨率游戏与" +
+                        " FMV 不增强，上游按设计）；② 改后需退出重进游戏（插件回调只在开插件时读取）；" +
+                        "③ 勿同时开「高分辨率降采样」（会把 2x 输出砍回原尺寸，抵消增强）；" +
+                        "④ 3x/4x 及 Vulkan/OpenGL 硬件渲染需换预编译核心 .so，前端无法注入。" +
+                        "验证：开 2x 后重进游戏，游戏内面板会显示核心输出翻倍(如 640x480)。",
                         color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownRow("显示内部FPS",
                         listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (画面内帧率)"),
@@ -2926,7 +2930,7 @@ private fun PspCoreOptionRow(def: PspCoreOptions.Def) {
                         android.widget.Toast.LENGTH_LONG).show()
                 } else {
                     android.widget.Toast.makeText(ctx,
-                        "已开启，但未检测到 HD 纹理包 —— 请用 主设置页 → 核心设置 → PSP 的「导入 HD 纹理包」按钮导入后重进游戏",
+                        "已开启，但未检测到 HD 纹理包 —— 目录在 Android/data/…/files/PSP/TEXTURES/<游戏ID>/（进一次 PSP 游戏后自动生成），请用「导入 HD 纹理包」按钮导入后重进游戏",
                         android.widget.Toast.LENGTH_LONG).show()
                 }
             }
@@ -2934,8 +2938,9 @@ private fun PspCoreOptionRow(def: PspCoreOptions.Def) {
     )
 }
 
-/** ★ v23: PSP HD 纹理包扫描 —— 实证路径（PPSSPP v1.20.4 上游 TextureReplacer）：
- *  memstick 根 = libretro save 目录 = <filesDir>/saves，核心只读
+/** ★ v23→v24: PSP HD 纹理包扫描 —— 实证路径（PPSSPP 上游 TextureReplacer）：
+ *  memstick 根 = libretro save 目录（★ v24 起 = <外置files>/PSP，用户可见，
+ *  由 PspSettingsStore.ensureMemstick 预建目录树），核心只读
  *  <memstick>/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写、游戏ID无连字符）。
  *  返回 (正确目录包数, 正确目录, 旧错误位置包数)。 */
 private fun scanPspTexturePacks(ctx: android.content.Context): Triple<Int, String, Int> =
@@ -2971,7 +2976,7 @@ private fun PspTexturePackStatus() {
         else if (legacyCount > 0)
             "检测到 ${legacyCount} 个包在旧版错误目录 —— 点下方「迁移旧版纹理目录」自动移到正确位置。"
         else
-            "「高清纹理替换」需 HD 纹理包才有效。核心只读 <存档目录>/saves/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写、游戏ID无连字符如 NPJH50505）—— 推荐直接用下方导入按钮自动放置。",
+            "「高清纹理替换」需 HD 纹理包才有效。核心只读 Android/data/…/files/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写、游戏ID无连字符如 NPJH50505；目录树进 PSP 游戏时自动生成、文件管理器/电脑可直接查看）—— 推荐直接用下方导入按钮自动放置。",
         color = Color(0xFFFDD835),
         fontSize = 10.sp, lineHeight = 14.sp)
     TextButtonRow("导入 HD 纹理包 (zip)",

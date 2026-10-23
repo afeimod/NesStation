@@ -2687,7 +2687,20 @@ fun EmulatorScreen(
             romAdjSaveNameOverride = resolved.basename
             romAdjSaveNotice = resolved.notice
         }
-        val savesDirPath = romAdjSaveDirPath ?: savesDir.absolutePath
+        // ★ v24: PSP（PPSSPP libretro）—— memstick = libretro save 目录（上游
+        //   libretro.cpp g_Config.memStickDirectory = retro_save_dir）。专传
+        //   用户可见的外置 memstick（<外置files>/PSP，PspSettingsStore 预建
+        //   PSP/{SAVEDATA,PPSSPP_STATE,GAME,SYSTEM,TEXTURES,CHEATS,PLUGINS}
+        //   目录树 + 一次性迁移旧内部数据）。v23 及更早传 <filesDir>/saves：
+        //   /data/data 内部不可见 + 目录永不预建（libretro 版不调上游
+        //   CreateSysDirectories）= 用户反馈 "psp文件夹什么都没有生成、
+        //   高清纹理依旧无效" 的双重根因。PSP 无 SRAM（游戏存档走
+        //   SAVEDATA），ROM 相邻存档模式对其无意义，忽略 romAdjSaveDirPath。
+        val savesDirPath = if (platform == GamePlatform.PSP) {
+            withContext(Dispatchers.IO) {
+                PspSettingsStore.ensureMemstick(context).absolutePath
+            }
+        } else (romAdjSaveDirPath ?: savesDir.absolutePath)
 
         // ★★ v4：Switch（Eden）预初始化 + 设置先行 —— 对齐上游 EmulationFragment
         //   的“读取/下发配置在前、NativeLibrary.run 在后”时序。旧版把整表设置
@@ -15188,12 +15201,40 @@ private fun SettingsPanel(
                     padLayout.pscxDithering
                 ) { onLayoutChange(padLayout.copy {pscxDithering = it}) }
 
-                // ★ v23: 高清分辨率增强（2倍）三件套 + 内部FPS —— 此前游戏内缺失
-                DropdownSetting("高清分辨率增强 (2倍)",
+                // ★ v23→v24: 高清分辨率增强（2倍）三件套 + 内部FPS —— 此前游戏内缺失。
+                //   ★ v24 实证补充（上游 notaz/pcsx_rearmed）：
+                //   - 插件回调（GPUrearmedCallbacks）只在 retro_load_game 开插件时
+                //     灌入 —— 游戏内改此开关必须退出重进游戏才生效；
+                //   - 增强仅对 ≤512x256 且非 24 位色的视频模式激活（vout_pl.c
+                //     check_mode_change），480i/512i 高分辨率游戏与 FMV 无增强；
+                //   - 「缩放高分辨率」(scale_hires) 会把 h>256 的输出对半砍回
+                //     （vout_set_mode）＝ 与增强互斥，同时开增强会被抵消。
+                DropdownSetting("高清分辨率增强 (2倍·需重进游戏)",
                     listOf("disabled" to "关闭 (默认·最快)", "enabled" to "2倍渲染 (更清晰·吃性能)"),
                     padLayout.pscxNeonEnhance
-                ) { onLayoutChange(padLayout.copy {pscxNeonEnhance = it}) }
-                DropdownSetting("2倍增强·提速Hack",
+                ) { v ->
+                    onLayoutChange(padLayout.copy {pscxNeonEnhance = v})
+                    // ★ v24: 开启即给生效条件反馈（否则用户感知"无效果"）
+                    if (v == "enabled") {
+                        Toast.makeText(context,
+                            "已开 2x 增强：退出并重进游戏生效；仅对 3D 画面且游戏为标准分辨率(≤512x256)模式时生效，" +
+                                "勿同时开「缩放高分辨率」（会抵消增强）",
+                            Toast.LENGTH_LONG).show()
+                    }
+                }
+                // ★ v24: 实时输出分辨率读数 —— 判断增强是否真激活的铁证
+                //   （开启增强 + 重进游戏后 320x240 → 640x480；仍为原尺寸 =
+                //   游戏运行在高分辨率模式/24位色，上游按设计不增强）。
+                val psxOutW = engine?.videoWidth() ?: 0
+                val psxOutH = engine?.videoHeight() ?: 0
+                if (psxOutW > 0 && psxOutH > 0) {
+                    Text(
+                        "当前核心输出：${psxOutW}x${psxOutH}" +
+                            (if (padLayout.pscxNeonEnhance == "enabled")
+                                "（重进游戏后翻倍 = 增强生效；不变 = 游戏为高分辨率模式，上游按设计不增强）" else ""),
+                        color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
+                }
+                DropdownSetting("2倍增强·提速Hack (需重进游戏)",
                     listOf("disabled" to "关闭 (默认·稳)", "enabled" to "开启 (提速·风险)"),
                     padLayout.pscxNeonEnhanceNoMain
                 ) { onLayoutChange(padLayout.copy {pscxNeonEnhanceNoMain = it}) }
@@ -16263,8 +16304,9 @@ private fun SettingsPanel(
                         }
                     }
                     if (groupTitle == "纹理") {
-                        // ★ v23: 高清纹理替换 —— 实证正确路径检测 + 旧目录迁移引导
-                        //   （核心只读 <filesDir>/saves/PSP/TEXTURES/<游戏ID>/）
+                        // ★ v23→v24: 高清纹理替换 —— 实证正确路径检测 + 旧目录迁移引导
+                        //   （核心只读 <外置files>/PSP/TEXTURES/<游戏ID>/，目录树
+                        //   由前端预建 —— libretro 版 PPSSPP 不会自建目录）
                         val pspPacks = remember(platform) { scanPspTexturePacks(context) }
                         val (texOk, texMsg, texLegacy) = pspPacks
                         Text(
@@ -16273,7 +16315,7 @@ private fun SettingsPanel(
                             else if (texLegacy > 0)
                                 "检测到 ${texLegacy} 个包在旧版错误目录 —— 请到 主设置页 → 核心设置 → PSP 点「迁移旧版纹理目录」。"
                             else
-                                "「高清纹理替换」需 HD 纹理包才有效（核心只读 <存档目录>/saves/PSP/TEXTURES/<游戏ID>/，TEXTURES 大写、游戏ID无连字符）—— 推荐用主设置页「导入 HD 纹理包」按钮自动放置。",
+                                "「高清纹理替换」需 HD 纹理包才有效（核心只读 Android/data/…/files/PSP/TEXTURES/<游戏ID>/，TEXTURES 大写、游戏ID无连字符如 NPJH50505；目录在进 PSP 游戏时自动生成）—— 推荐用主设置页「导入 HD 纹理包」按钮自动放置。",
                             color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     }
                     Spacer(Modifier.size(4.dp))

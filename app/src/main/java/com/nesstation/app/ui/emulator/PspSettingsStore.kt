@@ -256,14 +256,15 @@ object PspSettingsStore {
     }
 
     // ==================================================================
-    // ★★ v23: HD 纹理包路径实证与工具 —— 结合 PPSSPP v1.20.4 上游源码 ★★
+    // ★★ v23→v24: HD 纹理包路径实证与工具 —— 结合 PPSSPP 上游源码 ★★
     //
     // 路径链（逐层实证，v22 及更早的引导目录全部是错的）：
-    //   1. 上游 libretro.cpp:1290  g_Config.memStickDirectory = retro_save_dir
+    //   1. 上游 libretro.cpp  g_Config.memStickDirectory = retro_save_dir
     //      —— memstick 根 = libretro save 目录；
     //   2. psp_loader.cpp GET_SAVE_DIRECTORY 返回 PspNative.setPaths(systemDir,
     //      saveDir) 传入的 saveDir = EmulatorScreen 的 savesDirPath
-    //      = <filesDir>/saves（nesstation 存档模式）；
+    //      （v23 及更早 = <filesDir>/saves 内部不可见；★ v24 起 PSP 专传
+    //      [memstickRoot] = <外置files>/PSP，见下节）；
     //   3. 上游 TextureReplacer.cpp NotifyConfigChanged：
     //      basePath_ = GetSysDirectory(DIRECTORY_TEXTURES) / gameID_
     //      = <memstick>/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写！Android 内部
@@ -273,22 +274,118 @@ object PspSettingsStore {
     //   5. 同函数 replaceEnabled_ && File::IsDirectory(basePath_) ——
     //      目录不存在则高清纹理替换【静默自禁用】（"开了没反应"的机制根源）。
     //
-    // 旧版错误（v22）：扫描/引导 "Android/data/.../files/PSP/textures/"
-    // —— 根错（外部目录 vs 核心实际读的内部 filesDir/saves）+ 大小写错。
+    // v23 教训：路径算对了但指向 <filesDir>/saves（/data/data 内部，文件
+    // 管理器不可见）+ 目录从不预建（libretro 版不调 CreateSysDirectories）
+    // ＝ 用户视角 "psp文件夹什么都没有生成、贴图依旧无效"。
     // ==================================================================
+
+    // ==================================================================
+    // ★★ v24: memstick 迁至用户可见目录 + 预建目录树 ★★
+    //
+    // 上游实证（hrydgard/ppsspp master，逐文件核对）：
+    //   1. libretro/libretro.cpp:1265  g_Config.memStickDirectory = retro_save_dir
+    //      —— memstick 根 = libretro save 目录（本应用 = EmulatorScreen 传给
+    //      loadRom 的 saveDir，v24 起 PSP 平台专传本函数返回的目录）；
+    //   2. Core/Util/PathUtil.cpp:95-102  memstick 末级目录名若为 "PSP" 则自动
+    //      去重 —— memstick=<外置files>/PSP 时 TEXTURES=<外置files>/PSP/TEXTURES
+    //      （与 PPSSPP 安卓独立版 /sdcard/PSP 布局完全一致）；
+    //   3. Core/Util/PathUtil.cpp:158 CreateSysDirectories() 会预建
+    //      PSP/{SAVEDATA,PPSSPP_STATE,GAME,SYSTEM,TEXTURES,CHEATS,PLUGINS,
+    //      SYSTEM/CACHE}（Android 加 .nomedia）—— 但【libretro 移植从不调用它】
+    //      （libretro.cpp 无任何调用点）＝ 用户 "psp文件夹什么都没生成" 的
+    //      根因：核心永远不会自建目录树，必须前端预建。
+    //
+    // v24 方案：memstick = <getExternalFilesDir>/PSP（文件管理器/电脑可见，
+    // /storage/emulated/0/Android/data/<pkg>/files/PSP/），首启预建全套目录
+    // 树 + 一次性从旧内部 memstick（<filesDir>/saves）递归拷贝迁移。
+    // 外置目录不可用（罕见）时回退旧路径（行为 = v23，不会更差）。
+    // ==================================================================
+
+    /**
+     * memstick 根目录：优先 <getExternalFilesDir>/PSP（用户可见），
+     * 不可用时回退 <filesDir>/saves（内部，v23 行为）。
+     */
+    fun memstickRoot(context: Context): java.io.File {
+        val ext = context.getExternalFilesDir(null)
+        return if (ext != null) java.io.File(ext, "PSP")
+               else java.io.File(context.filesDir, "saves")
+    }
+
+    /** 一次性迁移标记（存在 = 旧内部 memstick 已搬运，后续启动直接跳过）。 */
+    private val memstickMigrateMarker = ".ns_memstick_migrated"
+
+    /**
+     * 确保 memstick 目录树存在并完成一次性迁移，返回 memstick 根。
+     * 上游 CreateSysDirectories 同款目录集（含 .nomedia），由前端预建 ——
+     * libretro 版 PPSSPP 永远不会自建这些目录。
+     * 一次性迁移：旧内部 memstick（<filesDir>/saves/PSP/**）递归拷贝到新根
+     * （跳过已存在，绝不覆盖；源保留作备份）。幂等 —— 标记文件存在即跳过。
+     */
+    fun ensureMemstick(context: Context): java.io.File {
+        val root = memstickRoot(context)
+        try {
+            // 1) 预建目录树（上游 PathUtil.cpp CreateSysDirectories 同款）
+            val dirs = listOf(
+                "SAVEDATA", "PPSSPP_STATE", "GAME", "SYSTEM",
+                "TEXTURES", "CHEATS", "PLUGINS", "SYSTEM/CACHE")
+            for (d in dirs) {
+                val f = java.io.File(root, d)
+                f.mkdirs()
+                // 上游 Android 行为：各子目录放 .nomedia 防媒体库扫描
+                try { java.io.File(f, ".nomedia").createNewFile() } catch (_: Throwable) {}
+            }
+            // 2) 一次性迁移旧内部 memstick（PSP/ 整树 = SAVEDATA/存档/纹理包…）
+            val marker = java.io.File(root, memstickMigrateMarker)
+            val oldPsp = java.io.File(context.filesDir, "saves/PSP")
+            if (!marker.isFile && oldPsp.isDirectory) {
+                copyTreeRecursive(oldPsp, root)
+                try { marker.createNewFile() } catch (_: Throwable) {}
+            } else if (!marker.isFile) {
+                // 无旧数据也写标记，避免每启动都扫 saves 目录
+                try { marker.createNewFile() } catch (_: Throwable) {}
+            }
+        } catch (_: Throwable) {}
+        return root
+    }
+
+    /** 递归拷贝（跳过已存在；返回拷贝的文件数）。 */
+    private fun copyTreeRecursive(src: java.io.File, dst: java.io.File): Int {
+        var n = 0
+        try {
+            val files = src.listFiles() ?: return 0
+            for (f in files) {
+                val t = java.io.File(dst, f.name)
+                if (f.isDirectory) {
+                    t.mkdirs()
+                    n += copyTreeRecursive(f, t)
+                } else if (!t.isFile) {
+                    try {
+                        f.inputStream().use { i -> t.outputStream().use { o -> i.copyTo(o) } }
+                        n++
+                    } catch (_: Throwable) {}
+                }
+            }
+        } catch (_: Throwable) {}
+        return n
+    }
 
     /** 核心真正读取的纹理包目录（正确路径，勿改大小写）。 */
     fun texturePackDir(context: Context): java.io.File =
-        java.io.File(context.filesDir, "saves/PSP/TEXTURES")
+        java.io.File(memstickRoot(context), "TEXTURES")
 
     /** v22 及更早引导文案造成的错误放置位置（仅用于检测/迁移）。 */
     private fun legacyTextureRoots(context: Context): List<java.io.File> {
         val roots = mutableListOf(
+            // ★ v24: 旧正确目录（v23 口径，内部不可见路径）也要迁到新 memstick
+            java.io.File(context.filesDir, "saves/PSP/TEXTURES"),
             java.io.File(context.filesDir, "saves/PSP/textures"),   // 根对了但小写
             java.io.File(context.filesDir, "PSP/textures"),          // 根错+小写
             java.io.File(context.filesDir, "psp/PSP/textures"),
             java.io.File(context.filesDir, "psp/textures"),
             java.io.File(context.filesDir, "PPSSPP/PSP/textures"))
+        val memstick = memstickRoot(context)
+        // 注意：新 memstick 自己的下级 textures（小写误建）也算旧位置
+        roots.add(java.io.File(memstick, "textures"))
         context.getExternalFilesDir(null)?.let { ext ->
             roots.add(java.io.File(ext, "PSP/textures"))            // v22 引导的外部目录
             roots.add(java.io.File(ext, "psp/PSP/textures"))
@@ -314,7 +411,9 @@ object PspSettingsStore {
 
     /**
      * 把旧错误位置的纹理包目录迁移到核心真实目录（目标已存在则跳过该包，
-     * 绝不覆盖）。只做同盘 renameTo，失败即原地保留。返回迁移成功的包数。
+     * 绝不覆盖）。★ v24: 旧位置可能在另一存储卷（内部→外置），renameTo
+     * 跨卷必败 —— 改为递归拷贝 + 成功后删源；同卷 renameTo 快路径优先。
+     * 返回迁移成功的包数。
      */
     fun migrateLegacyTexturePacks(context: Context): Int {
         val canonical = texturePackDir(context)
@@ -326,7 +425,12 @@ object PspSettingsStore {
                 val target = java.io.File(canonical, p.name)
                 if (target.exists()) continue
                 try {
-                    if (p.renameTo(target)) moved++
+                    if (p.renameTo(target)) { moved++; continue }
+                    // 跨卷 renameTo 失败 → 递归拷贝 + 删源
+                    if (copyTreeRecursive(p, target) > 0) {
+                        p.deleteRecursively()
+                        moved++
+                    }
                 } catch (_: Throwable) {}
             }
         }
@@ -342,8 +446,8 @@ object PspSettingsStore {
 
     /**
      * 从 SAF Uri 导入纹理包 zip，解压到核心真实读取的
-     * <filesDir>/saves/PSP/TEXTURES/<游戏ID>/ —— 与上游 PPSSPP "打开 zip
-     * 自动安装" 同等效果。识别三种包结构（按优先级）：
+     * <外置files>/PSP/TEXTURES/<游戏ID>/（memstickRoot —— 与上游 PPSSPP
+     * "打开 zip 自动安装" 同等效果）。识别三种包结构（按优先级）：
      *   1) zip 根层有以游戏ID命名的文件夹（NPJH50505/xxx.png）—— 全部导入；
      *   2) 唯一顶层包装文件夹且其名是游戏ID —— 以该文件夹为 ID 导入；
      *   3) 以上都没有 —— 要求 zip 文件名即游戏ID（官方发行包的普遍形态）。

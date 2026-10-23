@@ -73,10 +73,14 @@ namespace psxcore::rom {
 //   368x240 (slightly wider, e.g. Chrono Cross menus)
 //   512x240 (hi-res, e.g. Square RPGs in 2D mode)
 //   640x480 (interlaced hi-res, e.g. Valkyrie Profile, MGS menus)
-// 640x480 covers every known PS1 video mode with no margin to spare.
+// ★ v24: pcsx_rearmed_neon_enhancement_enable（NEON 2x 增强分辨率）开启后
+//   核心按 2x 输出（上游 frontend/libretro.c:205 原文 "PSX max resolution is
+//   640x512, but with enhancement it's 1024x512"）。旧上限 640x480 会把增强帧
+//   （如 PAL 320x256 → 640x512）拒之门外 —— "高清分辨率无效果"的根因之一。
+//   静态缓冲在 .bss，仅按需提交物理页，无实存开销。
 // ---------------------------------------------------------------------------
-static constexpr int kMaxW = 640;
-static constexpr int kMaxH = 480;
+static constexpr int kMaxW = 1024;
+static constexpr int kMaxH = 512;
 
 static constexpr int TARGET_SAMPLE_RATE = coreshared::TARGET_SAMPLE_RATE;
 
@@ -193,6 +197,12 @@ static coreshared::AudioResampler s_resampler;
 
 static ANativeWindow* s_window = nullptr;
 static std::mutex s_windowMtx;
+// ★ v24: "快速缩放"（hqScaling=false）路径下最后一次为窗口设置的 buffer
+//   geometry 尺寸。增强分辨率激活/切换视频模式时核心输出尺寸会变
+//   （如 320x240 → 640x480），cb_video 检测到变化后持窗锁重设 geometry，
+//   否则窗口 buffer 仍是旧尺寸，2x 增强画面无法呈现。
+static unsigned s_geomW = 0;
+static unsigned s_geomH = 0;
 
 static std::mutex s_optMtx;
 static std::map<std::string, std::string> s_options;
@@ -620,6 +630,22 @@ static void cb_video(const void* data, unsigned width, unsigned height, size_t p
             return;
     } else {
         s_ffFrameSkip.store(0, std::memory_order_relaxed);
+    }
+
+    // ★ v24: 帧尺寸变化时同步窗口 buffer geometry（快速缩放路径）。
+    //   NEON 2x 增强激活 / 游戏切换视频模式时核心输出尺寸会变（上游
+    //   gpu_neon 增强按 2x 输出，上限 1024x512）；buffer geometry 只在挂载
+    //   Surface 时设过一次的话，新旧尺寸失配 → 增强帧被裁/被拒 →
+    //   “高清分辨率开了没反应”。持窗锁重设（与 setHighQualityScaling
+    //   同一锁纪律）；高质量缩放路径 buffer 恒为窗口尺寸（0,0），无需跟随。
+    if (!s_highQualityScaling.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> lk(s_windowMtx);
+        if (s_window && (s_geomW != width || s_geomH != height)) {
+            ANativeWindow_setBuffersGeometry(
+                s_window, (int)width, (int)height, WINDOW_FORMAT_RGBA_8888);
+            s_geomW = width;
+            s_geomH = height;
+        }
     }
 
     const int filter = s_videoFilter.load(std::memory_order_relaxed);
@@ -1054,10 +1080,21 @@ void setSurface(void* nativeWindow) {
     if (nativeWindow) {
         if (s_highQualityScaling.load(std::memory_order_relaxed)) {
             ANativeWindow_setBuffersGeometry(s_window, 0, 0, WINDOW_FORMAT_RGBA_8888);
+            s_geomW = 0;
+            s_geomH = 0;
+        } else {
+            // ★ v24: 挂载时即按当前视频尺寸设置 geometry 并记录 ——
+            //   后续帧尺寸变化由 cb_video 同步（见上文）。
+            ANativeWindow_setBuffersGeometry(
+                s_window, (int)s_videoW, (int)s_videoH, WINDOW_FORMAT_RGBA_8888);
+            s_geomW = s_videoW;
+            s_geomH = s_videoH;
         }
-        LOGI("Surface attached (pixelFormat=%u, surface=RGBA_8888, hqScaling=%d)",
-             s_pixelFormat, s_highQualityScaling.load() ? 1 : 0);
+        LOGI("Surface attached (pixelFormat=%u, surface=RGBA_8888, hqScaling=%d, geom=%ux%u)",
+             s_pixelFormat, s_highQualityScaling.load() ? 1 : 0, s_videoW, s_videoH);
     } else {
+        s_geomW = 0;
+        s_geomH = 0;
         LOGI("Surface detached");
     }
 }
@@ -1068,8 +1105,12 @@ void setHighQualityScaling(bool enabled) {
     if (s_window) {
         if (enabled) {
             ANativeWindow_setBuffersGeometry(s_window, 0, 0, WINDOW_FORMAT_RGBA_8888);
+            s_geomW = 0;
+            s_geomH = 0;
         } else {
             ANativeWindow_setBuffersGeometry(s_window, s_videoW, s_videoH, WINDOW_FORMAT_RGBA_8888);
+            s_geomW = s_videoW;
+            s_geomH = s_videoH;
         }
     }
     LOGI("High-quality scaling: %s", enabled ? "ON" : "OFF");

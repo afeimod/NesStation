@@ -108,6 +108,14 @@ import com.nesstation.app.flash.download.SwfDownloadManager
 import com.nesstation.app.ui.swf.SwfExtractDialog
 import com.nesstation.app.ui.swf.SwfItem
 import kotlinx.coroutines.flow.MutableStateFlow
+// ★ v24: 主页双指缩放（手势采集）
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.draw.clipToBounds
 
 // ★ Neon 主题适配：播放器底色随主题切换（Neon=深空黑蓝）
 private val PrimaryBackground
@@ -2454,6 +2462,18 @@ private fun BrowserHomeOverlay(
     // 展示层去重（网格 key 需 url 唯一，防异常种子数据导致重复 key）
     val shownFavorites = remember(favorites) { favorites.distinctBy { it.url } }
 
+    // ---- ★ v24: 主页双指缩放（用户反馈"第一个页面无法双指缩放"）----
+    //   主页是 Compose 覆盖层（nesstation://home，非网页），WebView 的缩放
+    //   管不到这里 —— 在覆盖层自实现捏合缩放：
+    //   - 手势采集在 Initial 指针阶段且仅在 ≥2 指时消费 —— 单指点击/滚动
+    //     不受影响，双指捏合时子元素（网格滚动/点击）不会误触发；
+    //   - 缩放钳制 0.6x..2.4x，中心锚点；持久化 web_home_zoom；
+    //   - 非 1x 时右下角出现百分比胶囊，点击复位。
+    var homeZoom by remember {
+        mutableStateOf(
+            (PrefsManager.sp.getFloat("web_home_zoom", 1f)).coerceIn(0.6f, 2.4f))
+    }
+
     // ---- ★ v19: 搜索引擎（仿图中主页：中央搜索框 + 引擎切换） ----
     val searchEngines = remember {
         listOf(
@@ -2480,6 +2500,44 @@ private fun BrowserHomeOverlay(
         modifier = Modifier
             .fillMaxSize()
             .background(PrimaryBackground)
+            .clipToBounds()
+            // ★ v24: 双指捏合缩放 —— Initial 阶段仅拦 ≥2 指；单指手势
+            //   原样放行给子元素（网格滚动/点击/输入完全不受影响）。
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(
+                        requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var prevSpan = -1f
+                    var pinched = false
+                    while (true) {
+                        val event =
+                            awaitPointerEvent(PointerEventPass.Initial)
+                        val pressed = event.changes.filter { it.pressed }
+                        if (pressed.size >= 2) {
+                            pinched = true
+                            val span = (pressed[0].position - pressed[1].position)
+                                .getDistance()
+                            if (prevSpan > 0f && span > 1f) {
+                                val factor = span / prevSpan
+                                if (factor != 1f) {
+                                    homeZoom = (homeZoom * factor)
+                                        .coerceIn(0.6f, 2.4f)
+                                }
+                            }
+                            prevSpan = span
+                            // 捏合期间消费掉，防止网格滚动/误点击
+                            event.changes.forEach { it.consume() }
+                        } else {
+                            prevSpan = -1f
+                        }
+                        if (event.changes.none { it.pressed }) break
+                    }
+                    if (pinched) {
+                        PrefsManager.sp.edit()
+                            .putFloat("web_home_zoom", homeZoom).apply()
+                    }
+                }
+            }
     ) {
         // ---- 背景层：自定义图片 / 预设渐变（默认 = PrimaryBackground 深色底） ----
         when (bgMode) {
@@ -2512,7 +2570,16 @@ private fun BrowserHomeOverlay(
                 )
         )
 
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                // ★ v24: 缩放作用于内容层（背景层保持全幅不缩放）
+                .graphicsLayer {
+                    scaleX = homeZoom
+                    scaleY = homeZoom
+                    transformOrigin = TransformOrigin(0.5f, 0.5f)
+                }
+        ) {
             // ★ v22: 仿图二「简洁主页」紧凑化 —— 顶栏/搜索框/引擎行/图标全元素缩小
             androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
             // ---- 顶栏：标题区 + ★ v19 设置入口（原"背景"文字胶囊 → 齿轮图标） ----
@@ -2682,7 +2749,7 @@ private fun BrowserHomeOverlay(
                 }
             }
             Text(
-                "点击打开 · 长按管理 · 齿轮设置背景",
+                "双指缩放 · 点击打开 · 长按管理 · 齿轮设置背景",
                 color = Color(0xFF8FA2B8),
                 fontSize = 8.sp,
                 modifier = Modifier
@@ -2690,6 +2757,28 @@ private fun BrowserHomeOverlay(
                     .align(Alignment.CenterHorizontally)
                     .padding(bottom = 6.dp)
             )
+        }
+
+        // ★ v24: 非 1x 时右下角缩放状态胶囊（固定尺寸，不随内容缩放）
+        if (homeZoom != 1f) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 16.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
+                    .background(Color(0xCC1E2A3A))
+                    .clickable {
+                        homeZoom = 1f
+                        PrefsManager.sp.edit().putFloat("web_home_zoom", 1f).apply()
+                    }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "缩放 ${kotlin.math.round(homeZoom * 100).toInt()}% · 点此复位",
+                    color = Color(0xFFFDD835), fontSize = 11.sp
+                )
+            }
         }
     }
 

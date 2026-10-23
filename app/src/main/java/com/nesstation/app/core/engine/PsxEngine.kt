@@ -33,9 +33,14 @@ class PsxEngine private constructor() : EmulatorEngine {
 
     /**
      * PSX frame buffer. PSX resolutions vary: 320x240 (NTSC), 320x256 (PAL),
-     * 640x480 (hi-res). Size for the largest common case (640x480).
+     * 640x480 (hi-res)。
+     * ★ v24: NEON 2x 增强分辨率（pcsx_rearmed_neon_enhancement_enable）开启后
+     *   核心按 2x 输出（上游 frontend/libretro.c:205："PSX max resolution is
+     *   640x512, but with enhancement it's 1024x512"）。旧固定 640x480 缓冲会
+     *   拒收/裁切增强帧（PAL 320x256 → 640x512、512x240 → 1024x480），
+     *   扩到 1024x512 覆盖全部增强档位（约 2MB 常驻，可接受）。
      */
-    override val frameBuffer = IntArray(640 * 480)
+    override val frameBuffer = IntArray(1024 * 512)
 
     private val running = AtomicBoolean(false)
     private var thread: Thread? = null
