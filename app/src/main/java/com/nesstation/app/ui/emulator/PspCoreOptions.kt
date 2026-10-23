@@ -132,7 +132,7 @@ object PspCoreOptions {
             ),
             "GPU 上做纹理放大（与上面的 CPU 放大二选一）"),
         Def("ppsspp_texture_replacement", "高清纹理替换", G_TEX, "disabled", DE,
-            "读取 textures/ 下的替换包"),
+            "★ 需 HD 纹理包才有效：核心只读 <存档目录>/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写、游戏ID无连字符如 NPJH50505）—— 用主设置页 PSP 分区「导入 HD 纹理包」按钮自动放置"),
 
         // ─────────────── 性能 / CPU ───────────────
         Def("ppsspp_cpu_core", "CPU 核心", G_PERF, "JIT",

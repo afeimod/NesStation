@@ -36,6 +36,13 @@ import android.widget.Toast
  * - 闲置 5 秒无交互 → 自动滑到最近的屏幕边角 + 变极淡（alpha 0.30）；
  * - 点击隐藏态的球 → 动画回原位置（本次点击不弹菜单），拖动/菜单开合/
  *   全屏切换都会重置计时；菜单打开与全屏视频期间不自动隐藏。
+ * ★ v23: 悬浮球更透 + 菜单去单元背景 + 紧凑化（用户反馈：「悬浮球半透明，
+ * 菜单每个按钮周围的背景去掉，并紧凑一点，小一点」）：
+ * - 球体常态 alpha 0.55 → 0.45（更透），按下 0.9 → 0.8；
+ * - 菜单单元撤掉 v15 的小深色芯片托底（徽章实色 + 白描边 + 字影保留，
+ *   任意底色仍可辨）；
+ * - 单元 56dp → 48dp、徽章 26dp → 22dp、字形 11sp → 10sp、标签 9sp → 8sp、
+ *   列数横屏 5 → 6 / 竖屏 4 → 5、行距 4dp → 3dp、容器内距 2dp → 1dp。
  * ★ v15 可见性修复（用户反馈："悬浮菜单看不见了，颜色弄好点"）：
  * v14 全透明悬浮在浅色/噪点网页上被淹没（徽章底仅 26% alpha、标签浅灰蓝
  * DDE3EE）。本次：尺寸不动（38dp 球 / 56dp 单元 / 26dp 徽章 / 9sp），每个
@@ -77,8 +84,8 @@ class FloatingMenuView @JvmOverloads constructor(
     companion object {
         /** 闲置多久后自动滑到最近屏幕边角（毫秒） */
         private const val AUTO_HIDE_MS = 5000L
-        /** 常态半透明（用户反馈：球“应该半透明”） */
-        private const val BALL_ALPHA_NORMAL = 0.55f
+        /** 常态半透明（用户反馈：球“应该半透明”；★ v23 再加深 0.55 → 0.45） */
+        private const val BALL_ALPHA_NORMAL = 0.45f
         /** 边角隐藏态极淡（点击恢复） */
         private const val BALL_ALPHA_HIDDEN = 0.30f
     }
@@ -229,8 +236,8 @@ class FloatingMenuView @JvmOverloads constructor(
                             restoreFromEdge()
                         } else {
                             suppressRestoreClick = false
-                            // 按下时暂时恢复全实，方便看清拖动位置
-                            triggerBtn.alpha = 0.9f
+                            // 按下时暂时提亮（★ v23 0.9 → 0.8），方便看清拖动位置
+                            triggerBtn.alpha = 0.8f
                         }
                         startX = e.rawX
                         startY = e.rawY
@@ -315,16 +322,16 @@ class FloatingMenuView @JvmOverloads constructor(
         triggerBtn.alpha = 1f
         val isLandscapeRes = resources.configuration.orientation ==
             android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        // ★ v14: 横屏 5 列 / 竖屏 4 列（单元从 78dp 缩到 56dp，列数加密）
-        val columns = if (isLandscapeRes) 5 else 4
+        // ★ v23: 横屏 6 列 / 竖屏 5 列（单元 56dp → 48dp，列数再加密、菜单更小）
+        val columns = if (isLandscapeRes) 6 else 5
         val items = menuItems()
-        val cell = dp(56)
-        val menuWidth = columns * cell + dp(4)
+        val cell = dp(48)
+        val menuWidth = columns * cell + dp(2)
 
         // ★ v14: 无背景容器 —— 徽章+文字直接悬浮在页面上（用户"不要背景"）
         val menuContainer = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(2), dp(2), dp(2), dp(2))
+            setPadding(dp(1), dp(1), dp(1), dp(1))
         }
 
         fun rippleForeground(v: View) {
@@ -342,12 +349,12 @@ class FloatingMenuView @JvmOverloads constructor(
             return LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                setPadding(dp(2), dp(4), dp(2), dp(4))
+                setPadding(dp(2), dp(3), dp(2), dp(3))
                 isClickable = true
                 isFocusable = true
-                // ★ v15: 单元级小深色芯片托底（非整块面板背景）—— 保证任意
-                //   页面底色（白底/浅色/游戏画面）上菜单都清晰可见
-                background = createCellChipBg()
+                // ★ v23: 去掉 v15 的单元级芯片托底（用户：「每个按钮周围的
+                //   背景去掉」）—— 可见性由徽章实色 + 白描边 + 字影保证。
+                background = null
                 rippleForeground(this)
                 layoutParams = LinearLayout.LayoutParams(cell, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     setMargins(dp(1), 0, dp(1), 0)
@@ -355,7 +362,7 @@ class FloatingMenuView @JvmOverloads constructor(
                 addView(TextView(context).apply {
                     text = item.glyph
                     setTextColor(Color.WHITE)
-                    textSize = 11f
+                    textSize = 10f
                     typeface = android.graphics.Typeface.create(
                         android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD
                     )
@@ -363,15 +370,15 @@ class FloatingMenuView @JvmOverloads constructor(
                     background = createBadgeBg(accent)
                     // ★ v15: 字形阴影（浅色页面上白字也有轮廓）
                     setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(), 0xCC000000.toInt())
-                    layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply {
-                        bottomMargin = dp(3)
+                    layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply {
+                        bottomMargin = dp(2)
                     }
                 })
                 addView(TextView(context).apply {
                     text = item.title
                     // ★ v15: 浅灰蓝 DDE3EE 在白底页面上几乎不可见 → 纯白 + 阴影
                     setTextColor(Color.WHITE)
-                    textSize = 9f
+                    textSize = 8f
                     gravity = Gravity.CENTER
                     setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(), 0xCC000000.toInt())
                 })
@@ -398,7 +405,7 @@ class FloatingMenuView @JvmOverloads constructor(
         for (i in 0 until menuContainer.childCount) {
             val r = menuContainer.getChildAt(i) as? LinearLayout ?: continue
             val lp = r.layoutParams as? LinearLayout.LayoutParams
-            lp?.bottomMargin = dp(4)
+            lp?.bottomMargin = dp(3)
             r.layoutParams = lp
         }
 
@@ -442,17 +449,8 @@ class FloatingMenuView @JvmOverloads constructor(
         setStroke(dp(1), 0x99FFFFFF.toInt())
     }
 
-    /**
-     * ★ v15: 菜单单元小芯片托底 —— 深蓝黑 90% 圆角。单元级小卡片而非整块
-     * 面板背景（用户"不要背景"指大块容器底），既保持紧凑轻盈，又保证菜单
-     * 在白底网页/浅色页面/游戏画面等任意底色上清晰可见。
-     */
-    private fun createCellChipBg() = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(14).toFloat()
-        setColor(0xE6151721.toInt())
-        setStroke(dp(1), 0x2EFFFFFF)
-    }
+    // ★ v23: createCellChipBg（v15 单元芯片托底）已按用户最新指令移除
+    //   （菜单每个按钮周围的背景去掉）—— 徽章实色 + 白描边 + 字影兜底可见性。
 
     /** 自绘"汉堡"三横线图标（dp 适配 intrinsic，白色圆头短条 —— 比系统图标干净） */
     private class MenuGlyphDrawable(private val density: Float) : Drawable() {

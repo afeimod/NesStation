@@ -657,6 +657,20 @@ class PadLayout {
     var pscxGpuOddEven: String = "disabled"         // disabled | enabled (Peops odd/even GPU hack — Chrono Cross)
     var pscxAnalogAxis: String = "square"           // circle | square (analog stick bounds)
 
+    // === ★ v23: PCSX-ReARMed 上游补全（.so strings + libretro_core_options.h 实证）===
+    var pscxNeonEnhanceNoMain: String = "disabled"   // pcsx_rearmed_neon_enhancement_no_main (2倍增强提速Hack)
+    var pscxNeonEnhanceTexAdj: String = "enabled"    // pcsx_rearmed_neon_enhancement_tex_adj_v2 (上游默认 enabled)
+    var pscxDisplayInternalFps: String = "disabled"  // pcsx_rearmed_display_internal_fps
+    var pscxDisplayInfo: String = "enabled"          // pcsx_rearmed_display_info (上游默认 enabled)
+    var pscxNoSmc: String = "disabled"               // pcsx_rearmed_nosmccheck (加速Hack·载入可能崩溃)
+    var pscxGteRegsUnneeded: String = "disabled"     // pcsx_rearmed_gteregsunneeded (加速Hack·渲染错误风险)
+    var pscxNoGteFlags: String = "disabled"          // pcsx_rearmed_nogteflags (加速Hack·渲染错误风险)
+    var pscxNoStalls: String = "disabled"            // pcsx_rearmed_nostalls (加速Hack·部分游戏过快)
+    var pscxExceptionEmu: String = "disabled"        // pcsx_rearmed_exception_emulation (仅解释器·调试用)
+    var pscxCenteringX: String = "0"                 // pcsx_rearmed_screen_centering_x (-16..16 偶数)
+    var pscxCenteringY: String = "0"                 // pcsx_rearmed_screen_centering_y (-16..16 整数)
+    var pscxCenteringHAdj: String = "0"              // pcsx_rearmed_screen_centering_h_adj (-64..0)
+
     // === DC (libretro Flycast — Dreamcast / NAOMI / AtomisWave) core options ===
     // 键名/取值已对照预编译 libflycast_libretro_android.so（libretro buildbot）
     // 字符串提取校验；reicast_* 键由 dc_loader.cpp 下发（见 applyCoreOptions）。
@@ -1723,6 +1737,18 @@ class PadLayout {
         pscxMultitap = another.pscxMultitap
         pscxGpuOddEven = another.pscxGpuOddEven
         pscxAnalogAxis = another.pscxAnalogAxis
+        pscxNeonEnhanceNoMain = another.pscxNeonEnhanceNoMain
+        pscxNeonEnhanceTexAdj = another.pscxNeonEnhanceTexAdj
+        pscxDisplayInternalFps = another.pscxDisplayInternalFps
+        pscxDisplayInfo = another.pscxDisplayInfo
+        pscxNoSmc = another.pscxNoSmc
+        pscxGteRegsUnneeded = another.pscxGteRegsUnneeded
+        pscxNoGteFlags = another.pscxNoGteFlags
+        pscxNoStalls = another.pscxNoStalls
+        pscxExceptionEmu = another.pscxExceptionEmu
+        pscxCenteringX = another.pscxCenteringX
+        pscxCenteringY = another.pscxCenteringY
+        pscxCenteringHAdj = another.pscxCenteringHAdj
         dcResolution = another.dcResolution
         dcAlphaSorting = another.dcAlphaSorting
         dcThreadedRendering = another.dcThreadedRendering
@@ -3022,6 +3048,19 @@ object PadLayoutStore {
             }
             pscxGpuOddEven = p.getString("psx_gpu_odd_even", "disabled") ?: "disabled"
             pscxAnalogAxis = p.getString("psx_analog_axis", "square") ?: "square"
+            // ★ v23: 上游补全选项
+            pscxNeonEnhanceNoMain = p.getString("psx_neon_enhance_no_main", "disabled") ?: "disabled"
+            pscxNeonEnhanceTexAdj = p.getString("psx_neon_enhance_tex_adj", "enabled") ?: "enabled"
+            pscxDisplayInternalFps = p.getString("psx_display_internal_fps", "disabled") ?: "disabled"
+            pscxDisplayInfo = p.getString("psx_display_info", "enabled") ?: "enabled"
+            pscxNoSmc = p.getString("psx_no_smc", "disabled") ?: "disabled"
+            pscxGteRegsUnneeded = p.getString("psx_gte_regs_unneeded", "disabled") ?: "disabled"
+            pscxNoGteFlags = p.getString("psx_no_gte_flags", "disabled") ?: "disabled"
+            pscxNoStalls = p.getString("psx_no_stalls", "disabled") ?: "disabled"
+            pscxExceptionEmu = p.getString("psx_exception_emu", "disabled") ?: "disabled"
+            pscxCenteringX = p.getString("psx_centering_x", "0") ?: "0"
+            pscxCenteringY = p.getString("psx_centering_y", "0") ?: "0"
+            pscxCenteringHAdj = p.getString("psx_centering_h_adj", "0") ?: "0"
             // DC (libretro Flycast) options
             dcResolution = p.getString("dc_resolution", "640x480 (Native)") ?: "640x480 (Native)"
             dcAlphaSorting = p.getString("dc_alpha_sorting", "per-triangle (normal)") ?: "per-triangle (normal)"
@@ -4166,6 +4205,19 @@ object PadLayoutStore {
             putString("psx_rgb32", layout.pscxRgb32)
             putString("psx_scale_hires", layout.pscxScaleHires)
             putString("psx_show_overscan", layout.pscxShowOverscan)
+            // ★ v23: 上游补全选项
+            putString("psx_neon_enhance_no_main", layout.pscxNeonEnhanceNoMain)
+            putString("psx_neon_enhance_tex_adj", layout.pscxNeonEnhanceTexAdj)
+            putString("psx_display_internal_fps", layout.pscxDisplayInternalFps)
+            putString("psx_display_info", layout.pscxDisplayInfo)
+            putString("psx_no_smc", layout.pscxNoSmc)
+            putString("psx_gte_regs_unneeded", layout.pscxGteRegsUnneeded)
+            putString("psx_no_gte_flags", layout.pscxNoGteFlags)
+            putString("psx_no_stalls", layout.pscxNoStalls)
+            putString("psx_exception_emu", layout.pscxExceptionEmu)
+            putString("psx_centering_x", layout.pscxCenteringX)
+            putString("psx_centering_y", layout.pscxCenteringY)
+            putString("psx_centering_h_adj", layout.pscxCenteringHAdj)
             putString("psx_multitap", layout.pscxMultitap)
             putString("psx_gpu_odd_even", layout.pscxGpuOddEven)
             putString("psx_analog_axis", layout.pscxAnalogAxis)

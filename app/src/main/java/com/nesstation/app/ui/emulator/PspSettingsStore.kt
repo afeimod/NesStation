@@ -254,4 +254,199 @@ object PspSettingsStore {
             android.util.Log.w("PspSettingsStore", "removeCoreOption($key) failed", t)
         }
     }
+
+    // ==================================================================
+    // ★★ v23: HD 纹理包路径实证与工具 —— 结合 PPSSPP v1.20.4 上游源码 ★★
+    //
+    // 路径链（逐层实证，v22 及更早的引导目录全部是错的）：
+    //   1. 上游 libretro.cpp:1290  g_Config.memStickDirectory = retro_save_dir
+    //      —— memstick 根 = libretro save 目录；
+    //   2. psp_loader.cpp GET_SAVE_DIRECTORY 返回 PspNative.setPaths(systemDir,
+    //      saveDir) 传入的 saveDir = EmulatorScreen 的 savesDirPath
+    //      = <filesDir>/saves（nesstation 存档模式）；
+    //   3. 上游 TextureReplacer.cpp NotifyConfigChanged：
+    //      basePath_ = GetSysDirectory(DIRECTORY_TEXTURES) / gameID_
+    //      = <memstick>/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写！Android 内部
+    //      存储大小写敏感，小写 textures 核心永远读不到）；
+    //   4. gameID_ = g_paramSFO.GetDiscID() = PARAM.SFO DISC_ID 原样值 ——
+    //      大写、无连字符（如 NPJH50505 / ULUS10566，官方文档同口径）；
+    //   5. 同函数 replaceEnabled_ && File::IsDirectory(basePath_) ——
+    //      目录不存在则高清纹理替换【静默自禁用】（"开了没反应"的机制根源）。
+    //
+    // 旧版错误（v22）：扫描/引导 "Android/data/.../files/PSP/textures/"
+    // —— 根错（外部目录 vs 核心实际读的内部 filesDir/saves）+ 大小写错。
+    // ==================================================================
+
+    /** 核心真正读取的纹理包目录（正确路径，勿改大小写）。 */
+    fun texturePackDir(context: Context): java.io.File =
+        java.io.File(context.filesDir, "saves/PSP/TEXTURES")
+
+    /** v22 及更早引导文案造成的错误放置位置（仅用于检测/迁移）。 */
+    private fun legacyTextureRoots(context: Context): List<java.io.File> {
+        val roots = mutableListOf(
+            java.io.File(context.filesDir, "saves/PSP/textures"),   // 根对了但小写
+            java.io.File(context.filesDir, "PSP/textures"),          // 根错+小写
+            java.io.File(context.filesDir, "psp/PSP/textures"),
+            java.io.File(context.filesDir, "psp/textures"),
+            java.io.File(context.filesDir, "PPSSPP/PSP/textures"))
+        context.getExternalFilesDir(null)?.let { ext ->
+            roots.add(java.io.File(ext, "PSP/textures"))            // v22 引导的外部目录
+            roots.add(java.io.File(ext, "psp/PSP/textures"))
+            roots.add(java.io.File(ext, "psp/textures"))
+            roots.add(java.io.File(ext, "PPSSPP/PSP/textures"))
+        }
+        return roots.distinctBy { it.absolutePath }
+    }
+
+    /**
+     * 扫描纹理包：返回 (正确目录包数, 正确目录绝对路径, 旧错误位置包数)。
+     * 旧位置包数 > 0 时应引导用户迁移（见 [migrateLegacyTexturePacks]）。
+     */
+    fun scanTexturePacks(context: Context): Triple<Int, String, Int> {
+        val canonical = texturePackDir(context)
+        val count = canonical.listFiles { f -> f.isDirectory }?.size ?: 0
+        var legacyCount = 0
+        for (r in legacyTextureRoots(context)) {
+            legacyCount += r.listFiles { f -> f.isDirectory }?.size ?: 0
+        }
+        return Triple(count, canonical.absolutePath, legacyCount)
+    }
+
+    /**
+     * 把旧错误位置的纹理包目录迁移到核心真实目录（目标已存在则跳过该包，
+     * 绝不覆盖）。只做同盘 renameTo，失败即原地保留。返回迁移成功的包数。
+     */
+    fun migrateLegacyTexturePacks(context: Context): Int {
+        val canonical = texturePackDir(context)
+        try { canonical.mkdirs() } catch (_: Throwable) {}
+        var moved = 0
+        for (r in legacyTextureRoots(context)) {
+            val packs = r.listFiles { f -> f.isDirectory } ?: continue
+            for (p in packs) {
+                val target = java.io.File(canonical, p.name)
+                if (target.exists()) continue
+                try {
+                    if (p.renameTo(target)) moved++
+                } catch (_: Throwable) {}
+            }
+        }
+        return moved
+    }
+
+    /** 纹理包导入结果。 */
+    data class TexturePackImportResult(
+        val ok: Boolean,
+        val message: String,
+        val folders: List<String> = emptyList()
+    )
+
+    /**
+     * 从 SAF Uri 导入纹理包 zip，解压到核心真实读取的
+     * <filesDir>/saves/PSP/TEXTURES/<游戏ID>/ —— 与上游 PPSSPP "打开 zip
+     * 自动安装" 同等效果。识别三种包结构（按优先级）：
+     *   1) zip 根层有以游戏ID命名的文件夹（NPJH50505/xxx.png）—— 全部导入；
+     *   2) 唯一顶层包装文件夹且其名是游戏ID —— 以该文件夹为 ID 导入；
+     *   3) 以上都没有 —— 要求 zip 文件名即游戏ID（官方发行包的普遍形态）。
+     * 拒绝无 ID 可得的导入（给出改名指引），杜绝解压成核心读不到的孤儿目录。
+     */
+    fun importTexturePackZip(context: Context, uri: android.net.Uri): TexturePackImportResult {
+        val tmp = java.io.File(context.cacheDir,
+            "psp_tex_import_${System.currentTimeMillis()}.zip")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                tmp.outputStream().use { input.copyTo(it) }
+            } ?: return TexturePackImportResult(false, "无法读取所选文件")
+            java.util.zip.ZipFile(tmp).use { zip ->
+                val idPattern = Regex("^[A-Za-z]{4}[0-9]{5}$")
+                fun junk(name: String): Boolean =
+                    name.isBlank() || name.contains("__MACOSX") || name.contains("..") ||
+                    name.split('/').any { it.startsWith(".") }
+                // java.util.Enumeration 手动遍历（不依赖任何序列转换扩展的可用性）
+                val entries = mutableListOf<java.util.zip.ZipEntry>()
+                val en = zip.entries()
+                while (en.hasMoreElements()) {
+                    val e = en.nextElement()
+                    if (!e.isDirectory && !junk(e.name) &&
+                        !e.name.substringAfterLast('/').startsWith("._")) {
+                        entries.add(e)
+                    }
+                }
+                if (entries.isEmpty())
+                    return TexturePackImportResult(false, "zip 内没有可用的纹理文件")
+                // zip 文件名（SAF 显示名去扩展名）—— 可能本身即游戏ID
+                var displayName: String? = null
+                try {
+                    context.contentResolver.query(uri,
+                        arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                        null, null, null)?.use { c ->
+                        if (c.moveToFirst()) {
+                            val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (i >= 0) displayName = c.getString(i)
+                        }
+                    }
+                } catch (_: Throwable) {}
+                val stemId = (displayName ?: "").substringBeforeLast('.').trim().uppercase()
+
+                // (游戏ID, 解压时需剥掉的 zip 内前缀) 目标列表
+                val targets: List<Pair<String, String>> = run {
+                    // ① 根层以游戏ID命名的文件夹（NPJH50505/xxx.png）—— 全部导入
+                    val idDirs = entries.mapNotNull { e ->
+                        val top = e.name.substringBefore('/')
+                        if (e.name.contains('/') && idPattern.matches(top)) top.uppercase() else null
+                    }.toSortedSet()
+                    if (idDirs.isNotEmpty()) return@run idDirs.map { it to "$it/" }
+                    // ② 唯一顶层包装文件夹：优先用文件夹名，其次 zip 文件名作 ID
+                    val tops = entries.map { it.name.substringBefore('/') }.toSet()
+                    if (tops.size == 1 && entries.all { it.name.contains('/') }) {
+                        val wrapper = tops.first()
+                        if (idPattern.matches(wrapper)) return@run listOf(wrapper.uppercase() to "$wrapper/")
+                        if (idPattern.matches(stemId)) return@run listOf(stemId to "$wrapper/")
+                        return@run emptyList<Pair<String, String>>()
+                    }
+                    // ③ 根层散文件 —— zip 文件名即游戏ID（官方发行包普遍形态）
+                    if (idPattern.matches(stemId)) return@run listOf(stemId to "")
+                    emptyList<Pair<String, String>>()
+                }
+                if (targets.isEmpty())
+                    return TexturePackImportResult(false,
+                        "未识别游戏ID：请把 zip 重命名为 <游戏ID>.zip（如 NPJH50505.zip），" +
+                        "或把 zip 内纹理放进以游戏ID命名的文件夹后重新导入")
+                val canonical = texturePackDir(context)
+                try { canonical.mkdirs() } catch (_: Throwable) {}
+                val done = mutableListOf<String>()
+                for ((id, prefix) in targets) {
+                    val dir = java.io.File(canonical, id)
+                    try { dir.mkdirs() } catch (_: Throwable) {}
+                    var n = 0
+                    for (e in entries) {
+                        if (!e.name.startsWith(prefix)) continue
+                        val rel = e.name.removePrefix(prefix)
+                        if (rel.isBlank()) continue
+                        val out = java.io.File(dir, rel)
+                        // zip-slip 防护：落盘路径必须仍在目标目录内
+                        if (!out.canonicalPath.startsWith(dir.canonicalPath + java.io.File.separator)) continue
+                        try {
+                            out.parentFile?.mkdirs()
+                            zip.getInputStream(e).use { ins ->
+                                out.outputStream().use { o -> ins.copyTo(o) }
+                            }
+                            n++
+                        } catch (_: Throwable) {}
+                    }
+                    if (n > 0) done.add(id)
+                }
+                return if (done.isEmpty())
+                    TexturePackImportResult(false, "导入失败：未能解压出任何纹理文件")
+                else
+                    TexturePackImportResult(true,
+                        "已导入 ${done.size} 个纹理包（${done.joinToString("、")}）", done)
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("PspSettingsStore", "importTexturePackZip failed", t)
+            return TexturePackImportResult(false,
+                "导入失败：${t.message ?: t.javaClass.simpleName}")
+        } finally {
+            try { tmp.delete() } catch (_: Throwable) {}
+        }
+    }
 }

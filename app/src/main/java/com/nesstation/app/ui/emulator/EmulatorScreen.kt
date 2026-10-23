@@ -6001,6 +6001,12 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("pcsx_rearmed_icache_emulation", layout.pscxIcache)
             engine.setCoreOption("pcsx_rearmed_cd_turbo", layout.pscxCdTurbo)
             engine.setCoreOption("pcsx_rearmed_nocompathacks", "disabled")
+            // ★ v23: 上游 speed_hack 目录（默认全关）+ 异常模拟（仅解释器）
+            engine.setCoreOption("pcsx_rearmed_nosmccheck", layout.pscxNoSmc)
+            engine.setCoreOption("pcsx_rearmed_gteregsunneeded", layout.pscxGteRegsUnneeded)
+            engine.setCoreOption("pcsx_rearmed_nogteflags", layout.pscxNoGteFlags)
+            engine.setCoreOption("pcsx_rearmed_nostalls", layout.pscxNoStalls)
+            engine.setCoreOption("pcsx_rearmed_exception_emulation", layout.pscxExceptionEmu)
 
             // --- GPU / 显示 ---
             engine.setCoreOption("pcsx_rearmed_gpu_thread_rendering", layout.pscxGpuThreadRendering) // GPU 渲染线程化(性能关键)
@@ -6014,6 +6020,16 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("pcsx_rearmed_neon_interlace_enable_v2", layout.pscxNeonInterlace)
             engine.setCoreOption("pcsx_rearmed_neon_enhancement_enable", layout.pscxNeonEnhance)
             engine.setCoreOption("pcsx_rearmed_screen_centering", layout.pscxCentering)
+            // ★ v23: 上游补全 —— 2倍增强辅助（no_main 提速 / tex_adj 修贴图
+            //   错位，上游默认 enabled）+ 显示 + 手动居中三轴（仅 manual 时
+            //   核心生效）。键名/取值对照 .so strings + 上游 libretro_core_options.h。
+            engine.setCoreOption("pcsx_rearmed_neon_enhancement_no_main", layout.pscxNeonEnhanceNoMain)
+            engine.setCoreOption("pcsx_rearmed_neon_enhancement_tex_adj_v2", layout.pscxNeonEnhanceTexAdj)
+            engine.setCoreOption("pcsx_rearmed_display_internal_fps", layout.pscxDisplayInternalFps)
+            engine.setCoreOption("pcsx_rearmed_display_info", layout.pscxDisplayInfo)
+            engine.setCoreOption("pcsx_rearmed_screen_centering_x", layout.pscxCenteringX)
+            engine.setCoreOption("pcsx_rearmed_screen_centering_y", layout.pscxCenteringY)
+            engine.setCoreOption("pcsx_rearmed_screen_centering_h_adj", layout.pscxCenteringHAdj)
 
             // --- 跳帧 (注意: 类型值必须是 disabled/auto/auto_threshold/fixed_interval) ---
             engine.setCoreOption("pcsx_rearmed_frameskip_type", layout.pscxFrameskipType)
@@ -6443,27 +6459,12 @@ private fun applyCoreOptionsInner(
     }
 }
 
-// ★ v22: PSP HD 纹理包扫描 —— 「高清纹理替换」(ppsspp_texture_replacement) 是
-//   官方核心选项（PPSSPP v1.20.4 libretro_core_options.h 实证存在），但只有
-//   memstick 下 PSP/textures/<游戏ID>/ 放了纹理包才有可见效果；核心 memstick
-//   根由引擎传入的系统目录决定，此处按常见布局扫描内置/外置 files 两类根，
-//   返回 (包目录数, 命中的纹理目录)。供主设置页与游戏内快捷面板共用。
-private fun scanPspTexturePacks(context: android.content.Context): Pair<Int, String> {
-    val roots = listOfNotNull(
-        context.getExternalFilesDir(null), context.filesDir)
-    val candidates = roots.flatMap { r ->
-        listOf(
-            java.io.File(r, "PSP/textures"),
-            java.io.File(r, "psp/PSP/textures"),
-            java.io.File(r, "psp/textures"),
-            java.io.File(r, "PPSSPP/PSP/textures"))
-    }.distinctBy { it.absolutePath }
-    for (dir in candidates) {
-        val packs = dir.listFiles { f -> f.isDirectory } ?: continue
-        if (packs.isNotEmpty()) return Pair(packs.size, dir.absolutePath)
-    }
-    return Pair(0, "")
-}
+// ★ v23: PSP HD 纹理包扫描 —— 实证路径（PPSSPP v1.20.4 上游 TextureReplacer）：
+//   memstick 根 = libretro save 目录 = <filesDir>/saves，核心只读
+//   <memstick>/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写、游戏ID无连字符）。
+//   返回 (正确目录包数, 正确目录, 旧错误位置包数)。供游戏内快捷面板使用。
+private fun scanPspTexturePacks(context: android.content.Context): Triple<Int, String, Int> =
+    PspSettingsStore.scanTexturePacks(context)
 
 // ---------------------------------------------------------------------------
 // GameSurfaceView
@@ -15109,23 +15110,56 @@ private fun SettingsPanel(
                     padLayout.pscxDrc
                 ) { onLayoutChange(padLayout.copy {pscxDrc = it}) }
 
+                // ★ v23: 补齐 DRC/GPU 线程化（性能关键，此前游戏内面板缺失）
+                DropdownSetting("DRC 线程化",
+                    listOf("auto" to "自动 (推荐)", "enabled" to "开启", "disabled" to "关闭"),
+                    padLayout.pscxDrcThread
+                ) { onLayoutChange(padLayout.copy {pscxDrcThread = it}) }
+                DropdownSetting("GPU 渲染线程化",
+                    listOf("auto" to "自动 (推荐)", "enabled" to "开启", "disabled" to "关闭"),
+                    padLayout.pscxGpuThreadRendering
+                ) { onLayoutChange(padLayout.copy {pscxGpuThreadRendering = it}) }
+
+                // ★ v23: 修复非法枚举 —— 上游 psxclock 只认 auto/30..100，
+                //   旧 "125/150/200" 被核心静默忽略（改了永远不生效）
                 DropdownSetting("CPU 时钟",
-                    listOf("auto" to "自动", "30" to "30%", "50" to "50%", "75" to "75%",
-                           "100" to "100%", "125" to "125%", "150" to "150%", "200" to "200%"),
+                    listOf("auto" to "自动 (推荐)", "50" to "50%", "57" to "57% (标准实测)",
+                           "60" to "60%", "70" to "70%", "80" to "80%", "90" to "90%",
+                           "100" to "100%"),
                     padLayout.pscxClock
                 ) { onLayoutChange(padLayout.copy {pscxClock = it}) }
 
                 DropdownSetting("跳帧类型",
-                    listOf("disabled" to "关闭", "auto" to "自动", "fixed" to "固定"),
+                    listOf("disabled" to "关闭", "auto" to "自动",
+                           "auto_threshold" to "自动(按阈值)", "fixed_interval" to "固定间隔"),
                     padLayout.pscxFrameskipType
                 ) { onLayoutChange(padLayout.copy {pscxFrameskipType = it}) }
+                // ★ v23: 修复非法枚举 —— 旧 "fixed" 核心不认（应 fixed_interval，
+                //   载入时虽已归一但面板继续写回错误值）；跳帧数改 1..10（旧 "0" 不在枚举）
+                if (padLayout.pscxFrameskipType == "fixed_interval") {
+                    DropdownSetting("固定跳帧数",
+                        (1..10).map { it.toString() to it.toString() },
+                        padLayout.pscxFrameskip
+                    ) { onLayoutChange(padLayout.copy {pscxFrameskip = it}) }
+                }
 
-                DropdownSetting("跳帧数",
-                    listOf("0" to "0", "1" to "1", "2" to "2", "3" to "3",
-                           "4" to "4", "5" to "5", "6" to "6", "7" to "7",
-                           "8" to "8", "9" to "9", "10" to "10"),
-                    padLayout.pscxFrameskip
-                ) { onLayoutChange(padLayout.copy {pscxFrameskip = it}) }
+                // ★ v23: 加速 Hack（上游 speed_hack 目录，主设置页同款；默认全关）
+                DropdownSetting("关闭SMC内存检查",
+                    listOf("disabled" to "关闭 (默认·稳)", "enabled" to "开启 (提速·风险)"),
+                    padLayout.pscxNoSmc
+                ) { onLayoutChange(padLayout.copy {pscxNoSmc = it}) }
+                DropdownSetting("GTE寄存器免更新",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速·风险)"),
+                    padLayout.pscxGteRegsUnneeded
+                ) { onLayoutChange(padLayout.copy {pscxGteRegsUnneeded = it}) }
+                DropdownSetting("关闭GTE标志",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速·风险)"),
+                    padLayout.pscxNoGteFlags
+                ) { onLayoutChange(padLayout.copy {pscxNoGteFlags = it}) }
+                DropdownSetting("关闭CPU/GTE停顿",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速·风险)"),
+                    padLayout.pscxNoStalls
+                ) { onLayoutChange(padLayout.copy {pscxNoStalls = it}) }
 
                 Spacer(Modifier.size(4.dp))
                 Text("画面", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -15150,9 +15184,27 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {pscxGpuOddEven = it}) }
 
                 DropdownSetting("抖动效果",
-                    listOf("enabled" to "开启", "disabled" to "关闭"),
+                    listOf("enabled" to "开启", "disabled" to "关闭", "force" to "强制"),
                     padLayout.pscxDithering
                 ) { onLayoutChange(padLayout.copy {pscxDithering = it}) }
+
+                // ★ v23: 高清分辨率增强（2倍）三件套 + 内部FPS —— 此前游戏内缺失
+                DropdownSetting("高清分辨率增强 (2倍)",
+                    listOf("disabled" to "关闭 (默认·最快)", "enabled" to "2倍渲染 (更清晰·吃性能)"),
+                    padLayout.pscxNeonEnhance
+                ) { onLayoutChange(padLayout.copy {pscxNeonEnhance = it}) }
+                DropdownSetting("2倍增强·提速Hack",
+                    listOf("disabled" to "关闭 (默认·稳)", "enabled" to "开启 (提速·风险)"),
+                    padLayout.pscxNeonEnhanceNoMain
+                ) { onLayoutChange(padLayout.copy {pscxNeonEnhanceNoMain = it}) }
+                DropdownSetting("2倍增强·纹理修正",
+                    listOf("enabled" to "开启 (上游默认)", "disabled" to "关闭"),
+                    padLayout.pscxNeonEnhanceTexAdj
+                ) { onLayoutChange(padLayout.copy {pscxNeonEnhanceTexAdj = it}) }
+                DropdownSetting("显示内部FPS",
+                    listOf("disabled" to "关闭 (默认)", "enabled" to "开启"),
+                    padLayout.pscxDisplayInternalFps
+                ) { onLayoutChange(padLayout.copy {pscxDisplayInternalFps = it}) }
 
                 Spacer(Modifier.size(4.dp))
                 Text("手柄", color = Color(0xFF8899AA), fontSize = 11.sp)
@@ -15177,7 +15229,8 @@ private fun SettingsPanel(
                 ) { onLayoutChange(padLayout.copy {pscxAnalogAxis = it}) }
 
                 DropdownSetting("多手柄",
-                    listOf("disabled" to "关闭", "port1" to "端口1", "port2" to "端口2", "both" to "全部"),
+                    listOf("disabled" to "关闭", "port 1" to "接口 1 (最多5人)", "port 2" to "接口 2 (最多5人)",
+                           "ports 1 and 2" to "双接口 (最多8人)"),
                     padLayout.pscxMultitap
                 ) { onLayoutChange(padLayout.copy {pscxMultitap = it}) }
 
@@ -16210,14 +16263,17 @@ private fun SettingsPanel(
                         }
                     }
                     if (groupTitle == "纹理") {
-                        // ★ v22: 高清纹理替换需纹理包才有效 —— 检测提示
-                        //   （完整目录指引见主设置页 PSP 分区）
+                        // ★ v23: 高清纹理替换 —— 实证正确路径检测 + 旧目录迁移引导
+                        //   （核心只读 <filesDir>/saves/PSP/TEXTURES/<游戏ID>/）
                         val pspPacks = remember(platform) { scanPspTexturePacks(context) }
+                        val (texOk, texMsg, texLegacy) = pspPacks
                         Text(
-                            if (pspPacks.first > 0)
-                                "已检测到 ${pspPacks.first} 个 HD 纹理包 —— 开启「高清纹理替换」并重进游戏即生效。"
+                            if (texOk > 0)
+                                "已检测到 ${texOk} 个 HD 纹理包（${texMsg}）—— 开启「高清纹理替换」并重进游戏即生效。"
+                            else if (texLegacy > 0)
+                                "检测到 ${texLegacy} 个包在旧版错误目录 —— 请到 主设置页 → 核心设置 → PSP 点「迁移旧版纹理目录」。"
                             else
-                                "「高清纹理替换」需 HD 纹理包才有效（解压到 PSP/textures/<游戏ID>/，目录详见 主设置页 → 核心设置 → PSP）；无包时开启无画面变化。",
+                                "「高清纹理替换」需 HD 纹理包才有效（核心只读 <存档目录>/saves/PSP/TEXTURES/<游戏ID>/，TEXTURES 大写、游戏ID无连字符）—— 推荐用主设置页「导入 HD 纹理包」按钮自动放置。",
                             color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     }
                     Spacer(Modifier.size(4.dp))

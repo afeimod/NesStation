@@ -29,6 +29,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,7 +39,9 @@ import androidx.compose.ui.unit.sp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.widget.Toast
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.nesstation.app.core.model.GamePlatform
 import com.nesstation.app.core.storage.CemuDriverStore
 import com.nesstation.app.core.storage.PadLayout
@@ -1202,9 +1205,26 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {pscxCdReadahead = it}) }
                     DropdownRow("屏幕居中",
                         listOf("auto" to "自动(推荐)", "game" to "游戏内容",
-                               "borderless" to "无边框"),
+                               "borderless" to "无边框", "manual" to "手动 (配合下方偏移)"),
                         padLayout.pscxCentering
                     ) { updateLayout(padLayout.copy {pscxCentering = it}) }
+                    // ★ v23: 上游 manual 居中 + 三个偏移微调项（仅 manual 时显示）
+                    if (padLayout.pscxCentering == "manual") {
+                        DropdownRow("手动位置 X",
+                            (-16..16 step 2).map { v -> v.toString() to if (v == 0) "0 (默认)" else v.toString() },
+                            padLayout.pscxCenteringX
+                        ) { updateLayout(padLayout.copy {pscxCenteringX = it}) }
+                        DropdownRow("手动位置 Y",
+                            (-16..16).map { v -> v.toString() to if (v == 0) "0 (默认)" else v.toString() },
+                            padLayout.pscxCenteringY
+                        ) { updateLayout(padLayout.copy {pscxCenteringY = it}) }
+                        DropdownRow("手动高度调整",
+                            listOf(-64, -48, -40, -32, -24, -16, -8, -7, -6, -5,
+                                   -4, -3, -2, -1, 0)
+                                .map { v -> v.toString() to if (v == 0) "0 (默认)" else v.toString() },
+                            padLayout.pscxCenteringHAdj
+                        ) { updateLayout(padLayout.copy {pscxCenteringHAdj = it}) }
+                    }
                 }
 
                 SettingsSection("PSX · 性能") {
@@ -1265,11 +1285,51 @@ fun CoreSettingsPanel(
                         listOf("disabled" to "关闭", "enabled" to "开启(提速·兼容性风险)"),
                         padLayout.pscxCdTurbo
                     ) { updateLayout(padLayout.copy {pscxCdTurbo = it}) }
+
+                    // ★ v23: 上游 speed_hack 目录补全（libretro_core_options.h +
+                    //   预编译 .so strings 双实证；默认全关 —— 开启提速明显但
+                    //   有兼容风险，逐个试、出问题立即关闭）
+                    Text(
+                        "加速 Hack（上游 speed_hack）：默认全关；开启后提速明显，但可能花屏/卡死/存档异常。",
+                        color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
+                    DropdownRow("关闭SMC内存检查",
+                        listOf("disabled" to "关闭 (默认·稳)", "enabled" to "开启 (提速·载入可能崩溃)"),
+                        padLayout.pscxNoSmc
+                    ) { updateLayout(padLayout.copy {pscxNoSmc = it}) }
+                    DropdownRow("GTE寄存器免更新",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速·可能渲染错误)"),
+                        padLayout.pscxGteRegsUnneeded
+                    ) { updateLayout(padLayout.copy {pscxGteRegsUnneeded = it}) }
+                    DropdownRow("关闭GTE标志",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速·可能渲染错误)"),
+                        padLayout.pscxNoGteFlags
+                    ) { updateLayout(padLayout.copy {pscxNoGteFlags = it}) }
+                    DropdownRow("关闭CPU/GTE停顿",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (提速·部分游戏过快)"),
+                        padLayout.pscxNoStalls
+                    ) { updateLayout(padLayout.copy {pscxNoStalls = it}) }
+
+                    // ★ v23: 一键恢复性能推荐（防旧存档残留关闭值 → 「JIT失效」感知）
+                    TextButtonRow("一键恢复性能推荐 (PSX)",
+                        "DRC=开 · DRC线程=自动 · GPU渲染线程=自动 · 跳帧=关 · 加速Hack=全关",
+                        onClick = {
+                            updateLayout(padLayout.copy {
+                                pscxDrc = "enabled"
+                                pscxDrcThread = "auto"
+                                pscxGpuThreadRendering = "auto"
+                                pscxFrameskipType = "disabled"
+                                pscxNoSmc = "disabled"
+                                pscxGteRegsUnneeded = "disabled"
+                                pscxNoGteFlags = "disabled"
+                                pscxNoStalls = "disabled"
+                            })
+                        })
                 }
 
                 SettingsSection("PSX · 画面") {
                     DropdownRow("抖动(色彩过渡)",
-                        listOf("enabled" to "开启(原始效果)", "disabled" to "关闭"),
+                        listOf("enabled" to "开启(原始效果)", "disabled" to "关闭",
+                               "force" to "强制 (游戏关闭时也开启·上游第三值)"),
                         padLayout.pscxDithering
                     ) { updateLayout(padLayout.copy {pscxDithering = it}) }
                     DropdownRow("32 位色彩输出",
@@ -1288,10 +1348,31 @@ fun CoreSettingsPanel(
                         listOf("auto" to "自动", "enabled" to "开启", "disabled" to "关闭"),
                         padLayout.pscxNeonInterlace
                     ) { updateLayout(padLayout.copy {pscxNeonInterlace = it}) }
-                    DropdownRow("NEON 高分辨率增强(慢)",
-                        listOf("disabled" to "关闭", "enabled" to "开启 (2倍分辨率)"),
+                    DropdownRow("高清分辨率增强 (2倍)",
+                        listOf("disabled" to "关闭 (默认·最快)",
+                               "enabled" to "2倍渲染 (更清晰·更吃性能)"),
                         padLayout.pscxNeonEnhance
                     ) { updateLayout(padLayout.copy {pscxNeonEnhance = it}) }
+                    DropdownRow("2倍增强·提速Hack",
+                        listOf("disabled" to "关闭 (默认·稳)", "enabled" to "开启 (提速·兼容风险)"),
+                        padLayout.pscxNeonEnhanceNoMain
+                    ) { updateLayout(padLayout.copy {pscxNeonEnhanceNoMain = it}) }
+                    DropdownRow("2倍增强·纹理修正",
+                        listOf("enabled" to "开启 (上游默认·修贴图错位)", "disabled" to "关闭"),
+                        padLayout.pscxNeonEnhanceTexAdj
+                    ) { updateLayout(padLayout.copy {pscxNeonEnhanceTexAdj = it}) }
+                    Text(
+                        "分辨率说明：此核心(PCSX-ReARMed)的 2倍增强 = NEON 内部 2x 渲染；" +
+                        "3x/4x 及 Vulkan/OpenGL 硬件渲染需换预编译核心 .so，前端无法注入。",
+                        color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
+                    DropdownRow("显示内部FPS",
+                        listOf("disabled" to "关闭 (默认)", "enabled" to "开启 (画面内帧率)"),
+                        padLayout.pscxDisplayInternalFps
+                    ) { updateLayout(padLayout.copy {pscxDisplayInternalFps = it}) }
+                    DropdownRow("运行信息提示",
+                        listOf("enabled" to "开启 (上游默认)", "disabled" to "关闭"),
+                        padLayout.pscxDisplayInfo
+                    ) { updateLayout(padLayout.copy {pscxDisplayInfo = it}) }
                     DropdownRow("交替翻转方式",
                         listOf("auto" to "自动", "early" to "早翻转", "late" to "晚翻转"),
                         padLayout.pscxAltFlip
@@ -1370,6 +1451,10 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "开启 (F1 系列需要)", "disabled" to "关闭 (稍快)"),
                         padLayout.pscxIcache
                     ) { updateLayout(padLayout.copy {pscxIcache = it}) }
+                    DropdownRow("异常/断点模拟",
+                        listOf("disabled" to "关闭 (默认·最快)", "enabled" to "开启 (仅解释器·自制软件调试)"),
+                        padLayout.pscxExceptionEmu
+                    ) { updateLayout(padLayout.copy {pscxExceptionEmu = it}) }
                 }
             }
             GamePlatform.PS2 -> item {
@@ -2827,17 +2912,21 @@ private fun PspCoreOptionRow(def: PspCoreOptions.Def) {
             com.nesstation.app.core.engine.PspEngine.get().setCoreOption(def.key, v)
             // ★ v22: 「高清纹理替换」开启时的纹理包状态反馈 —— 该选项是
             //   官方核心选项（PPSSPP v1.20.4 libretro_core_options.h 实证），
-            //   但 PSP/textures/<游戏ID>/ 无包时开启不会产生任何画面变化，
+            //   但无包时开启不会产生任何画面变化（v23 已实证正确目录，见下方说明），
             //   此前零提示 = 用户反馈"没有正确生效"的主因。
             if (def.key == "ppsspp_texture_replacement" && v == "enabled") {
-                val (packCount, packPath) = scanPspTexturePacks(ctx)
+                val (packCount, packPath, legacyCount) = scanPspTexturePacks(ctx)
                 if (packCount > 0) {
                     android.widget.Toast.makeText(ctx,
                         "已开启高清纹理替换：检测到 ${packCount} 个纹理包（${packPath}），重进游戏后生效",
                         android.widget.Toast.LENGTH_SHORT).show()
+                } else if (legacyCount > 0) {
+                    android.widget.Toast.makeText(ctx,
+                        "已开启，但纹理包还在旧版错误目录 —— 请到 主设置页 → 核心设置 → PSP 点「迁移旧版纹理目录」",
+                        android.widget.Toast.LENGTH_LONG).show()
                 } else {
                     android.widget.Toast.makeText(ctx,
-                        "已开启，但未检测到 HD 纹理包 —— 不会有画面变化。请把纹理包解压到 PSP/textures/<游戏ID>/（见下方说明）",
+                        "已开启，但未检测到 HD 纹理包 —— 请用 主设置页 → 核心设置 → PSP 的「导入 HD 纹理包」按钮导入后重进游戏",
                         android.widget.Toast.LENGTH_LONG).show()
                 }
             }
@@ -2845,38 +2934,65 @@ private fun PspCoreOptionRow(def: PspCoreOptions.Def) {
     )
 }
 
-/** ★ v22: PSP HD 纹理包扫描 —— 核心 memstick 根由引擎传入的系统目录决定，
- *  按常见布局扫描内置/外置 files 两类根，返回 (包目录数, 命中的纹理目录)。 */
-private fun scanPspTexturePacks(ctx: android.content.Context): Pair<Int, String> {
-    val roots = listOfNotNull(
-        ctx.getExternalFilesDir(null), ctx.filesDir)
-    val candidates = roots.flatMap { r ->
-        listOf(
-            java.io.File(r, "PSP/textures"),
-            java.io.File(r, "psp/PSP/textures"),
-            java.io.File(r, "psp/textures"),
-            java.io.File(r, "PPSSPP/PSP/textures"))
-    }.distinctBy { it.absolutePath }
-    for (dir in candidates) {
-        val packs = dir.listFiles { f -> f.isDirectory } ?: continue
-        if (packs.isNotEmpty()) return Pair(packs.size, dir.absolutePath)
-    }
-    return Pair(0, "")
-}
+/** ★ v23: PSP HD 纹理包扫描 —— 实证路径（PPSSPP v1.20.4 上游 TextureReplacer）：
+ *  memstick 根 = libretro save 目录 = <filesDir>/saves，核心只读
+ *  <memstick>/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写、游戏ID无连字符）。
+ *  返回 (正确目录包数, 正确目录, 旧错误位置包数)。 */
+private fun scanPspTexturePacks(ctx: android.content.Context): Triple<Int, String, Int> =
+    PspSettingsStore.scanTexturePacks(ctx)
 
-/** ★ v22: PSP HD 纹理包状态行 —— 给出真实检测状态与放置目录，
- *  把"静默无效"变成可行动的提示。 */
+/** ★ v23: 状态行升级 —— 正确路径状态 + 旧目录迁移 + zip 导入按钮。 */
 @Composable
 private fun PspTexturePackStatus() {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val (packCount, packPath) = remember { scanPspTexturePacks(ctx) }
+    val scanTick = androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    val (packCount, packPath, legacyCount) = remember(scanTick.intValue) { scanPspTexturePacks(ctx) }
+    val scope = rememberCoroutineScope()
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val res = PspSettingsStore.importTexturePackZip(ctx, uri)
+                val moved = PspSettingsStore.migrateLegacyTexturePacks(ctx)
+                withContext(Dispatchers.Main) {
+                    scanTick.intValue++
+                    Toast.makeText(ctx,
+                        res.message + (if (res.ok) " —— 重进游戏生效" else "") +
+                            (if (moved > 0) "；已顺带迁移旧目录包 ${moved} 个" else ""),
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
     Text(
         if (packCount > 0)
             "已检测到 ${packCount} 个 HD 纹理包（${packPath}）—— 开启「高清纹理替换」并重进游戏即生效。"
+        else if (legacyCount > 0)
+            "检测到 ${legacyCount} 个包在旧版错误目录 —— 点下方「迁移旧版纹理目录」自动移到正确位置。"
         else
-            "「高清纹理替换」需要 HD 纹理包才会改变画面：把包解压到 Android/data/com.nesstation.app/files/PSP/textures/<游戏ID>/（无包时开启没有任何效果）。",
+            "「高清纹理替换」需 HD 纹理包才有效。核心只读 <存档目录>/saves/PSP/TEXTURES/<游戏ID>/（TEXTURES 大写、游戏ID无连字符如 NPJH50505）—— 推荐直接用下方导入按钮自动放置。",
         color = Color(0xFFFDD835),
         fontSize = 10.sp, lineHeight = 14.sp)
+    TextButtonRow("导入 HD 纹理包 (zip)",
+        "选择纹理包 zip 自动解压到核心真实读取目录（zip 名 = 游戏ID，或包内含游戏ID文件夹）",
+        onClick = { importLauncher.launch(arrayOf("*/*")) })
+    if (legacyCount > 0) {
+        TextButtonRow("迁移旧版纹理目录",
+            "把旧版错误位置的包移到正确位置（目标已存在同名包则跳过）",
+            onClick = {
+                scope.launch(Dispatchers.IO) {
+                    val moved = PspSettingsStore.migrateLegacyTexturePacks(ctx)
+                    withContext(Dispatchers.Main) {
+                        scanTick.intValue++
+                        Toast.makeText(ctx,
+                            if (moved > 0) "已迁移 ${moved} 个纹理包 —— 开启「高清纹理替换」并重进游戏生效"
+                            else "没有可迁移的包（目标目录已存在同名包则跳过）",
+                            Toast.LENGTH_LONG).show()
+                    }
+                }
+            })
+    }
 }
 
 /** PRO ad-hoc 服务器地址（自由文本 —— 接受主机名或 IP；留空 = 不下发）。 */
