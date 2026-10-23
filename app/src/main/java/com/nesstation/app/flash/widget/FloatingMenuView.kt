@@ -425,7 +425,10 @@ class FloatingMenuView @JvmOverloads constructor(
             }
             sectionView.addView(TextView(context).apply {
                 text = section.label
-                setTextColor(Color(0xB8E6ECF5))
+                // ★ 菜单优化版修复：android.graphics.Color 无参构造器已废弃且不收参，
+                //   setTextColor 需要 Int —— 直接传 0xB8E6ECF5.toInt()（72% 半透明
+                //   浅蓝灰，比纯白项目标签弱一档，形成层级；字影保证浅色页面可辨）。
+                setTextColor(0xB8E6ECF5.toInt())
                 textSize = 7f
                 typeface = android.graphics.Typeface.create(
                     android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD
