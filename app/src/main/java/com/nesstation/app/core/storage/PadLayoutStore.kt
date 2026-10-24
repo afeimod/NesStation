@@ -671,6 +671,11 @@ class PadLayout {
     var pscxCenteringY: String = "0"                 // pcsx_rearmed_screen_centering_y (-16..16 整数)
     var pscxCenteringHAdj: String = "0"              // pcsx_rearmed_screen_centering_h_adj (-64..0)
 
+    // === ★ 分辨率倍数（前端整数放大，参照 ARMSX upscale_multiplier 的前端实现）===
+    // 1..4：呈现层最近邻整数放大，热切换、对 2D/CG/FMV 全生效 —— NEON 2x
+    // 增强（仅 3D、需重进游戏）的通用补充。非 core option（psx_loader 本地实现）。
+    var pscxResScale: String = "1"                   // "1" | "2" | "3" | "4"
+
     // === DC (libretro Flycast — Dreamcast / NAOMI / AtomisWave) core options ===
     // 键名/取值已对照预编译 libflycast_libretro_android.so（libretro buildbot）
     // 字符串提取校验；reicast_* 键由 dc_loader.cpp 下发（见 applyCoreOptions）。
@@ -1749,6 +1754,7 @@ class PadLayout {
         pscxCenteringX = another.pscxCenteringX
         pscxCenteringY = another.pscxCenteringY
         pscxCenteringHAdj = another.pscxCenteringHAdj
+        pscxResScale = another.pscxResScale
         dcResolution = another.dcResolution
         dcAlphaSorting = another.dcAlphaSorting
         dcThreadedRendering = another.dcThreadedRendering
@@ -3061,6 +3067,10 @@ object PadLayoutStore {
             pscxCenteringX = p.getString("psx_centering_x", "0") ?: "0"
             pscxCenteringY = p.getString("psx_centering_y", "0") ?: "0"
             pscxCenteringHAdj = p.getString("psx_centering_h_adj", "0") ?: "0"
+            // ★ 分辨率倍数（前端整数放大）：旧值兜底为 1x
+            pscxResScale = (p.getString("psx_res_scale", "1") ?: "1").let {
+                if (it in listOf("1", "2", "3", "4")) it else "1"
+            }
             // DC (libretro Flycast) options
             dcResolution = p.getString("dc_resolution", "640x480 (Native)") ?: "640x480 (Native)"
             dcAlphaSorting = p.getString("dc_alpha_sorting", "per-triangle (normal)") ?: "per-triangle (normal)"
@@ -4218,6 +4228,7 @@ object PadLayoutStore {
             putString("psx_centering_x", layout.pscxCenteringX)
             putString("psx_centering_y", layout.pscxCenteringY)
             putString("psx_centering_h_adj", layout.pscxCenteringHAdj)
+            putString("psx_res_scale", layout.pscxResScale)
             putString("psx_multitap", layout.pscxMultitap)
             putString("psx_gpu_odd_even", layout.pscxGpuOddEven)
             putString("psx_analog_axis", layout.pscxAnalogAxis)

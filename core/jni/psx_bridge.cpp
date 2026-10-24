@@ -98,6 +98,9 @@ int Engine::videoHeight() { return rom::videoHeight(); }
 void Engine::setVideoFilter(int filter) { rom::setVideoFilter(filter); }
 void Engine::setHighQualityScaling(bool enabled) { rom::setHighQualityScaling(enabled); }
 
+// ★ 分辨率倍数（前端整数放大）—— UI 可运行中热切换，下一帧生效。
+void Engine::setResolutionScale(int scale) { rom::setResolutionScale(scale); }
+
 } // namespace psxcore
 
 // ---------------------------------------------------------------------------
@@ -313,6 +316,12 @@ Java_com_nesstation_app_core_jni_PsxNative_setVideoFilter(JNIEnv*, jclass, jint 
 JNIEXPORT void JNICALL
 Java_com_nesstation_app_core_jni_PsxNative_setHighQualityScaling(JNIEnv*, jclass, jboolean enabled) {
     psxcore::Engine::instance().setHighQualityScaling(enabled);
+}
+
+// ★ 分辨率倍数（前端整数放大，1..4）—— 运行中热切换，下一帧生效。
+JNIEXPORT void JNICALL
+Java_com_nesstation_app_core_jni_PsxNative_setResolutionScale(JNIEnv*, jclass, jint scale) {
+    psxcore::Engine::instance().setResolutionScale(scale);
 }
 
 JNIEXPORT jboolean JNICALL

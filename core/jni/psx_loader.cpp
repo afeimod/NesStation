@@ -187,6 +187,16 @@ static std::atomic<bool> s_fastForward{false};
 static std::atomic<int>  s_ffFrameSkip{0};
 static std::atomic<int>  s_ffMaxSkip{6};
 
+// ★ 分辨率倍数（前端整数放大）：1..4。仅在“快速缩放”路径生效（高质量
+//   缩放路径本身已按窗口尺寸逐像素放大，叠加整数倍无意义还白耗 CPU）。
+//   与 XBR/HQX 像素滤镜互斥（滤镜路径自带 2x/4x 放大）。缓冲按需增长，
+//   只在模拟线程（cb_video）访问，无需加锁。
+static std::atomic<int>  s_resScale{1};
+static std::vector<uint32_t> s_resScaleBuf;
+// 整数倍放大后的尺寸安全上限（超过屏分辨率已无意义，纯浪费带宽）。
+static constexpr int kScaleMaxOutW = 2560;
+static constexpr int kScaleMaxOutH = 1600;
+
 // 2x / 4x upscale buffers for XBR / HQ2X / HQ4X filters.
 static uint32_t s_xbrBuffer2x[kMaxW * kMaxH * 2 * 2];
 static uint32_t s_xbrBuffer4x[kMaxW * kMaxH * 4 * 4];
@@ -638,7 +648,26 @@ static void cb_video(const void* data, unsigned width, unsigned height, size_t p
     //   Surface 时设过一次的话，新旧尺寸失配 → 增强帧被裁/被拒 →
     //   “高清分辨率开了没反应”。持窗锁重设（与 setHighQualityScaling
     //   同一锁纪律）；高质量缩放路径 buffer 恒为窗口尺寸（0,0），无需跟随。
-    if (!s_highQualityScaling.load(std::memory_order_relaxed)) {
+    //   ★ 分辨率倍数激活时本预同步跳过：blit 尺寸是放大后的尺寸，由下方
+    //     blitToSurface 持同一窗锁设置（此处先设原生尺寸再被覆盖纯属浪费）。
+    const int resScaleReq = s_resScale.load(std::memory_order_relaxed);
+    const int filterEarly = s_videoFilter.load(std::memory_order_relaxed);
+    // XBR/HQX 像素滤镜自带 2x/4x 放大（filter 4/5/6/7/8/9/10），与分辨率
+    // 倍数互斥；高质量缩放路径已按窗口尺寸逐像素放大，同样跳过。
+    const bool pixelUpscaleFilter =
+        (filterEarly >= 4 && filterEarly <= 10);
+    int resScaleEff = 0;
+    if (resScaleReq > 1 && !pixelUpscaleFilter &&
+        !s_highQualityScaling.load(std::memory_order_relaxed)) {
+        // 按帧尺寸收敛倍数：上限 2560x1600（再高无显示收益）。
+        resScaleEff = resScaleReq;
+        while (resScaleEff > 1 &&
+               ((int)width * resScaleEff > kScaleMaxOutW ||
+                (int)height * resScaleEff > kScaleMaxOutH)) {
+            resScaleEff--;
+        }
+    }
+    if (!s_highQualityScaling.load(std::memory_order_relaxed) && resScaleEff <= 1) {
         std::lock_guard<std::mutex> lk(s_windowMtx);
         if (s_window && (s_geomW != width || s_geomH != height)) {
             ANativeWindow_setBuffersGeometry(
@@ -648,7 +677,43 @@ static void cb_video(const void* data, unsigned width, unsigned height, size_t p
         }
     }
 
-    const int filter = s_videoFilter.load(std::memory_order_relaxed);
+    // ★ 分辨率倍数（前端整数放大）：把核心输出按 N 倍最近邻放大后整帧上屏。
+    //   窗口 buffer 变为 N× 原生尺寸，系统合成器只需 ≤1.5x 的轻微缩放即可
+    //   铺满屏幕 —— 像素边缘保持锐利（对比直接把 320x240 buffer 交给合成器
+    //   做 ~4.5x 双线性的“糊成一片”）。nearest 无融合计算，CPU 开销极低
+    //   （行级 memcpy × N）；对 2D/CG/FMV/高分辨率模式全部立即生效 ——
+    //   这正是上游 NEON 2x 增强（仅 3D、仅 ≤512x256、需重进游戏）做不到的。
+    if (resScaleEff > 1) {
+        const size_t outW = (size_t)width * resScaleEff;
+        const size_t outH = (size_t)height * resScaleEff;
+        if (s_resScaleBuf.size() < outW * outH) {
+            s_resScaleBuf.resize(outW * outH);
+        }
+        const uint32_t* src = s_frame.data();
+        uint32_t* dst = s_resScaleBuf.data();
+        for (unsigned y = 0; y < height; ++y) {
+            const uint32_t* srow = src + (size_t)y * width;
+            // 源行 y 展开到输出行 y*N：行内逐像素 × N 展开，再整行复制
+            // N-1 次 —— 行内重复展开 + 行间 memcpy，两级都缓存友好。
+            uint32_t* drow = dst + (size_t)y * resScaleEff * outW;
+            for (unsigned x = 0; x < width; ++x) {
+                const uint32_t px = srow[x];
+                uint32_t* d = drow + (size_t)x * resScaleEff;
+                for (int k = 0; k < resScaleEff; ++k) d[k] = px;
+            }
+            for (int rep = 1; rep < resScaleEff; ++rep) {
+                std::memcpy(dst + ((size_t)y * resScaleEff + (size_t)rep) * outW,
+                            drow, outW * sizeof(uint32_t));
+            }
+        }
+        coreshared::blitToSurface(s_window, s_windowMtx,
+                      s_resScaleBuf.data(),
+                      (unsigned)outW, (unsigned)outH, outW,
+                      false);
+        return;
+    }
+
+    const int filter = filterEarly;
     coreshared::applyFilterAndBlit(
         s_window, s_windowMtx,
         s_frame.data(), width, height, width,
@@ -946,6 +1011,10 @@ void unload() {
         s_frameW = 0;
         s_frameH = 0;
     }
+    // ★ 分辨率倍数缓冲释放（最多 ~16MB，退出游戏时回收；倍数设置本身
+    //   跨游戏保留 —— 用户偏好的清晰度档位不因换游戏被重置）。
+    s_resScaleBuf.clear();
+    s_resScaleBuf.shrink_to_fit();
     s_videoW = 320;
     s_videoH = 240;
     s_lastRomPath.clear();
@@ -1139,6 +1208,16 @@ void videoAspectRatio(int& num, int& den) {
 void setVideoFilter(int filter) {
     s_videoFilter.store(filter, std::memory_order_relaxed);
     LOGI("Video filter set: %d", filter);
+}
+
+// ★ 分辨率倍数（前端整数放大）：UI 线程可随时调用（原子写），下一帧
+//   cb_video 即按新倍数呈现 —— 无需重进游戏，对 2D/CG/FMV 全部生效。
+void setResolutionScale(int scale) {
+    int s = scale;
+    if (s < 1) s = 1;
+    if (s > 4) s = 4;
+    s_resScale.store(s, std::memory_order_relaxed);
+    LOGI("Resolution scale set: %dx", s);
 }
 
 bool isCoreLoaded() {

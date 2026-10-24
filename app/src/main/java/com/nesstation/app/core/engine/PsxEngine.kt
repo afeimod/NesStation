@@ -213,6 +213,14 @@ class PsxEngine private constructor() : EmulatorEngine {
     override fun setVideoFilter(filter: Int) = PsxNative.setVideoFilter(filter)
     override fun setHighQualityScaling(enabled: Boolean) = PsxNative.setHighQualityScaling(enabled)
 
+    /**
+     * ★ 分辨率倍数（前端整数放大，1..4）：呈现层把核心输出按 N 倍最近邻
+     * 放大后上屏 —— 参照 ARMSX upscale_multiplier 的前端等价实现。运行中
+     * 热切换（下一帧生效、无需重进游戏），对 2D/CG/FMV 全部生效 ——
+     * 上游 NEON 2x 增强（仅 3D、仅 ≤512x256、需重进游戏）的通用补充。
+     */
+    fun setResolutionScale(scale: Int) = PsxNative.setResolutionScale(scale)
+
     override fun setFastForward(speed: Int) {
         _ffSpeed = speed
         if (isLoaded) PsxNative.setFastForward(speed)

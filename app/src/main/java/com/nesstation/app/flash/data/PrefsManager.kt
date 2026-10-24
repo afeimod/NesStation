@@ -100,8 +100,15 @@ object PrefsManager {
     val isCameraRotationEnabled: Boolean get() = sp.getBoolean("camera_rotation_enabled", false)
 
     // ---- 画面比例（游戏画面 letterbox）----
-    // auto(全屏自适应) / 4:3 / 16:9 / 16:10 / 5:4
+    // auto(全屏自适应) / stretch(全屏拉伸) / 4:3 / 16:9 / 16:10 / 5:4
     val gameAspectRatio: String get() = sp.getString("game_aspect_ratio", "auto") ?: "auto"
+
+    // ---- 悬浮球菜单排列（用户反馈「菜单不能一直横着放」）----
+    // auto = 跟随屏幕方向（横屏 2×2 分区并排 / 竖屏四节竖排，默认）；
+    // portrait = 强制竖排（四节自上而下堆叠，窄而高 —— 横屏看图等
+    //            竖向内容场景不挡画面）；
+    // landscape = 强制横排（2×2 分区并排，矮而宽）。
+    val floatingMenuLayout: String get() = sp.getString("floating_menu_layout", "auto") ?: "auto"
 
     // ---- 自定义四角布局（按 parent 0..1 归一化坐标）----
     // 启用时游戏画面按 left/top/right/bottom 的归一化值放入矩形。

@@ -745,6 +745,8 @@ open class GameWebViewClient(
         // - Ruffle 页面(flash.local/player.html):引擎内部已经按 SWF 原生 stageSize 比例 letterbox +
         //   scale:showAll 不变形显示,这里只对 ruffle-player 外层做 CSS 居中 + max-width/max-height
         //   letterbox 容器,让它按用户指定的 4:3 / 16:9 / 16:10 / 5:4 居中显示,不破坏引擎内部渲染。
+        // ★ stretch（全屏拉伸）也注入：脚本内部按"清理外框"处理（清掉此前
+        //   比例模式留下的样式），真正的拉伸由加载参数（exactFit/off）完成。
         if (PrefsManager.gameAspectRatio != "auto" && url != null) {
             val isWaflashPage = url.startsWith("https://flash.local/waflash")
             val isRufflePage = !isWaflashPage &&
@@ -1448,8 +1450,10 @@ open class GameWebViewClient(
          * @param ratio 比例字符串："4:3" / "16:9" / "16:10" / "5:4" / "auto"
          */
         fun buildAspectRatioScript(ratio: String): String {
-            if (ratio == "auto") {
-                // 恢复默认：移除自定义样式，让引擎自身设置生效
+            if (ratio == "auto" || ratio == "stretch") {
+                // 恢复默认：移除自定义样式，让引擎自身设置生效。
+                // ★ stretch（全屏拉伸）＝ WAFlash 画布 CSS 本就是 100%×100%
+                //   铺满 —— 与 auto 同为"清理外框"即可获得满屏拉伸效果。
                 return """
                 (function(){
                   var old = document.getElementById('__aspectRatioStyle');
@@ -1551,7 +1555,13 @@ open class GameWebViewClient(
          * (调 window.dispatchEvent('resize') 触发 ruffle-player 元素 resize 回调)。
          */
         fun buildRuffleAspectRatioScript(ratio: String): String {
-            if (ratio == "auto") {
+            if (ratio == "auto" || ratio == "stretch") {
+                // ★ stretch（全屏拉伸）：清掉外框 letterbox 样式、#stage 回归
+                //   player.html 默认的 fixed inset:0 全屏。真正的拉伸由加载
+                //   参数完成（scale=exactFit + letterbox=off，见 NavHelper/
+                //   SwfPlayerScreen.applyAspectRatio 的重载链）—— Ruffle 的
+                //   scale 模式是加载期配置，运行中改 CSS 无法热切换，因此
+                //   调用方在选 stretch 时会自动 reload 播放页。
                 return """
                 (function(){
                   var old = document.getElementById('__ruffleAspectRatioStyle');

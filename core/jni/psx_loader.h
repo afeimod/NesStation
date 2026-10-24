@@ -112,6 +112,13 @@ void videoAspectRatio(int& num, int& den);
 void setVideoFilter(int filter);
 void setHighQualityScaling(bool enabled);
 
+// --- ★ 分辨率倍数（前端整数放大，参照 ARMSX upscale_multiplier 的前端实现）---
+// PCSX-ReARMed 的 NEON 2x 增强仅对 ≤512x256 非 24 位色的 3D 画面生效且需
+// 重进游戏；本接口在呈现层把核心输出按 1..4 整数倍最近邻放大后再上屏 ——
+// 对任何画面（2D/CG/FMV/高分辨率模式）都立即生效，消除“糊成一片”的观感。
+// scale: 1..4（超上限自动按帧尺寸收敛，见 cb_video）。
+void setResolutionScale(int scale);
+
 // Check whether libpcsx_rearmed_libretro_android.so was successfully dlopen()'d.
 bool isCoreLoaded();
 

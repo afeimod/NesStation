@@ -96,6 +96,9 @@ public:
     void setVideoFilter(int filter);
     void setHighQualityScaling(bool enabled);
 
+    // ★ 分辨率倍数（前端整数放大，1..4）—— 运行中热切换，下一帧生效。
+    void setResolutionScale(int scale);
+
     std::string lastError() const { return lastError_; }
 
 private:

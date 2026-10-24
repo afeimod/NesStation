@@ -165,6 +165,16 @@ object PsxNative {
     /** Control native surface buffer geometry. false=fast, true=sharp. */
     @JvmStatic external fun setHighQualityScaling(enabled: Boolean)
 
+    /**
+     * ★ 分辨率倍数（前端整数放大，1..4）—— 参照 ARMSX upscale_multiplier 的
+     * 前端等价实现：把核心输出按整数倍最近邻放大后上屏，窗口 buffer 变为
+     * N× 原生尺寸、系统合成器只做轻微缩放 —— 像素锐利不再"糊成一片"。
+     * 运行中可随时热切换（原子写，下一帧生效），无需重进游戏；对 2D/CG/
+     * FMV/高分辨率模式全部生效（上游 NEON 2x 增强仅 3D 且需重进游戏）。
+     * 与 XBR/HQX 像素滤镜、高质量缩放路径互斥（两者自带放大，自动跳过）。
+     */
+    @JvmStatic external fun setResolutionScale(scale: Int)
+
     /** Check whether libpcsx_rearmed_libretro_android.so was successfully dlopen()'d. */
     @JvmStatic external fun isCoreLibLoaded(): Boolean
 }

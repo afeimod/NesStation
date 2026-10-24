@@ -247,7 +247,23 @@ fun SwfPlayerScreen(
     }
 
     fun applyAspectRatio(ratio: String) {
-        PrefsManager.sp.edit().putString("game_aspect_ratio", ratio).apply()
+        // ★★ 修复「看图 SWF 比例定死」：Ruffle 的 scale/letterbox/forceScale 是
+        //   【加载期】配置（player.html 读 URL 参数注入 window.RufflePlayer.config），
+        //   运行中只改外框 CSS 无法改变引擎内部缩放 —— 自管 Stage.scaleMode 的
+        //   SWF（看图/视觉小说类）对外框变化完全无反应，黑边纹丝不动。
+        //   现在与 WebGameScreen.applyAspectRatio 同步写入引擎缩放偏好，并
+        //   【自动重载播放页】让新参数立即生效（进度会重置，属预期代价）：
+        //     · auto   = showAll + letterbox on（保持原比例不变形）
+        //     · stretch = exactFit + letterbox off（无黑边拉伸铺满全屏）
+        //     · 4:3 等 = exactFit + letterbox on（拉伸填满指定比例外框）
+        val spEdit = PrefsManager.sp.edit().putString("game_aspect_ratio", ratio)
+        when (ratio) {
+            "auto" -> spEdit.putString("flash_scale", "showAll").putString("flash_letterbox", "on")
+            "stretch" -> spEdit.putString("flash_scale", "exactFit").putString("flash_letterbox", "off")
+            else -> spEdit.putString("flash_scale", "exactFit").putString("flash_letterbox", "off")
+        }
+        spEdit.apply()
+
         val wv = webViewRef.value
         if (wv != null) {
             // 按当前引擎选择正确的 letterbox 脚本。
@@ -260,7 +276,22 @@ fun SwfPlayerScreen(
                 GameWebViewClient.buildRuffleAspectRatioScript(ratio)
             }
             wv.evaluateJavascript(script, null)
+            // ★ 自动重载：scale 级变更必须重载播放页才完全生效（config 是
+            //   页面加载时注入的）。正在播放 flash.local 播放页时立即重载 ——
+            //   用户改比例立刻看到效果，不再是"老样子"。
+            val curUrl = wv.url ?: ""
+            if (curUrl.startsWith("https://flash.local/")) {
+                wv.postDelayed({
+                    try { reload() } catch (_: Throwable) {}
+                }, 150)
+            }
         }
+        val modeText = when (ratio) {
+            "auto" -> "全屏自适应（保持原比例）"
+            "stretch" -> "全屏拉伸（无黑边铺满，已重载生效）"
+            else -> "按 $ratio 拉伸显示（已重载生效）"
+        }
+        Toast.makeText(context, "画面比例：$modeText", Toast.LENGTH_SHORT).show()
     }
 
     fun applyZoom(mode: String, manual: Int) {
@@ -747,14 +778,34 @@ fun SwfPlayerScreen(
 
     // ========== Flash 引擎切换弹窗 ==========
     if (showFlashDialog.value) {
-        val engines = arrayOf("Ruffle", "WAFlash", "关闭 Flash")
-        val values = arrayOf("ruffle", "waflash", "off")
+        // ★ Flash 引擎 + 悬浮菜单排列（用户反馈「菜单不能一直横着放」）：
+        //   引擎选择保持原单选行为；新增菜单排列选择（跟随屏幕/竖排/横排），
+        //   写入 floating_menu_layout 偏好，FloatingMenuView.showMenu 读取。
+        val engines = arrayOf("Ruffle", "WAFlash", "关闭 Flash", "悬浮菜单排列…")
+        val values = arrayOf("ruffle", "waflash", "off", "__menu_layout__")
         val current = if (PrefsManager.isFlashEnabled) PrefsManager.flashEngine else "off"
         val checked = values.indexOf(current).coerceAtLeast(0)
         android.app.AlertDialog.Builder(context)
             .setTitle("Flash 引擎")
             .setSingleChoiceItems(engines, checked) { dlg, which ->
-                if (values[which] == "off") {
+                if (values[which] == "__menu_layout__") {
+                    // 悬浮菜单排列子选择（不关闭引擎对话框选择态）
+                    val layouts = arrayOf("跟随屏幕 (默认)", "竖排 (横屏看图推荐)", "横排 (2×2 并排)")
+                    val layoutValues = arrayOf("auto", "portrait", "landscape")
+                    android.app.AlertDialog.Builder(context)
+                        .setTitle("悬浮菜单排列")
+                        .setSingleChoiceItems(layouts,
+                            layoutValues.indexOf(PrefsManager.floatingMenuLayout).coerceAtLeast(0)
+                        ) { dlg2, w2 ->
+                            PrefsManager.sp.edit().putString("floating_menu_layout", layoutValues[w2]).apply()
+                            Toast.makeText(context,
+                                "菜单排列：${layouts[w2]}（下次打开菜单生效）",
+                                Toast.LENGTH_SHORT).show()
+                            dlg2.dismiss()
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                } else if (values[which] == "off") {
                     PrefsManager.sp.edit().putBoolean("flash_enabled", false).apply()
                 } else {
                     applyEngineAndReload(values[which])
@@ -1089,11 +1140,14 @@ fun SwfPlayerScreen(
 
     // ========== 画面比例弹窗(包含自定义布局入口) ==========
     if (showAspectRatioDialog.value) {
-        val ratios = arrayOf("全屏自适应 (auto)", "4:3", "16:9", "16:10", "5:4", "自定义(拖动四角)")
-        val values = arrayOf("auto", "4:3", "16:9", "16:10", "5:4", "__custom__")
+        // ★ 新增「全屏拉伸 (stretch)」：exactFit 无黑边铺满 —— 看图类 SWF
+        //   （自管 Stage.scaleMode、原生比例定死）此前任何设置都不变形的
+        //   唯一出路。选择后自动重载播放页立即生效（见 applyAspectRatio）。
+        val ratios = arrayOf("全屏拉伸 (无黑边)", "全屏自适应 (auto)", "4:3", "16:9", "16:10", "5:4", "自定义(拖动四角)")
+        val values = arrayOf("stretch", "auto", "4:3", "16:9", "16:10", "5:4", "__custom__")
         val current = PrefsManager.gameAspectRatio
-        // 如果当前是自定义布局,把"自定义"标为选中
-        val checked = if (PrefsManager.isCustomLayoutEnabled) 5
+        // 如果当前是自定义布局,把"自定义"标为选中（★ 索引随 stretch 项加入后移到 6）
+        val checked = if (PrefsManager.isCustomLayoutEnabled) 6
                        else values.indexOf(current).coerceAtLeast(0)
         android.app.AlertDialog.Builder(context)
             .setTitle("画面比例")

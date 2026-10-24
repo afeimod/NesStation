@@ -6044,6 +6044,13 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("pcsx_rearmed_screen_centering_y", layout.pscxCenteringY)
             engine.setCoreOption("pcsx_rearmed_screen_centering_h_adj", layout.pscxCenteringHAdj)
 
+            // ★ 分辨率倍数（前端整数放大，1..4）：呈现层最近邻放大后上屏 ——
+            //   参照 ARMSX upscale_multiplier 的前端等价实现。运行中热切换
+            //   （下一帧生效），对 2D/CG/FMV 全部生效（NEON 2x 增强仅 3D 且
+            //   需重进游戏）。非 core option，走引擎本地链路。
+            (engine as? com.nesstation.app.core.engine.PsxEngine)?.setResolutionScale(
+                layout.pscxResScale.toIntOrNull()?.coerceIn(1, 4) ?: 1)
+
             // --- 跳帧 (注意: 类型值必须是 disabled/auto/auto_threshold/fixed_interval) ---
             engine.setCoreOption("pcsx_rearmed_frameskip_type", layout.pscxFrameskipType)
             engine.setCoreOption("pcsx_rearmed_frameskip_threshold", layout.pscxFrameskipThreshold)
@@ -6927,9 +6934,10 @@ private fun GameSurfaceView(
                 )
             }
         } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
-                   engine is com.nesstation.app.core.engine.Psx2Engine &&
+                   (engine is com.nesstation.app.core.engine.Psx2Engine ||
+                    platform == GamePlatform.PSX) &&
                    !ps2GlFailed.value) {
-            // === PS2（ARMSX2）仿电视机（CRT 弧面）路径 ===
+            // === PS2（ARMSX2）/ PSX（PCSX-ReARMed）仿电视机（CRT 弧面）路径 ===
             // ★ 修复「ps2核心画面没生效电视滤镜凸起」：PS2 引擎是 push 模型，
             // 直接把画面画到传入的 Surface 上且无帧回读，此前被排除在弧面
             // 路径外，选「仿电视机」只有平面扫描线。现在用 Ps2CurvedView：
@@ -6939,6 +6947,18 @@ private fun GameSurfaceView(
             // 每帧桶形凸起后上屏，叠扫描线/暗角/玻璃高光 —— 凸起与其他
             // 核心一致；全出血预缩放，无大黑边（不遮挡遮罩）。
             // 外观由视图自绘，不再叠加平面 FilterOverlay（避免双重扫描线）。
+            //
+            // ★★ PSX（PCSX-ReARMed）加入本路径（用户反馈「pcsx 无法使用仿
+            //   电视机滤镜」）：旧实现 PSX 落进下方 TvCurvedGameView 画布
+            //   路径 —— CPU 网格变形 + Choreographer 拉帧，帧率不稳且观感
+            //   与 ARMSX 的 GL 弧面差异大。PSX 的 native 呈现链完全兼容
+            //   SurfaceTexture：cb_video 经 ANativeWindow 直绘任意 Surface
+            //   （引擎 setSurface/blitToSurface 契约与 PS2 同构），因此改走
+            //   与 ARMSX 完全相同的 Ps2CurvedView 中转 —— GPU 着色器桶形
+            //   凸起 + 扫描线 + 暗角 + 玻璃高光，帧率稳、观感与其他核心
+            //   统一。分辨率倍数（pscxResScale）在此路径同样生效：放大后
+            //   的帧直接成为弧面着色器的纹理源。EGL 失败经 ps2GlFailed
+            //   回落到下方画布路径（再回落 SurfaceView，绝不黑屏）。
             val ps2CurvedModifier = when (effectiveVideoScale) {
                 "4:3" -> Modifier.aspectRatio(4f / 3f)
                 "2:3" -> Modifier.aspectRatio(2f / 3f)
@@ -7818,7 +7838,15 @@ data class ComboButtonEntry(
     val x: Float,
     val y: Float,
     val sizeDp: Int,
-    val color: Int          // ARGB int (e.g. 0xFFE74C3C)
+    val color: Int,          // ARGB int (e.g. 0xFFE74C3C)
+    /**
+     * ★ 摇杆方向组合（用户需求：组合键加入左/右摇杆上下左右）：
+     * 逗号分隔的方向令牌，按下时除按键位外同时把对应模拟轴推满 ——
+     * 令牌 = "LU"/"LD"/"LL"/"LR"（左摇杆上/下/左/右）+ "RU"/"RD"/"RL"/"RR"。
+     * 空串 = 纯按键组合（旧数据兼容，缺省）。轴输出按 libretro 约定：
+     * X 右正、Y 下正（上=负、下=正）；同杆多方向可叠加成斜向。
+     */
+    val axes: String = ""
 )
 
 /**
@@ -7873,7 +7901,8 @@ private fun parseComboButtons(padLayout: PadLayout, platform: GamePlatform): Lis
                 x = o.optDouble("x", 0.5).toFloat(),
                 y = o.optDouble("y", 0.85).toFloat(),
                 sizeDp = o.optInt("size", 56),
-                color = o.optInt("color", 0xFF9C27B0.toInt())
+                color = o.optInt("color", 0xFF9C27B0.toInt()),
+                axes = o.optString("axes", "")
             )
         }
     } catch (_: Exception) {
@@ -7894,9 +7923,35 @@ private fun serializeComboButtons(list: List<ComboButtonEntry>): String {
         o.put("y", c.y.toDouble())
         o.put("size", c.sizeDp)
         o.put("color", c.color)
+        // ★ 摇杆方向令牌（空 = 纯按键组合，旧版本数据兼容）
+        if (c.axes.isNotBlank()) o.put("axes", c.axes)
         arr.put(o)
     }
     return arr.toString()
+}
+
+/**
+ * ★ 摇杆方向令牌 → 轴向量 (lx, ly, rx, ry)。
+ * libretro 轴约定：X 右正、Y 下正 —— 上=负、下=正、左=负、右=正。
+ * 同杆多令牌叠加（LU+LR = 左上斜向 → ly=-1, lx=-1）；对向令牌相互抵消。
+ */
+private fun comboAxesToVector(axes: String): FloatArray {
+    val v = FloatArray(4)
+    if (axes.isBlank()) return v
+    for (tok in axes.split(",")) {
+        when (tok.trim().uppercase()) {
+            "LU" -> v[1] -= 1f
+            "LD" -> v[1] += 1f
+            "LL" -> v[0] -= 1f
+            "LR" -> v[0] += 1f
+            "RU" -> v[3] -= 1f
+            "RD" -> v[3] += 1f
+            "RL" -> v[2] -= 1f
+            "RR" -> v[2] += 1f
+        }
+    }
+    for (i in 0..3) v[i] = v[i].coerceIn(-1f, 1f)
+    return v
 }
 
 // ---------------------------------------------------------------------------
@@ -8475,8 +8530,29 @@ fun OnScreenController(
     // PS2 双摇杆轴输出：把四轴拇指位置（-1..1）打包回调给调用方，
     // 由主 composable 转成 int16 libretro 轴值推给 Psx2Engine。
     // libretro ANALOG 轴约定与屏幕坐标一致：X 右正、Y 下正 —— 无需翻转。
+    //
+    // ★★ 摇杆方向组合键（用户需求：组合键加入 L/R 摇杆上下左右）：
+    //   每个按下的"带摇杆方向的组合键"贡献一份轴向量（comboAxesToVector），
+    //   存于 activeComboAxes（pid → FloatArray(4)）；与摇杆拇指位置叠加后
+    //   clamp 到 -1..1 输出 —— 多个组合键可同按叠加，与 LSTICK/RSTICK
+    //   实体拖动共存（各占各的指针，互不干扰）。COMBO 松手时移除该指
+    //   针的贡献并重推轴（见 UP 分支 BtnType.COMBO）。
+    val activeComboAxes = remember { mutableMapOf<Long, FloatArray>() }
+    fun comboAxesSum(): FloatArray {
+        val sum = FloatArray(4)
+        for (v in activeComboAxes.values) {
+            sum[0] += v[0]; sum[1] += v[1]; sum[2] += v[2]; sum[3] += v[3]
+        }
+        for (i in 0..3) sum[i] = sum[i].coerceIn(-1f, 1f)
+        return sum
+    }
     fun pushAnalog() {
-        currentOnAnalogAxes?.invoke(lStickTX, lStickTY, rStickTX, rStickTY)
+        val ca = comboAxesSum()
+        currentOnAnalogAxes?.invoke(
+            (lStickTX + ca[0]).coerceIn(-1f, 1f),
+            (lStickTY + ca[1]).coerceIn(-1f, 1f),
+            (rStickTX + ca[2]).coerceIn(-1f, 1f),
+            (rStickTY + ca[3]).coerceIn(-1f, 1f))
     }
 
     // Turbo auto-fire: simulates rapid short taps (press 2 frames, release 4 frames)
@@ -8814,7 +8890,16 @@ fun OnScreenController(
                             BtnType.WIIU_TV -> bits = BTN_WIIU_TV
                             BtnType.WIIU_MIC -> bits = BTN_WIIU_MIC
                             BtnType.WIIU_HOME -> bits = BTN_HOME
-                            BtnType.COMBO -> bits = comboMatch?.bits ?: 0
+                            // ★★ 摇杆方向组合键：按下时除按键位外，把组合的
+                            //   摇杆方向向量记入本指针的贡献并立即推轴 ——
+                            //   "L↑+A" 类组合同时产生左杆上推 + A 键。
+                            BtnType.COMBO -> {
+                                bits = comboMatch?.bits ?: 0
+                                if (comboMatch != null && comboMatch.axes.isNotBlank()) {
+                                    activeComboAxes[pid] = comboAxesToVector(comboMatch.axes)
+                                    pushAnalog()
+                                }
+                            }
                             // 即时存档 / 即时读档：按下瞬间触发一次回调，
                             // 不写任何输入位（不影响游戏内的按键状态）。
                             BtnType.QUICK_SAVE -> currentOnQuickSave?.invoke()
@@ -8904,6 +8989,13 @@ fun OnScreenController(
                                                 if (bt == BtnType.DPAD && useAnalogStick) {
                                                     analogThumbX = 0f
                                                     analogThumbY = 0f
+                                                }
+                                                // ★★ 摇杆方向组合键：松手移除本指针的
+                                                //   轴贡献并重推（其它仍按住的组合键 /
+                                                //   实体摇杆拇指贡献自动保留 —— 与三指
+                                                //   连键修复同一"重算"语义）。
+                                                if (activeComboAxes.remove(pid) != null) {
+                                                    pushAnalog()
                                                 }
                                             }
                                             // 即时存档 / 即时读档无输入位，UP 仅移除指针
@@ -13262,9 +13354,10 @@ private fun PadLayoutEditor(
     if (showComboPickerDialog) {
         ComboButtonPickerDialog(
             platform = platform,
-            onConfirm = { selectedBits, label ->
+            // ★ 摇杆方向组合：selectedAxes 为逗号令牌串（LU/LD/LL/LR/RU/RD/RL/RR）
+            onConfirm = { selectedBits, label, selectedAxes ->
                 showComboPickerDialog = false
-                if (selectedBits != 0) {
+                if (selectedBits != 0 || selectedAxes.isNotBlank()) {
                     val current = parseComboButtons(padLayout, platform)
                     val newCombo = ComboButtonEntry(
                         id = "combo_${System.currentTimeMillis()}",
@@ -13273,7 +13366,8 @@ private fun PadLayoutEditor(
                         x = 0.5f,
                         y = 0.85f,
                         sizeDp = 56,
-                        color = 0xFF9C27B0.toInt()
+                        color = 0xFF9C27B0.toInt(),
+                        axes = selectedAxes
                     )
                     val updated = current + newCombo
                     val json = serializeComboButtons(updated)
@@ -13289,6 +13383,9 @@ private fun PadLayoutEditor(
                         // ★ Wii U / PSP 组合键补齐：独立字段持久化
                         GamePlatform.WIIU -> padLayout.copy {comboButtonsWiiU = json}
                         GamePlatform.PSP -> padLayout.copy {comboButtonsPsp = json}
+                        // ★★ v4 修复：Switch 此前落在 else -> 无操作，添加组合键
+                        //   完全不生效；独立字段 comboButtonsSwitch 持久化。
+                        GamePlatform.NSWITCH -> padLayout.copy {comboButtonsSwitch = json}
                         else -> padLayout
                     }
                     onLayoutChange(newLayout)
@@ -13439,12 +13536,40 @@ private fun KeyVisibilityDialog(
 @Composable
 private fun ComboButtonPickerDialog(
     platform: GamePlatform,
-    onConfirm: (bits: Int, label: String) -> Unit,
+    onConfirm: (bits: Int, label: String, axes: String) -> Unit,
     onDismiss: () -> Unit
 ) {
     // L/R bit values differ between GBA (bit8/9) and SNES/ARCADE/MD (bit10/11)
     val lBit = if (platform == GamePlatform.GBA) BTN_L_GBA else BTN_L_SNES
     val rBit = if (platform == GamePlatform.GBA) BTN_R_GBA else BTN_R_SNES
+
+    // ★★ 摇杆方向选项（用户需求：组合键加入左/右摇杆上下左右）：
+    //   只给"拥有对应摇杆 + 前端有模拟轴链路（onAnalogAxes 回调）+ 组合键
+    //   系统已启用"的平台开放 —— 双摇杆：PS2 / Wii U / Switch（8 方向）；
+    //   单摇杆：DC / PSP（4 方向，仅左杆）。PSX 前端虚拟手柄是纯数字位
+    //   （cb_input_state 模拟轴恒中性）无轴链路；N3DS/NGC-Wii 组合键位
+    //   链路未启用（parseComboButtons 返回空）—— 均不开放，避免死选项。
+    val hasDualSticks = platform == GamePlatform.PS2 ||
+        platform == GamePlatform.WIIU ||
+        platform == GamePlatform.NSWITCH
+    val hasSingleStick = platform == GamePlatform.DC || platform == GamePlatform.PSP
+    data class AxisOption(val token: String, val label: String)
+    val stickAxisOptions = remember(platform) {
+        val list = mutableListOf<AxisOption>()
+        if (hasDualSticks || hasSingleStick) {
+            list.add(AxisOption("LU", "L↑"))
+            list.add(AxisOption("LD", "L↓"))
+            list.add(AxisOption("LL", "L←"))
+            list.add(AxisOption("LR", "L→"))
+            if (hasDualSticks) {
+                list.add(AxisOption("RU", "R↑"))
+                list.add(AxisOption("RD", "R↓"))
+                list.add(AxisOption("RL", "R←"))
+                list.add(AxisOption("RR", "R→"))
+            }
+        }
+        list.toList()
+    }
 
     // Available buttons for this platform
     data class ButtonOption(val name: String, val bit: Int)
@@ -13513,12 +13638,21 @@ private fun ComboButtonPickerDialog(
 
     // Track selected buttons (by name, to support toggling)
     val selected = remember { mutableStateListOf<String>() }
+    // ★ 已选摇杆方向令牌（与按键并行选择，共同计入 2..4 上限）
+    val selectedAxes = remember { mutableStateListOf<String>() }
 
     fun toggle(name: String) {
         if (name in selected) {
             selected.remove(name)
-        } else if (selected.size < 4) {
+        } else if (selected.size + selectedAxes.size < 4) {
             selected.add(name)
+        }
+    }
+    fun toggleAxis(token: String) {
+        if (token in selectedAxes) {
+            selectedAxes.remove(token)
+        } else if (selected.size + selectedAxes.size < 4) {
+            selectedAxes.add(token)
         }
     }
 
@@ -13526,7 +13660,13 @@ private fun ComboButtonPickerDialog(
     val bits = selected.sumOf { name ->
         availableButtons.firstOrNull { it.name == name }?.bit ?: 0
     }
-    val label = selected.joinToString("")
+    val axesStr = selectedAxes.joinToString(",")
+    // 标签：按键名 + 摇杆方向符号（L↑/R→ 等），按下时一目了然
+    val axisLabels = selectedAxes.mapNotNull { t ->
+        stickAxisOptions.firstOrNull { it.token == t }?.label
+    }
+    val label = selected.joinToString("") + axisLabels.joinToString("")
+    val totalSelected = selected.size + selectedAxes.size
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
@@ -13535,9 +13675,12 @@ private fun ComboButtonPickerDialog(
                 fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         },
         text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                 Text(
-                    "选择 2-4 个按键组合为一个虚拟按键：",
+                    if (stickAxisOptions.isNotEmpty())
+                        "选择 2-4 个按键/摇杆方向组合为一个虚拟按键："
+                    else
+                        "选择 2-4 个按键组合为一个虚拟按键：",
                     color = Color(0xFFB0BEC5), fontSize = 12.sp
                 )
                 Spacer(Modifier.size(8.dp))
@@ -13577,16 +13720,60 @@ private fun ComboButtonPickerDialog(
                         }
                     }
                 }
+                // ★★ 摇杆方向区块（拥有摇杆 + 有模拟轴链路的平台显示）：选中后
+                //   组合键按下时把对应模拟轴推满 —— "推杆+按键"合成操作（如
+                //   摄像机复位=L↑+L→、冲刺=L↓+A、技能=R↑+X）。
+                if (stickAxisOptions.isNotEmpty()) {
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        if (hasDualSticks) "摇杆方向（按下时推满对应轴）：" else "摇杆方向：",
+                        color = Color(0xFF8899AA), fontSize = 11.sp
+                    )
+                    Spacer(Modifier.size(4.dp))
+                    val axisRows = stickAxisOptions.chunked(4)
+                    axisRows.forEach { rowAxes ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            rowAxes.forEach { opt ->
+                                val isAxisSelected = opt.token in selectedAxes
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (isAxisSelected) Color(0xFF4A90D9)
+                                            else Color(0xFF2C2C38)
+                                        )
+                                        .clickable { toggleAxis(opt.token) }
+                                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        opt.label,
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                            repeat(4 - rowAxes.size) {
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
                 Spacer(Modifier.size(12.dp))
                 // Live preview
-                val previewLabel = if (selected.isEmpty()) "（请选择按键）" else label
+                val previewLabel = if (totalSelected == 0) "（请选择按键）" else label
                 val countColor = when {
-                    selected.size < 2 -> Color(0xFFE74C3C)  // red - too few
-                    selected.size > 4 -> Color(0xFFE74C3C)  // red - too many (shouldn't happen)
+                    totalSelected < 2 -> Color(0xFFE74C3C)  // red - too few
+                    totalSelected > 4 -> Color(0xFFE74C3C)  // red - too many (shouldn't happen)
                     else -> Color(0xFF88DD88)               // green - valid
                 }
                 Text(
-                    "已选: $previewLabel  (${selected.size}/4)",
+                    "已选: $previewLabel  (${totalSelected}/4)",
                     color = countColor, fontSize = 12.sp,
                     fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
                 )
@@ -13598,22 +13785,23 @@ private fun ComboButtonPickerDialog(
                 }
                 Spacer(Modifier.size(6.dp))
                 Text(
-                    "提示: 组合键按下时会同时触发所选的全部按键。常见用途:\n" +
+                    "提示: 组合键按下时会同时触发所选的全部按键与摇杆方向。常见用途:\n" +
                     "• A+B → 跑/跳/滑铲 (FC/MD动作游戏)\n" +
                     "• A+B+X+Y → 必杀技 (格斗游戏)\n" +
-                    "• L+R → 特殊操作 (SNES/GBA)",
+                    "• L+R → 特殊操作 (SNES/GBA)\n" +
+                    "• L↑+A → 推左杆上+A (双摇杆平台)",
                     color = Color(0xFF8899AA), fontSize = 9.sp, lineHeight = 12.sp
                 )
             }
         },
         confirmButton = {
             androidx.compose.material3.TextButton(
-                enabled = selected.size in 2..4,
-                onClick = { onConfirm(bits, label) }
+                enabled = totalSelected in 2..4,
+                onClick = { onConfirm(bits, label, axesStr) }
             ) {
                 Text(
                     "添加",
-                    color = if (selected.size in 2..4) Color(0xFFFFD66B) else Color(0xFF555555),
+                    color = if (totalSelected in 2..4) Color(0xFFFFD66B) else Color(0xFF555555),
                     fontSize = 13.sp
                 )
             }
@@ -15200,6 +15388,28 @@ private fun SettingsPanel(
                     listOf("enabled" to "开启", "disabled" to "关闭", "force" to "强制"),
                     padLayout.pscxDithering
                 ) { onLayoutChange(padLayout.copy {pscxDithering = it}) }
+
+                // ★★ 分辨率倍数（前端整数放大，参照 ARMSX upscale_multiplier）★★
+                //   与下方「高清分辨率增强(NEON 2x)」互补：
+                //   - 本项 = 呈现层整数倍最近邻放大：热切换、立即生效、对任何
+                //     画面（2D/CG/FMV/高分辨率模式）都显著锐化，不吃核心性能；
+                //   - NEON 2x = 核心内部 3D 重渲染：仅 3D 画面、需重进游戏。
+                //   两者可叠加（先核心 2x，再前端 N 倍）。与 XBR/HQX 滤镜、
+                //   「高质量缩放」自动互斥（后两者自带放大路径）。
+                DropdownSetting("分辨率倍数 (立即生效)",
+                    listOf("1" to "1x (原生·默认)",
+                           "2" to "2x (清晰·推荐)",
+                           "3" to "3x (更锐利)",
+                           "4" to "4x (最锐利·高配)"),
+                    padLayout.pscxResScale
+                ) { v ->
+                    onLayoutChange(padLayout.copy {pscxResScale = v})
+                    if (v != "1") {
+                        Toast.makeText(context,
+                            "已设 ${v}x：立即生效无需重进游戏；对 2D/CG/FMV 同样有效（与 NEON 2x 增强可叠加）",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }
 
                 // ★ v23→v24: 高清分辨率增强（2倍）三件套 + 内部FPS —— 此前游戏内缺失。
                 //   ★ v24 实证补充（上游 notaz/pcsx_rearmed）：

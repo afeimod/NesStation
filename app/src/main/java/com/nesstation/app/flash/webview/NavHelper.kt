@@ -47,6 +47,11 @@ object NavHelper {
             // 只控制外框大小 + 居中，**不会**改 ruffle-player 内部 stage 尺寸。
             // 这样 Ruffle 内核能稳定执行引擎内部 letterbox 逻辑，画面比例完全可控。
             "4:3", "16:9", "16:10", "5:4" -> "on"
+            // ★ stretch（全屏拉伸）：letterbox 关 + scale=exactFit（applyAspectRatio
+            //   已写入 flash_scale）—— SWF 无黑边拉伸铺满全屏；forceScale 由
+            //   player.html 按 aspect != auto 自动启用，压制 SWF 内部
+            //   Stage.scaleMode 自管（看图类 SWF"比例定死"的根因）。
+            "stretch" -> "off"
             else -> "fullscreen"
         }
         val quality = PrefsManager.flashQuality
