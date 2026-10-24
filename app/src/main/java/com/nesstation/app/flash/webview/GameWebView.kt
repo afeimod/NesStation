@@ -229,6 +229,21 @@ open class GameWebView @JvmOverloads constructor(
      *   4) 文件名清洗（剥路径分隔符/控制字符），防非法名导致 enqueue 失败。
      */
     private fun handleExternalDownload(url: String, userAgent: String, contentDisposition: String?, mimetype: String?) {
+        // ★ v25: 下载监听器运行在主线程，任何未捕获异常都会闪退 —— 整体兑底防御
+        try {
+            handleExternalDownloadInner(url, userAgent, contentDisposition, mimetype)
+        } catch (e: Exception) {
+            android.util.Log.e("GameWebView", "handleExternalDownload 兑底异常", e)
+            post {
+                try {
+                    android.widget.Toast.makeText(context, "下载失败：${e.message ?: "未知错误"}", android.widget.Toast.LENGTH_SHORT).show()
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun handleExternalDownloadInner(url: String, userAgent: String, contentDisposition: String?, mimetype: String?) {
         val fileName = sanitizeDownloadFileName(parseDownloadFileName(contentDisposition, url))
         val scheme = try { android.net.Uri.parse(url).scheme?.lowercase() } catch (_: Exception) { null }
         when (scheme) {
@@ -298,9 +313,14 @@ open class GameWebView @JvmOverloads constructor(
                 // ★ v19: blob: URL —— 弹窗下载页最常见的形态（JS 生成的文件对象）。
                 //   必须在创建该 blob 的同一个 WebView 页面里 fetch（本实例），
                 //   FileReader 转 base64 → NativeDownload 桥接落盘。
+                // ★ v25 修复崩溃：旧代码 org.json.JSONObject(url) 是把 url 当 JSON
+                //   【解析】而不是【转义】，“blob:...” 非法 JSON 直接抛
+                //   JSONException(Value blob of type String cannot be converted
+                //   to JSONObject) → 应用闪退。改用 JSONArray 包裹截取的正确
+                //   转义方式，输出 "…" 形式的 JSON 字符串字面量供 JS 内嵌。
                 post { android.widget.Toast.makeText(context, "正在获取下载内容…", android.widget.Toast.LENGTH_SHORT).show() }
-                val urlJson = org.json.JSONObject(url).toString()
-                val nameJson = org.json.JSONObject(fileName).toString()
+                val urlJson = jsonQuote(url)
+                val nameJson = jsonQuote(fileName)
                 val script = """
                     (function(){
                       if (window.__nsDlBusy) return; window.__nsDlBusy = 1;
@@ -328,6 +348,23 @@ open class GameWebView @JvmOverloads constructor(
             else -> {
                 post { android.widget.Toast.makeText(context, "暂不支持该类型下载链接（$scheme）", android.widget.Toast.LENGTH_SHORT).show() }
             }
+        }
+    }
+
+    /** ★ v25: 把任意字符串安全转义为 JSON 字符串字面量（含首尾双引号）。
+     *  原理：org.json.JSONArray 会按 JSON 规范正确转义元素（\" \\ \n 控制字符
+     *  等），单元素数组 ["…"] 去掉方括号即得字面量。
+     *  旧实现误用 JSONObject(s)（解析语义）遇到 blob:/http: 等普通字符串必抛
+     *  JSONException —— 正是“在线游戏下载文件闪退”的根因。 */
+    private fun jsonQuote(s: String): String {
+        return try {
+            val arr = org.json.JSONArray()
+            arr.put(s)
+            val t = arr.toString()
+            t.substring(1, t.length - 1)
+        } catch (_: Exception) {
+            // 理论不可达；兑底手工转义，绝不让下载流程再抛异常
+            "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") + "\""
         }
     }
 
