@@ -246,6 +246,14 @@ fun SwfPlayerScreen(
         wv.requestLayout()
     }
 
+    fun reload() {
+        val wv = webViewRef.value ?: return
+        val swfProxy = "https://flash.local/local.swf?t=${System.currentTimeMillis()}"
+        val playerUrl = NavHelper.playerUrl(swfProxy, base = null, title = null)
+        wv.releaseAllKeys()
+        wv.loadUrl(playerUrl)
+    }
+
     fun applyAspectRatio(ratio: String) {
         // ★★ 修复「看图 SWF 比例定死」：Ruffle 的 scale/letterbox/forceScale 是
         //   【加载期】配置（player.html 读 URL 参数注入 window.RufflePlayer.config），
@@ -319,14 +327,6 @@ fun SwfPlayerScreen(
             }
         }
         webViewRef.value?.reload()
-    }
-
-    fun reload() {
-        val wv = webViewRef.value ?: return
-        val swfProxy = "https://flash.local/local.swf?t=${System.currentTimeMillis()}"
-        val playerUrl = NavHelper.playerUrl(swfProxy, base = null, title = null)
-        wv.releaseAllKeys()
-        wv.loadUrl(playerUrl)
     }
 
     fun applyEngineAndReload(engine: String) {
