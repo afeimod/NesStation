@@ -21,6 +21,9 @@
 
 package javax.microedition.m3g;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import javax.microedition.lcdui.Graphics;
 import javax.microedition.lcdui.Image;
 
@@ -30,10 +33,10 @@ import javax.microedition.lcdui.Image;
  * synchronizing 2D and 3D rendering.
  */
 class Platform {
-	/**
-	 * eSWT display for ui thread access
-	 */
+
 	private static boolean libraryLoaded = false;
+	private static ExecutorService executor;
+	private static Thread m3gThread;
 
 	//------------------------------------------------------------------
 	// Package private methods
@@ -48,8 +51,16 @@ class Platform {
 		}
 
 		if (obj != null) {
-			// In this case we are in UI thread so just execute directly
-			obj.run();
+			if (Thread.currentThread() != m3gThread) {
+				try {
+					executor.submit(obj).get();
+				} catch (Throwable e) {
+					throw new RuntimeException(e);
+				}
+			} else {
+				// In this case we are in UI thread so just execute directly
+				obj.run();
+			}
 			// Check if any exceptions occured in execution
 			// and throw forward in caller thread
 			obj.checkAndThrow();
@@ -63,21 +74,27 @@ class Platform {
 	 * otherwise false
 	 */
 	static boolean uiThreadAvailable() {
-		{
-			// UI thread is available, so load native library if not already loaded
-			if (!libraryLoaded) {
-				System.loadLibrary("javam3g");
-				libraryLoaded = true;
-			}
+		if (executor != null) {
 			return true;
 		}
+		executor = Executors.newSingleThreadExecutor(r -> {
+			m3gThread = new Thread(r, "M3G");
+			return m3gThread;
+		});
+		// UI thread is available, so load native library if not already loaded
+		if (!libraryLoaded) {
+			System.loadLibrary("c++_shared");
+			System.loadLibrary("javam3g");
+			libraryLoaded = true;
+		}
+		return true;
 	}
 
 	/**
 	 * Registers an Object3D in the global handle-to-object map. The
 	 * handle of the object must already be set at this point!
 	 */
-	static final void registerFinalizer(Object3D obj) {
+	static void registerFinalizer(Object3D obj) {
 		//heuristicGC();
 	}
 
@@ -85,27 +102,27 @@ class Platform {
 	 * Registers a Graphics3D object (not derived from Object3D) for
 	 * finalization.
 	 */
-	static final void registerFinalizer(Graphics3D g3d) {
+	static void registerFinalizer(Graphics3D g3d) {
 		//heuristicGC();
 	}
 
 	/**
 	 * Registers an Interface object for finalization
 	 */
-	static final void registerFinalizer(Interface m3g) {
+	static void registerFinalizer(Interface m3g) {
 	}
 
 	/**
 	 * Registers a Loader object for finalization
 	 */
-	static final void registerFinalizer(Loader loader) {
+	static void registerFinalizer(Loader loader) {
 	}
 
 	/**
 	 * Flushes all pending rendering to a Graphics context and blocks
 	 * until finished
 	 */
-	static final void sync(Graphics g) {
+	static void sync(Graphics g) {
 		//ToolkitInvoker invoker = ToolkitInvoker.getToolkitInvoker();
 		//invoker.toolkitSync(invoker.getToolkit());
 	}
@@ -113,7 +130,7 @@ class Platform {
 	/**
 	 * Flushes all pending rendering to an Image object
 	 */
-	static final void sync(Image img) {
+	static void sync(Image img) {
 		//ToolkitInvoker invoker = ToolkitInvoker.getToolkitInvoker();
 		//invoker.toolkitSync(invoker.getToolkit());
 	}
@@ -121,13 +138,13 @@ class Platform {
 	/**
 	 * Finalizes the native peer of an interface
 	 */
-	static final native void finalizeInterface(long handle);
+	static native void finalizeInterface(long handle);
 
 	/**
 	 * Finalizes the native peer of an object
 	 * JCF: added this wrapper method so we could pass the toolkit handle to the native method.
 	 */
-	static final void finalizeObject(long handle) {
+	static void finalizeObject(long handle) {
 		try {
 			final long finalHandle = handle;
 			executeInUIThread(
@@ -146,7 +163,7 @@ class Platform {
 	 * Finalizes the native peer of an object associated with
 	 * given Interface instance
 	 */
-	static final void finalizeObject(long handle, Interface aInterface) {
+	static void finalizeObject(long handle, Interface aInterface) {
 		try {
 			final long finalHandle = handle;
 			executeInUIThread(
@@ -169,9 +186,9 @@ class Platform {
 	/**
 	 * Trigger GC if minimum free memory limit has been exceeded in the native side
 	 */
-	static final void heuristicGC() {
+	static void heuristicGC() {
 	}
 
-	private static final native void _finalizeObject(long handle);
+	private static native void _finalizeObject(long handle);
 }
 

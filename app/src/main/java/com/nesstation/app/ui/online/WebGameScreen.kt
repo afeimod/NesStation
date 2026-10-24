@@ -2689,13 +2689,14 @@ private fun BrowserHomeOverlay(
             //   ★ 主页优化版：限宽 520dp 居中。
             //   ★★ v24（用户反馈"搜索框太长"）：旧 fillMaxWidth()+widthIn(520dp) 在
             //      竖屏（内容宽 ~360-412dp）限宽完全不生效 → 搜索条几乎占满全屏宽。
-            //      改为 fillMaxWidth(0.82f) + 上限 380dp：竖屏 ~295-338dp 明显收短，
-            //      横屏/平板最多 380dp，与引擎行/收藏网格同轴对齐。
+            //      改为 fillMaxWidth(0.82f) + 上限 380dp。
+            //   ★★ v25（用户再次反馈"搜索框也小点"）：0.82f/380dp → 0.7f/300dp ——
+            //      竖屏 ~252-288dp，明显小于列表宽度，视觉更聚焦；引擎行同步。
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .fillMaxWidth(0.82f)
-                    .widthIn(max = 380.dp)
+                    .fillMaxWidth(0.7f)
+                    .widthIn(max = 300.dp)
                     .align(Alignment.CenterHorizontally)
                     .height(38.dp)
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
@@ -2765,11 +2766,12 @@ private fun BrowserHomeOverlay(
             // ---- 引擎快捷切换行（仿图中引擎列表：当前引擎高亮，其余半透明白） ----
             //   ★ 主页优化版：与搜索框同宽限宽居中，两者对齐成一体。
             //   ★★ v24：同步搜索框新口径（0.82f + 380dp 上限），保持同轴对齐。
+            //   ★★ v25：同步 v25 搜索框口径（0.7f + 300dp）。
             Row(
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
                 modifier = Modifier
-                    .fillMaxWidth(0.82f)
-                    .widthIn(max = 380.dp)
+                    .fillMaxWidth(0.7f)
+                    .widthIn(max = 300.dp)
                     .align(Alignment.CenterHorizontally)
             ) {
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
@@ -2798,11 +2800,14 @@ private fun BrowserHomeOverlay(
             // ---- ★ 主页优化版：「收藏站点」分区标题（小标签 + 发丝分隔线 + 计数） ----
             //   原顶栏一行小字塞了全部提示信息，结构不清晰；拆出分区标题后
             //   主页层级 = 标题栏 → 搜索区 → 收藏网格，排列一目了然。
+            //   ★★ v25（用户反馈"中间的列表不要两边顶边，应该往中间显示点"）：
+            //      640dp → 与收藏网格同步改为 fillMaxWidth(0.86f) + 500dp 上限 ——
+            //      竖屏两侧留出 ~7% 边距，列表不再贴边。
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 640.dp)
+                    .fillMaxWidth(0.86f)
+                    .widthIn(max = 500.dp)
                     .align(Alignment.CenterHorizontally)
                     .padding(horizontal = 16.dp)
             ) {
@@ -2847,10 +2852,13 @@ private fun BrowserHomeOverlay(
                 columns = GridCells.Adaptive(minSize = 56.dp),
                 modifier = Modifier
                     .heightIn(max = 184.dp)
-                    .fillMaxWidth()
-                    .widthIn(max = 640.dp)
+                    // ★★ v25（用户反馈"中间的列表不要两边顶边"）：fillMaxWidth() →
+                    //    fillMaxWidth(0.86f)：竖屏两侧留 ~7% 边距不再顶边；
+                    //    640dp → 500dp：横屏/平板收窄更聚焦；padding 8→10dp。
+                    .fillMaxWidth(0.86f)
+                    .widthIn(max = 500.dp)
                     .align(Alignment.CenterHorizontally)
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 10.dp),
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)
             ) {

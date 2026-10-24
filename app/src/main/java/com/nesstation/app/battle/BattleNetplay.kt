@@ -15,13 +15,19 @@ import kotlin.concurrent.thread
  * 协议（JSON 行，\n 分隔）：
  *   -> {"type":"hello","token":"...","roomId":"..."}   握手（第一行）
  *   <- {"type":"hello","msg":"host"|"guest","pad":4}   角色分配 + 输入延迟帧数
- *   -> {"type":"input","frame":N,"pad":0x...}           本端输入
- *   <- {"type":"input","frame":N,"pad":0x...}           对方输入
+ *   -> {"type":"ping","ts":纳秒}                          RTT 测量
+ *   <- {"type":"pong","ts":回显}                          服务器回显时间戳
+ *   -> {"type":"ready","pad":建议延迟帧}                   引擎加载完毕，等待 start
+ *   <- {"type":"peer_ready","msg":...}                     对方也就绪了
+ *   <- {"type":"start","pad":最终延迟帧}                    双方就绪，同步开跑
+ *   -> {"type":"input","frame":N,"pad":0x...}              本端输入
+ *   <- {"type":"input","frame":N,"pad":0x...}              对方输入
  *   <- {"type":"peer_joined"/"peer_left", "msg":...}
  *   <- {"type":"error","msg":"..."}
  *
- * 无 ready/start 同步：客户端连接后立即开始游戏，服务器直接转发输入。
- * inputDelay 由服务器在 hello 响应中通过 pad 字段传递。
+ * ★ 同步启动：客户端连接后先把引擎加载完，发 ready；服务器等双方 ready
+ *   同时广播 start → 两端从帧 0 同步开跑（修复双方启动时差导致的水久 desync）。
+ * inputDelay 最终值以 start 消息为准（= max(双方建议, 服务器配置)，两端一致）。
  */
 class BattleNetplay(
     private val host: String,
@@ -36,15 +42,19 @@ class BattleNetplay(
         fun onRemoteInput(frame: Long, pad: Int)
         /**
          * 服务器 hello 回执已收到 —— TCP 握手 + JWT 验证 + 房间加入全部完成。
-         * 此时可以开始发送/接收输入了。
-         * @param role "host" 或 "guest"
-         * @param inputDelay 服务器下发的输入延迟帧数
+         * @param role "host" 或 "guest"（房主 = host = 1P）
+         * @param inputDelay 服务器配置的输入延迟帧数（参考值，最终以 onStart 为准）
          */
         fun onReady(role: String, inputDelay: Int)
         /**
-         * 对方已 ready（收到对方发的 ready 信号，服务器转发过来）。
-         * 1P (host) 用这个信号知道 2P 已经准备好，可以启动引擎了。
-         * 2P (guest) 不会收到这个（因为是 2P 自己发的 ready）。
+         * ★ 同步开始信号：双方都已 ready，服务器同时广播了 start。
+         * 收到本回调后引擎才允许从帧 0 开始模拟 —— 这是消除双方
+         * 启动时差（ROM 加载耗时不同 → 帧计数错位 → 水久 desync）的关键。
+         * @param inputDelay 最终输入延迟帧数（两端一致，由服务器裁决）
+         */
+        fun onStart(inputDelay: Int)
+        /**
+         * 对方已 ready（引擎已加载完，正在等 start）。
          */
         fun onPeerReady(username: String)
         /** 对方加入 */
@@ -129,9 +139,15 @@ class BattleNetplay(
             "hello" -> {
                 role = msg.optString("msg", "host")
                 // 服务器通过 pad 字段传递 inputDelay
-                inputDelay = msg.optInt("pad", 4).coerceIn(0, 8)
+                inputDelay = msg.optInt("pad", 4).coerceIn(0, 16)
                 // 通知 listener：握手完成，可以开始对战了
                 listener.onReady(role, inputDelay)
+            }
+            "start" -> {
+                // ★ 同步开始：双方就绪，服务器同时广播（最终 inputDelay 两端一致）
+                val finalDelay = msg.optInt("pad", 4).coerceIn(0, 16)
+                inputDelay = finalDelay
+                listener.onStart(finalDelay)
             }
             "peer_ready" -> listener.onPeerReady(msg.optString("msg", ""))
             "input" -> {
@@ -140,7 +156,37 @@ class BattleNetplay(
             "peer_joined" -> listener.onPeerJoined(msg.optString("msg", ""))
             "peer_left" -> listener.onPeerLeft(msg.optString("msg", ""))
             "error" -> listener.onError(msg.optString("msg", "服务器错误"))
-            "pong" -> {}
+            "pong" -> {
+                // RTT 测量回显：交给等待中的测量请求
+                val ts = msg.optLong("ts", 0L)
+                val cb = pongWaiter.getAndSet(null)
+                cb?.invoke(ts)
+            }
+        }
+    }
+
+    /** pong 等待器（单次 RTT 测量；原子引用避免并发乱序） */
+    private val pongWaiter = java.util.concurrent.atomic.AtomicReference<((Long) -> Unit)?>()
+
+    /**
+     * 单次 RTT 测量：发 ping（带本地纳秒时间戳），服务器回显后回调往返耗时(ms)。
+     * [timeoutMs] 内未收到 pong 回调 null。同一时刻只支持一个在途测量。
+     */
+    fun measureRtt(timeoutMs: Long = 1200, onDone: (rttMs: Long?) -> Unit) {
+        val sentAt = System.nanoTime()
+        pongWaiter.set { echoedTs -> onDone((System.nanoTime() - echoedTs) / 1_000_000L) }
+        sendLine(JSONObject().put("type", "ping").put("ts", sentAt).toString())
+        // 超时看门狗：未回显则回调 null（复用共享调度线程，避免每次新建）
+        rttWatchdog.schedule({
+            val cb = pongWaiter.getAndSet(null)
+            if (cb != null) onDone(null)
+        }, timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    /** RTT 超时看门狗调度器（守护线程，懒加载） */
+    private val rttWatchdog by lazy {
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "battle-rtt-watchdog").apply { isDaemon = true }
         }
     }
 
@@ -153,9 +199,9 @@ class BattleNetplay(
         sendLine(line)
     }
 
-    /** 通知对方：我已 ready，可以启动引擎了。2P 在 onReady 后发，1P 收到后启动引擎。 */
-    fun sendReady() {
-        sendLine(JSONObject().put("type", "ready").toString())
+    /** 通知服务器：我已就绪（引擎已加载完、帧循环就位，等 start）。带建议 inputDelay（帧）。 */
+    fun sendReady(suggestedDelay: Int = 0) {
+        sendLine(JSONObject().put("type", "ready").put("pad", suggestedDelay.coerceIn(0, 16)).toString())
     }
 
     fun sendPing() {

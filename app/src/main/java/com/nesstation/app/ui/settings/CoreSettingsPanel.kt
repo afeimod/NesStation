@@ -719,6 +719,24 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "开启", "disabled" to "关闭"),
                         padLayout.arcadeMemcard
                     ) { updateLayout(padLayout.copy {arcadeMemcard = it}) }
+
+                    // ★★ 改版 ROM 兼容（参考 aFBN：免CRC启动 + IPS 补丁）★★
+                    DropdownRow("改版ROM支持 (免CRC)",
+                        listOf("enabled" to "开启 (推荐)", "disabled" to "关闭 (严格校验)"),
+                        padLayout.arcadeAllowPatched
+                    ) { updateLayout(padLayout.copy {arcadeAllowPatched = it}) }
+                    InfoRow("改版 ROM 用法：把改版 zip（内部文件名/大小需与原版一致）放到 " +
+                        "Android/data/com.nesstation.app/files/fbneo/fbneo/patched/ 目录，" +
+                        "命名为原集名（如 kof97.zip），启动同名游戏即自动覆盖原版（忽略CRC）。" +
+                        "关闭此项可恢复严格 CRC 校验。联机对战时此项自动强制关闭。")
+                    DropdownRow("高分榜 (hiscore)",
+                        listOf("enabled" to "开启", "disabled" to "关闭"),
+                        padLayout.arcadeHiscores
+                    ) { updateLayout(padLayout.copy {arcadeHiscores = it}) }
+                    InfoRow("IPS 补丁：把 .dat 补丁包（含同目录 .ips 文件）放到 " +
+                        "Android/data/com.nesstation.app/files/fbneo/fbneo/ips/<游戏集名>/ " +
+                        "目录（如 ips/kof97/），启动游戏时自动应用。需开启「改版ROM支持」。" +
+                        "联机对战时自动跳过补丁（两端状态一致性优先）。")
                 }
             }
             GamePlatform.JAVA -> item {
@@ -4064,4 +4082,21 @@ fun EdenDriverSection(
             dark = dark
         ) { driverLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "*/*")) }
     }
+}
+
+/**
+ * ★ 改版 ROM / IPS 补丁帮助说明行（街机设置面板用）。
+ * 与 DropdownRow 同款视觉密度的多行说明文字（弱化色 + 小字号）。
+ */
+@Composable
+private fun InfoRow(text: String) {
+    Text(
+        text = text,
+        fontSize = 11.sp,
+        lineHeight = 15.sp,
+        color = androidx.compose.ui.graphics.Color(0xFF8FA2B8),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 6.dp)
+    )
 }

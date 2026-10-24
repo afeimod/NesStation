@@ -354,21 +354,19 @@ class FloatingMenuView @JvmOverloads constructor(
         // ★ v21: 菜单打开期间不自动隐藏；球体全实方便定位
         autoHideHandler.removeCallbacks(hideRunnable)
         triggerBtn.alpha = 1f
-        val isLandscapeRes = resources.configuration.orientation ==
-            android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        // ★★ 菜单排列偏好（用户反馈「悬浮球菜单不能一直横着放」）：
-        //   auto = 跟随屏幕方向（横屏 2×2 并排 / 竖屏竖排，旧行为）；
-        //   portrait = 强制竖排 —— 横屏锁定 + 竖向内容（看图 SWF）场景下
-        //             菜单不再横向铺开挡画面，窄而高贴边显示；
-        //   landscape = 强制横排（2×2 分区并排）。设置入口在 Flash 引擎
-        //             对话框（SwfPlayerScreen / WebGameScreen）。
+        // ★★ 菜单排列偏好（用户反馈「横屏时悬浮球菜单不要横着放，太长了」）：
+        //   auto = 恒竖向紧凑四列（新旧反馈合并后的默认：横屏也不再横向铺开
+        //          挡画面 —— 旧 auto 跟随屏幕方向，横屏 2×2 分区并排宽达
+        //          ~400dp+，横屏游戏/看图时菜单横贯屏幕）；
+        //   portrait = 强制竖排（同 auto，保留兼容）；
+        //   landscape = 强制横排（2×2 分区并排，想要宽排的用户手动指定）。
+        //   设置入口在 Flash 引擎对话框（SwfPlayerScreen / WebGameScreen）。
         val menuLayoutPref = try {
             com.nesstation.app.flash.data.PrefsManager.floatingMenuLayout
         } catch (_: Throwable) { "auto" }
         val useWideLayout = when (menuLayoutPref) {
             "landscape" -> true
-            "portrait" -> false
-            else -> isLandscapeRes
+            else -> false // auto / portrait：统一竖向紧凑四列，横屏不再横排
         }
         // ★ 菜单优化版：单元规格沿用 v23 紧凑口径（48dp 单元 / 22dp 徽章 / 10sp 字形 / 8sp 标签）；
         //   ★ v24 竖屏四列布局单元再收一档 44dp（长条 → 紧凑表格的总高度关键）。

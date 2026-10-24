@@ -105,20 +105,18 @@ fun BattleMatchScreen(
         mutableStateOf(com.nesstation.app.core.model.GamePlatform.fromString(args.platform.name))
     }
 
-    // === 对战开始标志 —— 这是修复"2P 不同步 1P"的关键 ===
+    // === 对战开始标志（★ v25 同步启动门协议） ===
     //
-    // 之前 1P 在收到 peer_joined 就启动引擎，但 2P 此时可能还没收到 hello(guest)，
-    // 更没启动引擎。双方引擎启动时间差几百毫秒（ROM 加载），frame 计数错位，
-    // 2P 查 remoteHistory[execFrame] 一直查不到 → desync 累积 → 单机体验。
+    // 旧协议（"各玩各的"根因）：1P 在 peer_joined 就启动引擎，2P 在 hello 后
+    // 启动 —— 双方引擎启动时刻差 = RTT + 双端 ROM 加载耗时差（慢设备数秒），
+    // 帧计数错开几十上百帧，inputDelay（4-6帧）根本吸收不了 → 一方永远等不到
+    // 对方早期帧输入 → 兑底补帧 → 两端状态永久发散。
     //
-    // 修复后的启动时序（参考 GGPO 的 ready 握手）：
-    //  - 2P (guest): onReady（收到 hello）→ 立即发 sendReady() 通知 1P →
-    //                然后启动自己的引擎
-    //  - 1P (host): onReady → 显示"等待对手就绪" → 等 onPeerReady
-    //                （2P 的 ready 经服务器转发到了）→ 启动引擎
-    //
-    // 这样 1P 的引擎启动时刻 ≤ 2P 引擎启动时刻 + RTT/2。inputDelay=6 (100ms)
-    // 足够吸收这个差 + ROM 加载时间差。
+    // 新协议：双方都在 onReady（TCP+JWT+入房完成）后进入 EmulatorScreen 加载
+    // 引擎；引擎加载完后 EmulatorScreen 调 controller.notifyEngineReady()（测
+    // RTT → 发 ready）；服务器等【双方都 ready】后【同时】广播 start →
+    // NetplayController 的启动门放行 → 两端同帧从 0 开跑。启动时差缩到一次
+    // 消息传播差（毫秒级），被 inputDelay 轻松吸收。
     var netReady by remember { mutableStateOf(false) }
     var matchStarted by remember { mutableStateOf(false) }
 
@@ -127,50 +125,36 @@ fun BattleMatchScreen(
     }
 
     // === 先注册 UI listener，再连接服务器 ===
-    // 之前 DisposableEffect 在 LaunchedEffect 之前执行，导致 controller.connect()
-    // 触发的 onReady 回调可能比 setUiListener 还早到达 → dispatch 看到
-    // primaryListener==null 直接丢弃 → matchStarted 永远不设 true。
-    //
-    // 现在在 remember controller 的同时就把 listener 设上，保证 connect()
-    // 之前 listener 已经 ready。listener 内部用 setState 触发重组，安全。
     DisposableEffect(controller) {
         controller.setUiListener(object : NetplayController.UiListener {
             override fun onReady(role: String, inputDelay: Int) {
                 netReady = true
                 roleText = if (args.isHost) {
-                    "房主 · 等待对手加入…（inputDelay=${inputDelay}f）"
+                    "房主 · 等待对手加入…（基础延迟 ${inputDelay}f）"
                 } else {
-                    "挑战者 · 已与房主连线（inputDelay=${inputDelay}f）"
+                    "挑战者 · 已与房主连线（基础延迟 ${inputDelay}f）"
                 }
-                // 2P (guest): onReady 到了就说明 1P 在房间里。立即启动引擎。
-                // 同时发 ready 通知 1P（作为备用信号，但 1P 主要靠 onPeerJoined）。
-                if (!args.isHost) {
-                    controller.sendReady()
-                    matchStarted = true
-                }
+                // ★ 新协议：双方都在 onReady 就进入 EmulatorScreen（提前加载
+                //   ROM/BIOS，帧被同步启动门挡住），不再等对方就绪才加载 ——
+                //   同步由服务器 start 广播保证，提前加载只会减少等待。
+                matchStarted = true
+            }
+            override fun onStart(inputDelay: Int) {
+                // 双方都 ready，服务器同时广播了 start：门已放行
+                roleText = "对战开始！双方延迟 ${inputDelay}f（同步开跑）"
             }
             override fun onPeerReady(username: String) {
-                // 1P (host): 2P 发的 ready 信号到了。这是备用启动信号 ——
-                // 如果 onPeerJoined 已经启动了，这里只是更新状态文字。
-                roleText = "房主 · 对手 $username 已就绪，开战！"
-                if (args.isHost) {
-                    matchStarted = true
-                }
+                roleText = "对手 $username 已就绪，等待同步开跑…"
             }
             override fun onFrameInfo(frame: Long, inputDelay: Int, desyncCount: Int) {}
             override fun onPeerJoined(username: String) {
-                roleText = if (args.isHost) "房主 · 对手 $username 已加入，开战！" else "挑战者 · 已与 $username 对战"
-                // 1P (host): 2P 加入后立即启动引擎。不再等 ready 信号 ——
-                // 之前等 onPeerReady 导致 1P 卡在"等待就绪"，但 2P 已经在跑了。
-                // 双方启动时间差由 inputDelay 吸收（默认 6 帧 = 100ms）。
-                if (args.isHost) {
-                    matchStarted = true
-                }
+                roleText = if (args.isHost) "房主 · 对手 $username 已加入，等其加载完成…" else "挑战者 · 已与 $username 对战"
             }
             override fun onPeerLeft(username: String) { errorMsg = "对手 $username 已离开，对战结束" }
             override fun onError(message: String) { errorMsg = message }
             override fun onDisconnected() { if (errorMsg == null) errorMsg = "与对战服务器断开连接" }
-            override fun onNetplayLost(reason: String) { roleText = reason }
+            override fun onNetplayWait(reason: String) { roleText = reason }
+            override fun onNetplayLost(reason: String) { errorMsg = reason }
         })
         onDispose { controller.setUiListener(null) }
     }

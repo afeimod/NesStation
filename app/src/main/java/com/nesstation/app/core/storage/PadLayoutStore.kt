@@ -352,6 +352,11 @@ class PadLayout {
     var arcadeLowpass: String = "disabled"             // disabled | enabled
     var arcadeNeogeomode: String = "MVS"               // MVS | AES
     var arcadeMemcard: String = "enabled"              // enabled | disabled
+    // ★ 改版 ROM 兼容（参考 aFBN）：允许 <fbneo>/fbneo/patched/ 覆盖原集（免CRC 启动）
+    //   + IPS 补丁总开关。联机对战时强制 disabled。
+    var arcadeAllowPatched: String = "enabled"          // enabled | disabled
+    // 高分榜（hiscore.dat）—— 联机对战时强制 disabled（状态分歧）。
+    var arcadeHiscores: String = "enabled"              // enabled | disabled
 
     // === Genesis-Plus-GX (MD/SEGA) core options ===
     // Keys must match genesis_plus_gx's libretro_core_options.h exactly.
@@ -1584,6 +1589,8 @@ class PadLayout {
         arcadeLowpass = another.arcadeLowpass
         arcadeNeogeomode = another.arcadeNeogeomode
         arcadeMemcard = another.arcadeMemcard
+        arcadeAllowPatched = another.arcadeAllowPatched
+        arcadeHiscores = another.arcadeHiscores
         mdRegion = another.mdRegion
         mdSystem = another.mdSystem
         mdAspect = another.mdAspect
@@ -2830,6 +2837,8 @@ object PadLayoutStore {
             arcadeLowpass = p.getString("arcade_lowpass", "disabled") ?: "disabled"
             arcadeNeogeomode = p.getString("arcade_neogeo_mode", "MVS") ?: "MVS"
             arcadeMemcard = p.getString("arcade_memcard", "enabled") ?: "enabled"
+            arcadeAllowPatched = p.getString("arcade_allow_patched", "enabled") ?: "enabled"
+            arcadeHiscores = p.getString("arcade_hiscores", "enabled") ?: "enabled"
             // Genesis-Plus-GX (MD/SEGA) options
             mdRegion = p.getString("md_region", "auto") ?: "auto"
             mdSystem = p.getString("md_system", "auto") ?: "auto"
@@ -4076,6 +4085,8 @@ object PadLayoutStore {
             putString("arcade_lowpass", layout.arcadeLowpass)
             putString("arcade_neogeo_mode", layout.arcadeNeogeomode)
             putString("arcade_memcard", layout.arcadeMemcard)
+            putString("arcade_allow_patched", layout.arcadeAllowPatched)
+            putString("arcade_hiscores", layout.arcadeHiscores)
             // Genesis-Plus-GX (MD/SEGA) options
             putString("md_region", layout.mdRegion)
             putString("md_system", layout.mdSystem)

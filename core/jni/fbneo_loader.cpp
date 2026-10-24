@@ -51,6 +51,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <map>
 #include <mutex>
 #include <string>
@@ -215,6 +217,17 @@ static void initDefaultOptions() {
     // --- Diagnostics ---
     s_options["fbneo-debug-text"]                  = "disabled";
     s_options["fbneo-show-debug-info"]             = "disabled";
+
+    // --- ★ 改版 ROM 兼容（参考 aFBN 的免CRC启动/IPS 补丁支持） ---
+    // fbneo-allow-patched-romsets 是总开关：
+    //   1. 允许 <systemDir>/fbneo/patched/<原集名>.zip 覆盖原 ROM（CRC 忽略，
+    //      文件名/大小仍需匹配）—— 改版 ROM 放这里即可启动；
+    //   2. 同时也是 IPS 补丁与 RomData 的执行开关。默认开启（改版兼容优先；
+    //      联机对战时 EmulatorScreen 会强制写 disabled 保证两端状态一致）。
+    s_options["fbneo-allow-patched-romsets"]       = "enabled";
+    // 高分榜（hiscore.dat 把分数写进游戏 RAM）：默认开（单机体验），
+    // 联机对战时强制关（两端 RAM 状态分歧 = desync）。
+    s_options["fbneo-hiscores"]                    = "enabled";
 
     // --- NeoGeo / PGM BIOS selection (default: unibios for NeoGeo if available) ---
     // FBNeo auto-detects BIOS by filename in the system directory.
@@ -428,6 +441,21 @@ static bool cb_environment(unsigned cmd, void* data) {
             if (data) *static_cast<unsigned*>(data) = RETRO_LANGUAGE_ENGLISH;
             return true;
 
+        case RETRO_ENVIRONMENT_SET_VARIABLE: {
+            // ★ IPS/romdata 支持：核心在应用完一批 IPS 补丁后会把对应选项
+            //   重置为 "disabled"（防止下次 reset 重复打补丁）。必须接收并
+            //   存回选项表，否则 GET_VARIABLE 后续永远查不到 / 应用状态错乱。
+            if (!data) return false;
+            auto* var = static_cast<retro_variable*>(data);
+            if (!var || !var->key || !var->value) return false;
+            {
+                std::lock_guard<std::mutex> lk(s_optMtx);
+                s_options[var->key] = var->value;
+            }
+            s_optionsChanged.store(true, std::memory_order_release);
+            return true;
+        }
+
         default:
             return false;
     }
@@ -540,6 +568,74 @@ static int16_t cb_input_state(unsigned port, unsigned device,
 }
 
 // ---------------------------------------------------------------------------
+// ★ 改版 ROM / IPS 补丁支持（参考 aFBN）
+// ---------------------------------------------------------------------------
+
+// 在 <systemDir>/fbneo/ 下确保 patched/ 与 ips/ 目录存在 —— 用户把改版
+// ROM 放 patched/<原集名>.zip、IPS 补丁包放 ips/<集名>/*.dat。
+static void ensurePatchedRomDirs() {
+    if (s_systemDir.empty()) return;
+    std::string base = s_systemDir;
+    if (!base.empty() && base.back() != '/') base += '/';
+    base += "fbneo/";
+    std::string patched = base + "patched";
+    std::string ips = base + "ips";
+    mkdir(base.c_str(), 0755);
+    mkdir(patched.c_str(), 0755);
+    mkdir(ips.c_str(), 0755);
+}
+
+// 扫描 <systemDir>/fbneo/ips/<drvname>/*.dat，把每个补丁包注册为
+// fbneo-ips-<drvname>-<i> = "enabled"（与上游 libretro 前端行为一致：
+// create_variables_from_ipses 按 .dat 枚举生成选项，勾选 = enabled）。
+// .dat 内容格式（上游 ips_manager.cpp）：
+//   "rom name.bin" "patch.ips" CRC(xxxxxxxx)   ← 逐行指定打补丁的目标
+//   [zh_CN] 描述文字 ...（语言段仅作 UI 显示）
+static void registerIpsPatchesForDriver(const std::string& romPath) {
+    if (s_systemDir.empty()) return;
+    // 驱动名 = zip/7z 文件名去扩展（FBNeo 用它作为 romset 标识）
+    std::string drv = romPath;
+    const size_t slash = drv.find_last_of('/');
+    if (slash != std::string::npos) drv = drv.substr(slash + 1);
+    const size_t dot = drv.find_last_of('.');
+    if (dot != std::string::npos) drv = drv.substr(0, dot);
+    if (drv.empty()) return;
+
+    std::string ipsDir = s_systemDir;
+    if (!ipsDir.empty() && ipsDir.back() != '/') ipsDir += '/';
+    ipsDir += "fbneo/ips/" + drv;
+
+    DIR* d = opendir(ipsDir.c_str());
+    if (!d) return;
+    std::vector<std::string> dats;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        std::string name = e->d_name;
+        if (name.size() < 5) continue;
+        std::string ext = name.substr(name.size() - 4);
+        for (auto& c : ext) c = (char)tolower((unsigned char)c);
+        if (ext == ".dat") dats.push_back(name);
+    }
+    closedir(d);
+    if (dats.empty()) return;
+
+    // 与上游枚举顺序无关紧要 —— 选项键的序号只要与 .dat 一一对应即可。
+    // 我们按文件名排序保证多次启动注册稳定（readdir 顺序不保证）。
+    std::sort(dats.begin(), dats.end());
+    {
+        std::lock_guard<std::mutex> lk(s_optMtx);
+        for (size_t i = 0; i < dats.size(); i++) {
+            char key[256];
+            snprintf(key, sizeof(key), "fbneo-ips-%s-%d", drv.c_str(), (int)i);
+            s_options[key] = "enabled";
+        }
+    }
+    s_optionsChanged.store(true, std::memory_order_release);
+    LOGI("IPS: registered %d patch dat(s) for driver '%s' from %s",
+         (int)dats.size(), drv.c_str(), ipsDir.c_str());
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 std::string loadFromFile(const std::string& path, int& regionOut) {
@@ -577,6 +673,12 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
 
     s_audio.reset();
     s_resampler.reset();
+
+    // ★ 改版支持：确保 patched/ips 目录存在（首次启动即建好，用户可直接放文件），
+    // 并把 ips/<驱动名>/ 下的补丁包注册为启用（每次启动重新注册 —— 核心在
+    // 上次应用后会把选项重置为 disabled，重新注册即"启动时自动打补丁"）。
+    ensurePatchedRomDirs();
+    registerIpsPatchesForDriver(path);
 
     // FBNeo loads ROMs by path (it has its own zip/7z VFS). The path passed
     // is the .zip / .7z archive containing the ROM set.

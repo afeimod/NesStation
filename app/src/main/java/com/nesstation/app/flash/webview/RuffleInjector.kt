@@ -12,8 +12,10 @@ import com.nesstation.app.flash.data.PrefsManager
  * GameWebViewClient.shouldInterceptRequest 会拦截 flash.local 的请求并从 assets 返回内容。
  *
  * 引擎选择：
- * - "ruffle"：Ruffle 最新版 0.3.0 (Rust + WebAssembly)，AS1/2 支持率 95%，AS3 约 60%
- *   本地模式下自带 simhei.ttf 字体，中文显示正常
+ * - "ruffle"：Ruffle (Rust + WebAssembly)，AS1/2 支持率 95%，AS3 约 60%
+ *   ★ 引擎已升级上游 0.7.1（旧版 0.4.1）：包含大量移动端 WebView 的
+ *     viewport / Stage.scaleMode / letterbox 渲染修复（"拉伸设置不生效"
+ *     的上游修复）。本地模式下自带 simhei.ttf 字体，中文显示正常
  * - "waflash"：WAFlash (AS2/AS3 完整支持, Canvas渲染)
  */
 object RuffleInjector {
@@ -75,14 +77,22 @@ object RuffleInjector {
         normalizeScale(PrefsManager.sp.getString("flash_scale", null))
 
     /**
-     * letterbox 由 game_aspect_ratio 隐式控制：
-     * - 指定具体比例 (4:3/16:9/16:10/5:4)：letterbox="on"，让 Ruffle 引擎内部按 SWF 原生 stageSize 加黑边，
-     *   外层 buildRuffleAspectRatioScript 只控制 #stage 外框大小 + 居中，**不会**改 ruffle-player 内部 stage 尺寸。
-     * - auto（默认）：letterbox="fullscreen"，Ruffle 仅在全屏时 letterbox，否则按 viewport 自由撑满。
+     * letterbox 优先读 flash_letterbox 偏好（与 flash_scale 同源，applyAspectRatio
+     * 写入）—— 旧版完全不读这个键，只从 game_aspect_ratio 自行推导，且对
+     * stretch/比例模式错传 "fullscreen"/"on"：Ruffle letterbox 渲染路径在部分
+     * 版本里优先于 scale，外层已缩成指定比例框时引擎又叠黑边 = exactFit 永不
+     * 生效（polyfill 页面上“拉伸无效果”的直接根因之一）。
+     * 偏好缺失时回退推导：stretch/比例模式 → off（外框比例框 + exactFit 填满），
+     * auto → fullscreen（保持原比例，黑边属预期）。
      */
-    private fun currentLetterbox(): String = when (PrefsManager.gameAspectRatio) {
-        "4:3", "16:9", "16:10", "5:4" -> "on"
-        else -> "fullscreen"
+    private fun currentLetterbox(): String {
+        val pref = PrefsManager.sp.getString("flash_letterbox", null)
+        if (pref != null && pref in setOf("on", "off", "fullscreen")) return pref
+        return when (PrefsManager.gameAspectRatio) {
+            "stretch" -> "off"
+            "4:3", "16:9", "16:10", "5:4" -> "off"
+            else -> "fullscreen"
+        }
     }
 
     /**

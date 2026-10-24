@@ -25,6 +25,10 @@ type Room struct {
         GameID    string
         CreatedAt time.Time
         Status    string // 房间状态：waiting / ready / playing
+        // ★ 房主（创建者）用户 ID —— 由 HTTP 创建房间时记录，
+        //   中继握手时按它分配 host/guest 角色（旧版按连接顺序分配，
+        //   加入者先连上时角色反转，两人都以为自己是 1P）。
+        OwnerID string
         // 玩家连接（socket 已建立）。key 为 user id。
         conns map[string]*relayConn
 }
@@ -39,11 +43,16 @@ func (r *Room) playerCount() int { return len(r.conns) }
 // 协议：客户端 -> 服务器 -> 对端。
 //   {"type":"input","frame":123,"pad":0x00FF}
 //   {"type":"hello",...}  握手
+//   {"type":"ready","pad":建议inputDelay}  客户端就绪（引擎已加载完，等 start）
+//   {"type":"start","pad":最终inputDelay}  双方就绪后服务器同时广播 → 同步开跑
+//   {"type":"ping","ts":纳秒时间戳} / {"type":"pong","ts":回显}  RTT 测量
 //   {"type":"bye",...}    结束
 type relayMsg struct {
         Type  string `json:"type"`
         Frame int64  `json:"frame"`
         Pad   int    `json:"pad"`
+        // ping/pong 时间戳回显（客户端本地时钟，原样返回）
+        Ts int64 `json:"ts,omitempty"`
         // 握手字段
         Token  string `json:"token,omitempty"`
         RoomID string `json:"roomId,omitempty"`
@@ -63,6 +72,9 @@ type relayConn struct {
         // relayLoop（转发对端的 input）和 handleConn（发 hello / peer_joined）
         // 可能在不同 goroutine 里并发调 send，必须加锁。
         sendMu sync.Mutex
+        // ★ 同步启动：该端是否已发过 ready，以及它建议的 inputDelay（帧）。
+        ready    bool
+        readyPad int
 }
 
 func (rc *relayConn) send(m relayMsg) error {
@@ -157,7 +169,6 @@ func (h *relayHub) handleConn(conn net.Conn) {
                 room: room,
         }
         room.conns[claims.Sub] = rc
-        playerCount := room.playerCount()
 
         // === 关键修复：在锁内设置 peer 引用 ===
         // 之前 other.peer = rc 和 rc.peer = other 在 peerOf 的锁外执行，
@@ -180,9 +191,25 @@ func (h *relayHub) handleConn(conn net.Conn) {
         conn.SetReadDeadline(time.Time{}) // 清除超时
 
         // 向本端发送 hello 回执（附带输入延迟帧数，客户端据此配置同步参数）
-        role := "host"
-        if playerCount == 2 {
-                role = "guest"
+        // ★ 角色按房主身份分配（Room.OwnerID 由 HTTP 创建房间时记录），
+        //   不再按连接顺序 —— 否则加入者网络快先连上时会被当成 host，
+        //   双方 pad1/pad2 映射颠倒，各自控制对方角色。
+        //   拿不到 OwnerID（旧客户端建的房间）时退回连接顺序，兼容旧数据。
+        var other2 *relayConn
+        for id, c := range room.conns {
+                if id != claims.Sub {
+                        other2 = c
+                        break
+                }
+        }
+        role := "guest"
+        if room.OwnerID != "" {
+                if claims.Sub == room.OwnerID {
+                        role = "host"
+                }
+        } else if other2 == nil {
+                // 无房主记录：第一个连接的当 host（旧行为兜底）
+                role = "host"
         }
         delay := h.cfg.InputDelay
         if delay <= 0 {
@@ -197,6 +224,15 @@ func (h *relayHub) handleConn(conn net.Conn) {
         // 通知对方（peer_joined）—— 告诉 1P 有新玩家加入。
         if other != nil {
                 _ = other.send(relayMsg{Type: "peer_joined", Msg: rc.user.Username})
+                // ★ 补发通知：若对方在我加入前就已发过 ready（它加载快、先就绪），
+                //   它的 peer_ready 通知当时无处可投 —— 给新加入的这端补一条，
+                //   让 UI 能正确显示"对手已就绪，等同步开跑"。
+                h.mu.Lock()
+                otherReady := other.ready
+                h.mu.Unlock()
+                if otherReady {
+                        _ = rc.send(relayMsg{Type: "peer_ready", Msg: other.user.Username})
+                }
         }
 
         // 中继循环：读本端输入，转发给对端
@@ -241,17 +277,62 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                                 }
                         }
                 case "ready":
-                        // 2P (guest) 收到 hello 后发 ready，表示引擎即将启动。
-                        // 服务器转发给 1P (host)，1P 收到后才知道 2P 已经准备好，
-                        // 此刻双方几乎同时启动引擎。
+                        // ★★ 同步启动门（修复"对战不同步、各玩各的"的根因）：
+                        //   旧协议 2P 收到 hello 就发 ready 给 1P，1P 收到就各自
+                        //   启动引擎 —— 双方引擎启动时刻差 = RTT + 双端 ROM 加载
+                        //   时差（慢设备可达数秒），帧计数错开几十上百帧，
+                        //   inputDelay（4-6 帧 ≈ 100ms）根本吸收不了 → 一方永远
+                        //   等不到对方早期帧的输入 → 用"上一帧输入兜底"补帧 →
+                        //   两边状态永久发散 = 各玩各的。
+                        //   现在：双方各自在【引擎完全加载好、帧循环就位】后才发
+                        //   ready；服务器等【两端都 ready】后向双方【同时】广播
+                        //   start（最终 inputDelay = max(双方建议, 服务器配置)，
+                        //   两端用同一个值 —— 不同值会让两边的执行帧错位）。
+                        //   客户端收到 start 才放行帧 0 → 双方帧计数起点差缩到
+                        //   一次消息传播差（毫秒级），被 inputDelay 轻松吸收。
                         h.mu.Lock()
+                        rc.ready = true
+                        if msg.Pad > rc.readyPad {
+                                rc.readyPad = msg.Pad
+                        }
                         peer := rc.peer
+                        bothReady := peer != nil && peer.ready && rc.ready
+                        finalDelay := h.cfg.InputDelay
+                        if finalDelay <= 0 {
+                                finalDelay = 4
+                        }
+                        if bothReady {
+                                if rc.readyPad > finalDelay {
+                                        finalDelay = rc.readyPad
+                                }
+                                if peer.readyPad > finalDelay {
+                                        finalDelay = peer.readyPad
+                                }
+                                if finalDelay > 16 {
+                                        finalDelay = 16
+                                }
+                                if rc.room != nil {
+                                        rc.room.Status = roomPlaying
+                                }
+                        }
                         h.mu.Unlock()
+
+                        // 转发 peer_ready 给对端（UI 状态显示用）
                         if peer != nil && peer.conn != nil {
                                 _ = peer.send(relayMsg{Type: "peer_ready", Msg: rc.user.Username})
                         }
+                        // 双方就绪 → 同时广播 start（带最终 inputDelay）
+                        if bothReady {
+                                _ = rc.send(relayMsg{Type: "start", Pad: finalDelay})
+                                if peer.send(relayMsg{Type: "start", Pad: finalDelay}) != nil {
+                                        // 对端发送失败（已断）→ 收回本端状态
+                                        h.drop(rc)
+                                        return
+                                }
+                        }
                 case "ping":
-                        _ = rc.send(relayMsg{Type: "pong"})
+                        // RTT 测量：原样回显客户端时间戳
+                        _ = rc.send(relayMsg{Type: "pong", Ts: msg.Ts})
                 case "bye":
                         // 主动退出
                         h.drop(rc)

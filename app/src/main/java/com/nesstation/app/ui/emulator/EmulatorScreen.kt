@@ -1341,6 +1341,98 @@ private fun copyDcSingleFile(
 }
 
 /**
+ * PSX / PS2 自包含光盘镜像（.chd/.iso/.cso/.img/.mdf）单文件物化。
+ *
+ * ★ 修复"PS2 不导入文件夹、单独导入 chd 运行报错（无法读取文件夹内容）"：
+ *   单文件选择器（ACTION_OPEN_DOCUMENT）的 document URI 没有 tree 授权，
+ *   整夹复制（loadGameFolder）必然失败。.chd/.iso/.cso/.img/.mdf 本身就是
+ *   自包含镜像（不引用兄弟轨道文件），直接单文件复制到
+ *   <filesDir>/<subDir>/<safeId>/<原始文件名> 即可，无需任何文件夹权限。
+ *
+ * 完整性保障：先写 .tmp 再原子重命名 + .copy_ok 标记 —— 防止进程在复制
+ * 多 GB chd 中途被杀后残留的截断文件被当作完整镜像（核心读得出 CHD 头、
+ * 读不到游戏数据 → BIOS 动画后黑屏）。
+ *
+ * @param subDir ps2_file / psx_file（与 psx_cd 整夹缓存互不干扰）
+ */
+private fun materializePsxDisc(
+    context: android.content.Context,
+    romUriStr: String,
+    gameId: String,
+    subDir: String
+): java.io.File? {
+    if (!romUriStr.startsWith("content://")) {
+        val f = java.io.File(romUriStr)
+        return if (f.exists()) f else null
+    }
+    val uri = android.net.Uri.parse(romUriStr)
+    val safeId = gameId.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
+        .takeIf { it.isNotBlank() } ?: "game"
+
+    // 原始文件名（SAF query，失败回退 URI 末段解码）
+    val fileName = run {
+        var name = ""
+        try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME
+                )
+                if (idx >= 0 && c.moveToFirst()) {
+                    val n = c.getString(idx)
+                    if (!n.isNullOrBlank()) name = n
+                }
+            }
+        } catch (_: Exception) { }
+        if (name.isBlank()) {
+            try {
+                uri.lastPathSegment?.let {
+                    name = android.net.Uri.decode(it).substringAfterLast('/')
+                }
+            } catch (_: Exception) { }
+        }
+        name
+    }
+    if (fileName.isBlank()) return null
+
+    val destRoot = java.io.File(context.filesDir, "$subDir/$safeId")
+    val dest = java.io.File(destRoot, fileName)
+    val copyMarker = java.io.File(destRoot, ".${safeId}.copy_ok")
+
+    // 快路径：此前已完整物化（标记存在）→ 直接复用，避免每次启动重拷多 GB 镜像
+    if (dest.exists() && dest.length() > 0L && copyMarker.exists()) return dest
+
+    return try {
+        destRoot.mkdirs()
+        // 清理残留（旧截断文件 / 旧标记）
+        if (dest.exists()) dest.delete()
+        copyMarker.delete()
+        val tmp = java.io.File(destRoot, "$fileName.tmp")
+        if (tmp.exists()) tmp.delete()
+
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            tmp.outputStream().use { input.copyTo(it) }
+        } ?: return null
+
+        if (!tmp.exists() || tmp.length() <= 0L) {
+            tmp.delete()
+            return null
+        }
+        // 原子重命名 + 完整性标记
+        if (!tmp.renameTo(dest)) {
+            // 极少见的跨文件系统 rename 失败 → 拷贝改名
+            tmp.copyTo(dest, overwrite = true)
+            tmp.delete()
+        }
+        if (!dest.exists() || dest.length() <= 0L) return null
+        copyMarker.writeText("ok")
+        dest
+    } catch (e: Exception) {
+        android.util.Log.w("EmulatorScreen", "PSX/PS2 single-file materialize failed", e)
+        null
+    }
+}
+
+/**
  * 尽力复制 NAOMI CHD 同名子文件夹（MAME 约定 <zip名>/<gdrom名>.chd）到
  * [destRoot]。需要 SAF 对父目录的列举权限 —— 文件选择器 URI 通常没有，
  * 此时返回 null 并静默跳过（调用方已保证 zip 本体复制成功）。
@@ -2285,7 +2377,7 @@ fun EmulatorScreen(
                    padLayout.edFrameGen, padLayout.edFrameGenTarget,
                    padLayout.edPatchOldQcom
                    ) {
-        applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
+        applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize, netplayActive = netplayController != null)
         // Apply video filter (frontend post-processing, not a core option)
         //
         // 与 3.5.2 分支保持一致（用户实测该分支"滤镜生效"）：
@@ -2357,7 +2449,7 @@ fun EmulatorScreen(
     if (platform == GamePlatform.N3DS) {
         LaunchedEffect(loaded, surfaceSize, padLayout.videoScale, padLayout.azLayoutOption) {
             if (surfaceSize != IntSize.Zero && loaded) {
-                applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
+                applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize, netplayActive = netplayController != null)
             }
         }
     }
@@ -2510,20 +2602,22 @@ fun EmulatorScreen(
 
     // === 联机对战：把 NetplayController 挂到引擎的 frameHook 上 ===
     // 必须在 LaunchedEffect(game) 之前设置，否则引擎模拟线程的第 0 帧会
-    // 没有这个 hook 而按单机模式跑（虽然之后会自动切换，但前 inputDelay 帧
-    // 的输入序列可能不一致）。Compose 中 LaunchedEffect 按声明顺序执行，
+    // 没有这个 hook 而按单机模式跑。Compose 中 LaunchedEffect 按声明顺序执行，
     // 所以这里放在 LaunchedEffect(game) 之前即可。
     var netplayStatusText by remember { mutableStateOf("") }
     val netplayUiListener = remember {
         object : com.nesstation.app.battle.NetplayController.UiListener {
             override fun onReady(role: String, inputDelay: Int) {
-                netplayStatusText = "已连线（$role · 延迟 ${inputDelay}f）"
+                netplayStatusText = "已连线（$role · 基础延迟 ${inputDelay}f）"
+            }
+            override fun onStart(inputDelay: Int) {
+                netplayStatusText = "对战开始！延迟 ${inputDelay}f（同步开跑）"
             }
             override fun onPeerReady(username: String) {
-                netplayStatusText = "对手 $username 已就绪"
+                netplayStatusText = "对手 $username 已就绪，等同步开跑…"
             }
             override fun onFrameInfo(frame: Long, inputDelay: Int, desyncCount: Int) {
-                netplayStatusText = "对战中 · 帧 #$frame · 延迟 ${inputDelay}f · desync $desyncCount"
+                netplayStatusText = "对战中 · 帧 #$frame · 延迟 ${inputDelay}f"
             }
             override fun onPeerJoined(username: String) {
                 netplayStatusText = "对手 $username 已加入"
@@ -2537,6 +2631,9 @@ fun EmulatorScreen(
             override fun onDisconnected() {
                 netplayStatusText = "与对战服务器断开连接"
             }
+            override fun onNetplayWait(reason: String) {
+                netplayStatusText = reason
+            }
             override fun onNetplayLost(reason: String) {
                 netplayStatusText = reason
             }
@@ -2545,6 +2642,13 @@ fun EmulatorScreen(
     LaunchedEffect(netplayController) {
         engine.frameHook = netplayController
         netplayController?.addUiListener(netplayUiListener)
+    }
+    // ★ 同步启动门：引擎加载成功（loaded=true）后通知控制器 → 测 RTT → 发 ready。
+    // 服务器等双方 ready 后同时广播 start，门才放行第一帧 —— 双方同帧从 0 开跑。
+    LaunchedEffect(loaded, netplayController) {
+        if (loaded && netplayController != null) {
+            netplayController.notifyEngineReady()
+        }
     }
     DisposableEffect(netplayController) {
         onDispose {
@@ -2722,7 +2826,7 @@ fun EmulatorScreen(
         if (platform == GamePlatform.NSWITCH) {
             (engine as? com.nesstation.app.core.engine.EdenEngine)?.let { eden ->
                 withContext(Dispatchers.IO) { eden.coreInitOnce() }
-                applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
+                applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize, netplayActive = netplayController != null)
             }
         }
 
@@ -2738,6 +2842,23 @@ fun EmulatorScreen(
         // content:// URIs (all games would share one temp_rom.sav).
         val coreSaveName = romAdjSaveNameOverride ?: saveName
         engine.setSaveName(coreSaveName)
+
+        // ★★ 联机对战：删除本局对战的旧存档（.srm）保证两端初始状态一致。
+        //   战斗存档名（battle_<game>_<room>）会跨局复用：一端玩过几局后
+        //   NVRAM/高分数据落盘，另一端没有 → 两端从帧 0 就在不同状态上模拟
+        //   = 必然"各玩各的"。对战存档仅影响本房间的对战进度，删除无损失。
+        if (netplayController != null) {
+            try {
+                val srmCandidates = listOfNotNull(
+                    java.io.File(savesDir, "$coreSaveName.srm").takeIf { it.exists() },
+                    romAdjSaveDirPath?.let { java.io.File(it, "$coreSaveName.srm") }?.takeIf { it.exists() }
+                )
+                srmCandidates.forEach { it.delete() }
+                if (srmCandidates.isNotEmpty()) {
+                    android.util.Log.i("EmulatorScreen", "netplay: cleared ${srmCandidates.size} stale battle save(s) for $coreSaveName")
+                }
+            } catch (_: Throwable) {}
+        }
 
         // === Mega-CD BIOS pre-check ===
         // If the user is launching a Mega-CD / SEGA-CD game (.cue/.iso/.chd),
@@ -3066,24 +3187,46 @@ fun EmulatorScreen(
                     romPath.endsWith(".chd", ignoreCase = true) ||
                     romPath.endsWith(".iso", ignoreCase = true) ||
                     romPath.endsWith(".cso", ignoreCase = true) ||
+                    romPath.endsWith(".img", ignoreCase = true) ||
                     romPath.endsWith(".mdf", ignoreCase = true) ||
                     romPath.endsWith(".mds", ignoreCase = true) ||
                     romPath.endsWith(".ccd", ignoreCase = true))) {
-            // === PSX CD image via SAF (content://) ===
-            // The .cue file references .bin audio tracks by RELATIVE path.
-            // Copying only the .cue (as the single-file branch below would)
-            // makes PCSX-ReARMed fail to open the disc — it cannot find the
-            // .bin tracks. Copy the whole folder so the .bin tracks are
-            // available next to the .cue. Also handle .chd/.iso/.mdf/.mds
-            // the same way for consistency (these are single-file images but
-            // the folder-copy path is safe and handles edge cases like
-            // .mdf+.mds pairs).
+            // === PSX/PS2 disc image via SAF (content://) ===
+            // ★ 单文件镜像修复（"PS2 单独导入 chd 报错：无法读取文件夹内容"）：
+            //   旧版对 .chd/.iso/.cso 等自包含单文件镜像也走 loadGameFolder 整夹
+            //   复制 —— 单文件选择器（ACTION_OPEN_DOCUMENT）产生的 document URI
+            //   没有 tree 授权段，loadGameFolder 构造的 tree URI 无持久权限 →
+            //   copySafFolderRecursive 抛 SecurityException → 返回 null → 报
+            //   "无法读取文件夹内容（.cue/.bin 音轨）"。而"导入文件夹"路径有
+            //   tree 授权所以正常 —— 这正是"单独导入 chd 报错、扫描文件夹正常"
+            //   的根因。
+            //   现在按格式分流：
+            //     · .chd/.iso/.cso/.img/.mdf —— 自包含单文件，直接单文件物化
+            //       （保留原始文件名 + 完整性标记），绝不碰 SAF 文件夹；
+            //     · .cue/.ccd/.mds —— 引用同目录兄弟轨道/描述文件，仍走整夹
+            //       复制（tree 授权可用时），失败再回落单文件物化。
+            val isSingleFileImage = romPath.endsWith(".chd", ignoreCase = true) ||
+                romPath.endsWith(".iso", ignoreCase = true) ||
+                romPath.endsWith(".cso", ignoreCase = true) ||
+                romPath.endsWith(".img", ignoreCase = true) ||
+                romPath.endsWith(".mdf", ignoreCase = true)
+            val subDir = if (platform == GamePlatform.PS2) "ps2_file" else "psx_file"
             val cdFile = withContext(Dispatchers.IO) {
-                loadGameFolder(context, romPath, game.id, "psx_cd")
+                if (isSingleFileImage) {
+                    materializePsxDisc(context, romPath, game.id, subDir)
+                } else {
+                    // .cue/.ccd/.mds：优先整夹（轨道文件一并带走）
+                    loadGameFolder(context, romPath, game.id, "psx_cd")
+                        // 整夹失败（无 tree 授权/单文件选择器导入）→ 单文件兜底。
+                        // .cue 可能缺 .bin 轨道，但部分 cue 只含单条 .bin 且用户
+                        // 可能把 .bin 放在了 ROM 同名目录 —— 物化后交给核心判定，
+                        // 核心的报错比"无法读取文件夹内容"明确得多。
+                        ?: materializePsxDisc(context, romPath, game.id, subDir)
+                }
             }
             if (cdFile == null) {
-                errorMsg = if (platform == GamePlatform.PS2) "PS2 加载失败：无法读取文件夹内容（.cue/.bin 音轨）"
-                           else "PS1 加载失败：无法读取文件夹内容（.cue/.bin 音轨）"
+                errorMsg = if (platform == GamePlatform.PS2) "PS2 加载失败：无法读取所选文件（存储权限或文件已移动）。\n建议：用「导入文件夹」选择包含 .cue 与音轨的目录，或直接导入 .chd/.iso 单文件"
+                           else "PS1 加载失败：无法读取所选文件（存储权限或文件已移动）。\n建议：用「导入文件夹」选择包含 .cue 与音轨的目录，或直接导入 .chd/.iso 单文件"
             } else {
                 // ★ 全核心统一 IO 线程加载（重开闪退/ANR 防护）
                 val ok = withContext(Dispatchers.IO) {
@@ -3396,7 +3539,7 @@ fun EmulatorScreen(
             //   下发（见上方 “Switch（Eden）预初始化”块），避免在 System::Load
             //   窗口内并发写配置（启动期竞态根因；EdenEngine 的 applySettings
             //   另有 isRunning 双保险）。
-            applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize)
+            applyCoreOptions(engine, padLayout, platform, n3dsSurfaceSize = surfaceSize, netplayActive = netplayController != null)
         }
     }
 
@@ -5460,7 +5603,9 @@ private fun applyCoreOptions(
     platform: GamePlatform = GamePlatform.NES,
     // ★ 3DS 双屏自定义布局：全屏 Surface 尺寸（归一化矩形 → 核心像素矩形
     //   的换算基准；IntSize.Zero 时按 0 写入，Surface 尺寸就绪后重算会覆盖）。
-    n3dsSurfaceSize: androidx.compose.ui.unit.IntSize = androidx.compose.ui.unit.IntSize.Zero
+    n3dsSurfaceSize: androidx.compose.ui.unit.IntSize = androidx.compose.ui.unit.IntSize.Zero,
+    // ★★ 联机对战模式：强制确定性关键选项两端一致（见 ARCADE 分支注释）。
+    netplayActive: Boolean = false
 ) {
     // ★ 批量事务：一次设置面板变更会连发几十个 setCoreOption ——
     //   AzaharEngine 旧行为每个键都全量重写 config.ini + reloadSettings +
@@ -5469,7 +5614,7 @@ private fun applyCoreOptions(
     //   提交一次。其它引擎 begin/end 为默认空实现，行为完全不变。
     engine.beginCoreOptionsBatch()
     try {
-        applyCoreOptionsInner(engine, layout, platform, n3dsSurfaceSize)
+        applyCoreOptionsInner(engine, layout, platform, n3dsSurfaceSize, netplayActive)
     } finally {
         engine.endCoreOptionsBatch()
     }
@@ -5624,7 +5769,8 @@ private fun applyCoreOptionsInner(
     engine: EmulatorEngine,
     layout: PadLayout,
     platform: GamePlatform,
-    n3dsSurfaceSize: androidx.compose.ui.unit.IntSize
+    n3dsSurfaceSize: androidx.compose.ui.unit.IntSize,
+    netplayActive: Boolean = false
 ) {
     when (platform) {
         // ★★ 3DS（Citra MMJ）—— MMJ 配置键直通（本轮新增）：
@@ -5851,18 +5997,28 @@ private fun applyCoreOptionsInner(
         }
         GamePlatform.ARCADE -> {
             // FBNeo core options — keys match libretro_core_options.h.
+            // ★★ 联机对战（netplayActive）：确定性关键选项强制两端一致 ——
+            //   两台设备各自的本地设置差异（CPU 超频/跳帧/NeoGeo 模式/记忆卡/
+            //   高分榜/改版覆盖）会让两端状态从帧 0 或中途发散 = "各玩各的"。
+            //   对战期间强制安全值；纯音视频选项（比例/裁剪/采样率等）不干预。
             engine.setCoreOption("fbneo-aspect", layout.arcadeAspect)
             engine.setCoreOption("fbneo-rotate-mode", layout.arcadeRotate)
             engine.setCoreOption("fbneo-vertical-mode", layout.arcadeVerticalMode)
             engine.setCoreOption("fbneo-crop-overscan", layout.arcadeCropOverscan)
-            engine.setCoreOption("fbneo-cpu-speed", layout.arcadeCpuSpeed)
-            engine.setCoreOption("fbneo-cpu-frameskip", layout.arcadeFrameskip)
-            engine.setCoreOption("fbneo-force-60hz", layout.arcadeForce60hz)
+            engine.setCoreOption("fbneo-cpu-speed", if (netplayActive) "100" else layout.arcadeCpuSpeed)
+            engine.setCoreOption("fbneo-cpu-frameskip", if (netplayActive) "0" else layout.arcadeFrameskip)
+            engine.setCoreOption("fbneo-force-60hz", if (netplayActive) "disabled" else layout.arcadeForce60hz)
             engine.setCoreOption("fbneo-samplerate", layout.arcadeSampleRate)
             engine.setCoreOption("fbneo-audio-interpolation", layout.arcadeAudioInterp)
             engine.setCoreOption("fbneo-lowpass", layout.arcadeLowpass)
-            engine.setCoreOption("fbneo-neogeo-mode", layout.arcadeNeogeomode)
-            engine.setCoreOption("fbneo-memcard-mode", layout.arcadeMemcard)
+            engine.setCoreOption("fbneo-neogeo-mode", if (netplayActive) "MVS" else layout.arcadeNeogeomode)
+            engine.setCoreOption("fbneo-memcard-mode", if (netplayActive) "disabled" else layout.arcadeMemcard)
+            // ★ 改版 ROM 兼容（参考 aFBN）：patched/ 覆盖 + IPS 补丁总开关；
+            //   高分榜写游戏 RAM。两者联机时强制关（两端状态分歧），单机按用户设置。
+            engine.setCoreOption("fbneo-allow-patched-romsets",
+                if (netplayActive) "disabled" else layout.arcadeAllowPatched)
+            engine.setCoreOption("fbneo-hiscores",
+                if (netplayActive) "disabled" else layout.arcadeHiscores)
         }
         GamePlatform.MD -> {
             // Genesis-Plus-GX core options — keys match libretro_core_options.h.
