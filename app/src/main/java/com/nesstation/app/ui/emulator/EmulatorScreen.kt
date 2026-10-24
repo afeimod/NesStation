@@ -2093,6 +2093,10 @@ fun EmulatorScreen(
                    padLayout.ndsDrasticAutosave,
                    // PSX / PCSX-ReARMed options — keys verified against the
                    // shipped core; wrong-key entries (padNtype/cpu_clock 等) 已移除
+                   // ★ v24: 补齐下发列表（pscxResScale/加速 Hack/增强辅件/居中三轴等
+                   //   此前不在触发键里 —— 主设置页改动后游戏内 LaunchedEffect 不重放，
+                   //   只能等重进游戏才生效，即用户反馈“设置不一致/无效果”的一环）；
+                   //   死键 pcsx_rearmed_gpu_peops_odd_even_bit 已移除（.so 无此变量）。
                    padLayout.pscxBios, padLayout.pscxRegion, padLayout.pscxFrameskipType,
                    padLayout.pscxFrameskip, padLayout.pscxFrameskipThreshold,
                    padLayout.pscxVibration, padLayout.pscxDithering, padLayout.pscxSpuInterp,
@@ -2108,8 +2112,14 @@ fun EmulatorScreen(
                    padLayout.pscxCdAudio, padLayout.pscxXaAudio, padLayout.pscxSpuThread,
                    padLayout.pscxPad1Type, padLayout.pscxPad2Type,
                    padLayout.pscxMultitap, padLayout.pscxNegconResponse,
-                   padLayout.pscxNegconDeadzone, padLayout.pscxGpuOddEven,
-                   padLayout.pscxAnalogAxis,
+                   padLayout.pscxNegconDeadzone, padLayout.pscxAnalogAxis,
+                   padLayout.pscxResScale, padLayout.pscxNoSmc,
+                   padLayout.pscxGteRegsUnneeded, padLayout.pscxNoGteFlags,
+                   padLayout.pscxNoStalls, padLayout.pscxExceptionEmu,
+                   padLayout.pscxNeonEnhanceNoMain, padLayout.pscxNeonEnhanceTexAdj,
+                   padLayout.pscxDisplayInternalFps, padLayout.pscxDisplayInfo,
+                   padLayout.pscxCenteringX, padLayout.pscxCenteringY,
+                   padLayout.pscxCenteringHAdj,
                    // PS2 / PCEE2 (PCSX2) options
                    padLayout.ps2Renderer, padLayout.ps2ResMulti, padLayout.ps2Bilinear,
                    padLayout.ps2FastBoot, padLayout.ps2HwDownloadMode, padLayout.ps2BlendingAccuracy,
@@ -6003,8 +6013,13 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("pcsx_rearmed_bios", layout.pscxBios)
             engine.setCoreOption("pcsx_rearmed_region", layout.pscxRegion)
             engine.setCoreOption("pcsx_rearmed_show_bios_bootlogo", layout.pscxShowBootlogo)
-            engine.setCoreOption("pcsx_rearmed_memcard1", layout.pscxMemcard1)
-            engine.setCoreOption("pcsx_rearmed_memcard2", layout.pscxMemcard2)
+            // ★ v24: 记忆卡下发侧同步归一 —— 旧 UI 写入的非法值 "disabled" 核心
+            //   不认（合法 libretro/serial/shared/none），存量值在此映射为 none，
+            //   避免用户不改设置就永远下发无效值。
+            engine.setCoreOption("pcsx_rearmed_memcard1",
+                if (layout.pscxMemcard1 == "disabled") "none" else layout.pscxMemcard1)
+            engine.setCoreOption("pcsx_rearmed_memcard2",
+                if (layout.pscxMemcard2 == "disabled") "none" else layout.pscxMemcard2)
             engine.setCoreOption("pcsx_rearmed_cd_readahead", layout.pscxCdReadahead)
 
             // --- CPU / 性能 ---
@@ -6074,7 +6089,9 @@ private fun applyCoreOptionsInner(
             engine.setCoreOption("pcsx_rearmed_multitap", layout.pscxMultitap)
             engine.setCoreOption("pcsx_rearmed_negcon_response", layout.pscxNegconResponse)
             engine.setCoreOption("pcsx_rearmed_negcon_deadzone", layout.pscxNegconDeadzone)
-            engine.setCoreOption("pcsx_rearmed_gpu_peops_odd_even_bit", layout.pscxGpuOddEven)
+            // ★ v24: 移除死键 pcsx_rearmed_gpu_peops_odd_even_bit —— 随包 .so
+            //   strings 实证无此变量（只有 pcsx_rearmed_show_gpu_peops_settings
+            //   展示开关），下发永远被核心忽略，白占 UI 两处（主设置/游戏内）。
         }
         GamePlatform.PS2 -> {
             // --- PCEE2 (PCSX2 v2.7.523) core options ---
@@ -15061,6 +15078,11 @@ private fun SettingsPanel(
                     (1..8).map { it.toString() to "${it}x native (${256*it}x${192*it})" },
                     padLayout.ndsResolution
                 ) { onLayoutChange(padLayout.copy {ndsResolution = it}) }
+                // ★ v24: 诚实标注 —— 随包 libmelonds .so strings 实证无任何
+                //   melonds_opengl_* 变量（纯软件渲染构建），GL 渲染器/分辨率
+                //   选了也不会被核心读取。避免用户调了“没效果”。
+                Text("注：当前随包 melonDS 核心为软件渲染构建，上述 GL 选项暂不生效（仅作预设保留，更换含 OpenGL 的核心构建后自动恢复）。",
+                    color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
                 Text("★ 选择 xBR/HQx 放大滤镜时，内部分辨率会话内自动按 1x 运行以保证滤镜生效（滤镜优先，此设置原样保留，滤镜关闭后恢复）；若画面未立即变化，重进游戏后必生效。",
                     color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
 
@@ -15379,11 +15401,6 @@ private fun SettingsPanel(
                     padLayout.pscxShowOverscan
                 ) { onLayoutChange(padLayout.copy {pscxShowOverscan = it}) }
 
-                DropdownSetting("GPU 奇偶行修正",
-                    listOf("disabled" to "关闭", "enabled" to "开启"),
-                    padLayout.pscxGpuOddEven
-                ) { onLayoutChange(padLayout.copy {pscxGpuOddEven = it}) }
-
                 DropdownSetting("抖动效果",
                     listOf("enabled" to "开启", "disabled" to "关闭", "force" to "强制"),
                     padLayout.pscxDithering
@@ -15403,11 +15420,20 @@ private fun SettingsPanel(
                            "4" to "4x (最锐利·高配)"),
                     padLayout.pscxResScale
                 ) { v ->
-                    onLayoutChange(padLayout.copy {pscxResScale = v})
+                    // ★ v24: 选 >1 时自动关掉「高质量缩放」—— 二者在 native 层
+                    //   互斥（psx_loader.cpp: 高质量缩放开着就 resScaleEff=0，倍数
+                    //   被无声跳过），自动解除冲突而不是让用户踩坑后以为“没效果”。
+                    val hadHq = padLayout.highQualityScaling
+                    onLayoutChange(padLayout.copy {
+                        pscxResScale = v
+                        if (v != "1") highQualityScaling = false
+                    })
                     if (v != "1") {
                         Toast.makeText(context,
-                            "已设 ${v}x：立即生效无需重进游戏；对 2D/CG/FMV 同样有效（与 NEON 2x 增强可叠加）",
-                            Toast.LENGTH_SHORT).show()
+                            "已设 ${v}x：立即生效无需重进游戏" +
+                                (if (hadHq) "；已自动关闭互斥的「高质量缩放」" else "") +
+                                "（若开了 XBR/HQx 类放大滤镜，请改回普通滤镜否则倍数不生效）",
+                            Toast.LENGTH_LONG).show()
                     }
                 }
 
@@ -15435,11 +15461,16 @@ private fun SettingsPanel(
                 // ★ v24: 实时输出分辨率读数 —— 判断增强是否真激活的铁证
                 //   （开启增强 + 重进游戏后 320x240 → 640x480；仍为原尺寸 =
                 //   游戏运行在高分辨率模式/24位色，上游按设计不增强）。
+                //   ★★ v24 补充：同时显示「前端呈现分辨率」（核心输出 × 分辨率
+                //   倍数）—— 倍数是呈现层放大不改核心输出，只看核心输出会误判
+                //   “倍数没效果”（此前用户感知“高分辨率无效”的误导源之一）。
                 val psxOutW = engine?.videoWidth() ?: 0
                 val psxOutH = engine?.videoHeight() ?: 0
+                val psxScaleN = padLayout.pscxResScale.toIntOrNull()?.coerceIn(1, 4) ?: 1
                 if (psxOutW > 0 && psxOutH > 0) {
                     Text(
-                        "当前核心输出：${psxOutW}x${psxOutH}" +
+                        "核心输出：${psxOutW}x${psxOutH}" +
+                            (if (psxScaleN > 1) " · 前端呈现：${psxOutW * psxScaleN}x${psxOutH * psxScaleN}（${psxScaleN}x 倍数生效中）" else "") +
                             (if (padLayout.pscxNeonEnhance == "enabled")
                                 "（重进游戏后翻倍 = 增强生效；不变 = 游戏为高分辨率模式，上游按设计不增强）" else ""),
                         color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
@@ -15499,21 +15530,32 @@ private fun SettingsPanel(
 
                 Spacer(Modifier.size(4.dp))
                 Text("CD/记忆卡", color = Color(0xFF8899AA), fontSize = 11.sp)
+                // ★ v24: 与主设置页统一值集 —— 记忆卡合法值 libretro/serial/shared/none
+                //   （旧 UI 的 "disabled" 核心不认：改“关闭”静默无效且丢 serial 档位）；
+                //   CD 预读统一 0/4/8/12/16/20/30（旧 6/18/24 与主设置不一致）。
                 DropdownSetting("CD 预读扇区",
-                    listOf("0" to "0", "6" to "6", "12" to "12(默认)", "18" to "18",
-                           "24" to "24", "30" to "30"),
+                    listOf("0" to "0", "4" to "4", "8" to "8", "12" to "12(默认)",
+                           "16" to "16", "20" to "20", "30" to "30"),
                     padLayout.pscxCdReadahead
                 ) { onLayoutChange(padLayout.copy {pscxCdReadahead = it}) }
 
                 DropdownSetting("记忆卡1",
-                    listOf("libretro" to "Libretro", "shared" to "共享", "disabled" to "关闭"),
-                    padLayout.pscxMemcard1
+                    listOf("libretro" to "Libretro (每游戏独立)", "serial" to "串行槽位",
+                           "shared" to "共享", "none" to "关闭"),
+                    if (padLayout.pscxMemcard1 == "disabled") "none" else padLayout.pscxMemcard1
                 ) { onLayoutChange(padLayout.copy {pscxMemcard1 = it}) }
 
                 DropdownSetting("记忆卡2",
-                    listOf("libretro" to "Libretro", "shared" to "共享", "disabled" to "关闭"),
-                    padLayout.pscxMemcard2
+                    listOf("libretro" to "Libretro", "serial" to "串行槽位",
+                           "shared" to "共享", "none" to "关闭"),
+                    if (padLayout.pscxMemcard2 == "disabled") "none" else padLayout.pscxMemcard2
                 ) { onLayoutChange(padLayout.copy {pscxMemcard2 = it}) }
+
+                // ★ v24: 指引到主设置页（与 PSP 面板同款做法）—— 游戏内放高频项，
+                //   低频项（屏幕居中/小数帧率/CD加速/CDDA·XA/NEON隔行/neGcon/ICache 等）
+                //   去主设置调，两处不再“乱七八糟”。
+                Text("更多 PSX 选项（屏幕居中 / 小数帧率 / CD 加速 / CDDA·XA 音轨 / neGcon / ICache 等）在 设置 → 核心设置 → PSX 中调整。",
+                    color = Color(0xFF8899AA), fontSize = 10.sp, lineHeight = 14.sp)
 
                 Spacer(Modifier.size(12.dp))
                 Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0x33FFFFFF)))

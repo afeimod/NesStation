@@ -860,6 +860,12 @@ fun CoreSettingsPanel(
                         listOf("enabled" to "开启(硬件加速,推荐)", "disabled" to "关闭(软件渲染)"),
                         padLayout.ndsOpenGlRenderer
                     ) { updateLayout(padLayout.copy {ndsOpenGlRenderer = it}) }
+                    // ★ v24: 诚实标注 —— 随包 libmelonds .so 无任何 melonds_opengl_*
+                    //   变量（纯软件渲染构建），GL 选项选了不会被核心读取。
+                    Text(
+                        "注：当前随包 melonDS 核心为软件渲染构建，OpenGL 渲染器及下列 GL 选项暂不生效" +
+                            "（仅作预设保留，更换含 OpenGL 的核心构建后自动恢复）。",
+                        color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
                     // 仅当 OpenGL 渲染器启用时显示分辨率选项
                     if (padLayout.ndsOpenGlRenderer == "enabled") {
                         DropdownRow("3D 渲染分辨率",
@@ -1195,7 +1201,7 @@ fun CoreSettingsPanel(
                     ) { updateLayout(padLayout.copy {pscxMemcard1 = it}) }
                     DropdownRow("记忆卡 2",
                         listOf("shared" to "共享 (默认)", "libretro" to "Libretro",
-                               "none" to "关闭"),
+                               "serial" to "串行槽位", "none" to "关闭"),
                         padLayout.pscxMemcard2
                     ) { updateLayout(padLayout.copy {pscxMemcard2 = it}) }
                     DropdownRow("CD 预读扇区",
@@ -1327,6 +1333,25 @@ fun CoreSettingsPanel(
                 }
 
                 SettingsSection("PSX · 画面") {
+                    // ★ v24: 补上「分辨率倍数」—— 此前只在游戏内面板有，主设置页没有
+                    //   （用户两处找不一致的根因之一）。与游戏内同款：前端整数放大，
+                    //   热切换立即生效；选 >1 时自动关闭互斥的「高质量缩放」
+                    //   （native 层二者互斥，同时开 = 倍数被无声跳过）。
+                    DropdownRow("分辨率倍数 (立即生效)",
+                        listOf("1" to "1x (原生·默认)", "2" to "2x (清晰·推荐)",
+                               "3" to "3x (更锐利)", "4" to "4x (最锐利·高配)"),
+                        padLayout.pscxResScale
+                    ) { v ->
+                        updateLayout(padLayout.copy {
+                            pscxResScale = v
+                            if (v != "1") highQualityScaling = false
+                        })
+                    }
+                    Text(
+                        "分辨率倍数 = 前端整数倍最近邻放大（热切换、对 2D/CG/FMV 全生效）；" +
+                            "若同时开 XBR/HQx 类放大滤镜或「高质量缩放」，倍数会被自动跳过（互斥）。" +
+                            "与下方 NEON 2x 增强（核心内部重渲染，仅 3D、需重进）可叠加。",
+                        color = Color(0xFFFDD835), fontSize = 10.sp, lineHeight = 14.sp)
                     DropdownRow("抖动(色彩过渡)",
                         listOf("enabled" to "开启(原始效果)", "disabled" to "关闭",
                                "force" to "强制 (游戏关闭时也开启·上游第三值)"),
@@ -1362,7 +1387,7 @@ fun CoreSettingsPanel(
                         padLayout.pscxNeonEnhanceTexAdj
                     ) { updateLayout(padLayout.copy {pscxNeonEnhanceTexAdj = it}) }
                     Text(
-                        "分辨率说明（上游 notaz/pcsx_rearmed 实证）：① 2倍增强 = NEON 内部 2x 渲染，" +
+                        "NEON 2x 增强说明（上游 notaz/pcsx_rearmed 实证）：① 2倍增强 = NEON 内部 2x 渲染，" +
                         "仅对 3D 画面且游戏为标准分辨率(≤512x256)模式时生效（480i/512i 高分辨率游戏与" +
                         " FMV 不增强，上游按设计）；② 改后需退出重进游戏（插件回调只在开插件时读取）；" +
                         "③ 勿同时开「高分辨率降采样」（会把 2x 输出砍回原尺寸，抵消增强）；" +
@@ -1447,10 +1472,10 @@ fun CoreSettingsPanel(
                 }
 
                 SettingsSection("PSX · 游戏兼容修正") {
-                    DropdownRow("Peops 奇偶位 Hack",
-                        listOf("disabled" to "关闭", "enabled" to "开启 (时空之轮需要)"),
-                        padLayout.pscxGpuOddEven
-                    ) { updateLayout(padLayout.copy {pscxGpuOddEven = it}) }
+                    // ★ v24: 移除「Peops 奇偶位 Hack」—— 随包 .so strings 实证无
+                    //   pcsx_rearmed_gpu_peops_odd_even_bit 变量（只有展示开关
+                    //   pcsx_rearmed_show_gpu_peops_settings），该设置永远无效，
+                    //   与游戏内面板同步删除，两处不再各留一个死项。
                     DropdownRow("iCache 模拟",
                         listOf("enabled" to "开启 (F1 系列需要)", "disabled" to "关闭 (稍快)"),
                         padLayout.pscxIcache

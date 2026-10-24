@@ -41,19 +41,28 @@ object NavHelper {
         // 从 PrefsManager.sp 直接读取（不依赖 FlashPrefs），
         // 因为 PrefsManager.sp 才是真正的数据源。
         val scale = PrefsManager.sp.getString("flash_scale", null) ?: "showAll"
-        val letterbox = when (PrefsManager.gameAspectRatio) {
-            // 4:3 / 16:9 / 16:10 / 5:4 等指定比例时，把 Ruffle letterbox 强制 on，
-            // 让 Ruffle 自身按 SWF 原生 stageSize letterbox，外层 buildRuffleAspectRatioScript
-            // 只控制外框大小 + 居中，**不会**改 ruffle-player 内部 stage 尺寸。
-            // 这样 Ruffle 内核能稳定执行引擎内部 letterbox 逻辑，画面比例完全可控。
-            "4:3", "16:9", "16:10", "5:4" -> "on"
-            // ★ stretch（全屏拉伸）：letterbox 关 + scale=exactFit（applyAspectRatio
-            //   已写入 flash_scale）—— SWF 无黑边拉伸铺满全屏；forceScale 由
-            //   player.html 按 aspect != auto 自动启用，压制 SWF 内部
-            //   Stage.scaleMode 自管（看图类 SWF"比例定死"的根因）。
-            "stretch" -> "off"
-            else -> "fullscreen"
-        }
+        // ★★ v24 修复「SWF 按比例拉伸无效、各种黑边」：
+        //   旧版 letterbox 完全不读 flash_letterbox 偏好（两处播放器的
+        //   applyAspectRatio 写了却没人消费 = 死键），只从 game_aspect_ratio
+        //   自行推导，且对 4:3/16:9 等比例模式错传 "on" —— Ruffle 的
+        //   letterbox 渲染路径优先于 scale：外层 CSS 已把 #stage 缩成指定
+        //   比例框，框内引擎又按 SWF 原生 stageSize letterbox 加黑边 =
+        //   双重黑边，exactFit 永远不生效（必现“拉伸无效果”）。
+        //   现在改为：优先读 flash_letterbox 偏好（与 flash_scale 同源），
+        //   偏好缺失时才回退到推导（回退映射同步修正：比例模式 → off）。
+        //     · auto   = showAll + on/fullscreen（保持原比例，黑边属预期）
+        //     · stretch = exactFit + off（无黑边铺满全屏）
+        //     · 4:3 等 = exactFit + off（拉伸填满外层比例框，无内层黑边）
+        val letterboxPref = PrefsManager.sp.getString("flash_letterbox", null)
+        val letterbox: String =
+            if (letterboxPref != null && letterboxPref in setOf("on", "off", "fullscreen")) {
+                letterboxPref
+            } else when (PrefsManager.gameAspectRatio) {
+                "stretch" -> "off"
+                // 比例模式同样 off：外层比例框 + exactFit 填满，引擎不再叠黑边
+                "4:3", "16:9", "16:10", "5:4" -> "off"
+                else -> "fullscreen"
+            }
         val quality = PrefsManager.flashQuality
         // WAFlash 引擎使用独立的 waflash.html 页面（canvas 渲染 + ES module）
         // 从 flash.local 虚拟域名加载，确保 Emscripten 的 fetch/XHR 能正常工作

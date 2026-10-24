@@ -248,8 +248,22 @@ fun SwfPlayerScreen(
 
     fun reload() {
         val wv = webViewRef.value ?: return
-        val swfProxy = "https://flash.local/local.swf?t=${System.currentTimeMillis()}"
-        val playerUrl = NavHelper.playerUrl(swfProxy, base = null, title = null)
+        // ★★ v24: 保留当前播放页的 swf/base 参数重建 URL（与 WebGameScreen
+        //   applyAspectRatio 的重载同款）—— 旧版固定 base=null，改比例/引擎
+        //   触发 reload 后多文件 SWF 的 base 丢失，只能靠资源拦截兑底，
+        //   失败即黑屏；现在在播放页上原样带回。
+        val curUrl = wv.url ?: ""
+        var swfParam: String? = null
+        var baseUrl: String? = null
+        if (curUrl.startsWith("https://flash.local/")) {
+            try {
+                val parsed = android.net.Uri.parse(curUrl)
+                swfParam = parsed.getQueryParameter("swf")
+                baseUrl = parsed.getQueryParameter("base")
+            } catch (_: Throwable) {}
+        }
+        val swfProxy = swfParam ?: "https://flash.local/local.swf?t=${System.currentTimeMillis()}"
+        val playerUrl = NavHelper.playerUrl(swfProxy, base = baseUrl, title = null)
         wv.releaseAllKeys()
         wv.loadUrl(playerUrl)
     }
@@ -263,7 +277,10 @@ fun SwfPlayerScreen(
         //   【自动重载播放页】让新参数立即生效（进度会重置，属预期代价）：
         //     · auto   = showAll + letterbox on（保持原比例不变形）
         //     · stretch = exactFit + letterbox off（无黑边拉伸铺满全屏）
-        //     · 4:3 等 = exactFit + letterbox on（拉伸填满指定比例外框）
+        //     · 4:3 等 = exactFit + letterbox off（拉伸填满指定比例外框；
+        //       ★ v24 修正：旧注释写 on —— Ruffle letterbox 优先于 scale，
+        //       框内又按原生比例加黑边 = 双重黑边，实际写的是 off 才对，
+        //       NavHelper 侧消费链同步已修）
         val spEdit = PrefsManager.sp.edit().putString("game_aspect_ratio", ratio)
         when (ratio) {
             "auto" -> spEdit.putString("flash_scale", "showAll").putString("flash_letterbox", "on")

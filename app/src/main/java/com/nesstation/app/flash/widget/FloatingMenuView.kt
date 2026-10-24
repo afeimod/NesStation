@@ -43,6 +43,11 @@ import android.widget.Toast
  *   任意底色仍可辨）；
  * - 单元 56dp → 48dp、徽章 26dp → 22dp、字形 11sp → 10sp、标签 9sp → 8sp、
  *   列数横屏 5 → 6 / 竖屏 4 → 5、行距 4dp → 3dp、容器内距 2dp → 1dp。
+ * ★ v24 竖屏紧凑化（用户反馈：「悬浮球调出的菜单排列太长了」）：
+ * - 竖屏不再四节自上而下堆叠（约 4×52dp ≈ 210dp 长条），改为【四列并排】
+ *   —— 每列 = 节标签 + 该节功能项竖排，总高收至 ~180dp、宽 ~215dp，
+ *   整体呈紧凑表格，竖屏下半屏不再被长条菜单挡住；
+ * - 竖屏单元 48dp → 44dp、列间距 8dp；横屏 2×2 分区布局保持不变。
  * ★ v15 可见性修复（用户反馈："悬浮菜单看不见了，颜色弄好点"）：
  * v14 全透明悬浮在浅色/噪点网页上被淹没（徽章底仅 26% alpha、标签浅灰蓝
  * DDE3EE）。本次：尺寸不动（38dp 球 / 56dp 单元 / 26dp 徽章 / 9sp），每个
@@ -365,9 +370,10 @@ class FloatingMenuView @JvmOverloads constructor(
             "portrait" -> false
             else -> isLandscapeRes
         }
-        // ★ 菜单优化版：单元规格沿用 v23 紧凑口径（48dp 单元 / 22dp 徽章 / 10sp 字形 / 8sp 标签）
+        // ★ 菜单优化版：单元规格沿用 v23 紧凑口径（48dp 单元 / 22dp 徽章 / 10sp 字形 / 8sp 标签）；
+        //   ★ v24 竖屏四列布局单元再收一档 44dp（长条 → 紧凑表格的总高度关键）。
         val sections = menuSections()
-        val cell = dp(48)
+        val cell = if (useWideLayout) dp(48) else dp(44)
 
         // ★ v14: 无背景容器 —— 徽章+文字直接悬浮在页面上（用户"不要背景"）
         val menuContainer = LinearLayout(context).apply {
@@ -430,10 +436,12 @@ class FloatingMenuView @JvmOverloads constructor(
             }
         }
 
-        // ---- ★ 菜单优化版：节（标签行 + 单行功能项） ----
+        // ---- ★ 菜单优化版：节（标签行 + 功能项行） ----
         //   accentStart：该节第一项的全局序号 —— 彩色徽章仍按全局序轮转取色，
         //   与浏览器收藏卡片同一视觉语言；节标签独立小字 + 阴影保证可读。
-        fun buildSection(section: MenuSection, accentStart: Int): View {
+        //   ★ v24: itemsPerRow 参数 —— 横屏默认全部一项一行（旧版行为不变）；
+        //   竖屏传 1 → 功能项竖排成列（配合下方四列并排容器）。
+        fun buildSection(section: MenuSection, accentStart: Int, itemsPerRow: Int = section.items.size): View {
             val sectionView = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
             }
@@ -451,22 +459,27 @@ class FloatingMenuView @JvmOverloads constructor(
                 letterSpacing = 0.12f
                 setPadding(dp(6), 0, dp(6), dp(1))
             })
-            val itemRow = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
+            var idx = 0
+            section.items.chunked(itemsPerRow.coerceAtLeast(1)).forEach { rowItems ->
+                val itemRow = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                }
+                rowItems.forEach { item ->
+                    itemRow.addView(buildCell(item, accentStart + idx))
+                    idx++
+                }
+                sectionView.addView(itemRow)
             }
-            section.items.forEachIndexed { i, item ->
-                itemRow.addView(buildCell(item, accentStart + i))
-            }
-            sectionView.addView(itemRow)
             return sectionView
         }
 
         // ---- ★ 菜单优化版：布局排布 ----
         //   宽布局（横屏或偏好横排）：2×2 分区并排（[网页|显示] / [输入|引擎]）——
         //          宽屏横向利用空间，总高度 ~2 节（比旧版 3 行网格更矮）；
-        //   窄布局（竖屏或偏好竖排）：四节自上而下堆叠 —— 每节 ≤4 项占满一行，
-        //          绝无孤行残项；横屏看图（竖向内容）时菜单窄而不挡画面。
+        //   窄布局（竖屏或偏好竖排）：★ v24 四列并排 —— 每列 = 节标签 +
+        //          该节功能项竖排（网页|显示|输入|引擎），总高 ~180dp 紧凑
+        //          表格，不再四节堆叠成长条（用户反馈“菜单排列太长了”）。
         if (useWideLayout) {
             fun sectionRow(pair: List<Pair<MenuSection, Int>>): LinearLayout {
                 return LinearLayout(context).apply {
@@ -492,13 +505,26 @@ class FloatingMenuView @JvmOverloads constructor(
             menuContainer.addView(top)
             menuContainer.addView(bottom)
         } else {
+            // ★ v24 紧凑四列：竖屏不再四节竖排堆叠（~210dp 长条），改为
+            //   网页|显示|输入|引擎 四列并排 —— 每列自带节标签 + 竖排功能项，
+            //   总高收至 ~180dp；列间以 8dp 空隙分隔（无背景，透明悬浮不变）。
+            val columnsRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
             var accent = 0
             sections.forEachIndexed { si, sec ->
-                val v = buildSection(sec, accent)
+                val col = buildSection(sec, accent, 1)
+                col.setPadding(dp(4), 0, dp(4), 0)
+                if (si > 0) {
+                    columnsRow.addView(View(context), LinearLayout.LayoutParams(dp(8), 1).apply {
+                        gravity = Gravity.CENTER_VERTICAL
+                    })
+                }
+                columnsRow.addView(col)
                 accent += sec.items.size
-                if (si < sections.lastIndex) v.setPadding(0, 0, 0, dp(4))
-                menuContainer.addView(v)
             }
+            menuContainer.addView(columnsRow)
         }
 
         // ---- ★ 菜单优化版：先测量再定位（防出屏） ----

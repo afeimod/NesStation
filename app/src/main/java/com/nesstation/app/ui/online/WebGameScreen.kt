@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 // ★ 主页优化版：横屏/平板下搜索框、引擎行、收藏网格限宽居中所需
 import androidx.compose.foundation.layout.widthIn
+// ★ v24: 收藏网格限高（heightIn）—— 网格不再吃满剩余高度
+import androidx.compose.foundation.layout.heightIn
 // ★ v11 浏览器化：工具栏/收藏夹主页所需
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -2684,15 +2686,17 @@ private fun BrowserHomeOverlay(
             androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
             // ---- ★ v19: 中央搜索框（仿图中主页：白底圆角长条 + 引擎徽标 + 搜索按钮） ----
             //   ★ v22: 46dp → 38dp 紧凑瘦身（用户反馈对比图二"差的太多，都缩小点"）
-            //   ★ 主页优化版：限宽 520dp 居中 —— 横屏/平板不再拉成超长搜索条，
-            //      保持仿图二"简洁主页"的紧凑观感。
+            //   ★ 主页优化版：限宽 520dp 居中。
+            //   ★★ v24（用户反馈"搜索框太长"）：旧 fillMaxWidth()+widthIn(520dp) 在
+            //      竖屏（内容宽 ~360-412dp）限宽完全不生效 → 搜索条几乎占满全屏宽。
+            //      改为 fillMaxWidth(0.82f) + 上限 380dp：竖屏 ~295-338dp 明显收短，
+            //      横屏/平板最多 380dp，与引擎行/收藏网格同轴对齐。
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 520.dp)
+                    .fillMaxWidth(0.82f)
+                    .widthIn(max = 380.dp)
                     .align(Alignment.CenterHorizontally)
-                    .padding(horizontal = 20.dp)
                     .height(38.dp)
                     .clip(androidx.compose.foundation.shape.RoundedCornerShape(50))
                     .background(Color(0xF2FFFFFF))
@@ -2759,12 +2763,13 @@ private fun BrowserHomeOverlay(
             }
             androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
             // ---- 引擎快捷切换行（仿图中引擎列表：当前引擎高亮，其余半透明白） ----
-            //   ★ 主页优化版：与搜索框同宽限宽 520dp 居中，两者对齐成一体。
+            //   ★ 主页优化版：与搜索框同宽限宽居中，两者对齐成一体。
+            //   ★★ v24：同步搜索框新口径（0.82f + 380dp 上限），保持同轴对齐。
             Row(
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 520.dp)
+                    .fillMaxWidth(0.82f)
+                    .widthIn(max = 380.dp)
                     .align(Alignment.CenterHorizontally)
             ) {
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
@@ -2833,16 +2838,21 @@ private fun BrowserHomeOverlay(
             //   「简洁主页」小图标多列紧凑观感（竖屏 5-6 列，间距均匀不空旷）。
             //   ★ 主页优化版：网格限宽 640dp 居中 —— 横屏/平板上收藏图标不再
             //      摊满整屏宽度，与搜索区同轴对齐；单元密度维持 v22 紧凑口径。
+            //   ★★ v24（用户反馈"收藏夹的排列也太长"）：旧 weight(1f) 让网格吃掉
+            //      全部剩余高度（竖屏 12 个种子收藏铺满下半屏）；改为
+            //      heightIn(max=184dp)（约 3 行）+ 列更密（Adaptive 60→56dp）+
+            //      行距 8→6dp —— 网格自身不再掉长屏，超出部分在小区内滚动；
+            //      底部提示行由 Spacer(weight(1f)) 压到屏幕底部，中部留白显壁纸。
             LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 60.dp),
+                columns = GridCells.Adaptive(minSize = 56.dp),
                 modifier = Modifier
-                    .weight(1f)
+                    .heightIn(max = 184.dp)
                     .fillMaxWidth()
                     .widthIn(max = 640.dp)
                     .align(Alignment.CenterHorizontally)
                     .padding(horizontal = 8.dp),
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp)
             ) {
                 // ★ v20: gridItems 是 LazyGridScope 的 List 扩展（同 2333 行标签栏 items 用法），
                 //   原误传数量 Int 导致 CI 六连错（重载不匹配→lambda 类型不可推断→Composable 上下文丢失）。
@@ -2857,6 +2867,8 @@ private fun BrowserHomeOverlay(
                     DesktopAddShortcut(onClick = onAdd)
                 }
             }
+            // ★ v24: 网格限高后中段留白显壁纸，底部提示行压到屏幕底部
+            androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
             Text(
                 "双指缩放 · 点击打开 · 长按管理 · 齿轮设置背景",
                 color = Color(0xFF8FA2B8),
