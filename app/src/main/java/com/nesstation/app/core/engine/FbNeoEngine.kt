@@ -88,6 +88,13 @@ class FbNeoEngine private constructor() : EmulatorEngine {
 
         FbNeoNative.setPaths(systemDir, saveDir)
 
+        // ★★ 改版 .dif 兼容（kof97t 三问等）：上游审计要求 romset 同时包含
+        //   完整改版 ROM 与 .dif 差分文件，用户手里的"完整 ROM 版"zip 因缺
+        //   .dif 被拒。进核心前向 <systemDir>/fbneo/patched/ 铺零填充占位
+        //   （fbneo-allow-patched-romsets 已默认开启，patched 目录免 CRC、
+        //   仅校验文件名+长度），全零 XOR 为无操作，游戏按原 ROM 运行。
+        FbNeoDifCompat.ensureDifPatches(rom, systemDir)
+
         if (!FbNeoNative.loadRom(rom.absolutePath)) {
             return false
         }

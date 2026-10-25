@@ -16,15 +16,19 @@
 
 package com.mascotcapsule.micro3d.v3;
 
-import androidx.annotation.NonNull;
+import ru.woesss.j2me.micro3d.MathUtil;
 
-@SuppressWarnings("unused, WeakerAccess")
 public class Vector3D {
 	public int x;
 	public int y;
 	public int z;
 
-	public Vector3D() {
+	public Vector3D() {}
+
+	public Vector3D(int x, int y, int z) {
+		this.x = x;
+		this.y = y;
+		this.z = z;
 	}
 
 	public Vector3D(Vector3D v) {
@@ -36,28 +40,79 @@ public class Vector3D {
 		z = v.z;
 	}
 
-	public Vector3D(int x, int y, int z) {
-		this.x = x;
-		this.y = y;
-		this.z = z;
+	public final int getX() {
+		return x;
+	}
+
+	public final int getY() {
+		return y;
+	}
+
+	public final int getZ() {
+		return z;
+	}
+
+	public final int innerProduct(Vector3D v) {
+		if (v == null) {
+			throw new NullPointerException();
+		}
+		return x * v.x + y * v.y + z * v.z;
 	}
 
 	public static int innerProduct(Vector3D v1, Vector3D v2) {
-		if (v1 == null || v2 == null) {
+		if (v1 == null) {
 			throw new NullPointerException();
 		}
 		return v1.innerProduct(v2);
+	}
+
+	public final void outerProduct(Vector3D v) {
+		if (v == null) {
+			throw new NullPointerException();
+		}
+		int x = this.x;
+		int y = this.y;
+		int z = this.z;
+		this.x = y * v.z - z * v.y;
+		this.y = z * v.x - x * v.z;
+		this.z = x * v.y - y * v.x;
 	}
 
 	public static Vector3D outerProduct(Vector3D v1, Vector3D v2) {
 		if (v1 == null || v2 == null) {
 			throw new NullPointerException();
 		}
-		Vector3D dst = new Vector3D();
-		dst.x = v1.y * v2.z - v1.z * v2.y;
-		dst.y = v1.z * v2.x - v1.x * v2.z;
-		dst.z = v1.x * v2.y - v1.y * v2.x;
-		return dst;
+		int x = v1.y * v2.z - v1.z * v2.y;
+		int y = v1.z * v2.x - v1.x * v2.z;
+		int z = v1.x * v2.y - v1.y * v2.x;
+		return new Vector3D(x, y, z);
+	}
+
+	public final void set(int x, int y, int z) {
+		this.x = x;
+		this.y = y;
+		this.z = z;
+	}
+
+	public final void set(Vector3D v) {
+		if (v == null) {
+			throw new NullPointerException();
+		}
+		x = v.x;
+		y = v.y;
+		z = v.z;
+	}
+
+	public final void setX(int x) {
+		this.x = x;
+	}
+
+	public final void setY(int y) {
+		this.y = y;
+	}
+
+	public final void setZ(int z) {
+		this.z = z;
 	}
 
 	public final void unit() {
@@ -75,7 +130,7 @@ public class Vector3D {
 			y >>= shift;
 			z >>= shift;
 		}
-		int i = Util3D.sqrt(x * x + y * y + z * z);
+		int i = MathUtil.uSqrt(x * x + y * y + z * z);
 		if (i != 0) {
 			this.x = (x << 12) / i;
 			this.y = (y << 12) / i;
@@ -85,69 +140,5 @@ public class Vector3D {
 			this.y = 0;
 			this.z = 4096;
 		}
-	}
-
-	public final int getX() {
-		return x;
-	}
-
-	public final void setX(int x) {
-		this.x = x;
-	}
-
-	public final int getY() {
-		return y;
-	}
-
-	public final void setY(int y) {
-		this.y = y;
-	}
-
-	public final int getZ() {
-		return z;
-	}
-
-	public final void setZ(int z) {
-		this.z = z;
-	}
-
-	public final void set(Vector3D v) {
-		if (v == null) {
-			throw new NullPointerException();
-		}
-		x = v.x;
-		y = v.y;
-		z = v.z;
-	}
-
-	public final void set(int x, int y, int z) {
-		this.x = x;
-		this.y = y;
-		this.z = z;
-	}
-
-	public final int innerProduct(Vector3D v) {
-		if (v == null) {
-			throw new NullPointerException();
-		}
-		return x * v.x + y * v.y + z * v.z;
-	}
-
-	public final void outerProduct(Vector3D v) {
-		if (v == null) {
-			throw new NullPointerException();
-		}
-		int x = this.x;
-		int y = this.y;
-		int z = this.z;
-		this.x = y * v.z - z * v.y;
-		this.y = z * v.x - x * v.z;
-		this.z = x * v.y - y * v.x;
-	}
-
-	@NonNull
-	@Override
-	public String toString() {
-		return "Vector3D{" + x + ", " + y + ", " + z + "}";
 	}
 }

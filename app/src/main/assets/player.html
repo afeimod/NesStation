@@ -165,7 +165,23 @@
         player.style.width = '100%';
         player.style.height = '100%';
         player.style.display = 'block';
-        var opt = { url: SWF_URL, allowScriptAccess: true };
+        // ★★ v26 加固：scale/letterbox/forceScale/forceAlign 除了写入
+        //   window.RufflePlayer.config（全局配置，加载期合并）之外，
+        //   再随 load() 的 per-load options 直接传递一次。
+        //   Ruffle 的 load() 配置合并顺序为 {...内置默认, ...window.RufflePlayer.config,
+        //   ...元素自身config, ...perLoadOptions} —— per-load 优先级最高，
+        //   即使个别 WebView 版本上全局配置对象被页面脚本/ruffle.js 自身
+        //   重建时机覆盖，exactFit 拉伸也必然生效（用户反馈"选拉伸依旧 4:3"
+        //   的最后一道保险）。
+        var opt = {
+          url: SWF_URL,
+          allowScriptAccess: true,
+          scale: SCALE,
+          letterbox: LETTERBOX,
+          forceScale: ASPECT_RAW !== 'auto',
+          forceAlign: ASPECT_RAW !== 'auto',
+          quality: QUALITY
+        };
         if (BASE_URL) opt.base = BASE_URL;
         player.ruffle().load(opt);
         document.getElementById('loading').style.display = 'none';
@@ -213,7 +229,16 @@
         stage.appendChild(player);
         player.style.width = '100%';
         player.style.height = '100%';
-        var opt = { url: url, allowScriptAccess: true };
+        // ★★ v26 同步加固：per-load options 直带缩放配置（与首次加载一致）
+        var opt = {
+          url: url,
+          allowScriptAccess: true,
+          scale: SCALE,
+          letterbox: LETTERBOX,
+          forceScale: ASPECT_RAW !== 'auto',
+          forceAlign: ASPECT_RAW !== 'auto',
+          quality: QUALITY
+        };
         if (base) opt.base = base;
         player.ruffle().load(opt);
       } catch(e) { console.error(e); }

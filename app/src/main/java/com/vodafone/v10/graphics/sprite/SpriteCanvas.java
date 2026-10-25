@@ -16,6 +16,8 @@
 
 package com.vodafone.v10.graphics.sprite;
 
+import android.graphics.Color;
+
 import java.util.ArrayList;
 
 import javax.microedition.lcdui.Canvas;
@@ -38,7 +40,7 @@ public abstract class SpriteCanvas extends Canvas {
 	}
 
 	public void createFrameBuffer(int fw, int fh) {
-		spriteImage = Image.createImage(fw, fh, 0);
+		spriteImage = Image.createImage(fw, fh, Color.WHITE);
 		graphics = spriteImage.getGraphics();
 	}
 

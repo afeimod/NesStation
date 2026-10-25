@@ -1,25 +1,20 @@
 /*
- *  Copyright 2020 Yury Kharchenko
+ * Copyright 2020-2025 Yury Kharchenko
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
-package com.mascotcapsule.micro3d.v3;
-
-import static com.mascotcapsule.micro3d.v3.Util3D.TAG;
-import static com.mascotcapsule.micro3d.v3.Utils.IDENTITY_AFFINE;
-import static com.mascotcapsule.micro3d.v3.Utils.TO_FLOAT;
-import static com.mascotcapsule.micro3d.v3.Utils.TO_RADIANS;
+package ru.woesss.j2me.micro3d;
 
 import android.util.Log;
 import android.util.SparseIntArray;
@@ -27,23 +22,28 @@ import android.util.SparseIntArray;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
 class Loader {
-	private static final int[] POOL_NORMALS = new int[]{0, 0, 64, 0, 0, -64, 0, 0};
+	private static final int BMP_FILE_HEADER_SIZE = 14;
+	private static final int BMP_VERSION_3 = 40;
+	private static final int BMP_VERSION_CORE = 12;
+	private static final int[] POOL_NORMALS = new int[]{0, 0, 4096, 0, 0, -4096, 0, 0};
 	private static final int[] SIZES = {8, 10, 13, 16};
-	private final byte[] mBytes;
+	private final byte[] data;
+	private final int length;
 	private int pos;
 	private int cached;
 	private int cache;
 
-	private Loader(byte[] bytes) {
-		this.mBytes = bytes;
+	private Loader(byte[] data, int offset, int length) {
+		this.data = data;
+		this.length = length;
+		pos = offset;
 	}
 
-	static Model loadMbacData(byte[] bytes) throws IOException {
-		Loader loader = new Loader(bytes);
+	static Model loadMbacData(byte[] data, int offset, int length) throws IOException {
+		Loader loader = new Loader(data, offset, length);
 		if (loader.readUByte() != 'M' || loader.readUByte() != 'B') {
 			throw new RuntimeException("Not a MBAC file");
 		}
@@ -100,7 +100,7 @@ class Loader {
 					numVertices, numTextures, numPatterns, numColors));
 		}
 
-		Model data = new Model(numVertices, numBones, numPatterns,
+		Model model = new Model(numVertices, numBones, numPatterns,
 				numTextures, numPolyT3, numPolyT4, numPolyC3, numPolyC4);
 		int[][][] patterns = new int[numPatterns][(numTextures + 1)][2];
 		if (version == 5) {
@@ -118,17 +118,17 @@ class Loader {
 		}
 
 		if (vertexFormat == 1) {
-			loader.readVerticesV1(data.originalVertices);
+			loader.readVerticesV1(model.originalVertices);
 		} else if (vertexFormat == 2) {
-			loader.readVerticesV2(data.originalVertices);
+			loader.readVerticesV2(model.originalVertices);
 		} else {
 			throw new RuntimeException("Unexpected vertexFormat: " + vertexFormat);
 		}
 		loader.clearCache();
-		data.originalVertices.rewind();
+		model.originalVertices.rewind();
 
 		if (normalFormat != 0) {
-			FloatBuffer normals = ByteBuffer.allocateDirect(numVertices * 3 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+			FloatBuffer normals = BufferUtils.createFloatBuffer(numVertices * 3);
 			if (normalFormat == 1) {
 				try {
 					loader.readNormalsV1(normals);
@@ -147,28 +147,28 @@ class Loader {
 				throw new RuntimeException("Unsupported normalFormat: " + normalFormat);
 			}
 			normals.rewind();
-			data.originalNormals = normals;
+			model.originalNormals = normals;
 			int len = numVertices * 3 + 3;
-			data.normals = ByteBuffer.allocateDirect(len * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
-			data.normals.put(--len, 1.0f);
+			model.normals = BufferUtils.createFloatBuffer(len);
+			model.normals.put(--len, 1.0f);
 		}
 		loader.clearCache();
 
-		if (data.hasPolyC) {
-			loader.readPolyC(data, numVertices, numColors, numPolyC3);
+		if (model.hasPolyC) {
+			loader.readPolyC(model, numVertices, numColors, numPolyC3);
 		}
 
-		if (data.hasPolyT) {
+		if (model.hasPolyT) {
 
 			switch (polygonFormat) {
 				case 1:
-					loader.readPolyV1(data, numVertices, numPolyT3);
+					loader.readPolyV1(model, numVertices, numPolyT3);
 					break;
 				case 2:
-					loader.readPolyV2(data, numVertices, numPolyT3);
+					loader.readPolyV2(model, numVertices, numPolyT3);
 					break;
 				case 3:
-					loader.readPolyV3(data, numVertices, numPolyT3);
+					loader.readPolyV3(model, numVertices, numPolyT3);
 					break;
 				default:
 					throw new RuntimeException("Unexpected polygonFormat: " + polygonFormat);
@@ -181,8 +181,8 @@ class Loader {
 		int t3 = 0;
 		int t4 = numPolyT3;
 
-		Model.Polygon[] polygonsC = data.polygonsC;
-		Model.Polygon[] polygonsT = data.polygonsT;
+		Model.Polygon[] polygonsC = model.polygonsC;
+		Model.Polygon[] polygonsT = model.polygonsT;
 		for (int i = 0; i < numPatterns; i++) {
 			final int[][] pattern = patterns[i];
 			int[] polygons = pattern[0];
@@ -213,7 +213,7 @@ class Loader {
 			}
 		}
 
-		int count = loader.readBones(numBones, data);
+		int count = loader.readBones(numBones, model);
 		if (count != numVertices) {
 			throw new RuntimeException("Bones vertices = " + count + ", but all vertices = " + numVertices);
 		}
@@ -223,67 +223,145 @@ class Loader {
 			available -= 20;
 		}
 		if (available > 0) {
-			Log.e(TAG, "Uninterpreted bytes in MBAC (" + available + ", v=" + version);
+			Log.e(Utils.TAG, "Uninterpreted bytes in MBAC (" + available + ", v=" + version);
 		}
 
-		return data;
+		return model;
 	}
 
-	static Action[] loadMtraData(byte[] bytes) throws IOException {
-		Loader reader = new Loader(bytes);
-		if (reader.readUByte() != 'M' || reader.readUByte() != 'T') {
+	static Action[] loadMtraData(byte[] data, int offset, int length) throws IOException {
+		Loader loader = new Loader(data, offset, length);
+		if (loader.readUByte() != 'M' || loader.readUByte() != 'T') {
 			throw new RuntimeException("Not a MTRA file");
 		}
-		int version = reader.readUByte();
-		if (reader.readUByte() != 0 || version < 2 || version > 5) {
+		int version = loader.readUByte();
+		if (loader.readUByte() != 0 || version < 2 || version > 5) {
 			throw new RuntimeException("Unsupported version: " + version);
 		}
 
-		int numActions = reader.readUShort();
-		int numBones = reader.readUShort();
+		int numActions = loader.readUShort();
+		int numBones = loader.readUShort();
 		Action[] actions = new Action[numActions];
 		// number of bones by transform types
 		int[] transTypeCounts = new int[8];
 		for (int i = 0; i < 8; i++) {
-			transTypeCounts[i] = reader.readUShort();
+			transTypeCounts[i] = loader.readUShort();
 		}
 		if (transTypeCounts[7] != 0) {
 			// index 7 is unknown, I did not find mtra with non-zero value
-			Log.w(TAG, "ActTableData: transTypeCounts[7] = " + transTypeCounts[7]);
+			Log.w(Utils.TAG, "ActTableData: transTypeCounts[7] = " + transTypeCounts[7]);
 		}
 		//noinspection unused
-		int dataSize = reader.readInt();
-		// 'dataSize' and 'transTypeCounts' may be used for allocate memory and verify data)
+		int dataSize = loader.readInt();
+		// 'dataSize' and 'transTypeCounts' may be used for allocate memory and verify data
 
 		for (int action = 0; action < numActions; action++) {
-			int keyframes = reader.readUShort();
+			int keyframes = loader.readUShort();
 			Action act = new Action(keyframes, numBones);
 			actions[action] = act;
 
 			for (int bone = 0; bone < numBones; bone++) {
-				act.boneActions[bone] = reader.readBoneAction(act, bone * 12);
+				act.boneActions[bone] = loader.readBoneAction(act, bone * 12);
 			}
 			if (version < 5) continue;
 			// dynamic polygons chunk
-			int count = reader.readUShort();
+			int count = loader.readUShort();
 			final SparseIntArray sparseIntArray = new SparseIntArray(count);
 			actions[action].dynamic = sparseIntArray;
 			for (int j = 0; j < count; j++) {
-				int frame = reader.readUShort();
-				int pattern = reader.readInt();
+				int frame = loader.readUShort();
+				int pattern = loader.readInt();
 				sparseIntArray.put(frame, pattern);
 			}
 		}
 
-		int available = reader.available();
+		int available = loader.available();
 		if (version >= 4) {
 			available -= 20;
 		}
 		if (available > 0) {
-			Log.e(TAG, "ActTableData: uninterpreted bytes in MTRA");
+			Log.e(Utils.TAG, "ActTableData: uninterpreted bytes in MTRA");
 		}
 
 		return actions;
+	}
+
+	static TextureData loadBmpData(byte[] data, int offset, int length) throws IOException {
+		Loader loader = new Loader(data, offset, length);
+		if (loader.readUByte() != 'B' || loader.readUByte() != 'M') {
+			throw new RuntimeException("Not a BMP!");
+		}
+		loader.skip(BMP_FILE_HEADER_SIZE - 6);
+
+		int rasterOffset = loader.readInt();
+		int dibHeaderSize = loader.readInt();
+
+		int width;
+		int height;
+		int numColors;
+		int colorSize;
+		if (dibHeaderSize == BMP_VERSION_CORE) {
+			width = loader.readUShort();
+			height = loader.readUShort();
+			loader.skip(2);
+			int bpp = loader.readUShort();
+			if (bpp != 8) {
+				throw new RuntimeException("Unsupported BMP format: bpp = " + bpp);
+			}
+			colorSize = 3;
+			numColors = 256;
+		} else if (dibHeaderSize == BMP_VERSION_3) {
+			width = loader.readInt();
+			height = loader.readInt();
+			loader.skip(2);
+			int bpp = loader.readUShort();
+			if (bpp != 8) {
+				throw new RuntimeException("Unsupported BMP format: bpp = " + bpp);
+			}
+			int compression = loader.readInt();
+			if (compression != 0) {
+				throw new RuntimeException("Unsupported BMP format: compression = " + compression);
+			}
+			loader.skip(12);
+			numColors = loader.readInt();
+			if (numColors == 0 || numColors > 256) {
+				numColors = 256;
+			}
+			colorSize = 4;
+			loader.skip(4);
+		} else {
+			throw new RuntimeException("Unsupported BMP version = " + dibHeaderSize);
+		}
+
+		int paletteStart = BMP_FILE_HEADER_SIZE + dibHeaderSize;
+		int paletteEnd = paletteStart + numColors * colorSize;
+		if (rasterOffset < paletteEnd) {
+			rasterOffset = paletteEnd;
+		}
+
+		int stride = (width + 3) / 4 * 4;
+		if (height < 0) {
+			height = -height;
+		} else {
+			rasterOffset += (height - 1) * stride;
+			stride = -stride;
+		}
+
+		TextureData textureData = new TextureData(width, height);
+		ByteBuffer raster = textureData.getRaster();
+		for (int i = 0; i < height; i++) {
+			for (int j = 0; j < width; j++) {
+				int colorIdx = data[rasterOffset + j] & 0xff;
+				int p = paletteStart + colorIdx * colorSize;
+				byte b = data[p++];
+				byte g = data[p++];
+				byte r = data[p];
+				raster.put(r).put(g).put(b).put((byte) (colorIdx == 0 ? 0 : 0xff));
+			}
+			rasterOffset += stride;
+		}
+
+		return textureData;
 	}
 
 	private void readVerticesV1(FloatBuffer vertices) throws IOException {
@@ -327,10 +405,10 @@ class Loader {
 				y = POOL_NORMALS[type++];
 				x = POOL_NORMALS[type];
 			} else {
-				x = (x << 25) >> 25;
-				y = (readUBits(7) << 25) >> 25;
+				x = (x << 25) >> 19;
+				y = (readUBits(7) << 25) >> 19;
 				int sign = readUBits(1);
-				int dq = 4096 - x * x - y * y;
+				int dq = 4096 * 4096 - x * x - y * y;
 				z = dq > 0 ? (int) Math.round(Math.sqrt(dq)) : 0;
 				if (sign == 1) z = -z;
 			}
@@ -340,20 +418,22 @@ class Loader {
 		}
 	}
 
-	private void readPolyC(Model data, int numVertex, int numColor, int numTriangles) throws IOException {
+	private void readPolyC(Model model, int numVertex, int numColor, int numTriangles) throws IOException {
 		int materialBits = readUByte();
 		int vertexIndexBits = readUByte();
 		int colorBits = readUByte();
 		int colorIdBits = readUByte();
 		int unknownByte = readUByte();
-		if (unknownByte != 0) Log.w(TAG, "PolyC unknownByte = " + unknownByte);
+		if (unknownByte != 0) {
+			Log.w(Utils.TAG, "PolyC unknownByte = " + unknownByte);
+		}
 
 		byte[] colors = new byte[numColor * 3];
 		for (int i = 0; i < colors.length; i++) {
 			colors[i] = (byte) readUBits(colorBits);
 		}
 
-		Model.Polygon[] polygonsC = data.polygonsC;
+		Model.Polygon[] polygonsC = model.polygonsC;
 		for (int i = 0; i < numTriangles; i++) {
 			int material = readUBits(materialBits) << 1;
 			if ((material & 0xFC09) != 0) {
@@ -411,9 +491,9 @@ class Loader {
 		}
 	}
 
-	private void readPolyV1(Model data, int numVertices, int numPolyT3) throws IOException {
+	private void readPolyV1(Model model, int numVertices, int numPolyT3) throws IOException {
 
-		Model.Polygon[] polygons = data.polygonsT;
+		Model.Polygon[] polygons = model.polygonsT;
 		for (int i = 0; i < numPolyT3; i++) {
 			int material = readUShort();
 			if ((material & 0xFFF9) != 0) {
@@ -469,11 +549,11 @@ class Loader {
 		}
 	}
 
-	private void readPolyV2(Model data, int numVertex, int numTriangles) throws IOException {
+	private void readPolyV2(Model model, int numVertex, int numTriangles) throws IOException {
 		int matBitSize = readUByte();
 		int vertexIdxSize = readUByte();
 
-		Model.Polygon[] polygons = data.polygonsT;
+		Model.Polygon[] polygons = model.polygonsT;
 		for (int i = 0; i < numTriangles; i++) {
 			int material = readUBits(matBitSize);
 			if ((material & 0xFF88) != 0) {
@@ -532,15 +612,17 @@ class Loader {
 		}
 	}
 
-	private void readPolyV3(Model data, int numVertex, int numTriangles) throws IOException {
+	private void readPolyV3(Model model, int numVertex, int numTriangles) throws IOException {
 		int materialBits = readUBits(8);
 		int vertexIndexBits = readUBits(8);
 		int uvBits = readUBits(8);
 		int unknownByte = readUBits(8);
-		if (unknownByte != 0) Log.w(TAG, "PolyT v3: unknownByte = " + unknownByte);
+		if (unknownByte != 0) {
+			Log.w(Utils.TAG, "PolyT v3: unknownByte = " + unknownByte);
+		}
 
 
-		Model.Polygon[] polygons = data.polygonsT;
+		Model.Polygon[] polygons = model.polygonsT;
 		for (int i = 0; i < numTriangles; i++) {
 			int material = readUBits(materialBits);
 			if ((material & 0xFC08) != 0)
@@ -599,8 +681,8 @@ class Loader {
 		}
 	}
 
-	private int readBones(int numBones, Model data) throws IOException {
-		ByteBuffer bones = data.bones;
+	private int readBones(int numBones, Model model) throws IOException {
+		ByteBuffer bones = model.bones;
 
 		int boneVertexSum = 0;
 		for (int i = 0; i < numBones; i++) {
@@ -613,17 +695,17 @@ class Loader {
 			bones.putInt(boneVertices);
 			bones.putInt(parent);
 
-			bones.putFloat(readShort() * TO_FLOAT);
-			bones.putFloat(readShort() * TO_FLOAT);
-			bones.putFloat(readShort() * TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
 			bones.putFloat(readShort());
-			bones.putFloat(readShort() * TO_FLOAT);
-			bones.putFloat(readShort() * TO_FLOAT);
-			bones.putFloat(readShort() * TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
 			bones.putFloat(readShort());
-			bones.putFloat(readShort() * TO_FLOAT);
-			bones.putFloat(readShort() * TO_FLOAT);
-			bones.putFloat(readShort() * TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
+			bones.putFloat(readShort() * MathUtil.TO_FLOAT);
 			bones.putFloat(readShort());
 
 			boneVertexSum += boneVertices;
@@ -638,21 +720,21 @@ class Loader {
 		switch (type) {
 			case 0:
 				float[] m = act.matrices;
-				m[mtxOffset     ] = readShort() * TO_FLOAT;
-				m[mtxOffset +  1] = readShort() * TO_FLOAT;
-				m[mtxOffset +  2] = readShort() * TO_FLOAT;
+				m[mtxOffset     ] = readShort() * MathUtil.TO_FLOAT;
+				m[mtxOffset +  1] = readShort() * MathUtil.TO_FLOAT;
+				m[mtxOffset +  2] = readShort() * MathUtil.TO_FLOAT;
 				m[mtxOffset +  3] = readShort();
-				m[mtxOffset +  4] = readShort() * TO_FLOAT;
-				m[mtxOffset +  5] = readShort() * TO_FLOAT;
-				m[mtxOffset +  6] = readShort() * TO_FLOAT;
+				m[mtxOffset +  4] = readShort() * MathUtil.TO_FLOAT;
+				m[mtxOffset +  5] = readShort() * MathUtil.TO_FLOAT;
+				m[mtxOffset +  6] = readShort() * MathUtil.TO_FLOAT;
 				m[mtxOffset +  7] = readShort();
-				m[mtxOffset +  8] = readShort() * TO_FLOAT;
-				m[mtxOffset +  9] = readShort() * TO_FLOAT;
-				m[mtxOffset + 10] = readShort() * TO_FLOAT;
+				m[mtxOffset +  8] = readShort() * MathUtil.TO_FLOAT;
+				m[mtxOffset +  9] = readShort() * MathUtil.TO_FLOAT;
+				m[mtxOffset + 10] = readShort() * MathUtil.TO_FLOAT;
 				m[mtxOffset + 11] = readShort();
 				break;
 			case 1:
-				System.arraycopy(IDENTITY_AFFINE, 0, act.matrices, mtxOffset, 12);
+				System.arraycopy(MathUtil.IDENTITY_AFFINE, 0, act.matrices, mtxOffset, 12);
 				break;
 			case 2: {
 				// translate
@@ -672,9 +754,9 @@ class Loader {
 				Action.Animation scale = new Action.Animation(count);
 				for (int j = 0; j < count; j++) {
 					int kf = readUShort(); // key frame
-					float x = readShort() * TO_FLOAT;  // scale.x
-					float y = readShort() * TO_FLOAT;  // scale.y
-					float z = readShort() * TO_FLOAT;  // scale.z
+					float x = readShort() * MathUtil.TO_FLOAT;  // scale.x
+					float y = readShort() * MathUtil.TO_FLOAT;  // scale.y
+					float z = readShort() * MathUtil.TO_FLOAT;  // scale.z
 					scale.set(j, kf, x, y, z);
 				}
 				boneAction.scale = scale;
@@ -696,7 +778,7 @@ class Loader {
 				Action.RollAnim roll = new Action.RollAnim(count);
 				for (int j = 0; j < count; j++) {
 					int kf = readUShort();   // key frame
-					float r = readShort() * TO_RADIANS; // roll
+					float r = readShort() * MathUtil.TO_RADIANS; // roll
 					roll.set(j, kf, r);
 				}
 				boneAction.roll = roll;
@@ -724,7 +806,7 @@ class Loader {
 				boneAction.rotate = rotate;
 
 				// roll (for all frames)
-				float r = readShort() * TO_RADIANS;
+				float r = readShort() * MathUtil.TO_RADIANS;
 				Action.RollAnim roll = new Action.RollAnim(1);
 				roll.set(0, 0, r);
 				boneAction.roll = roll;
@@ -748,7 +830,7 @@ class Loader {
 				Action.RollAnim roll = new Action.RollAnim(count);
 				for (int j = 0; j < count; j++) {
 					int kf = readUShort();   // key frame
-					float r = readShort() * TO_RADIANS; // roll
+					float r = readShort() * MathUtil.TO_RADIANS; // roll
 					roll.set(j, kf, r);
 				}
 				boneAction.roll = roll;
@@ -798,7 +880,7 @@ class Loader {
 				Action.RollAnim roll = new Action.RollAnim(count);
 				for (int j = 0; j < count; j++) {
 					int kf = readUShort();   // key frame
-					float r = readShort() * TO_RADIANS; // roll
+					float r = readShort() * MathUtil.TO_RADIANS; // roll
 					roll.set(j, kf, r);
 				}
 				boneAction.roll = roll;
@@ -811,38 +893,38 @@ class Loader {
 	}
 
 	private byte readByte() throws IOException {
-		if (pos >= mBytes.length) throw new EOFException();
-		return mBytes[pos++];
+		if (pos >= length) throw new EOFException();
+		return data[pos++];
 	}
 
 	private int readUByte() throws IOException {
-		if (pos >= mBytes.length) throw new EOFException();
-		return mBytes[pos++] & 0xff;
+		if (pos >= length) throw new EOFException();
+		return data[pos++] & 0xff;
 	}
 
 	private short readShort() throws IOException {
-		if (pos + 1 >= mBytes.length) throw new EOFException();
-		return (short) (mBytes[pos++] & 0xff | mBytes[pos++] << 8);
+		if (pos + 2 > length) throw new EOFException();
+		return (short) (data[pos++] & 0xff | data[pos++] << 8);
 	}
 
 	private int readUShort() throws IOException {
-		if (pos + 1 >= mBytes.length) throw new EOFException();
-		return mBytes[pos++] & 0xff | (mBytes[pos++] & 0xff) << 8;
+		if (pos + 2 > length) throw new EOFException();
+		return data[pos++] & 0xff | (data[pos++] & 0xff) << 8;
 	}
 
 	private int readInt() throws IOException {
-		if (pos + 3 >= mBytes.length) throw new EOFException();
-		return mBytes[pos++] & 0xff | (mBytes[pos++] & 0xff) << 8
-				| (mBytes[pos++] & 0xff) << 16 | mBytes[pos++] << 24;
+		if (pos + 4 > length) throw new EOFException();
+		return data[pos++] & 0xff | (data[pos++] & 0xff) << 8
+				| (data[pos++] & 0xff) << 16 | data[pos++] << 24;
 	}
 
 	private int available() {
-		return mBytes.length - pos;
+		return length - pos;
 	}
 
 	private int readUBits(int size) throws IOException {
 		if (size > 25) {
-			Log.e(TAG, "readUBits(size=" + size + ')');
+			Log.e(Utils.TAG, "readUBits(size=" + size + ')');
 			throw new IllegalArgumentException("Invalid bit size=" + size);
 		}
 		while (size > cached) {
@@ -864,5 +946,10 @@ class Loader {
 	private void clearCache() {
 		cache = 0;
 		cached = 0;
+	}
+
+	private void skip(int n) throws EOFException {
+		if (pos + n > length) throw new EOFException();
+		pos += n;
 	}
 }

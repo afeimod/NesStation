@@ -18,7 +18,6 @@ package com.android.dx.cf.direct;
 
 import com.android.dex.util.FileUtils;
 
-import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.model.FileHeader;
 
 import java.io.ByteArrayOutputStream;
@@ -29,6 +28,9 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+
+import ru.woesss.util.TextUtils;
+import ru.woesss.util.zip.ZipFile;
 
 /**
  * Opens all the class files found in a class path element. Path elements
@@ -147,11 +149,11 @@ public class ClassPathOpener {
             }
 
             String path = file.getPath();
-            String lowerName = file.getName().toLowerCase();
+            String name = file.getName();
 
-            if (lowerName.endsWith(".zip") ||
-                    lowerName.endsWith(".jar") ||
-                    lowerName.endsWith(".apk")) {
+            if (TextUtils.endsWithIgnoreCase(name, ".zip") ||
+                TextUtils.endsWithIgnoreCase(name, ".jar") ||
+                TextUtils.endsWithIgnoreCase(name, ".apk")) {
                 return processArchive(file);
             }
             if (filter.accept(path)) {
@@ -236,51 +238,52 @@ public class ClassPathOpener {
      * @throws IOException on i/o problem
      */
     private boolean processArchive(File file) throws IOException {
-        ZipFile zip = new ZipFile(file);
+        boolean any;
+        try (ZipFile zip = new ZipFile(file)) {
 
-        List<FileHeader> entriesList = zip.getFileHeaders();
+            List<FileHeader> entriesList = zip.getFileHeaders();
 
-        if (sort) {
-            Collections.sort(entriesList, new Comparator<FileHeader>() {
-               @Override
-			   public int compare (FileHeader a, FileHeader b) {
-                   return compareClassNames(a.getFileName(), b.getFileName());
-               }
-            });
-        }
+            if (sort) {
+                Collections.sort(entriesList, new Comparator<FileHeader>() {
+                    @Override
+                    public int compare(FileHeader a, FileHeader b) {
+                        return compareClassNames(a.getFileName(), b.getFileName());
+                    }
+                });
+            }
 
-        consumer.onProcessArchiveStart(file);
+            consumer.onProcessArchiveStart(file);
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream(40000);
-        byte[] buf = new byte[20000];
-        boolean any = false;
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(40000);
+            byte[] buf = new byte[20000];
+            any = false;
 
-        for (FileHeader one : entriesList) {
-            final boolean isDirectory = one.isDirectory();
+            for (FileHeader one : entriesList) {
+                final boolean isDirectory = one.isDirectory();
 
-            String path = one.getFileName();
-            if (filter.accept(path)) {
-                final byte[] bytes;
-                if (!isDirectory) {
-                    InputStream in = zip.getInputStream(one);
+                String path = one.getFileName();
+                if (filter.accept(path)) {
+                    final byte[] bytes;
+                    if (!isDirectory) {
+                        InputStream in = zip.getInputStream(one);
 
-                    baos.reset();
-                    int read;
-                    while ((read = in.read(buf)) != -1) {
-                        baos.write(buf, 0, read);
+                        baos.reset();
+                        int read;
+                        while ((read = in.read(buf)) != -1) {
+                            baos.write(buf, 0, read);
+                        }
+
+                        in.close();
+                        bytes = baos.toByteArray();
+                    } else {
+                        bytes = new byte[0];
                     }
 
-                    in.close();
-                    bytes = baos.toByteArray();
-                } else {
-                    bytes = new byte[0];
+                    any |= consumer.processFileBytes(path, one.getCrc(), bytes);
                 }
-
-                any |= consumer.processFileBytes(path, one.getLastModifiedTimeEpoch(), bytes);
             }
-        }
 
-        zip.close();
+        }
         return any;
     }
 }

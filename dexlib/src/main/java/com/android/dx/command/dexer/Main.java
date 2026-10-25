@@ -53,10 +53,8 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
@@ -71,6 +69,8 @@ import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
+
+import ru.woesss.util.TextUtils;
 
 /**
  * Main class for the class file translator.
@@ -309,7 +309,7 @@ public class Main {
 
         try {
             for (int i = 0; i < fileNames.length; i++) {
-                processOne(fileNames[i], path -> path.endsWith(".class"));
+                processOne(fileNames[i], path -> TextUtils.endsWithIgnoreCase(path, ".class"));
             }
         } catch (StopProcessing ex) {
             /*
@@ -412,9 +412,9 @@ public class Main {
      * @param bytes {@code non-null;} contents of the file
      * @return whether processing was successful
      */
-    private boolean processFileBytes(String name, long lastModified, byte[] bytes) {
+    private boolean processFileBytes(String name, long crc, byte[] bytes) {
 
-        boolean isClass = name != null && name.toLowerCase().endsWith(".class");
+        boolean isClass = name != null && TextUtils.endsWithIgnoreCase(name, ".class");
         boolean keepResources = (outputResources != null);
 
         if (!isClass && !keepResources) {
@@ -437,10 +437,7 @@ public class Main {
                     outputResources.put(fixedName, bytes);
                 }
             }
-            if (lastModified < minimumFileAge) {
-                return true;
-            }
-            processClass(fixedName, bytes);
+            processClass(fixedName, crc, bytes);
             // Assume that an exception may occur. Status will be updated
             // asynchronously, if the class compiles without error.
             return false;
@@ -457,17 +454,18 @@ public class Main {
      *
      * @param name {@code non-null;} name of the file, clipped such that it
      * <i>should</i> correspond to the name of the class it contains
+     * @param crc CRC32 of class file
      * @param bytes {@code non-null;} contents of the file
      * @return whether processing was successful
      */
-    private boolean processClass(String name, byte[] bytes) {
+    private boolean processClass(String name, long crc, byte[] bytes) {
         if (! args.coreLibrary) {
             checkClassName(name);
         }
 
         try {
             // modify byte-code with ASM-java
-            bytes = AndroidProducer.instrument(bytes, name);
+            bytes = AndroidProducer.instrument(bytes, name, crc);
 
             new DirectClassFileConsumer(name, bytes, null).call(
                     new ClassParserTask(name, bytes).call());
@@ -1127,12 +1125,10 @@ public class Main {
                         outputIsDirectory = true;
                     } else if (FileUtils.hasArchiveSuffix(outName)) {
                         jarOutput = true;
-                    } else if (outName.endsWith(".dex") ||
-                               outName.equals("-")) {
+                    } else if (TextUtils.endsWithIgnoreCase(outName, ".dex") || outName.equals("-")) {
                         jarOutput = false;
                     } else {
-                        context.err.println("unknown output extension: " +
-                                outName);
+                        context.err.println("unknown output extension: " + outName);
                         throw new UsageException();
                     }
                 } else if (parser.isArg("--dump-to=")) {
@@ -1273,9 +1269,8 @@ public class Main {
     private class FileBytesConsumer implements ClassPathOpener.Consumer {
 
         @Override
-        public boolean processFileBytes(String name, long lastModified,
-                byte[] bytes)   {
-            return Main.this.processFileBytes(name, lastModified, bytes);
+        public boolean processFileBytes(String name, long crc, byte[] bytes)   {
+            return Main.this.processFileBytes(name, crc, bytes);
         }
 
         @Override

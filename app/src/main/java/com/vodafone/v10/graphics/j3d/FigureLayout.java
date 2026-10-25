@@ -16,20 +16,57 @@
 
 package com.vodafone.v10.graphics.j3d;
 
-public class FigureLayout extends com.mascotcapsule.micro3d.v3.FigureLayout {
+public class FigureLayout {
+	AffineTrans affine;
+	int scaleX;
+	int scaleY;
+	int centerX;
+	int centerY;
+
 	public FigureLayout() {
-		super();
+		this(null, 512, 512, 0, 0);
 	}
 
 	public FigureLayout(AffineTrans trans, int sx, int sy, int cx, int cy) {
-		super(trans, sx, sy, cx, cy);
+		setAffineTrans(trans);
+		setCenter(cx, cy);
+		setScale(sx, sy);
 	}
 
 	public AffineTrans getAffineTrans() {
-		return (AffineTrans) super.getAffineTrans();
+		return affine;
 	}
 
-	public void setAffineTrans(AffineTrans trans) {
-		super.setAffineTrans(trans);
+	public final int getCenterX() {
+		return centerX;
+	}
+
+	public final int getCenterY() {
+		return centerY;
+	}
+
+	public final int getScaleX() {
+		return scaleX;
+	}
+
+	public final int getScaleY() {
+		return scaleY;
+	}
+
+	public final void setAffineTrans(AffineTrans trans) {
+		if (trans == null) {
+			trans = new AffineTrans(4096, 0, 0, 0, 0, 4096, 0, 0, 0, 0, 4096, 0);
+		}
+		affine = trans;
+	}
+
+	public final void setCenter(int cx, int cy) {
+		centerX = cx;
+		centerY = cy;
+	}
+
+	public final void setScale(int sx, int sy) {
+		scaleX = sx;
+		scaleY = sy;
 	}
 }

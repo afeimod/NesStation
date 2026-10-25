@@ -18,8 +18,7 @@ package com.mascotcapsule.micro3d.v3;
 
 @SuppressWarnings({"unused", "WeakerAccess"})
 public class FigureLayout {
-
-	private AffineTrans[] affineArray;
+	AffineTrans[] affineArray;
 	AffineTrans affine;
 	int scaleX;
 	int scaleY;
@@ -32,7 +31,7 @@ public class FigureLayout {
 	int angle;
 	int perspectiveWidth;
 	int perspectiveHeight;
-	int settingIndex;
+	int projection;
 
 	public FigureLayout() {
 		this(null, 512, 512, 0, 0);
@@ -45,42 +44,41 @@ public class FigureLayout {
 		setScale(sx, sy);
 	}
 
-	FigureLayout(FigureLayout src) {
-		affine = new AffineTrans(src.affine);
-		affineArray = src.affineArray;
-		angle = src.angle;
-		centerX = src.centerX;
-		centerY = src.centerY;
-		far = src.far;
-		near = src.near;
-		parallelHeight = src.parallelHeight;
-		parallelWidth = src.parallelWidth;
-		perspectiveHeight = src.perspectiveHeight;
-		perspectiveWidth = src.perspectiveWidth;
-		scaleX = src.scaleX;
-		scaleY = src.scaleY;
-		settingIndex = src.settingIndex;
-	}
-
-	public AffineTrans getAffineTrans() {
+	public final AffineTrans getAffineTrans() {
 		return affine;
 	}
 
-	public final void setAffineTrans(AffineTrans[] trans) {
-		if (trans == null || trans.length == 0) {
-			throw new NullPointerException();
-		}
-		for (AffineTrans tran : trans) {
-			if (tran == null) throw new NullPointerException();
-		}
-		affineArray = trans;
+	public final int getCenterX() {
+		return centerX;
 	}
 
-	/**
-	 * Sets the affine transformation object.
-	 *
-	 * @param trans Affine transformation (no transformation if null)
-	 */
+	public final int getCenterY() {
+		return centerY;
+	}
+
+	public final int getParallelHeight() {
+		return parallelHeight;
+	}
+
+	public final int getParallelWidth() {
+		return parallelWidth;
+	}
+
+	public final int getScaleX() {
+		return scaleX;
+	}
+
+	public final int getScaleY() {
+		return scaleY;
+	}
+
+	public final void selectAffineTrans(int idx) {
+		if (affineArray == null || idx < 0 || idx >= affineArray.length) {
+			throw new IllegalArgumentException();
+		}
+		affine = affineArray[idx];
+	}
+
 	public final void setAffineTrans(AffineTrans trans) {
 		if (trans == null) {
 			trans = new AffineTrans(4096, 0, 0, 0, 0, 4096, 0, 0, 0, 0, 4096, 0);
@@ -92,37 +90,26 @@ public class FigureLayout {
 		affine = trans;
 	}
 
+	public final void setAffineTrans(AffineTrans[] trans) {
+		if (trans == null) {
+			throw new NullPointerException();
+		}
+		for (AffineTrans tran : trans) {
+			if (tran == null) {
+				throw new NullPointerException();
+			}
+		}
+		affineArray = trans;
+	}
+
+	@Deprecated
 	public final void setAffineTransArray(AffineTrans[] trans) {
 		setAffineTrans(trans);
 	}
 
-	public final void selectAffineTrans(int idx) {
-		if (affineArray == null || idx < 0 || idx >= affineArray.length) {
-			throw new IllegalArgumentException();
-		}
-		affine = affineArray[idx];
-	}
-
-	public final int getScaleX() {
-		return scaleX;
-	}
-
-	public final int getScaleY() {
-		return scaleY;
-	}
-
-	public final void setScale(int sx, int sy) {
-		scaleX = sx;
-		scaleY = sy;
-		settingIndex = Graphics3D.COMMAND_PARALLEL_SCALE;
-	}
-
-	public final int getParallelWidth() {
-		return parallelWidth;
-	}
-
-	public final int getParallelHeight() {
-		return parallelHeight;
+	public final void setCenter(int cx, int cy) {
+		centerX = cx;
+		centerY = cy;
 	}
 
 	public final void setParallelSize(int w, int h) {
@@ -131,20 +118,7 @@ public class FigureLayout {
 		}
 		parallelWidth = w;
 		parallelHeight = h;
-		settingIndex = Graphics3D.COMMAND_PARALLEL_SIZE;
-	}
-
-	public final int getCenterX() {
-		return centerX;
-	}
-
-	public final int getCenterY() {
-		return centerY;
-	}
-
-	public final void setCenter(int cx, int cy) {
-		centerX = cx;
-		centerY = cy;
+		projection = Graphics3D.COMMAND_PARALLEL_SIZE;
 	}
 
 	public final void setPerspective(int zNear, int zFar, int angle) {
@@ -154,7 +128,7 @@ public class FigureLayout {
 		near = zNear;
 		far = zFar;
 		this.angle = angle;
-		settingIndex = Graphics3D.COMMAND_PERSPECTIVE_FOV;
+		projection = Graphics3D.COMMAND_PERSPECTIVE_FOV;
 	}
 
 	public final void setPerspective(int zNear, int zFar, int width, int height) {
@@ -165,23 +139,12 @@ public class FigureLayout {
 		far = zFar;
 		perspectiveWidth = width;
 		perspectiveHeight = height;
-		settingIndex = Graphics3D.COMMAND_PERSPECTIVE_WH;
+		projection = Graphics3D.COMMAND_PERSPECTIVE_WH;
 	}
 
-	void set(FigureLayout src) {
-		settingIndex = src.settingIndex;
-		scaleY = src.scaleY;
-		scaleX = src.scaleX;
-		perspectiveWidth = src.perspectiveWidth;
-		perspectiveHeight = src.perspectiveHeight;
-		parallelWidth = src.parallelWidth;
-		parallelHeight = src.parallelHeight;
-		near = src.near;
-		far = src.far;
-		centerY = src.centerY;
-		centerX = src.centerX;
-		angle = src.angle;
-		affineArray = src.affineArray;
-		affine.set(src.affine);
+	public final void setScale(int sx, int sy) {
+		scaleX = sx;
+		scaleY = sy;
+		projection = Graphics3D.COMMAND_PARALLEL_SCALE;
 	}
 }

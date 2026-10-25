@@ -22,122 +22,75 @@ public class Effect3D {
 	public static final int TOON_SHADING = 1;
 
 	Light light;
-	int mShading;
-	Texture mTexture;
-	int mToonHigh;
-	int mToonLow;
-	int mToonThreshold;
+	Texture texture;
+	int shading;
+	int toonHigh;
+	int toonLow;
+	int toonThreshold;
 	boolean isTransparency;
-	boolean isLighting;
-	boolean isReflection;
-	boolean isToonShading;
 
 	public Effect3D() {
-		mShading = NORMAL_SHADING;
+		shading = NORMAL_SHADING;
 		isTransparency = true;
 	}
 
 	public Effect3D(Light light, int shading, boolean isEnableTrans, Texture tex) {
-		if (shading != NORMAL_SHADING && shading != TOON_SHADING) {
-			throw new IllegalArgumentException();
-		}
-		if (tex != null && !tex.isSphere) {
-			throw new IllegalArgumentException();
-		}
+		setShadingType(shading);
+		setSphereTexture(tex);
 		setLight(light);
-		mShading = shading;
 		isTransparency = isEnableTrans;
-		mTexture = tex;
-	}
-
-	Effect3D(Effect3D src) {
-		Light sl = src.light;
-		light = sl == null ? null : new Light(sl);
-		mShading = src.mShading;
-		mTexture = src.mTexture;
-		mToonHigh = src.mToonHigh;
-		mToonLow = src.mToonLow;
-		mToonThreshold = src.mToonThreshold;
-		isTransparency = src.isTransparency;
-		isLighting = src.isLighting;
-		isReflection = src.isReflection;
-		isToonShading = src.isToonShading;
 	}
 
 	public final Light getLight() {
 		return light;
 	}
 
-	public final void setLight(Light light) {
-		this.light = light;
-		isLighting = light != null;
-	}
-
+	@Deprecated
 	public final int getShading() {
-		return mShading;
+		return shading;
 	}
 
 	public final int getShadingType() {
-		return mShading;
+		return shading;
 	}
 
-	public final void setShading(int shading) {
-		setShadingType(shading);
+	@Deprecated
+	public final Texture getSphereMap() {
+		return texture;
 	}
 
-	public final void setShadingType(int shading) {
-		switch (shading) {
-			case NORMAL_SHADING:
-			case TOON_SHADING:
-				mShading = shading;
-				return;
-			default:
-				throw new IllegalArgumentException();
-		}
+	public final Texture getSphereTexture() {
+		return texture;
 	}
 
+	@Deprecated
 	public final int getThreshold() {
-		return mToonThreshold;
+		return toonThreshold;
 	}
 
-	public final int getToonThreshold() {
-		return mToonThreshold;
-	}
-
+	@Deprecated
 	public final int getThresholdHigh() {
-		return mToonHigh;
+		return toonHigh;
+	}
+
+	@Deprecated
+	public final int getThresholdLow() {
+		return toonLow;
 	}
 
 	public final int getToonHigh() {
-		return mToonHigh;
-	}
-
-	public final int getThresholdLow() {
-		return mToonLow;
+		return toonHigh;
 	}
 
 	public final int getToonLow() {
-		return mToonLow;
+		return toonLow;
 	}
 
-	public final void setThreshold(int threshold, int high, int low) {
-		setToonParams(threshold, high, low);
+	public final int getToonThreshold() {
+		return toonThreshold;
 	}
 
-	public final void setToonParams(int threshold, int high, int low) {
-		if (threshold < 0 || threshold > 255) {
-			throw new IllegalArgumentException();
-		} else if (high < 0 || high > 255) {
-			throw new IllegalArgumentException();
-		} else if (low < 0 || low > 255) {
-			throw new IllegalArgumentException();
-		} else {
-			mToonThreshold = threshold;
-			mToonHigh = high;
-			mToonLow = low;
-		}
-	}
-
+	@Deprecated
 	public final boolean isSemiTransparentEnabled() {
 		return isTransparency;
 	}
@@ -146,52 +99,54 @@ public class Effect3D {
 		return isTransparency;
 	}
 
+	public final void setLight(Light light) {
+		this.light = light;
+	}
+
+	@Deprecated
 	public final void setSemiTransparentEnabled(boolean isEnable) {
 		isTransparency = isEnable;
 	}
 
-	public final void setTransparency(boolean isEnable) {
-		isTransparency = isEnable;
+	@Deprecated
+	public final void setShading(int shading) {
+		setShadingType(shading);
 	}
 
-	public final Texture getSphereMap() {
-		return mTexture;
+	public final void setShadingType(int shading) {
+		if ((shading & ~TOON_SHADING) != 0) {
+			throw new IllegalArgumentException();
+		}
+		this.shading = shading;
 	}
 
-	public final Texture getSphereTexture() {
-		return mTexture;
-	}
-
+	@Deprecated
 	public final void setSphereMap(Texture tex) {
 		setSphereTexture(tex);
 	}
 
 	public final void setSphereTexture(Texture tex) {
-		if (tex != null && !tex.isSphere) {
+		if (tex != null && tex.isForModel) {
 			throw new IllegalArgumentException();
 		}
-		mTexture = tex;
+		texture = tex;
 	}
 
-	void set(Effect3D src) {
-		mShading = src.mShading;
-		mTexture = src.mTexture;
-		mToonHigh = src.mToonHigh;
-		mToonLow = src.mToonLow;
-		mToonThreshold = src.mToonThreshold;
-		isTransparency = src.isTransparency;
-		isLighting = src.isLighting;
-		isReflection = src.isReflection;
-		isToonShading = src.isToonShading;
-		Light sl = src.light;
-		if (sl == null) {
-			light = null;
-			return;
+	@Deprecated
+	public final void setThreshold(int threshold, int high, int low) {
+		setToonParams(threshold, high, low);
+	}
+
+	public final void setToonParams(int threshold, int high, int low) {
+		if (((threshold & ~0xff) | (high & ~0xff) | (low & ~0xff)) != 0) {
+			throw new IllegalArgumentException();
 		}
-		if (light == null) {
-			light = new Light(sl);
-			return;
-		}
-		light.set(sl);
+		toonThreshold = threshold;
+		toonHigh = high;
+		toonLow = low;
+	}
+
+	public final void setTransparency(boolean isEnable) {
+		isTransparency = isEnable;
 	}
 }

@@ -456,25 +456,28 @@ fun NeonLibraryScreen(
     }
 
     // ★★ Java 平台专属：安装 JAR（与经典 UI LibraryScreen 的 jarPickerLauncher
-    //   同款链路，逻辑共享 [com.nesstation.app.core.storage.JavaGameStore.installJar]）。
+    //   同款链路，逻辑共享 [com.nesstation.app.core.storage.JavaGameStore]）。
     //   J2ME 游戏是 .jar 安装包（非直接可启动镜像），必须先装进 Java 游戏库
     //   才能启动 —— 与 3DS 的 CIA 同一逻辑层级。
+    //   ★ v4.0：改为批量安装（installJars，IO 线程）—— 支持 JAD+JAR 一起选中
+    //   （索爱等机型专有 JAD 属性会 merge 进 manifest），失败时提示具体原因
+    //   （不再笼统地报"请检查 JAR 文件是否有效"）。
     val jarPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        var installed = 0
         uris.forEach { uri ->
             try {
                 context.contentResolver.takePersistableUriPermission(
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (_: Exception) { }
-            if (JavaGameStore.installJar(context, uri) != null) installed++
         }
-        statusMsg = if (installed > 0) "已安装 $installed 个 Java 游戏"
-        else "安装失败，请检查 JAR 文件是否有效"
-        onGamesChanged()
+        scope.launch {
+            val (_, msg) = JavaGameStore.installJars(context, uris.toList())
+            statusMsg = msg
+            onGamesChanged()
+        }
     }
 
     // ★ 自定义图标：SAF 选图 → 拷贝到内部目录 → RomStore.setCustomIcon

@@ -859,23 +859,23 @@ fun LibraryScreen(
     }
 
     // SAF picker for installing J2ME .jar games (Java platform tab)
+    // ★ v4.0：批量安装（installJars，IO 线程）—— JAD 与 JAR 可一起选中
+    //   （索爱等机型 JAD 专有属性 merge 进 manifest），失败提示具体原因。
     val jarPickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        var installed = 0
         uris.forEach { uri ->
             try {
                 context.contentResolver.takePersistableUriPermission(
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (_: Exception) { }
-            if (JavaGameStore.installJar(context, uri) != null) installed++
         }
-        refreshList(
-            postMessage = if (installed > 0) "已安装 $installed 个 Java 游戏"
-            else "安装失败，请检查 JAR 文件是否有效"
-        )
+        scope.launch {
+            val (_, msg) = JavaGameStore.installJars(context, uris.toList())
+            refreshList(postMessage = msg)
+        }
     }
 
     // SAF picker for choosing a custom cover icon for a game

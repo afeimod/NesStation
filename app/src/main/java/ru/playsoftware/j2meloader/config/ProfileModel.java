@@ -29,175 +29,182 @@ import javax.microedition.util.ContextHolder;
 import ru.playsoftware.j2meloader.util.SparseIntArrayAdapter;
 
 public class ProfileModel {
-	public static final int VERSION = 3;
-	/** True if this is a new profile (not yet saved to file) */
-	public final transient boolean isNew;
+        public static final int VERSION = 3;
+        /** True if this is a new profile (not yet saved to file) */
+        public final transient boolean isNew;
 
-	public transient File dir;
+        public transient File dir;
 
-	@SerializedName("Version")
-	public int version;
+        @SerializedName("Version")
+        public int version;
 
-	@SerializedName("ScreenWidth")
-	public int screenWidth;
+        @SerializedName("ScreenWidth")
+        public int screenWidth;
 
-	@SerializedName("ScreenHeight")
-	public int screenHeight;
+        @SerializedName("ScreenHeight")
+        public int screenHeight;
 
-	@SerializedName("ScreenBackgroundColor")
-	public int screenBackgroundColor;
+        @SerializedName("ScreenBackgroundColor")
+        public int screenBackgroundColor;
 
-	@SerializedName("ScreenScaleRatio")
-	public int screenScaleRatio;
+        // ★ v4.0（JL-Mod 对齐）：SkinLayer（lcdui/skin 皮肤背景）读取的配置字段
+        @SerializedName("ScreenBackgroundImage")
+        public String screenBackgroundImage;
 
-	@SerializedName("Orientation")
-	public int orientation;
+        @SerializedName("ScreenPadding")
+        public int screenPadding;
 
-	@SerializedName("ScreenScaleToFit")
-	public boolean screenScaleToFit;
+        @SerializedName("ScreenScaleRatio")
+        public int screenScaleRatio;
 
-	@SerializedName("ScreenKeepAspectRatio")
-	public boolean screenKeepAspectRatio;
+        @SerializedName("Orientation")
+        public int orientation;
 
-	@SerializedName("ScreenScaleType")
-	public int screenScaleType;
+        @SerializedName("ScreenScaleToFit")
+        public boolean screenScaleToFit;
 
-	@SerializedName("ScreenGravity")
-	public int screenGravity;
+        @SerializedName("ScreenKeepAspectRatio")
+        public boolean screenKeepAspectRatio;
 
-	@SerializedName("ScreenFilter")
-	public boolean screenFilter;
+        @SerializedName("ScreenScaleType")
+        public int screenScaleType;
 
-	@SerializedName("ImmediateMode")
-	public boolean immediateMode;
+        @SerializedName("ScreenGravity")
+        public int screenGravity;
 
-	@SerializedName("HwAcceleration")
-	public boolean hwAcceleration;
+        @SerializedName("ScreenFilter")
+        public boolean screenFilter;
 
-	@SerializedName("GraphicsMode")
-	public int graphicsMode;
+        @SerializedName("ImmediateMode")
+        public boolean immediateMode;
 
-	@SerializedName("Shader")
-	public ShaderInfo shader;
+        @SerializedName("HwAcceleration")
+        public boolean hwAcceleration;
 
-	@SerializedName("ParallelRedrawScreen")
-	public boolean parallelRedrawScreen;
+        @SerializedName("GraphicsMode")
+        public int graphicsMode;
 
-	@SerializedName("ShowFps")
-	public boolean showFps;
+        @SerializedName("Shader")
+        public ShaderInfo shader;
 
-	@SerializedName("FpsLimit")
-	public int fpsLimit;
+        @SerializedName("ParallelRedrawScreen")
+        public boolean parallelRedrawScreen;
 
-	@SerializedName("ForceFullscreen")
-	public boolean forceFullscreen;
+        @SerializedName("ShowFps")
+        public boolean showFps;
 
-	@SerializedName("FontSizeSmall")
-	public int fontSizeSmall;
+        @SerializedName("FpsLimit")
+        public int fpsLimit;
 
-	@SerializedName("FontSizeMedium")
-	public int fontSizeMedium;
+        @SerializedName("ForceFullscreen")
+        public boolean forceFullscreen;
 
-	@SerializedName("FontSizeLarge")
-	public int fontSizeLarge;
+        @SerializedName("FontSizeSmall")
+        public int fontSizeSmall;
 
-	@SerializedName("FontApplyDimensions")
-	public boolean fontApplyDimensions;
+        @SerializedName("FontSizeMedium")
+        public int fontSizeMedium;
 
-	@SerializedName("FontAntiAlias")
-	public boolean fontAA;
+        @SerializedName("FontSizeLarge")
+        public int fontSizeLarge;
 
-	@SerializedName("TouchInput")
-	public boolean touchInput;
+        @SerializedName("FontApplyDimensions")
+        public boolean fontApplyDimensions;
 
-	@SerializedName("ShowKeyboard")
-	public boolean showKeyboard;
+        @SerializedName("FontAntiAlias")
+        public boolean fontAA;
 
-	@SerializedName("VirtualKeyboardType")
-	public int vkType;
+        @SerializedName("TouchInput")
+        public boolean touchInput;
 
-	@SerializedName("ButtonShape")
-	public int vkButtonShape;
+        @SerializedName("ShowKeyboard")
+        public boolean showKeyboard;
 
-	@SerializedName("VirtualKeyboardAlpha")
-	public int vkAlpha;
+        @SerializedName("VirtualKeyboardType")
+        public int vkType;
 
-	@SerializedName("VirtualKeyboardForceOpacity")
-	public boolean vkForceOpacity;
+        @SerializedName("ButtonShape")
+        public int vkButtonShape;
 
-	@SerializedName("VirtualKeyboardFeedback")
-	public boolean vkFeedback;
+        @SerializedName("VirtualKeyboardAlpha")
+        public int vkAlpha;
 
-	@SerializedName("VirtualKeyboardDelay")
-	public int vkHideDelay;
+        @SerializedName("VirtualKeyboardForceOpacity")
+        public boolean vkForceOpacity;
 
-	@SerializedName("VirtualKeyboardColorBackground")
-	public int vkBgColor;
+        @SerializedName("VirtualKeyboardFeedback")
+        public boolean vkFeedback;
 
-	@SerializedName("VirtualKeyboardColorBackgroundSelected")
-	public int vkBgColorSelected;
+        @SerializedName("VirtualKeyboardDelay")
+        public int vkHideDelay;
 
-	@SerializedName("VirtualKeyboardColorForeground")
-	public int vkFgColor;
+        @SerializedName("VirtualKeyboardColorBackground")
+        public int vkBgColor;
 
-	@SerializedName("VirtualKeyboardColorForegroundSelected")
-	public int vkFgColorSelected;
+        @SerializedName("VirtualKeyboardColorBackgroundSelected")
+        public int vkBgColorSelected;
 
-	@SerializedName("VirtualKeyboardColorOutline")
-	public int vkOutlineColor;
+        @SerializedName("VirtualKeyboardColorForeground")
+        public int vkFgColor;
 
-	@SerializedName("Layout")
-	public int keyCodesLayout;
+        @SerializedName("VirtualKeyboardColorForegroundSelected")
+        public int vkFgColorSelected;
 
-	@JsonAdapter(SparseIntArrayAdapter.class)
-	@SerializedName("KeyCodeMap")
-	public SparseIntArray keyCodeMap;
+        @SerializedName("VirtualKeyboardColorOutline")
+        public int vkOutlineColor;
 
-	@JsonAdapter(SparseIntArrayAdapter.class)
-	@SerializedName("KeyMappings")
-	public SparseIntArray keyMappings;
+        @SerializedName("Layout")
+        public int keyCodesLayout;
 
-	@SerializedName("SystemProperties")
-	public String systemProperties;
+        @JsonAdapter(SparseIntArrayAdapter.class)
+        @SerializedName("KeyCodeMap")
+        public SparseIntArray keyCodeMap;
 
-	@SuppressWarnings("unused") // Gson uses default constructor if present
-	public ProfileModel() {
-		isNew = false;
-	}
+        @JsonAdapter(SparseIntArrayAdapter.class)
+        @SerializedName("KeyMappings")
+        public SparseIntArray keyMappings;
 
-	public ProfileModel(File dir) {
-		this.dir = dir;
-		isNew = true;
-		version = VERSION;
-		screenWidth = 240;
-		screenHeight = 320;
-		// GameBox: 黑色屏幕底色, 与其他模拟核心(NES/SFC/GBA/...)的黑色
-		// SurfaceView 背景保持一致; 原默认 0xD0D0D0 浅灰色在宽高比不一致时
-		// 会在游戏画面四周出现刺眼的白色/浅灰边框。
-		screenBackgroundColor = 0x000000;
-		screenScaleType = 1;
-		screenGravity = 1;
-		screenScaleRatio = 100;
-		screenScaleToFit = true;
-		screenKeepAspectRatio = true;
-		graphicsMode = 1;
+        @SerializedName("SystemProperties")
+        public String systemProperties;
 
-		fontSizeSmall = 18;
-		fontSizeMedium = 22;
-		fontSizeLarge = 26;
-		fontAA = true;
+        @SuppressWarnings("unused") // Gson uses default constructor if present
+        public ProfileModel() {
+                isNew = false;
+        }
 
-		showKeyboard = true;
-		touchInput = true;
+        public ProfileModel(File dir) {
+                this.dir = dir;
+                isNew = true;
+                version = VERSION;
+                screenWidth = 240;
+                screenHeight = 320;
+                // GameBox: 黑色屏幕底色, 与其他模拟核心(NES/SFC/GBA/...)的黑色
+                // SurfaceView 背景保持一致; 原默认 0xD0D0D0 浅灰色在宽高比不一致时
+                // 会在游戏画面四周出现刺眼的白色/浅灰边框。
+                screenBackgroundColor = 0x000000;
+                screenScaleType = 1;
+                screenGravity = 1;
+                screenScaleRatio = 100;
+                screenScaleToFit = true;
+                screenKeepAspectRatio = true;
+                graphicsMode = 1;
 
-		vkButtonShape = VirtualKeyboard.ROUND_RECT_SHAPE;
-		vkAlpha = 64;
+                fontSizeSmall = 18;
+                fontSizeMedium = 22;
+                fontSizeLarge = 26;
+                fontAA = true;
 
-		vkBgColor = 0xD0D0D0;
-		vkFgColor = 0x000080;
-		vkBgColorSelected = 0x000080;
-		vkFgColorSelected = 0xFFFFFF;
-		vkOutlineColor = 0xFFFFFF;
-		systemProperties = ContextHolder.getAssetAsString("defaults/system.props");
-	}
+                showKeyboard = true;
+                touchInput = true;
+
+                vkButtonShape = VirtualKeyboard.ROUND_RECT_SHAPE;
+                vkAlpha = 64;
+
+                vkBgColor = 0xD0D0D0;
+                vkFgColor = 0x000080;
+                vkBgColorSelected = 0x000080;
+                vkFgColorSelected = 0xFFFFFF;
+                vkOutlineColor = 0xFFFFFF;
+                systemProperties = ContextHolder.getAssetAsString("defaults/system.props");
+        }
 }

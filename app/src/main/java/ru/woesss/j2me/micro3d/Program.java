@@ -1,26 +1,28 @@
 /*
- *  Copyright 2020 Yury Kharchenko
+ * Copyright 2022 Yury Kharchenko
  *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
-package com.mascotcapsule.micro3d.v3;
+package ru.woesss.j2me.micro3d;
 
 import static android.opengl.GLES20.*;
-import static com.mascotcapsule.micro3d.v3.Util3D.TAG;
-import static com.mascotcapsule.micro3d.v3.Utils.TO_FLOAT;
 
 import android.util.Log;
+
+import com.mascotcapsule.micro3d.v3.Graphics3D;
+
+import java.nio.ByteBuffer;
 
 import javax.microedition.util.ContextHolder;
 
@@ -31,18 +33,16 @@ abstract class Program {
 	static Sprite sprite;
 	private static boolean isCreated;
 
-	final int id;
-	int uAmbIntensity;
-	int uDirIntensity;
-	int uLightDir;
-	int uMatrix;
-	int uMatrixMV;
+	protected final int id;
+	protected int uAmbIntensity;
+	protected int uDirIntensity;
+	protected int uLightDir;
+	protected int uMatrix;
+	protected int uNormalMatrix;
 	int aPosition;
 	int aNormal;
 	int aColorData;
 	int aMaterial;
-	private int vertexId;
-	private int fragmentId;
 
 	Program(String vertexShader, String fragmentShader) {
 		id = createProgram(vertexShader, fragmentShader);
@@ -63,8 +63,8 @@ abstract class Program {
 		String vertexShaderCode = ContextHolder.getAssetAsString(vertexShader);
 		String fragmentShaderCode = ContextHolder.getAssetAsString(fragmentShader);
 
-		vertexId = loadShader(GL_VERTEX_SHADER, vertexShaderCode);
-		fragmentId = loadShader(GL_FRAGMENT_SHADER, fragmentShaderCode);
+		int vertexId = loadShader(GL_VERTEX_SHADER, vertexShaderCode);
+		int fragmentId = loadShader(GL_FRAGMENT_SHADER, fragmentShaderCode);
 
 		int program = glCreateProgram();             // create empty OpenGL Program
 		glAttachShader(program, vertexId);   // add the vertex shader to program
@@ -75,8 +75,10 @@ abstract class Program {
 		glGetProgramiv(program, GL_LINK_STATUS, status, 0);
 		if (status[0] == 0) {
 			String s = glGetProgramInfoLog(program);
-			Log.e(TAG, "createProgram: " + s);
+			Log.e(Utils.TAG, "createProgram: " + s);
 		}
+		glDeleteShader(vertexId);
+		glDeleteShader(fragmentId);
 		Render.checkGlError("glLinkProgram");
 		return program;
 	}
@@ -104,7 +106,7 @@ abstract class Program {
 		glGetShaderiv(shader, GL_COMPILE_STATUS, status, 0);
 		if (status[0] == 0) {
 			String s = glGetShaderInfoLog(shader);
-			Log.e(TAG, "loadShader: " + s);
+			Log.e(Utils.TAG, "loadShader: " + s);
 		}
 		Render.checkGlError("glCompileShader");
 		return shader;
@@ -126,25 +128,20 @@ abstract class Program {
 	}
 
 	void delete() {
-		glDetachShader(id, vertexId);
-		glDetachShader(id, fragmentId);
-		glDeleteShader(vertexId);
-		glDeleteShader(fragmentId);
 		glDeleteProgram(id);
 		Render.checkGlError("program delete");
 	}
 
-	public void setLight(Light light) {
+	void setLight(Light light) {
 		if (light == null) {
 			glUniform1f(uAmbIntensity, -1.0f);
 			return;
 		}
-		glUniform1f(uAmbIntensity, Math.max(0, Math.min(light.getAmbientIntensity(), 4096)) * TO_FLOAT);
-		glUniform1f(uDirIntensity, Math.max(0, Math.min(light.getParallelLightIntensity(), 16384)) * TO_FLOAT);
-		Vector3D d = light.getDirection();
-		float x = d.x;
-		float y = d.y;
-		float z = d.z;
+		glUniform1f(uAmbIntensity, MathUtil.clamp(light.ambIntensity, 0, 4096) * MathUtil.TO_FLOAT);
+		glUniform1f(uDirIntensity, MathUtil.clamp(light.dirIntensity, 0, 16384) * MathUtil.TO_FLOAT);
+		float x = light.x;
+		float y = light.y;
+		float z = light.z;
 		float rlf = -1.0f / (float) Math.sqrt(x * x + y * y + z * z);
 		glUniform3f(uLightDir, x * rlf, y * rlf, z * rlf);
 	}
@@ -152,10 +149,7 @@ abstract class Program {
 	static final class Color extends Program {
 		private static final String VERTEX = "shaders/color.vsh";
 		private static final String FRAGMENT = "shaders/color.fsh";
-		int uSphereUnit;
 		int uSphereSize;
-		int uColor;
-		int uIsPrimitive;
 		int uToonThreshold;
 		int uToonHigh;
 		int uToonLow;
@@ -170,41 +164,51 @@ abstract class Program {
 			aNormal = glGetAttribLocation(id, "aNormal");
 			aColorData = glGetAttribLocation(id, "aColorData");
 			aMaterial = glGetAttribLocation(id, "aMaterial");
-			uColor = glGetUniformLocation(id, "uColor");
 			uMatrix = glGetUniformLocation(id, "uMatrix");
-			uMatrixMV = glGetUniformLocation(id, "uMatrixMV");
+			uNormalMatrix = glGetUniformLocation(id, "uNormalMatrix");
 			uAmbIntensity = glGetUniformLocation(id, "uAmbIntensity");
 			uDirIntensity = glGetUniformLocation(id, "uDirIntensity");
 			uLightDir = glGetUniformLocation(id, "uLightDir");
-			uSphereUnit = glGetUniformLocation(id, "uSphereUnit");
 			uSphereSize = glGetUniformLocation(id, "uSphereSize");
-			uIsPrimitive = glGetUniformLocation(id, "uIsPrimitive");
 			uToonThreshold = glGetUniformLocation(id, "uToonThreshold");
 			uToonHigh = glGetUniformLocation(id, "uToonHigh");
 			uToonLow = glGetUniformLocation(id, "uToonLow");
+			use();
+			glUniform1i(glGetUniformLocation(id, "uSphereUnit"), 2);
 		}
 
-		void setColor(int rgb) {
-			float r = (rgb >> 16 & 0xff) / 255.0f;
-			float g = (rgb >> 8 & 0xff) / 255.0f;
-			float b = (rgb & 0xff) / 255.0f;
-			glUniform3f(uColor, r, g, b);
+		void setColor(ByteBuffer rgb) {
+			rgb.rewind();
+			float r = (rgb.get() & 0xff) / 255.0f;
+			float g = (rgb.get() & 0xff) / 255.0f;
+			float b = (rgb.get() & 0xff) / 255.0f;
+			glVertexAttrib3f(aColorData, r, g, b);
 		}
 
-		void setToonShading(Effect3D effect) {
-			boolean enable = effect.mShading == Effect3D.TOON_SHADING && effect.isToonShading;
-			glUniform1f(uToonThreshold, enable ? effect.mToonThreshold : -1.0f);
-			glUniform1f(uToonHigh, effect.mToonHigh);
-			glUniform1f(uToonLow, effect.mToonLow);
-		}
-
-		void disableUniformColor() {
-			glUniform3f(uColor, -1.0f, -1.0f, -1.0f);
+		void setToonShading(int attrs, int threshold, int high, int low) {
+			if ((attrs & Graphics3D.ENV_ATTR_TOON_SHADING) != 0) {
+				glUniform1f(uToonThreshold, threshold / 255.0f);
+				glUniform1f(uToonHigh, high / 255.0f);
+				glUniform1f(uToonLow, low / 255.0f);
+			} else {
+				glUniform1f(uToonThreshold, -1.0f);
+			}
 		}
 
 		void bindMatrices(float[] mvp, float[] mv) {
 			glUniformMatrix4fv(uMatrix, 1, false, mvp, 0);
-			glUniformMatrix4fv(uMatrixMV, 1, false, mv, 0);
+			glUniformMatrix3fv(uNormalMatrix, 1, false, mv, 0);
+		}
+
+		void setSphere(TextureImpl sphere) {
+			if (sphere != null) {
+				int id = sphere.getId();
+				glActiveTexture(GL_TEXTURE2);
+				glBindTexture(GL_TEXTURE_2D, id);
+				glUniform2f(uSphereSize, sphere.getWidth(), sphere.getHeight());
+			} else {
+				glUniform2f(uSphereSize, -1, -1);
+			}
 		}
 	}
 
@@ -212,7 +216,6 @@ abstract class Program {
 		private static final String VERTEX = "shaders/simple.vsh";
 		private static final String FRAGMENT = "shaders/simple.fsh";
 		int aTexture;
-		int uTextureUnit;
 
 		Simple() {
 			super(VERTEX, FRAGMENT);
@@ -221,23 +224,19 @@ abstract class Program {
 		protected void getLocations() {
 			aPosition = glGetAttribLocation(id, "a_position");
 			aTexture = glGetAttribLocation(id, "a_texcoord0");
-			uTextureUnit = glGetUniformLocation(id, "sampler0");
+			use();
+			glUniform1i(glGetUniformLocation(id, "sampler0"), 1);
 		}
 	}
 
 	static final class Tex extends Program {
 		private static final String VERTEX = "shaders/tex.vsh";
 		private static final String FRAGMENT = "shaders/tex.fsh";
-		int uTextureUnit;
 		int uTexSize;
-		int uIsTransparency;
-		int uSphereUnit;
 		int uSphereSize;
-		int uIsPrimitive;
 		int uToonThreshold;
 		int uToonHigh;
 		int uToonLow;
-		int uColorKey;
 
 		Tex() {
 			super(VERTEX, FRAGMENT);
@@ -256,63 +255,65 @@ abstract class Program {
 			aNormal = glGetAttribLocation(id, "aNormal");
 			aColorData = glGetAttribLocation(id, "aColorData");
 			aMaterial = glGetAttribLocation(id, "aMaterial");
-			uTextureUnit = glGetUniformLocation(id, "uTextureUnit");
-			uSphereUnit = glGetUniformLocation(id, "uSphereUnit");
 			uTexSize = glGetUniformLocation(id, "uTexSize");
-			uColorKey = glGetUniformLocation(id, "uColorKey");
 			uSphereSize = glGetUniformLocation(id, "uSphereSize");
 			uMatrix = glGetUniformLocation(id, "uMatrix");
-			uMatrixMV = glGetUniformLocation(id, "uMatrixMV");
-			uIsTransparency = glGetUniformLocation(id, "uIsTransparency");
+			uNormalMatrix = glGetUniformLocation(id, "uNormalMatrix");
 			uAmbIntensity = glGetUniformLocation(id, "uAmbIntensity");
 			uDirIntensity = glGetUniformLocation(id, "uDirIntensity");
 			uLightDir = glGetUniformLocation(id, "uLightDir");
-			uIsPrimitive = glGetUniformLocation(id, "uIsPrimitive");
 			uToonThreshold = glGetUniformLocation(id, "uToonThreshold");
 			uToonHigh = glGetUniformLocation(id, "uToonHigh");
 			uToonLow = glGetUniformLocation(id, "uToonLow");
+			use();
+			glUniform1i(glGetUniformLocation(id, "uTextureUnit"), 0);
+			glUniform1i(glGetUniformLocation(id, "uSphereUnit"), 2);
 		}
 
-		void enableTexUnit() {
-			glActiveTexture(GL_TEXTURE0);
-			glUniform1i(uTextureUnit, 0);
-		}
-
-		void setTransparency(int transparent) {
-			glUniform1i(uIsTransparency, transparent);
-		}
-
-		void setTex(Texture tex) {
+		void setTex(TextureImpl tex) {
 			if (tex != null) {
-				glUniform2f(uTexSize, tex.width, tex.height);
-				glUniform3fv(uColorKey, 1, tex.getColorKey());
-				glBindTexture(GL_TEXTURE_2D, tex.getId());
+				int id = tex.getId();
+				glActiveTexture(GL_TEXTURE0);
+				glBindTexture(GL_TEXTURE_2D, id);
+				glUniform2f(uTexSize, tex.getWidth(), tex.getHeight());
 			} else {
 				glUniform2f(uTexSize, 256, 256);
 				glBindTexture(GL_TEXTURE_2D, 0);
 			}
 		}
 
-		void setToonShading(Effect3D effect) {
-			boolean enable = effect.mShading == Effect3D.TOON_SHADING && effect.isToonShading;
-			glUniform1f(uToonThreshold, enable ? effect.mToonThreshold / 255.0f : -1.0f);
-			glUniform1f(uToonHigh, effect.mToonHigh / 255.0f);
-			glUniform1f(uToonLow, effect.mToonLow / 255.0f);
+		void setToonShading(int attrs, int threshold, int high, int low) {
+			if ((attrs & Graphics3D.ENV_ATTR_TOON_SHADING) != 0) {
+				glUniform1f(uToonThreshold, threshold / 255.0f);
+				glUniform1f(uToonHigh, high / 255.0f);
+				glUniform1f(uToonLow, low / 255.0f);
+			} else {
+				glUniform1f(uToonThreshold, -1.0f);
+			}
 		}
 
 		void bindMatrices(float[] mvp, float[] mv) {
 			glUniformMatrix4fv(uMatrix, 1, false, mvp, 0);
-			glUniformMatrix4fv(uMatrixMV, 1, false, mv, 0);
+			glUniformMatrix3fv(uNormalMatrix, 1, false, mv, 0);
+		}
+
+		void setSphere(TextureImpl sphere) {
+			if (sphere != null) {
+				int id = sphere.getId();
+				glActiveTexture(GL_TEXTURE2);
+				glBindTexture(GL_TEXTURE_2D, id);
+				glUniform2f(uSphereSize, sphere.getWidth(), sphere.getHeight());
+			} else {
+				glUniform2f(uSphereSize, -1, -1);
+			}
 		}
 	}
 
 	static class Sprite extends Program {
 		private static final String VERTEX = "shaders/sprite.vsh";
 		private static final String FRAGMENT = "shaders/sprite.fsh";
-		int uTexUnit;
 		int uTexSize;
 		int uIsTransparency;
-		int uColorKey;
 
 		Sprite() {
 			super(VERTEX, FRAGMENT);
@@ -329,10 +330,17 @@ abstract class Program {
 		protected void getLocations() {
 			aPosition = glGetAttribLocation(id, "aPosition");
 			aColorData = glGetAttribLocation(id, "aColorData");
-			uTexUnit = glGetUniformLocation(id, "uTexUnit");
 			uTexSize = glGetUniformLocation(id, "uTexSize");
-			uColorKey = glGetUniformLocation(id, "uColorKey");
 			uIsTransparency = glGetUniformLocation(id, "uIsTransparency");
+			use();
+			glUniform1i(glGetUniformLocation(id, "uTextureUnit"), 0);
+		}
+
+		void setTexture(TextureImpl texture) {
+			int id = texture.getId();
+			glActiveTexture(GL_TEXTURE0);
+			glBindTexture(GL_TEXTURE_2D, id);
+			glUniform2f(uTexSize, texture.getWidth(), texture.getHeight());
 		}
 	}
 }
