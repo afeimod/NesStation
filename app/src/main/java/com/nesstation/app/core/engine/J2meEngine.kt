@@ -448,6 +448,29 @@ class J2meEngine private constructor() : EmulatorEngine, J2meHost {
                 return true
         }
 
+        /**
+         * ★ v4.1 让缩放/重力等显示设置对"正在运行"的游戏立即生效。
+         *
+         * Canvas.setScale / setGraphicsMode 等只更新 Canvas 的静态字段，不会
+         * 触发已显示 Canvas 重算虚拟屏幕几何 —— 旧版在设置面板改「画面缩放」
+         * 后画面毫无变化，必须退出重进游戏（用户反馈"自定义布局/缩放没效果"
+         * 的组成部分）。这里主动调用当前 Canvas.updateSize()：按新 scaleType /
+         * scaleRatio / gravity 重算 onX/onY/onWidth/onHeight 并 repaint。
+         * updateSize() 内部自带 bufferLock 同步，在任意线程调用安全。
+         */
+        fun refreshCanvasLayout() {
+                val displayable = currentDisplayable
+                if (displayable is javax.microedition.lcdui.Canvas) {
+                        try {
+                                displayable.updateSize()
+                        } catch (e: Throwable) {
+                                // Canvas 尚未完成首帧布局（offscreen 未建）等边界
+                                // 情况 —— updateSize 内部对未初始化状态已有兜底，
+                                // 这里再挡一层，设置重放绝不能把游戏线程打崩。
+                        }
+                }
+        }
+
         private var lastErr: String = ""
 
         companion object {

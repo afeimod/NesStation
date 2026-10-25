@@ -237,7 +237,18 @@ object RuffleInjector {
                     player.style.zIndex = '9999';
                     player.style.background = '#000';
                     document.body.appendChild(player);
+                    // ★ v4.1 per-load 补带缩放配置（与 player.html v26 同款）：
+                    //   Ruffle load() 合并顺序 {...默认, ...全局config, ...perLoad}，
+                    //   perLoad 优先级最高。旧版只传 {url, base}，若全局 config
+                    //   被页面脚本/ruffle.js 自身重建时机覆盖，用户设置的比例
+                    //   模式（exactFit/off）就全部丢失 → 拉伸失效。
+                    var cfg = window.RufflePlayer.config || {};
                     var opt = { url: url };
+                    if (cfg.scale) opt.scale = cfg.scale;
+                    if (cfg.letterbox) opt.letterbox = cfg.letterbox;
+                    if (typeof cfg.forceScale === 'boolean') opt.forceScale = cfg.forceScale;
+                    if (typeof cfg.forceAlign === 'boolean') opt.forceAlign = cfg.forceAlign;
+                    if (cfg.quality) opt.quality = cfg.quality;
                     if (base) opt.base = base;
                     player.ruffle().load(opt);
                   });

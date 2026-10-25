@@ -210,6 +210,79 @@
           // ruffle-player 的实际尺寸。
           window.dispatchEvent(new Event('resize'));
         }
+
+        // ★★ v4.1 比例看门狗：持续确保 #stage 几何符合用户设置。
+        //
+        // 背景：engine 层（scale=exactFit + letterbox=off + forceScale）已验证
+        // 可正确拉伸，但 App 层有多个一次性时机（注入脚本的 setTimeout 序列、
+        // 页面加载竞争、ruffle-player 迟到创建）都可能把 #stage 改回 100% 或
+        // 漏掉校正 —— 表现为“设置屏幕比例不生效，一直有黑边保持原比例”。
+        // 看门狗周期性把 #stage 校正到目标几何并 dispatch resize 让引擎重算
+        // viewport，无论初始化时机如何错开，最终几何必然正确：
+        //   · stretch / 缺省 → #stage 铺满视口（引擎 exactFit 拉伸铺满）
+        //   · 4:3 / 16:9 / 16:10 / 5:4 → 居中比例盒（引擎 exactFit 填满盒）
+        //   · auto → 不干预（引擎 showAll + letterbox 属预期）
+        //   · box（自定义四角）→ 不干预（box 逻辑自管）
+        (function() {
+          function ratioBox() {
+            var sw = window.innerWidth, sh = window.innerHeight;
+            if (sw <= 0 || sh <= 0) return null;
+            if (ASPECT_RAW === 'auto' || !ASPECT_RAW) return null; // 引擎自管
+            if (ASPECT_RAW === 'stretch') return { w: sw, h: sh, ratio: 0 };
+            var m = /^(\d+(?:\.\d+)?)[:x](\d+(?:\.\d+)?)$/.exec(ASPECT_RAW);
+            if (!m) return null;
+            var r = parseFloat(m[1]) / parseFloat(m[2]);
+            var w, h;
+            if (sw / sh > r) { h = sh; w = sh * r; } else { w = sw; h = sw / r; }
+            return { w: Math.floor(w), h: Math.floor(h), ratio: r };
+          }
+          var ticks = 0;
+          var timer = setInterval(function() {
+            ticks++;
+            try {
+              var stage = document.getElementById('stage');
+              if (!stage || stage.classList.contains('box-custom')) {
+                if (ticks > 80) clearInterval(timer);
+                return;
+              }
+              var box = ratioBox();
+              if (!box) { if (ticks > 80) clearInterval(timer); return; }
+              if (box.ratio === 0) {
+                // stretch：清理任何残留的比例盒样式，回归全屏
+                var stale = document.getElementById('__ruffleAspectRatioStyle');
+                if (stale) stale.remove();
+                if (stage.style.width || stage.style.height) {
+                  stage.style.width = '';
+                  stage.style.height = '';
+                  window.dispatchEvent(new Event('resize'));
+                }
+              } else {
+                // 比例盒：确保居中样式存在（与 GameWebViewClient 同款 CSS）
+                if (!document.getElementById('__ruffleAspectRatioStyle')) {
+                  var st = document.createElement('style');
+                  st.id = '__ruffleAspectRatioStyle';
+                  st.textContent = [
+                    'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;background:#000!important;overflow:hidden!important;}',
+                    '#stage{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;margin:auto!important;background:#000!important;box-sizing:border-box!important;}',
+                    '#stage > ruffle-player{display:block!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;}'
+                  ].join('\n');
+                  document.head.appendChild(st);
+                }
+                var bw = Math.max(1, window.innerWidth - 4);
+                var bh = Math.max(1, window.innerHeight - 4);
+                var w, h;
+                if (bw / bh > box.ratio) { h = bh; w = Math.floor(bh * box.ratio); }
+                else { w = bw; h = Math.floor(bw / box.ratio); }
+                if (Math.abs(stage.clientWidth - w) > 2 || Math.abs(stage.clientHeight - h) > 2) {
+                  stage.style.width = w + 'px';
+                  stage.style.height = h + 'px';
+                  window.dispatchEvent(new Event('resize'));
+                }
+              }
+            } catch (e) { /* 看门狗永不抛错 */ }
+            if (ticks > 120) clearInterval(timer); // ~96s 后停止（几何已稳定）
+          }, 800);
+        })();
       } catch (e) {
         loadText.textContent = '加载失败: ' + e.message;
         console.error(e);

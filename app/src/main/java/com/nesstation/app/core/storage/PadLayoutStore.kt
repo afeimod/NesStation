@@ -227,7 +227,25 @@ class PadLayout {
     // J2ME screen scale type: how the virtual MIDlet screen is scaled to fit
     // the device display. "stretch" = fill (may distort), "fit" = keep
     // aspect ratio with letterboxing, "center" = native resolution centered.
-    var javaScaleType: String = "fit"                 // stretch | fit | center
+    // ★ v4.1 默认 stretch：与用户需求“默认全屏拉伸”对齐 —— 旧默认 fit 会在
+    //   游戏逻辑分辨率与设备屏幕比例不一致时加黑边，且自定义布局（videoScale=
+    //   custom 的拖四角矩形）只约束窗口形状，窗口内 fit 仍按原比例留边，
+    //   表现为“自定义布局没效果”。默认拉伸后画面默认铺满窗口，自定义布局
+    //   所见即所得。
+    var javaScaleType: String = "stretch"              // stretch | fit | center
+    // ★ v4.1 J2ME 渲染模式（对齐 JL-Mod 的 graphicsMode 设置）：
+    //   "gl"  = OpenGL 加速（GlesView，默认，对应 Canvas.graphicsMode=1）
+    //   "software" = 软件渲染（CanvasView，graphicsMode=0，兼容性兜底）
+    //   "hardware" = 硬件画布（lockHardwareCanvas，graphicsMode=3，Android 8+）
+    // 旧版此设置不暴露， graphicsMode 由每游戏 config.json 决定；若老存档里
+    // config.json 是软件模式（graphicsMode=0），3D 游戏会全程走 CPU 路径。
+    // 现在 EmulatorScreen 在 loadRom 后重放 applyCoreOptions 时统一下发，
+    // 全局设置优先于旧 config.json。
+    var javaGraphicsMode: String = "gl"
+    // ★ v4.1 软件渲染并行重绘（对应 JL-Mod parallelRedrawScreen）：仅
+    //   software/hardware 模式生效（Canvas.setGraphicsMode 内部门控），
+    //   开启后重绘在独立 UI Handler 上异步执行，减少游戏线程阻塞。
+    var javaParallelRedraw: Boolean = false
     // J2ME FPS counter: show real-time FPS overlay inside the MIDlet screen.
     var javaShowFps: Boolean = false
     // J2ME immediate mode: when enabled, the MIDlet redraws immediately on
@@ -1511,6 +1529,8 @@ class PadLayout {
         javaInputMode = another.javaInputMode
         javaOpacity = another.javaOpacity
         javaScaleType = another.javaScaleType
+        javaGraphicsMode = another.javaGraphicsMode
+        javaParallelRedraw = another.javaParallelRedraw
         javaShowFps = another.javaShowFps
         javaImmediateMode = another.javaImmediateMode
         javaResolution = another.javaResolution
@@ -2753,7 +2773,10 @@ object PadLayoutStore {
             dosInputMode = p.getString("dos_input_mode", "gamepad") ?: "gamepad"
             javaInputMode = p.getString("java_input_mode", "gamepad") ?: "gamepad"
             javaOpacity = p.getFloat("java_opacity", 0.8f).coerceIn(0.3f, 1f)
-            javaScaleType = p.getString("java_scale_type", "fit") ?: "fit"
+            // ★ v4.1 默认 stretch（旧默认 fit，见字段注释）
+            javaScaleType = p.getString("java_scale_type", "stretch") ?: "stretch"
+            javaGraphicsMode = p.getString("java_graphics_mode", "gl") ?: "gl"
+            javaParallelRedraw = p.getBoolean("java_parallel_redraw", false)
             javaShowFps = p.getBoolean("java_show_fps", false)
             javaImmediateMode = p.getBoolean("java_immediate_mode", false)
             javaResolution = p.getString("java_resolution", "default") ?: "default"
@@ -4000,6 +4023,8 @@ object PadLayoutStore {
             putString("java_input_mode", layout.javaInputMode)
             putFloat("java_opacity", layout.javaOpacity)
             putString("java_scale_type", layout.javaScaleType)
+            putString("java_graphics_mode", layout.javaGraphicsMode)
+            putBoolean("java_parallel_redraw", layout.javaParallelRedraw)
             putBoolean("java_show_fps", layout.javaShowFps)
             putBoolean("java_immediate_mode", layout.javaImmediateMode)
             putString("java_resolution", layout.javaResolution)
@@ -5140,6 +5165,8 @@ fun javaButtonKeyMapSet(raw: String, buttonId: String, keyCode: Int): String {
 data class JavaGameSettings(
     val javaInputMode: String,
     val javaScaleType: String,
+    val javaGraphicsMode: String,
+    val javaParallelRedraw: Boolean,
     val javaShowFps: Boolean,
     val javaImmediateMode: Boolean,
     val javaResolution: String,
@@ -5157,6 +5184,8 @@ data class JavaGameSettings(
         fun of(l: PadLayout): JavaGameSettings = JavaGameSettings(
             javaInputMode = l.javaInputMode,
             javaScaleType = l.javaScaleType,
+            javaGraphicsMode = l.javaGraphicsMode,
+            javaParallelRedraw = l.javaParallelRedraw,
             javaShowFps = l.javaShowFps,
             javaImmediateMode = l.javaImmediateMode,
             javaResolution = l.javaResolution,
@@ -5182,7 +5211,9 @@ data class JavaGameSettings(
             }
             JavaGameSettings(
                 javaInputMode = o.optString("inputMode", "gamepad"),
-                javaScaleType = o.optString("scaleType", "fit"),
+                javaScaleType = o.optString("scaleType", "stretch"),
+                javaGraphicsMode = o.optString("graphicsMode", "gl"),
+                javaParallelRedraw = o.optBoolean("parallelRedraw", false),
                 javaShowFps = o.optBoolean("showFps", false),
                 javaImmediateMode = o.optBoolean("immediateMode", false),
                 javaResolution = o.optString("resolution", "default"),
@@ -5204,6 +5235,8 @@ data class JavaGameSettings(
         val o = org.json.JSONObject()
         o.put("inputMode", javaInputMode)
         o.put("scaleType", javaScaleType)
+        o.put("graphicsMode", javaGraphicsMode)
+        o.put("parallelRedraw", javaParallelRedraw)
         o.put("showFps", javaShowFps)
         o.put("immediateMode", javaImmediateMode)
         o.put("resolution", javaResolution)
@@ -5229,6 +5262,8 @@ data class JavaGameSettings(
 fun PadLayout.withJavaSettings(s: JavaGameSettings): PadLayout = copy {
     javaInputMode = s.javaInputMode
     javaScaleType = s.javaScaleType
+    javaGraphicsMode = s.javaGraphicsMode
+    javaParallelRedraw = s.javaParallelRedraw
     javaShowFps = s.javaShowFps
     javaImmediateMode = s.javaImmediateMode
     javaResolution = s.javaResolution

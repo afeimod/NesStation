@@ -734,10 +734,15 @@ fun WebGameScreen(
             //   页面的 swf/base 参数重建播放页 URL（NavHelper 按最新偏好拼
             //   scale/letterbox/aspect），重载后 exactFit/off 立即完全生效；
             //   普通网页不动（比例设置对之后打开的 SWF 生效）。
+            //   ★ v4.1 加固（与 SwfPlayerScreen 同款）：立即 loadUrl + 700ms 后
+            //   读回页面内引擎 config 校验，不符再补重载（最多两次）—— 旧版
+            //   postDelayed(150) 在部分设备上被 WebView 吞掉，重载根本没发生，
+            //   用户看到"设置比例不生效、一直黑边保持原比例"。
             val curUrl = wv.url ?: ""
             if (curUrl.startsWith("https://flash.local/player") ||
                 curUrl.startsWith("https://flash.local/waflash")) {
-                wv.postDelayed({
+                var retries = 0
+                fun doReload() {
                     try {
                         val parsed = android.net.Uri.parse(curUrl)
                         val swfParam = parsed.getQueryParameter("swf")
@@ -752,7 +757,24 @@ fun WebGameScreen(
                     } catch (_: Throwable) {
                         try { wv.reload() } catch (_: Throwable) {}
                     }
-                }, 150)
+                }
+                fun verify() {
+                    try {
+                        val expectedScale = if (ratio == "auto") "showAll" else "exactFit"
+                        wv.evaluateJavascript(
+                            "(window.RufflePlayer&&window.RufflePlayer.config&&window.RufflePlayer.config.scale)||''"
+                        ) { got ->
+                            val actual = got?.trim('"') ?: ""
+                            if (actual.isNotEmpty() && actual != expectedScale && retries < 2) {
+                                retries++
+                                doReload()
+                                wv.postDelayed({ verify() }, 900)
+                            }
+                        }
+                    } catch (_: Throwable) {}
+                }
+                doReload()
+                wv.postDelayed({ verify() }, 700)
             }
         }
         val modeText = if (ratio == "auto") "全屏自适应（保持原比例不拉伸）"

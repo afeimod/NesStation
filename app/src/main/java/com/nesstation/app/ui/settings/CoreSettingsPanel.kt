@@ -746,9 +746,23 @@ fun CoreSettingsPanel(
                         padLayout.javaInputMode
                     ) { updateLayout(padLayout.copy { javaInputMode = it }) }
                     DropdownRow("画面缩放",
-                        listOf("fit" to "适应 (保持比例)", "stretch" to "拉伸 (填满屏幕)", "center" to "原始分辨率居中"),
+                        listOf("stretch" to "拉伸 (填满屏幕) 【默认】", "fit" to "适应 (保持比例)", "center" to "原始分辨率居中"),
                         padLayout.javaScaleType
                     ) { updateLayout(padLayout.copy { javaScaleType = it }) }
+                    // ★ v4.1 渲染模式（对齐 JL-Mod graphicsMode）：3D 游戏（m3g/
+                    //   micro3d）必须用 OpenGL 加速路径；老存档 config.json 里若
+                    //   是软件模式会导致 3D 帧率极低。全局设置优先于旧 config。
+                    DropdownRow("渲染模式",
+                        listOf("gl" to "OpenGL 加速 (默认，3D 必选)",
+                               "software" to "软件渲染 (兼容性兑底)",
+                               "hardware" to "硬件画布 (Android 8+)"),
+                        padLayout.javaGraphicsMode
+                    ) { updateLayout(padLayout.copy { javaGraphicsMode = it }) }
+                    DropdownRow("软件模式并行重绘",
+                        listOf("disabled" to "关闭", "enabled" to "开启 (减少卡顿)"),
+                        if (padLayout.javaParallelRedraw) "enabled" else "disabled"
+                    ) { updateLayout(padLayout.copy { javaParallelRedraw = (it == "enabled") }) }
+                    InfoRow("渲染模式切换后重新进入游戏生效（游戏内 Canvas 视图按启动时的模式创建）。3D 游戏建议 OpenGL + 即时渲染。")
                     // 游戏逻辑分辨率（MIDlet 看到的屏幕尺寸）
                     DropdownRow("游戏分辨率",
                         listOf(

@@ -2743,6 +2743,8 @@ internal fun JavaGameSettingsDialog(
 
     var inputMode by remember { mutableStateOf(initial.javaInputMode) }
     var scaleType by remember { mutableStateOf(initial.javaScaleType) }
+    var graphicsMode by remember { mutableStateOf(initial.javaGraphicsMode) }
+    var parallelRedraw by remember { mutableStateOf(initial.javaParallelRedraw) }
     var resolution by remember { mutableStateOf(initial.javaResolution) }
     var scaleRatio by remember { mutableStateOf(initial.javaScaleRatio) }
     var fpsLimit by remember { mutableStateOf(initial.javaFpsLimit) }
@@ -2757,6 +2759,8 @@ internal fun JavaGameSettingsDialog(
     fun snapshot(): JavaGameSettings = JavaGameSettings(
         javaInputMode = inputMode,
         javaScaleType = scaleType,
+        javaGraphicsMode = graphicsMode,
+        javaParallelRedraw = parallelRedraw,
         javaShowFps = showFps,
         javaImmediateMode = immediateMode,
         javaResolution = resolution,
@@ -2852,10 +2856,38 @@ internal fun JavaGameSettingsDialog(
                         )
                     )
                     if (openDropdown == "scale") {
-                        listOf("fit" to "适应屏幕 (保持比例，推荐)",
-                               "stretch" to "全屏拉伸",
+                        listOf("stretch" to "全屏拉伸 (默认，铺满无黑边)",
+                               "fit" to "适应屏幕 (保持比例)",
                                "center" to "原始分辨率 (居中)").forEach { (v, label) ->
                             JavaSettingsOptionRow(label, scaleType == v) { scaleType = v; openDropdown = null }
+                        }
+                    }
+
+                    // --- 渲染模式（v4.1 对齐 JL-Mod graphicsMode）---
+                    androidx.compose.material3.ListItem(
+                        headlineContent = { Text("渲染模式", color = Color.White, fontSize = 13.sp) },
+                        trailingContent = {
+                            Text(
+                                when (graphicsMode) {
+                                    "software" -> "软件渲染 ▾"
+                                    "hardware" -> "硬件画布 ▾"
+                                    else -> "OpenGL 加速 ▾"
+                                },
+                                color = Color(0xFFFFD66B), fontSize = 12.sp,
+                                modifier = Modifier.clickable {
+                                    openDropdown = if (openDropdown == "gfx") null else "gfx"
+                                }
+                            )
+                        },
+                        colors = androidx.compose.material3.ListItemDefaults.colors(
+                            containerColor = Color.Transparent
+                        )
+                    )
+                    if (openDropdown == "gfx") {
+                        listOf("gl" to "OpenGL 加速 (默认，3D 游戏必选)",
+                               "software" to "软件渲染 (兼容性兑底)",
+                               "hardware" to "硬件画布 (Android 8+)").forEach { (v, label) ->
+                            JavaSettingsOptionRow(label, graphicsMode == v) { graphicsMode = v; openDropdown = null }
                         }
                     }
 

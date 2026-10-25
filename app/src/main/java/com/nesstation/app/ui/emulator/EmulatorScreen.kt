@@ -2228,6 +2228,9 @@ fun EmulatorScreen(
                    padLayout.javaScaleRatio, padLayout.javaFpsLimit,
                    padLayout.javaTouchInput, padLayout.javaNumDualDispatch,
                    padLayout.javaButtonKeyMap,
+                   // ★ v4.1 新增：渲染模式/并行重绘（改设置 → applyCoreOptions 重放 →
+                    // Canvas.setGraphicsMode 全局覆盖旧 config.json）
+                   padLayout.javaGraphicsMode, padLayout.javaParallelRedraw,
                    // DC 帧数限制 —— 改动即时重设模拟线程 pacing
                    padLayout.dcFrameLimit,
                    // 3DS / Azahar options — 改动即时写 config.ini + reloadSettings
@@ -6331,13 +6334,32 @@ private fun applyCoreOptionsInner(
             // Canvas 缩放语义: scaleType 0=原始分辨率 1=适应屏幕(保持比例) 2=全屏拉伸;
             // gravity: 0=左 1=上 2=居中 3=右 4=下。
             // (旧映射把 stretch→0/center→2 搞反了, 且 gravity 48 不在任何分支内)
-            val scaleType = when (layout.javaScaleType) {
-                "stretch" -> 2  // 全屏拉伸(不保持比例)
-                "center"  -> 0  // 原始分辨率(不缩放)
-                else      -> 1  // fit 适应屏幕保持比例
+            val scaleType = when {
+                // ★ v4.1 全局「自定义布局」(videoScale=custom) 对 JAVA 强制窗口内
+                //   拉伸：拖四角矩形本来就是玩家对"画面放哪儿、多大"的直接表达，
+                //   窗口内再按 fit 留黑边 = "自定义布局没效果"（用户反馈）。
+                //   与 PS2 分支的 custom→Stretch 处理一致，所见即所得。
+                //   （老存档里 java_scale_type 仍是旧默认 "fit"，仅改默认值救不了
+                //   已有配置，这里按窗口语义强制。）
+                layout.videoScale == "custom" -> 2
+                else -> when (layout.javaScaleType) {
+                    "stretch" -> 2  // 全屏拉伸(不保持比例)
+                    "center"  -> 0  // 原始分辨率(不缩放)
+                    else      -> 1  // fit 适应屏幕保持比例
+                }
             }
             val scaleRatio = layout.javaScaleRatio.toIntOrNull()?.coerceIn(25, 400) ?: 100
             javax.microedition.lcdui.Canvas.setScale(2, scaleType, scaleRatio)
+            // ★ v4.1 渲染模式（对齐 JL-Mod graphicsMode）：全局设置优先于每游戏
+            //   config.json（loadRom 内 applyConfiguration 已按 config.json 应用过，
+            //   这里在其后覆盖）。Canvas 视图按首次 getDisplayableView() 时的模式
+            //   创建 —— 游戏进行中切换仅对下一次进入生效。
+            val gfxMode = when (layout.javaGraphicsMode) {
+                "software" -> 0
+                "hardware" -> 3
+                else       -> 1  // gl (OpenGL 加速，默认)
+            }
+            javax.microedition.lcdui.Canvas.setGraphicsMode(gfxMode, layout.javaParallelRedraw)
             javax.microedition.lcdui.Canvas.setShowFps(layout.javaShowFps)
             javax.microedition.lcdui.event.EventQueue.setImmediate(layout.javaImmediateMode)
             // 补全原 J2ME-Loader 设置里游戏会用到的其余项：
@@ -6346,6 +6368,11 @@ private fun applyCoreOptionsInner(
                 engine.applyVirtualResolution(layout.javaResolution)
                 // 按键映射：虚拟手柄按键 → 手机按键（ABXY/START/SELECT/方向键）
                 engine.setCustomKeyMap(layout.javaButtonKeyMap)
+                // ★ v4.1 缩放/重力设置实时生效：setScale 只更新静态字段，不触发
+                //   已显示 Canvas 的 updateSize() —— 旧版改设置后画面纹丝不动，
+                //   必须重启游戏才生效（用户反馈"自定义布局/缩放没效果"的一环）。
+                //   这里主动让当前 Canvas 重算尺寸并立即重绘。
+                engine.refreshCanvasLayout()
             }
             // 帧率限制（0 = 不限制）
             val fpsLimit = layout.javaFpsLimit.toIntOrNull() ?: 0
@@ -15939,12 +15966,32 @@ private fun SettingsPanel(
 
                 DropdownSetting("屏幕缩放",
                     listOf(
-                        "fit" to "适应屏幕 (保持比例，推荐)",
-                        "stretch" to "全屏拉伸",
+                        "stretch" to "全屏拉伸 (默认，铺满无黑边)",
+                        "fit" to "适应屏幕 (保持比例)",
                         "center" to "原始分辨率 (居中)"
                     ),
                     padLayout.javaScaleType
                 ) { onLayoutChange(padLayout.copy {javaScaleType = it}) }
+
+                // ★ v4.1 渲染模式（对齐 JL-Mod graphicsMode）：3D 游戏必须
+                // OpenGL 加速；老存档 config.json 若为软件模式会致 3D 帧率
+                // 极低。全局设置优先于旧 config（下次进入游戏生效）。
+                DropdownSetting("渲染模式",
+                    listOf(
+                        "gl" to "OpenGL 加速 (默认，3D 必选)",
+                        "software" to "软件渲染 (兼容性兑底)",
+                        "hardware" to "硬件画布 (Android 8+)"
+                    ),
+                    padLayout.javaGraphicsMode
+                ) { onLayoutChange(padLayout.copy {javaGraphicsMode = it}) }
+
+                DropdownSetting("软件模式并行重绘",
+                    listOf(
+                        "disabled" to "关闭",
+                        "enabled" to "开启 (减少卡顿)"
+                    ),
+                    if (padLayout.javaParallelRedraw) "enabled" else "disabled"
+                ) { onLayoutChange(padLayout.copy {javaParallelRedraw = (it == "enabled")}) }
 
                 // 游戏逻辑分辨率（MIDlet 看到的屏幕尺寸）。旧版只能跳转
                 // J2ME-Loader 原生设置修改，现在补全到游戏内设置：

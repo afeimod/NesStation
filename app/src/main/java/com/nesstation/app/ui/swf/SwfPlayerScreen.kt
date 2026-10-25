@@ -304,11 +304,34 @@ fun SwfPlayerScreen(
             // ★ 自动重载：scale 级变更必须重载播放页才完全生效（config 是
             //   页面加载时注入的）。正在播放 flash.local 播放页时立即重载 ——
             //   用户改比例立刻看到效果，不再是"老样子"。
+            //   ★ v4.1 加固：旧版 postDelayed(150) 在部分设备上与 evaluateJavascript
+            //   竞争丢帧/被 WebView 吞掉 → 重载没发生 → 比例设置"不生效"。
+            //   现在 1) 立即 loadUrl（注入脚本与重载无顺序依赖，重载后页面参数
+            //   + onPageFinished 再注入一次）；2) 700ms 后读回页面内引擎 config
+            //   校验，与期望不符再补一次重载（最多两次），彻底闭环。
             val curUrl = wv.url ?: ""
             if (curUrl.startsWith("https://flash.local/")) {
-                wv.postDelayed({
+                var retries = 0
+                fun doReload() {
                     try { reload() } catch (_: Throwable) {}
-                }, 150)
+                }
+                fun verify() {
+                    try {
+                        val expectedScale = if (ratio == "auto") "showAll" else "exactFit"
+                        wv.evaluateJavascript(
+                            "(window.RufflePlayer&&window.RufflePlayer.config&&window.RufflePlayer.config.scale)||''"
+                        ) { got ->
+                            val actual = got?.trim('"') ?: ""
+                            if (actual.isNotEmpty() && actual != expectedScale && retries < 2) {
+                                retries++
+                                doReload()
+                                wv.postDelayed({ verify() }, 900)
+                            }
+                        }
+                    } catch (_: Throwable) {}
+                }
+                doReload()
+                wv.postDelayed({ verify() }, 700)
             }
         }
         val modeText = when (ratio) {
