@@ -20,6 +20,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 
+import ru.woesss.util.TextUtils;
+
 /**
  * File I/O utilities.
  */
@@ -78,8 +80,8 @@ public final class FileUtils {
      * Returns true if {@code fileName} names a .zip, .jar, or .apk.
      */
     public static boolean hasArchiveSuffix(String fileName) {
-        return fileName.endsWith(".zip")
-                || fileName.endsWith(".jar")
-                || fileName.endsWith(".apk");
+        return TextUtils.endsWithIgnoreCase(fileName, ".zip")
+               || TextUtils.endsWithIgnoreCase(fileName, ".jar")
+               || TextUtils.endsWithIgnoreCase(fileName, ".apk");
     }
 }

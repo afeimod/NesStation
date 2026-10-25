@@ -44,6 +44,8 @@ import java.util.zip.Adler32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
+import ru.woesss.util.TextUtils;
+
 /**
  * The bytes of a dex file in memory for reading and writing. All int offsets
  * are unsigned.
@@ -88,7 +90,7 @@ public final class Dex {
             } else {
                 throw new DexException("Expected " + DexFormat.DEX_IN_JAR_NAME + " in " + file);
             }
-        } else if (file.getName().endsWith(".dex")) {
+        } else if (TextUtils.endsWithIgnoreCase(file.getName(), ".dex")) {
             try (InputStream inputStream = new FileInputStream(file)) {
                 loadFrom(inputStream);
             }
