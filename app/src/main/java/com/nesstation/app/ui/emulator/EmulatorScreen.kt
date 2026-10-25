@@ -1809,6 +1809,41 @@ fun EmulatorScreen(
             }
         }
     }
+
+    // ★★ v4.2：Switch（Eden）启动看门狗（“小程序启动黑屏没反应”加固）★★
+    //   与 3DS 看门狗同模式：loaded=true 后核心若长时间一帧未出（realtimeFps
+    //   读的是核心真实 PerfStats —— 游戏帧率恒 0；HUD 心跳计数器不算数），
+    //   说明核心线程卡在 Load/渲染初始化且没有任何回调可弹窗 —— 旧版唯一
+    //   的呈现就是无声黑屏。30 秒（给着色器编译留余量）后主动把黑屏变成
+    //   可行动的诊断清单（密钥/固件状态 + 处理建议）。
+    LaunchedEffect(platform, loaded) {
+        if (platform != GamePlatform.NSWITCH || !loaded) return@LaunchedEffect
+        kotlinx.coroutines.delay(30_000)
+        if (!loaded || errorMsg != null) return@LaunchedEffect
+        val edenEngine = engine as? com.nesstation.app.core.engine.EdenEngine
+            ?: return@LaunchedEffect
+        val fps = try { edenEngine.realtimeFps() } catch (_: Throwable) { 0.0 }
+        if (fps > 0.5) return@LaunchedEffect
+        val keysOk = try {
+            org.yuzu.yuzu_emu.NativeLibrary.areKeysPresent()
+        } catch (_: Throwable) { false }
+        val fwOk = try {
+            org.yuzu.yuzu_emu.NativeLibrary.isFirmwareAvailable()
+        } catch (_: Throwable) { false }
+        errorMsg = buildString {
+            append("Switch 核心已加载但 30 秒内没有输出任何画面。\n\n")
+            if (!keysOk) {
+                append("· 缺少 prod.keys 密钥 —— 加密内容无法解密，请在 设置 → 核心设置 → Switch 安装。\n")
+            }
+            if (!fwOk) {
+                append("· 未安装官方固件 —— 系统小程序（相册/Mii/Amiibo/主菜单）内置于固件 zip。\n")
+            }
+            if (keysOk && fwOk) {
+                append("· 密钥与固件均已就绪 —— 可能是着色器编译特别慢（继续等待）或该程序与当前 GPU 驱动不兼容（可到 设置 → Switch·Eden 更换 GPU 驱动后重试）。\n")
+            }
+            append("\n提示：普通游戏首次启动编译着色器可能较慢，等待期间出现该提示属正常现象，可点「继续停留」。")
+        }
+    }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
 
     var showMenu by remember { mutableStateOf(false) }
@@ -2689,6 +2724,11 @@ fun EmulatorScreen(
         //   EdenEngine.loadApplet（上游 AppletAdapter 同款三步：
         //   setCurrentAppletId → getAppletLaunchPath → run）。
         //   未装固件时 loadApplet 返回可操作错误文案（不黑屏）。
+        //   ★★ v4.2 异常守卫：旧版整段无 try-catch —— loadApplet 若抛出
+        //   任何非预期 Throwable，LaunchedEffect 协程直接死亡，loaded 与
+        //   errorMsg 都没人写 → 画面永远停在“正在加载…”黑屏（用户实测
+        //   “小程序启动黑屏没反应”的候选路径之一）。现在任何异常都变成
+        //   可读错误面板。
         if (platform == GamePlatform.NSWITCH && romPath.startsWith("eden-applet://")) {
             val parsed = com.nesstation.app.ui.eden.EdenApplets.parse(romPath)
             if (parsed == null) {
@@ -2696,14 +2736,21 @@ fun EmulatorScreen(
                 return@LaunchedEffect
             }
             val (appletId, entryId, cabinetMode) = parsed
-            val ok = withContext(Dispatchers.IO) {
-                (engine as? com.nesstation.app.core.engine.EdenEngine)?.loadApplet(
-                    appletId, entryId, cabinetMode
-                ) { fpsFrameCounter.incrementAndGet() } ?: false
+            var launchError: String? = null
+            val ok = try {
+                withContext(Dispatchers.IO) {
+                    (engine as? com.nesstation.app.core.engine.EdenEngine)?.loadApplet(
+                        appletId, entryId, cabinetMode
+                    ) { fpsFrameCounter.incrementAndGet() } ?: false
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("EmulatorScreen", "applet launch failed", t)
+                launchError = "小程序启动异常：${t.message ?: t.javaClass.simpleName}"
+                false
             }
             if (!ok) {
-                val err = engine.lastError()
-                errorMsg = err.ifEmpty { "小程序启动失败" }
+                errorMsg = launchError
+                    ?: engine.lastError().ifEmpty { "小程序启动失败" }
             } else {
                 loaded = true
             }

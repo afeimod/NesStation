@@ -244,17 +244,11 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      * [pendingWiiLanguage] 会在下次 loadRom 前重放补丁）。
      */
     private fun patchSysconfLanguage(language: Int) {
-        val ctx = appContext
-        val userSysconf = File(File(File(userDir(), "Wii"), "shared2"), "SYSCONF")
-        val sysRoot = ctx?.let { File(File(File(it.filesDir, "ishiiruka"), "sys"), "Wii") }
-        val sysSysconf = sysRoot?.let { File(File(it, "shared2"), "SYSCONF") }
+        // ★★ v4.2：同步修正到核心规范位置（shared2/sys/SYSCONF）。
         var patched = false
-        if (userSysconf.isFile) {
-            patchSysconfFile(userSysconf, language)
-            patched = true
-        }
-        if (sysSysconf != null && sysSysconf.isFile) {
-            patchSysconfFile(sysSysconf, language)
+        for (sysconf in wiiSysconfCandidates()) {
+            if (!sysconf.isFile) continue
+            patchSysconfFile(sysconf, language)
             patched = true
         }
         if (!patched) {
@@ -262,8 +256,91 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         }
     }
 
+    /**
+     * ★★ v4.2 新增：Wii SYSCONF 候选路径列表 ★★
+     *
+     * 根因（「宽屏修正无效果」）：libishiiruka.so 字符串表实证
+     * （"p/shared2/sys/SYSCONF" / "/tmp/SYSCONF" / "/shared2/sys"）——
+     * 核心（Dolphin 5.0 系 SysConf.cpp）读写 SYSCONF 的规范位置是
+     * <WiiRoot>/shared2/sys/SYSCONF，带一层 sys/ 子目录。旧版补丁打到
+     * <Wii>/shared2/SYSCONF（少了 sys/）→ 核心从不读它 → 「宽屏修正」
+     * （Wii SYSCONF 路线）与「Wii 主机语言」的补丁从未生效。
+     *
+     * 候选（依次尝试，存在的都补丁）：
+     *  1. <userDir>/Wii/shared2/sys/SYSCONF —— 核心规范位置（首选）；
+     *  2. <userDir>/Wii/shared2/SYSCONF —— 旧版错误路径（防御性保留）；
+     *  3/4. Sys 种子目录（参考 APK 若随包带了模板则一并同步）。
+     */
+    private fun wiiSysconfCandidates(): List<File> {
+        val out = ArrayList<File>(4)
+        val wiiRoot = File(userDir(), "Wii")
+        out.add(File(File(File(wiiRoot, "shared2"), "sys"), "SYSCONF"))
+        out.add(File(File(wiiRoot, "shared2"), "SYSCONF"))
+        appContext?.let { ctx ->
+            val seedShared2 = File(File(File(File(ctx.filesDir, "ishiiruka"), "sys"), "Wii"), "shared2")
+            out.add(File(File(seedShared2, "sys"), "SYSCONF"))
+            out.add(File(seedShared2, "SYSCONF"))
+        }
+        return out
+    }
+
     /** 用户请求的 Wii 主机语言（-1 = 未设置；loadRom 前重放补丁）。 */
     @Volatile private var pendingWiiLanguage: Int = -1
+
+    /**
+     * ★★ v4.2 新增：用户请求的宽屏修正（null = 从未设置）★★
+     *
+     * 游戏未加载（isLoaded=false）时平台未知，无法区分 GC（GFX 矩阵 hack）
+     * 与 Wii（SYSCONF IPL.AR 主机信号）两条互斥路线 —— 只记意图，loadRom
+     * 判定平台后重放（applyWidescreenLocked）。与 [pendingWiiLanguage]
+     * 同款语义；持久保留（每次启动重放），保证「首次启用时 SYSCONF 尚未
+     * 生成 → 核心本启动生成 → 下次启动即生效」链路不断。
+     */
+    @Volatile private var pendingWidescreenHack: Boolean? = null
+
+    /**
+     * ★★ v4.2 新增：按已判定的平台应用宽屏修正（isLoaded=true 或
+     *   loadRom 平台判定后调用）。★★
+     *
+     *  - 开启 + GC ：GFX.ini [Settings] wideScreenHack=True（投影矩阵
+     *    hack 是 GC 唯一手段；配合前端 AspectRatio=拉伸呈现，宽视锥画面
+     *    铺满全屏 Surface = 可见的 16:9 效果）。
+     *  - 开启 + Wii：SYSCONF IPL.AR=1（主机级 16:9 信号，游戏自行切宽屏
+     *    渲染，稳定无抽搐）+ wideScreenHack=False（两路互斥）。
+     *  - 关闭 ：Wii 补 SYSCONF IPL.AR=0（不再依赖 isLoaded —— 旧版只在
+     *    游戏运行中才回写，关排后 SYSCONF 残留 16:9 信号 → 关不掉）；
+     *    GC 直接 False。
+     */
+    private fun applyWidescreenLocked(enable: Boolean) {
+        val isGc = isGameCubeGame()
+        val hackValue: String
+        if (enable && isGc) {
+            // GC：矩阵 hack（唯一手段）
+            hackValue = "True"
+        } else if (enable && !isGc) {
+            // Wii：主机级 16:9 信号，游戏自行切宽屏渲染；矩阵 hack 显式关闭
+            try { patchSysconfWidescreen(true) } catch (t: Throwable) {
+                android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch failed", t)
+            }
+            hackValue = "False"
+        } else {
+            // 关闭：两路全复位（Wii 的 SYSCONF 信号不再限制于运行中才回写）
+            if (!isGc) {
+                try { patchSysconfWidescreen(false) } catch (_: Throwable) {}
+            }
+            hackValue = "False"
+        }
+        coreOptions["GFX.ini/Settings/wideScreenHack"] = hackValue
+        if (isRunning2()) {
+            try { NativeLibrary.SetConfig("GFX.ini", "Settings", "wideScreenHack", hackValue) } catch (_: Throwable) {}
+            try {
+                writeIniMerged(
+                    java.io.File(configDir(), "GFX.ini"),
+                    mapOf("Settings" to mapOf("wideScreenHack" to hackValue))
+                )
+            } catch (_: Throwable) {}
+        }
+    }
 
     /** ★ 通用 SYSCONF BIGBYTE 条目补丁（IPL.LNG / IPL.AR 等）。
      *   复用 [patchSysconfLanguage] 的字节布局：
@@ -309,18 +386,13 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
      */
     private fun patchSysconfWidescreen(widescreen: Boolean) {
         val value = if (widescreen) 1 else 0
-        val userSysconf = File(File(File(userDir(), "Wii"), "shared2"), "SYSCONF")
-        val sysRoot = appContext?.let { File(File(File(it.filesDir, "ishiiruka"), "sys"), "Wii") }
-        val sysSysconf = sysRoot?.let { File(File(it, "shared2"), "SYSCONF") }
+        // ★★ v4.2：逐候选位补丁（wiiSysconfCandidates —— 首选核心规范位置
+        //   <Wii>/shared2/sys/SYSCONF；旧版写错路径导致补丁从未生效）
         var patched = false
-        if (userSysconf.isFile) {
-            try { patchSysconfBigByte(userSysconf, "IPL.AR", value); patched = true } catch (t: Throwable) {
-                android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch (user) failed", t)
-            }
-        }
-        if (sysSysconf != null && sysSysconf.isFile) {
-            try { patchSysconfBigByte(sysSysconf, "IPL.AR", value); patched = true } catch (t: Throwable) {
-                android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch (sys) failed", t)
+        for (sysconf in wiiSysconfCandidates()) {
+            if (!sysconf.isFile) continue
+            try { patchSysconfBigByte(sysconf, "IPL.AR", value); patched = true } catch (t: Throwable) {
+                android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch failed (${sysconf.path})", t)
             }
         }
         // ★★ 同步原生 JNI 通道（getSysconfSettings/setSysconfSettings
@@ -710,30 +782,27 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             //   调用，场景切换时命中与否来回翻转 = 抽搐的直接来源）。
             //   GC 游戏：无 SYSCONF，保持矩阵 hack（唯一手段）。
             //   两路互斥，避免双重修正；关闭时两路全复位。
+            //
+            //   ★★ v4.2 根因修复（「宽屏修正无效果」的 GC 侧）：★★
+            //   本分支被 applyCoreOptions 在游戏未加载时（EmulatorScreen
+            //   组合首帧，romPath==null）触发 —— 旧版此时 isGameCubeGame()
+            //   兜底返回 false（当作 Wii）→ GC 游戏的 wideScreenHack 被写成
+            //   "False" + 只打 Wii 专属的 SYSCONF 补丁 → loadRom 的
+            //   writeCoreIni 把 False 落盘 → GC 宽屏修正永远关闭。现在
+            //   平台未知（未加载）时只记 pendingWidescreenHack，loadRom
+            //   判定平台后按真实平台精确下发（见 applyWidescreenLocked）。
             "GFX.ini/Settings/wideScreenHack" -> {
                 val enable = value.equals("true", true) || value.equals("1", true)
-                val hackValue: String
-                if (enable && !isGameCubeGame()) {
-                    try { patchSysconfWidescreen(true) } catch (t: Throwable) {
-                        android.util.Log.w("IshirukaEngine", "SYSCONF widescreen patch failed", t)
-                    }
-                    hackValue = "False"
-                } else {
-                    if (isLoaded && !isGameCubeGame()) {
-                        try { patchSysconfWidescreen(false) } catch (_: Throwable) {}
-                    }
-                    hackValue = if (enable) "True" else "False"
+                // 意图永远先记档（loadRom 重放的权威来源）：退出游戏后
+                // isLoaded 短暂残留 true 时直接路由会用上一局的平台，
+                // loadRom 1.6) 的重放以 pending 为准按本局平台修正。
+                pendingWidescreenHack = enable
+                if (!isLoaded) {
+                    // 游戏未加载 —— 平台未知（GC 用矩阵 hack / Wii 用 SYSCONF
+                    // 主机信号，两路互斥），记完意图即返回，loadRom 时下发。
+                    return
                 }
-                coreOptions[key] = hackValue
-                if (isRunning2()) {
-                    try { NativeLibrary.SetConfig("GFX.ini", "Settings", "wideScreenHack", hackValue) } catch (_: Throwable) {}
-                    try {
-                        writeIniMerged(
-                            java.io.File(configDir(), "GFX.ini"),
-                            mapOf("Settings" to mapOf("wideScreenHack" to hackValue))
-                        )
-                    } catch (_: Throwable) {}
-                }
+                applyWidescreenLocked(enable)
                 return
             }
         }
@@ -858,6 +927,24 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
             DirectoryInitializationService.initialize(
                 File(userDir()), File(filesRoot(), "ishiiruka")
             )
+            // 1.5) ★★ v4.2：平台判定提前（writeCoreIni 之前）★★
+            //      宽屏修正路由（applyWidescreenLocked）需要知道 GC/Wii，
+            //      而旧版判定在第 4 步（writeCoreIni 之后）——设置项在游戏
+            //      未加载时只能错误兜底当作 Wii 处理（GC 的矩阵 hack 被写成
+            //      False = "宽屏修正无效果" 的 GC 侧根因）。GameFileCache 已
+            //      init、目录已就绪，这里检测正当时。
+            cachedIsGameCube = detectIsGameCube(rom.absolutePath)
+            // 1.6) ★★ v4.2：宽屏修正 pending 重放（平台已判定）★★
+            //      游戏未加载时 setCoreOption 只记意图（pendingWidescreenHack），
+            //      现在按真实平台精确下发：GC → GFX wideScreenHack=True；
+            //      Wii → SYSCONF IPL.AR=1（本启动若 SYSCONF 尚未生成，核心
+            //      生成后下次启动生效 —— 与 Wii 主机语言同款语义）。
+            //      ★ 必须在 writeCoreIni 之前 —— 路由结果要落进本次 INI。
+            pendingWidescreenHack?.let { enable ->
+                try { applyWidescreenLocked(enable) } catch (t: Throwable) {
+                    android.util.Log.w("IshirukaEngine", "widescreen replay failed", t)
+                }
+            }
             // 2) 核心设置 / 手柄绑定
             writeCoreIni()
             writeControllerInis()
@@ -872,7 +959,10 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
 
         // 4) ★ 平台判定（目录/配置就绪后）—— 加固：检测失败时兑底逻辑
         //    与 JNI 结果不一致的场合优先更可靠的通道（见 detectIsGameCube）。
-        cachedIsGameCube = detectIsGameCube(rom.absolutePath)
+        //    v4.2：已在 1.5) 提前执行过，此处仅在仍未知时兜底重测。
+        if (cachedIsGameCube == null) {
+            cachedIsGameCube = detectIsGameCube(rom.absolutePath)
+        }
 
         this.romPath = rom.absolutePath
         this.saveDir = saveDir

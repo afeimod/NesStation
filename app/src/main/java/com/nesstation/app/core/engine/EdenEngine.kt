@@ -215,17 +215,18 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
 
     /**
      * ★★ v8：启动 Switch 系统小程序（applet）★★
-     *
-     * 上游 AppletAdapter/AppletLauncherFragment 同款三步：
-     *   1. getAppletLaunchPath(entryId) —— 从固件 NAND 取 applet NCA 路径；
-     *      未安装固件 → 空串 → 可操作错误提示（不黑屏）；
-     *   2. setCurrentAppletId(appletId) —— 告知核心当前程序是哪个 applet；
-     *   3. Cabinet（Amiibo 管理）额外 setCabinetMode(mode) 选择操作模式。
-     * 之后与普通游戏同一条启动链（run(path, 0, true)）。
-     *
-     * 模拟会话结束时 native 侧自动把 applet id 重置回 Application
-     * （native.cpp ShutdownEmulation "Reset current applet ID"），
-     * 所以 applet → 游戏顺序启动无需 Kotlin 侧额外重置。
+     * ★★ v4.2：启动顺序逐字对齐上游 AppletAdapter / CabinetLauncherDialogAdapter
+     *   （getAppletLaunchPath 在前、setCurrentAppletId/setCabinetMode 在后），
+     *   修复「小程序启动黑屏没反应」的时序面：
+     *   旧版先 setCurrentAppletId 再 getAppletLaunchPath —— 路径解析失败时
+     *   还要手动回滚 applet id；且三步间任何一步的非预期异常都可能把
+     *   applet 身份残留在会话里影响后续正常游戏启动。现在严格按上游顺序：
+     *   1. getAppletLaunchPath(entryId) —— 失败（未装固件）直接返回可操作
+     *      错误（此刻尚未改任何会话状态，无需回滚）；
+     *   2. setCurrentAppletId(appletId) + setCabinetMode（仅 Cabinet）；
+     *   3. 与普通游戏同一条启动链（run(path, 0, true)）。
+     *   模拟会话结束时 native 侧自动把 applet id 重置回 Application
+     *   （native.cpp ShutdownEmulation "Reset current applet ID"）。
      *
      * @param cabinetMode 仅 Cabinet 用：0=昵称/主人设置 1=游戏数据擦除
      *                    2=恢复 3=格式化；传 -1 表示非 Cabinet。
@@ -242,7 +243,21 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
                     "请在 设置 → Switch·Eden → 密钥与固件 里选择密钥文件。"
                 return false
             }
-            // 先声明 applet 身份（上游顺序：setCurrentAppletId → launch）
+            // 1. 从固件 NAND 解析 applet NCA —— 未装固件时为空串
+            //    （上游第一步；此刻未改任何会话状态，失败即返回）
+            val appletPath = try {
+                NativeLibrary.getAppletLaunchPath(entryId)
+            } catch (t: Throwable) {
+                android.util.Log.e("EdenEngine", "getAppletLaunchPath failed", t)
+                ""
+            }
+            if (appletPath.isEmpty()) {
+                lastErrorText = "固件中未找到该小程序。\n" +
+                    "请到 设置 → Switch·Eden → 密钥与固件 安装官方固件 zip" +
+                    "（小程序内置于固件，重启后生效）。"
+                return false
+            }
+            // 2. 声明 applet 身份（上游顺序：路径解析成功后才 set）
             try {
                 NativeLibrary.setCurrentAppletId(appletId)
                 if (cabinetMode >= 0) {
@@ -251,24 +266,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             } catch (t: Throwable) {
                 android.util.Log.w("EdenEngine", "set applet id failed", t)
             }
-            // 从固件 NAND 解析 applet NCA —— 未装固件时为空串
-            val appletPath = try {
-                NativeLibrary.getAppletLaunchPath(entryId)
-            } catch (t: Throwable) {
-                android.util.Log.e("EdenEngine", "getAppletLaunchPath failed", t)
-                ""
-            }
-            if (appletPath.isEmpty()) {
-                // ★ 启动失败回滚 applet id：native 只在模拟会话结束时把
-                //   applet id 重置回 Application（ShutdownEmulation），本次
-                //   没有真正开过会话 → 必须手动复位，否则残留的 Cabinet/
-                //   QLaunch 身份会影响下一次正常游戏启动。
-                try { NativeLibrary.setCurrentAppletId(0x01) } catch (_: Throwable) {}
-                lastErrorText = "固件中未找到该小程序。\n" +
-                    "请到 设置 → Switch·Eden → 密钥与固件 安装官方固件 zip" +
-                    "（小程序内置于固件，重启后生效）。"
-                return false
-            }
+            // 3. 启动（与 loadRom 同款）
             romPath = appletPath
             isLoaded = true
             _paused = false
@@ -439,27 +437,57 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
      * NativeLibrary.installKeys(path, "keys")（上游 FirmwareManager 语义：
      * 校验扩展名 + 复制进 keys 目录）→ reloadKeys。
      * @return null = 成功；否则为用户可读的错误信息。
+     *
+     * ★★ v4.2 修复「安装 keys 密钥总是提示失败」★★
+     *   根因：上游 InstallKeys 的 Android 路径 = getFileExtension 校验 +
+     *   copyFileToStorage【按源文件名原样复制】进 keys 目录 +
+     *   KeyManager::ReloadKeys 只认 prod.keys / title.keys 两个固定名。
+     *   旧版把 SAF 选中的文件落盘成 eden_key_pick_<名>.keys（带前缀）
+     *   → 复制进 keys 目录后文件名是 eden_key_pick_prod.keys →
+     *   KeyManager 一个都不读 → AreKeysPresent 恒 false → native 恒返回
+     *   ErrorFailedInit(4) = 「密钥安装失败（错误码 4）」永远失败。
+     *   修复：临时文件必须用规范名（title.keys 精确匹配；其余一律按
+     *   prod.keys —— 最常见内容），并把错误码映射成可读原因。
      */
     fun installKeysFromUri(ctx: Context, uri: Uri): String? {
         if (!coreInitOnce()) return lastErrorText
         return try {
-            val name = queryDisplayName(ctx, uri)
+            val picked = queryDisplayName(ctx, uri)
                 ?: uri.lastPathSegment?.substringAfterLast('/') ?: "prod.keys"
-            if (!name.lowercase().endsWith(".keys")) {
-                return "所选文件不是 .keys 密钥文件（选中：$name）"
+            if (!picked.lowercase().endsWith(".keys")) {
+                return "所选文件不是 .keys 密钥文件（选中：$picked）"
             }
-            val tmp = File(ctx.cacheDir, "eden_key_pick_$name")
+            // 规范名：KeyManager 只读 prod.keys / title.keys；非规范命名的
+            // 密钥文件按 prod.keys 处理（99% 的场景就是 prod.keys）。
+            val canonical =
+                if (picked.lowercase() == "title.keys") "title.keys" else "prod.keys"
+            val tmpDir = File(ctx.cacheDir, "eden_key_pick").apply { mkdirs() }
+            val tmp = File(tmpDir, canonical)
             ctx.contentResolver.openInputStream(uri)?.use { input ->
                 tmp.outputStream().use { output -> input.copyTo(output) }
             } ?: return "无法读取所选文件"
+            if (tmp.length() == 0L) {
+                tmp.delete()
+                return "所选文件是空的（0 字节），不是有效的密钥文件"
+            }
             val code = NativeLibrary.installKeys(tmp.absolutePath, "keys")
             tmp.delete()
             if (code == 0) {
                 NativeLibrary.reloadKeys()
                 refreshKeysState("手动导入")
+                refreshFirmwareState()
                 null
             } else {
-                "密钥安装失败（错误码 $code；请确认选择的是 prod.keys / title.keys）"
+                val reason = when (code) {
+                    1 -> "目录无效（核心状态异常，请重启应用再试）"
+                    2 -> "复制进密钥目录失败（存储空间不足？）"
+                    3 -> "文件扩展名不是 .keys"
+                    4 -> "密钥内容校验未通过：文件不是有效的 prod.keys" +
+                        "（缺少 header_key / master_key 等必需密钥），" +
+                        "请确认从真实的密钥 Dump 工具导出"
+                    else -> "未知错误（错误码 $code）"
+                }
+                "密钥安装失败：$reason"
             }
         } catch (t: Throwable) {
             "密钥安装失败: ${t.message}"
