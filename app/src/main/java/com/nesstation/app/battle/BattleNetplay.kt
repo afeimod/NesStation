@@ -38,13 +38,22 @@ import kotlin.concurrent.thread
  *   - 房主单人 → 立即 start（1P 直接单机开玩，不等后来者）；
  *   - 多人等待 → 全员 ready 后同时广播 start；
  *   - 对局中有人 ready → pause + 存档同步 + resume（后加入接入）。
+ *
+ * ★★ v4.4：
+ *   - hello 可带 spectate=true（观战加入：不占 1P-4P 槽位、只收不发）；
+ *   - hello 可带 want=2/3/4（用户在大厅选的座位，空闲则满足）；
+ *   - peer_joined/peer_left 新增 spec 字段（true = 观战者加入/离开）。
  */
 class BattleNetplay(
     private val host: String,
     private val port: Int,
     private val token: String,
     private val roomId: String,
-    private val listener: Listener
+    private val listener: Listener,
+    /** ★★ v4.4：观战模式（hello 带 spectate=true；服务器回执角色 = spectator、槽位 0） */
+    private val spectate: Boolean = false,
+    /** ★★ v4.4：期望座位 2/3/4（0 = 自动取下一空闲位；服务器分配结果以 hello 回执 slot 为准） */
+    private val wantSlot: Int = 0
 ) {
 
     interface Listener {
@@ -89,10 +98,10 @@ class BattleNetplay(
                      dataBase64: String?, hist: Map<Int, List<Int>>?, histEnd: Long)
         /** 对方已 ready（引擎已加载完，正在等 start）。 */
         fun onPeerReady(username: String)
-        /** 对方加入（slot = 其槽位） */
-        fun onPeerJoined(username: String, slot: Int)
-        /** 对方断开（slot = 其槽位） */
-        fun onPeerLeft(username: String, slot: Int)
+        /** 对方加入（slot = 其槽位；★ v4.4 spec=true 为观战者，不占槽位） */
+        fun onPeerJoined(username: String, slot: Int, spec: Boolean = false)
+        /** 对方断开（slot = 其槽位；★ v4.4 spec=true 为观战者离开） */
+        fun onPeerLeft(username: String, slot: Int, spec: Boolean = false)
         /** 连接被拒绝 / 协议错误 */
         fun onError(message: String)
         /** 连接关闭（非主动） */
@@ -116,6 +125,9 @@ class BattleNetplay(
     @Volatile var roomPlaying: Boolean = false
         private set
 
+    /** ★★ v4.4：本端是否观战者（服务器 hello 回执角色 = spectator）。 */
+    val isSpectator: Boolean get() = role == "spectator"
+
     /** 输入延迟帧数（由服务器在 hello/start/resume 中下发）。 */
     @Volatile var inputDelay: Int = 4
         private set
@@ -134,11 +146,13 @@ class BattleNetplay(
                 reader = BufferedReader(InputStreamReader(s.getInputStream()), 1 shl 20)
                 writer = BufferedWriter(OutputStreamWriter(s.getOutputStream()), 1 shl 20)
 
-                // 握手
+                // 握手（★★ v4.4：spectate=true 观战加入；want=2/3/4 指定座位）
                 val hello = JSONObject()
                     .put("type", "hello")
                     .put("token", token)
                     .put("roomId", roomId)
+                if (spectate) hello.put("spectate", true)
+                if (wantSlot in 2..4) hello.put("want", wantSlot)
                 sendLine(hello.toString())
 
                 readLoop()
@@ -247,8 +261,10 @@ class BattleNetplay(
                     msg.optInt("slot", 0).coerceIn(0, 4)
                 )
             }
-            "peer_joined" -> listener.onPeerJoined(msg.optString("msg", ""), msg.optInt("slot", 0))
-            "peer_left" -> listener.onPeerLeft(msg.optString("msg", ""), msg.optInt("slot", 0))
+            "peer_joined" -> listener.onPeerJoined(
+                msg.optString("msg", ""), msg.optInt("slot", 0), msg.optBoolean("spec", false))
+            "peer_left" -> listener.onPeerLeft(
+                msg.optString("msg", ""), msg.optInt("slot", 0), msg.optBoolean("spec", false))
             "error" -> listener.onError(msg.optString("msg", "服务器错误"))
             "pong" -> {
                 // RTT 测量回显：交给等待中的测量请求

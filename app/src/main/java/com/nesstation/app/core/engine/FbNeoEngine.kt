@@ -73,6 +73,18 @@ class FbNeoEngine private constructor() : EmulatorEngine {
     /** Lock for all lifecycle methods to prevent restart conflicts. */
     private val lifecycleLock = Any()
 
+    /**
+     * ★★ v4.4 回滚联机（rollback netcode）：音频环形缓冲互斥锁。
+     *
+     * 回滚重放（runFrameDirect 连跑数帧）会向原生音频环里重复写入同一段
+     * 音频样本 —— 不处理的话对手每次改输入（触发回滚）都会听到一小段
+     * 重复/爆音。回滚前先在引擎线程上 [discardPendingAudio] 把环里
+     * “预测帧产生的待播样本”整段丢掉（重放产生的新样本随后入环），
+     * 保证扬声器的样本流不重复。锁只护 readAudio（音频线程每轮从环里
+     * 取样的瞬间），不护 AudioTrack.write（阻塞写不能拖住引擎线程）。
+     */
+    private val audioIoLock = Any()
+
     override fun ensureLoaded(): Boolean = FbNeoNative.ensureLoaded()
 
     override fun loadRom(
@@ -235,7 +247,9 @@ class FbNeoEngine private constructor() : EmulatorEngine {
             try {
                 while (audioRunning.get()) {
                     try {
-                        val n = FbNeoNative.readAudio(buf)
+                        // ★ v4.4：readAudio 持 audioIoLock —— 与 discardPendingAudio
+                        //   互斥，保证回滚丢样本时音频线程不会同时从环里取样本。
+                        val n = synchronized(audioIoLock) { FbNeoNative.readAudio(buf) }
                         if (n > 0) {
                             audioTrack?.write(buf, 0, n * 2, AudioTrack.WRITE_BLOCKING)
                         } else {
@@ -314,6 +328,57 @@ class FbNeoEngine private constructor() : EmulatorEngine {
     override fun setSampleRate(rate: Int) = FbNeoNative.setSampleRate(rate)
     override fun saveState(slot: Int, dst: File): Boolean = FbNeoNative.saveState(slot, dst.absolutePath)
     override fun loadState(slot: Int, src: File): Boolean = FbNeoNative.loadState(slot, src.absolutePath)
+
+    /**
+     * ★★ v4.4 回滚联机：绕过主循环直接执行一帧。
+     *
+     * 回滚控制器（NetplayController）在引擎线程的 beforeFramePads 钩子里
+     * 阻塞期间调用：装载检查点存档 → 用修正后的输入把 [from, to) 的帧
+     * 重放一遍。pads 为 [pad1, pad2, pad3, pad4]，null = 沿用当前 pad 状态。
+     *
+     * 与主循环同线程（钩子内），无并发；渲染照常发生（中间帧直接上屏，
+     * 最后一帧即修正后的当前画面）。节拍由主循环的 FramePacer 统一管
+     * （重放耗时超过一帧预算时后续帧自动补跑，不掉速）。
+     */
+    fun runFrameDirect(pads: IntArray?): Boolean {
+        if (!isLoaded) return false
+        return try {
+            if (pads != null && pads.size >= 4) {
+                FbNeoNative.setPad1(pads[0])
+                FbNeoNative.setPad2(pads[1])
+                FbNeoNative.setPad3(pads[2])
+                FbNeoNative.setPad4(pads[3])
+            }
+            FbNeoNative.runFrame()
+            true
+        } catch (t: Throwable) {
+            android.util.Log.w("FbNeoEngine", "runFrameDirect failed: ${t.message}")
+            false
+        }
+    }
+
+    /**
+     * ★★ v4.4 回滚联机：丢弃音频环形缓冲里未播放的样本（回滚重放前调用）。
+     *
+     * 环里此刻存的是“预测帧”产生的样本（内容可能是错的）——整段丢掉，
+     * 让重放产生的正确样本接着入环。听到的是一小次静音/跳跃，
+     * 而不是重复音效；样本总量守恒，后续时间轴不漂移。
+     */
+    fun discardPendingAudio() {
+        try {
+            synchronized(audioIoLock) {
+                val sink = ShortArray(4096)
+                // 有界防护：最多丢 4096 帧的样本（环容量远小于此，实际一次就空）
+                var guard = 0
+                while (guard++ < 4096) {
+                    val n = FbNeoNative.readAudio(sink)
+                    if (n <= 0) break
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("FbNeoEngine", "discardPendingAudio: ${t.message}")
+        }
+    }
 
     override fun captureFrame(): FrameCapture? {
         if (!isLoaded) return null

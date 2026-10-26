@@ -26,14 +26,26 @@ import kotlin.math.max
  *  - **帧计数对齐**：非房主端维护 frameOffset（本地帧 + offset = 网络帧号），
  *    恢复时 offset = 存档帧 - 本地暂停帧，保证全员网络帧号一致。
  *
- * ## 设计要点（★ 同步启动门 + 阻塞锁步 + RTT 自适应延迟）
+ * ## 设计要点（★ 同步启动门 + 阻塞锁步 + ★★ v4.4 预测回滚）
  *
  *  - **同步启动**：引擎加载完 → 帧循环就位 → [beforeFrame] 阻塞在启动门上；
  *    本端测完 RTT 后发 ready → 服务器按开局类型（房主单开 / 全员就绪 / 后加入）
  *    分别回 start / 广播 start / 走存档同步后广播 resume。
  *  - **绝不兜底**：锁步联机中只要有一帧用替代输入执行，各端状态就永久发散。
  *    [beforeFrameImpl] 对每个活跃槽位的 execFrame 帧输入【阻塞等待直到到达】。
- *  - inputDelay：ready 前测 RTT 建议；服务器裁决最终值随 start/resume 下发。
+ *  - **★★ v4.4 回滚网络码（rollback netcode，GGPO 式）**：引擎支持快速存档
+ *    （FBNeo）时启用 —— 不再“等不到就卡”：远端输入未到时用“延续上一输入”
+ *    预测先行执行；真实输入到达且与预测不一致 → 装载最近检查点存档 →
+ *    用修正后的输入把预测帧重放一遍（毫秒级，画面表现为 1 帧闪变）。
+ *    本地输入延迟不再需要盖住整个 RTT（旧建议公式 ceil(RTT/2/16.7)+2 ≈
+ *    半 RTT —— 中转拓扑下实际需要全 RTT，不够的部分全靠卡顿硬扛，
+ *    这就是“同步没问题但延迟非常大”的根因）。回滚模式下延迟只要低帧数，
+ *    其余 RTT 由预测+回滚吸收 → 手感从“RTT 级”降到“延迟帧级”。
+ *    延迟帧数（inputDelay）仍由服务器统一裁决下发（保证各端执行同一
+ *    (帧号→输入) 序列 —— 混合房间与 v4.3 客户端同场不发散）；纯 v4.4
+ *    房间建议值 2 帧 → 全员 2 帧（服务器 inputDelay=0 自动模式）。
+ *  - **★★ v4.4 观战模式**：spectate=true 加入 → 不占 1P-4P 槽位、不采样
+ *    不发送，只收全员输入（阻塞等待全部活跃槽位 → 同画面观战）。
  *
  * ## 线程模型
  *
@@ -44,11 +56,15 @@ import kotlin.math.max
  *  - UI 线程：[UiListener]（main Handler 自动 post）。
  */
 class NetplayController(
-    val platform: GamePlatform = GamePlatform.ARCADE
+    val platform: GamePlatform = GamePlatform.ARCADE,
+    /** ★★ v4.4：观战模式（不占槽位、不发送输入、阻塞等全员输入同画面观战） */
+    private val spectate: Boolean = false,
+    /** ★★ v4.4：期望座位 2/3/4（服务器 hello 回执的 slot 为准；0=自动） */
+    private val wantSlot: Int = 0
 ) : NetplayHook {
 
     /**
-     * ★★ v4.3 后加入：即时存档 I/O 桥（由 EmulatorScreen 注入 —— 它持有引擎）。
+     * ★★ v4.4 回滚联机：即时存档 I/O 桥（由 EmulatorScreen 注入 —— 它持有引擎）。
      * 引擎线程已暂停时在【网络线程】被调用；实现必须线程安全（FBNeo 等核心的
      * saveState/loadState 在模拟线程挂起时可安全调用）。
      */
@@ -59,6 +75,12 @@ class NetplayController(
         fun loadStateFrom(file: File): Boolean
         /** 存档暂存目录。 */
         fun stateDir(): File
+        /** ★★ v4.4 回滚：绕过主循环直接执行一帧（重放用；false=引擎不支持 → 回滚模式禁用）。 */
+        fun runFrameDirect(pads: IntArray): Boolean = false
+        /** ★★ v4.4 回滚：引擎是否支持回滚（快速存档 + 直接跑帧）。 */
+        fun supportsRollback(): Boolean = false
+        /** ★★ v4.4 回滚：丢弃待播音频样本（回滚重放前调用，防重复音效）。 */
+        fun discardPendingAudio() {}
     }
 
     /**
@@ -88,6 +110,12 @@ class NetplayController(
         fun onPeerLeftSlot(username: String, slot: Int) {}
         /** ★ v4.3：后加入同步进度提示（“新玩家接入：同步画面中…”等）。 */
         fun onSyncStatus(text: String) {}
+        /** ★★ v4.4：观战者加入/离开（不占座位，UI 显示“xx 正在观战”）。 */
+        fun onSpectatorJoined(username: String) {}
+        /** ★★ v4.4：观战者离开。 */
+        fun onSpectatorLeft(username: String) {}
+        /** ★★ v4.4 回滚统计（每 ~0.5s 一次：帧号 / 延迟帧 / 回滚次数 / 最深重放帧数）。 */
+        fun onNetplayStats(frame: Long, delayFrames: Int, rollbacks: Int, maxReplayDepth: Int) {}
     }
 
     @Volatile private var primaryListener: UiListener? = null
@@ -101,6 +129,21 @@ class NetplayController(
     private fun postToMain(block: () -> Unit) {
         if (Looper.myLooper() === Looper.getMainLooper()) block()
         else mainHandler.post(block)
+    }
+
+    companion object {
+        /** 回滚检查点环大小（文件数 × 存档间隔 = 纠错覆盖窗口，32 帧 ≈ 533ms） */
+        private const val RB_RING = 32
+        /** 预测深度上限（帧）：确认帧落后超过它就不再预测 → 阻塞等待（退化延迟模式，防不可纠正的深预测） */
+        private const val RB_MAX_PREDICT = 12
+        /** 单次回滚最大重放帧数（性能保护；超过则放弃纠正并提示重进房间） */
+        private const val RB_MAX_REPLAY = 96
+        /** 检查点无效哨兵（tag 可为负 —— warmup 帧也存，作 frame 0 的重放基点） */
+        private val RB_INVALID = java.lang.Long.MIN_VALUE
+        /** RTT 探测次数/间隔（★★ v4.4 提速：4×1300ms+180ms×3 最坏 ~6s → 3×800ms+60ms×2 最坏 ~2.5s） */
+        private const val RTT_SAMPLES = 3
+        private const val RTT_INTERVAL_MS = 60L
+        private const val RTT_TIMEOUT_MS = 800L
     }
 
     private fun dispatch(block: (UiListener) -> Unit) {
@@ -127,9 +170,12 @@ class NetplayController(
     /** 同步接入中的槽位（peer_joined 后、resume 前 —— 不等待其输入）。 */
     private val pendingSlots = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
 
-    /** 本端槽位（1P=1…4P=4，服务器 hello 下发）。 */
+    /** 本端槽位（1P=1…4P=4，服务器 hello 下发；★★ v4.4 观战者恒 0）。 */
     @Volatile var mySlot: Int = 1
         private set
+
+    /** ★★ v4.4：本端是否观战者（构造指定；不占座位、只收不发）。 */
+    val isSpectator: Boolean get() = spectate || role == "spectator"
 
     @Volatile private var inputDelay = 4
     @Volatile private var desyncCount = 0
@@ -157,19 +203,68 @@ class NetplayController(
     // === 网络 ===
     @Volatile private var net: BattleNetplay? = null
 
+    // === ★★ v4.4 回滚网络码（rollback）状态 ===
+    /** 回滚模式启用（引擎支持快速存档 && 非观战；notifyEngineReady 时评估）。 */
+    @Volatile private var rollbackMode = false
+    /** 每帧实际使用的 4 手柄输入（网络帧 → pads 拷贝）—— 重放与纠错比对的依据。 */
+    private val inputLog = java.util.concurrent.ConcurrentHashMap<Long, IntArray>()
+    /** 各槽位最新已知输入（预测策略：延续对手上一输入）。 */
+    private val rbLastKnownPad = java.util.concurrent.atomic.AtomicIntegerArray(5)
+    /** 各槽位最新已到达帧号（确认帧 = 活跃远端槽位最小值；-1=未收到）。 */
+    private val rbSlotLatest = java.util.concurrent.atomic.AtomicLongArray(5)
+    /** 最早待纠正帧（Long.MAX_VALUE = 无；网络线程 CAS 取 min，引擎线程消费）。 */
+    private val rbPendingFrom = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
+    /** 最后已执行的网络帧（execFrame = netFrame - inputDelay）。 */
+    @Volatile private var rbLastExecuted = -1L
+    /** ★ 待应用的时间线重置帧（Long.MIN_VALUE = 无；网络线程请求，引擎线程应用）。 */
+    @Volatile private var rbResetFrame = java.lang.Long.MIN_VALUE
+    /** 检查点环：槽 i 文件对应的帧号（RB_INVALID=无效；仅引擎线程访问）。
+     *  ★★ tag = 检查点包含的最后一个【执行帧】号（= netFrame - inputDelay），
+     *    可为负（warmup 阶段 —— 作 frame 0 的重放基点）。仿真验证：按执行帧
+     *    标记才能保证重放起点与快照内容严格衔接（按网络帧标记会丢 D 帧）。 */
+    private val rbCkFrame = LongArray(RB_RING) { RB_INVALID }
+    /** 检查点存档间隔（1=每帧；存档慢的设备自适应升到 2 降 CPU）。 */
+    private var rbSaveEvery = 1
+    private var rbSaveCounter = 0
+    /** 存档耗时 EWMA(ms) —— 自适应间隔依据。 */
+    private var rbSaveMsAvg = 2.0
+    /** 统计：回滚次数 / 最深重放。 */
+    @Volatile private var rbCount = 0L
+    @Volatile private var rbMaxDepth = 0
+
     private val netListener = object : BattleNetplay.Listener {
         override fun onRemoteInput(frame: Long, pad: Int, slot: Int) {
-            if (slot in 1..4) padsHistory[slot][frame] = pad
+            if (slot in 1..4) {
+                padsHistory[slot][frame] = pad
+                // ★★ v4.4 回滚：记录最新已知输入/帧号；已执行帧与预测不一致 → 标记待回滚
+                if (rollbackMode) {
+                    rbLastKnownPad.set(slot, pad)
+                    val prev = rbSlotLatest.get(slot)
+                    if (frame > prev) rbSlotLatest.set(slot, frame)
+                    if (frame <= rbLastExecuted) {
+                        val used = inputLog[frame]
+                        if (used != null && used[slot - 1] != pad) {
+                            // 取最早待纠正帧（CAS min，网络线程并发安全）
+                            var p = rbPendingFrom.get()
+                            while (frame < p) {
+                                if (rbPendingFrom.compareAndSet(p, frame)) break
+                                p = rbPendingFrom.get()
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         override fun onReady(role: String, inputDelay: Int, slot: Int, players: List<Int>, playing: Boolean) {
             this@NetplayController.inputDelay = inputDelay.coerceIn(0, 16)
             this@NetplayController.role = role
-            mySlot = slot.coerceIn(1, 4)
+            // ★★ v4.4：观战者槽位恒 0（服务器下发 slot=0；防 coerceIn 把 0 抬成 1）
+            mySlot = if (role == "spectator" || spectate) 0 else slot.coerceIn(1, 4)
             activeSlots.clear()
             activeSlots.addAll(players)
             dispatch { it.onReady(role, inputDelay) }
-            dispatch { it.onReadyDetail(role, inputDelay, slot, players, playing) }
+            dispatch { it.onReadyDetail(role, inputDelay, mySlot, players, playing) }
         }
 
         override fun onStart(inputDelay: Int, players: List<Int>) {
@@ -186,9 +281,12 @@ class NetplayController(
         }
 
         override fun onPause() {
-            // 后加入同步开始：运行中的引擎线程在下一帧前挂起
+            // 后加入同步开始：运行中的引擎线程在下一帧前挂起。
+            // ★★ v4.4：同时作废回滚状态（时间线即将被存档同步重置，旧检查点
+            //   不再适用；恢复后首帧重建检查点）。
             if (started) {
                 syncPaused = true
+                rbRequestReset(-1L)
                 dispatch { it.onSyncStatus("有玩家接入：暂停等待同步…") }
             }
         }
@@ -237,13 +335,22 @@ class NetplayController(
             dispatch { it.onPeerReady(username) }
         }
 
-        override fun onPeerJoined(username: String, slot: Int) {
+        override fun onPeerJoined(username: String, slot: Int, spec: Boolean) {
+            if (spec) {
+                // ★★ v4.4：观战者加入（不占座位，不影响槽位/等待）
+                dispatch { it.onSpectatorJoined(username) }
+                return
+            }
             if (slot in 1..4) pendingSlots.add(slot)
             dispatch { it.onPeerJoined(username) }
             dispatch { it.onPeerJoinedSlot(username, slot) }
         }
 
-        override fun onPeerLeft(username: String, slot: Int) {
+        override fun onPeerLeft(username: String, slot: Int, spec: Boolean) {
+            if (spec) {
+                dispatch { it.onSpectatorLeft(username) }
+                return
+            }
             pendingSlots.remove(slot)
             activeSlots.remove(slot)
             if (!started) {
@@ -344,6 +451,9 @@ class NetplayController(
         // 对齐：网络帧号 = 本地帧 + offset → 恢复时从 frame 起
         frameOffset = frame - parkedLocal
         seedHist(hist, histEnd)
+        // ★★ v4.4：请求时间线重置（清 ≥ frame 的旧时间线残留 + 检查点作废；
+        //   实际重置在引擎线程过门后统一应用 —— rbCkFrame 等簿记仅引擎线程可写）
+        rbRequestReset(frame)
         // 新玩家：装载完成即上报（服务器收到后全员 resume）
         n.sendStateOk()
         dispatch { it.onSyncStatus("同步画面已装载（帧 #$frame），等待全员恢复…") }
@@ -378,6 +488,10 @@ class NetplayController(
             frameOffset = 0
         }
         if (hist != null && frame >= 0) seedHist(hist, histEnd)
+        // ★★ v4.4：resume 帧之后的历史输入全部作废（旧时间线残留会被重新采样
+        //   覆盖 —— 房主与成员统一清理，避免任何一端误用旧值）；回滚簿记重建
+        //   （引擎线程过门后统一应用）。
+        rbRequestReset(if (frame >= 0) frame else -1L)
 
         inputDelay = finalDelay.coerceIn(0, 16)
         activeSlots.clear()
@@ -409,14 +523,17 @@ class NetplayController(
      * 连接到中继服务器。非阻塞：[BattleNetplay.connect] 在自己的线程里完成 TCP 握手。
      */
     fun connect(host: String, port: Int, token: String, roomId: String) {
-        val n = BattleNetplay(host, port, token, roomId, netListener)
+        // ★★ v4.4：透传观战模式 + 期望座位（服务器 spectate/want 握手）
+        val n = BattleNetplay(host, port, token, roomId, netListener, spectate, wantSlot)
         net = n
         n.connect()
     }
 
     /**
-     * ★ 引擎加载完毕通知（由 EmulatorScreen 在 ROM 加载完成、模拟循环就位后调用）。
+     * 引擎加载完毕通知（由 EmulatorScreen 在 ROM 加载完成、模拟循环就位后调用）。
      * 触发：RTT 测量 → 建议 inputDelay → 发 ready。此后按服务器编排走三种开局。
+     * ★★ v4.4：StateIo 已注入（supportsRollback 可用）→ 评估回滚模式；
+     *   探测提速（3 样本 / 60ms 间隔 / 800ms 超时）。
      */
     fun notifyEngineReady() {
         if (engineLoaded) return
@@ -424,32 +541,46 @@ class NetplayController(
         val n = net ?: return
         if (readySent) return
         readySent = true
+        // ★★ v4.4：回滚模式评估 —— 引擎支持快速存档 + 直接跑帧，且非观战。
+        //   观战者始终走延迟等待模式（手感不重要，稳定第一）。
+        rollbackMode = !spectate && (stateIo?.supportsRollback() == true)
+        if (rollbackMode) {
+            android.util.Log.i("NetplayController", "rollback netcode ENABLED (platform=$platform)")
+        }
         Thread({
             var minRtt: Long? = null
-            val samples = 4
-            for (i in 0 until samples) {
+            for (i in 0 until RTT_SAMPLES) {
                 val latch = java.util.concurrent.CountDownLatch(1)
                 var rtt: Long? = null
                 try {
-                    n.measureRtt(1000) { ms ->
+                    n.measureRtt(RTT_TIMEOUT_MS) { ms ->
                         rtt = ms
                         latch.countDown()
                     }
                 } catch (_: Throwable) {
                     latch.countDown()
                 }
-                try { latch.await(1300, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: InterruptedException) {}
+                try { latch.await(RTT_TIMEOUT_MS + 200, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: InterruptedException) {}
                 rtt?.let { ms -> minRtt = if (minRtt == null) ms else minOf(minRtt!!, ms) }
-                if (i < samples - 1) {
-                    try { Thread.sleep(180) } catch (_: InterruptedException) { return@Thread }
+                if (i < RTT_SAMPLES - 1) {
+                    try { Thread.sleep(RTT_INTERVAL_MS) } catch (_: InterruptedException) { return@Thread }
                 }
             }
-            val suggested = when (val r = minRtt) {
-                null -> 4
-                else -> (Math.ceil(r / 2.0 / 16.666) + 2).toInt().coerceIn(4, 12)
+            // ★★ v4.4 建议公式（中继拓扑修正）：
+            //   回滚模式 → 2（RTT 由预测+回滚吸收，各端一致由服务器裁决保证）；
+            //   延迟模式 → ceil(RTT/16.67)+1（全 RTT + 1 帧裕量 —— 旧公式
+            //   ceil(RTT/2/16.7)+2 只盖半 RTT，不够的部分全靠卡顿硬扛）；
+            //   观战 → 4（不参与手感，仅占位）。
+            val suggested = when {
+                rollbackMode -> 2
+                spectate -> 4
+                else -> when (val r = minRtt) {
+                    null -> 4
+                    else -> (Math.ceil(r / 16.667) + 1).toInt().coerceIn(2, 16)
+                }
             }
             android.util.Log.i("NetplayController",
-                "RTT min=${minRtt}ms → suggestedDelay=${suggested}f")
+                "RTT min=${minRtt}ms rollback=$rollbackMode → suggestedDelay=${suggested}f")
             try { n.sendReady(suggested) } catch (_: Throwable) {}
         }, "battle-rtt-probe").apply { isDaemon = true }.start()
     }
@@ -463,14 +594,15 @@ class NetplayController(
     val slot: Int get() = mySlot
 
     /**
-     * 引擎在调用 runFrame 之前回调：采样本地输入 → 发给服务器 → 阻塞拿所有
+     * 引擎在调用 runFrame 之前回调：采样本地输入 → 发给服务器 → 拿到所有
      * 活跃槽位的同帧输入。返回 4 手柄（pad1..pad4）。
      *
      * 1. 启动门：未 start（新玩家 / 同步重启）→ 记录 parkedLocalFrame 并阻塞。
      * 2. 同步暂停门：后加入同步中 → 记录 parkedLocalFrame 并阻塞。
-     * 3. 采样 + 发送（网络帧号 = 本地帧 + frameOffset，带槽位）。
-     * 4. 执行帧 = 网络帧 - inputDelay（warmup 阶段 pad 全 0，各端一致）。
-     * 5. 阻塞等所有活跃远端槽位的 execFrame 输入【绝不兜底】。
+     * 3. ★★ v4.4 观战模式：不采样不发送，阻塞等全员输入。
+     * 4. ★★ v4.4 回滚模式：先处理待纠正帧（回滚重放），再采样发送，
+     *    远端未到输入用“延续上一输入”预测（窗口内），返回后引擎立即跑帧。
+     * 5. 延迟模式（原逻辑）：阻塞等所有活跃远端槽位的 execFrame 输入【绝不兜底】。
      */
     private fun beforeFrameImpl(frame: Long): IntArray? {
         // 1. 启动门
@@ -503,23 +635,58 @@ class NetplayController(
         }
 
         val netFrame = frame + frameOffset
-        val localPad = currentLocalPad
-        padsHistory[mySlot][netFrame] = localPad
-
         val n = net
+
+        // ★★ v4.4 时间线重置应用（pause→state→resume 后新时间线首帧；
+        //   仅此处（引擎线程）触碰 rbCkFrame/inputLog 结构性重置）
+        val resetFrame = rbResetFrame
+        if (resetFrame != java.lang.Long.MIN_VALUE) {
+            rbResetFrame = java.lang.Long.MIN_VALUE
+            rbApplyReset(resetFrame)
+        }
+
+        // ★★ v4.4 观战模式：不占座位、不采样不发送；等全员输入同画面观战。
+        if (isSpectator) {
+            if (n == null) return IntArray(4)
+            inputDelay = n.inputDelay.coerceIn(0, 16)
+            val execFrame = netFrame - inputDelay
+            if (execFrame < 0) return IntArray(4) // warmup：全 0
+            val pads = IntArray(4)
+            for (slot in 1..4) {
+                if (activeSlots.contains(slot)) {
+                    var pad = padsHistory[slot][execFrame]
+                    if (pad == null) pad = awaitSlotInput(slot, execFrame)
+                    if (pad == null) return IntArray(4) // 断连：停模拟
+                    pads[slot - 1] = pad
+                }
+            }
+            return pads
+        }
+
+        // ★★ v4.4 回滚模式（预测 + 纠错重放，手感 = 延迟帧级而非 RTT 级）
+        if (rollbackMode && stateIo != null) {
+            return rbBeforeFrame(netFrame)
+        }
+
+        // ---- 延迟模式（v4.3 原逻辑）----
+        val localPad = currentLocalPad
+        if (mySlot in 1..4) padsHistory[mySlot][netFrame] = localPad
+
         if (n == null) {
             val pads = IntArray(4)
-            pads[mySlot - 1] = localPad
+            if (mySlot in 1..4) pads[mySlot - 1] = localPad
             return pads
         }
 
         inputDelay = n.inputDelay.coerceIn(0, 16)
 
         // 3. 发送本帧输入（带槽位，非阻塞）
-        try {
-            n.sendInput(netFrame, localPad, mySlot)
-        } catch (t: Throwable) {
-            android.util.Log.w("NetplayController", "sendInput failed: ${t.message}")
+        if (mySlot in 1..4) {
+            try {
+                n.sendInput(netFrame, localPad, mySlot)
+            } catch (t: Throwable) {
+                android.util.Log.w("NetplayController", "sendInput failed: ${t.message}")
+            }
         }
 
         // 4. 执行帧 = 网络帧 - inputDelay
@@ -589,9 +756,266 @@ class NetplayController(
             val dc = desyncCount
             dispatch { it.onFrameInfo(netFrame, il, dc) }
         }
-        if (netFrame % 256 == 0L) {
+        if (rollbackMode) {
+            // ★★ v4.4 回滚：引擎刚跑完 netFrame → 核心状态 = 执行帧 [0..netFrame-inputDelay]
+            //   的折叠 → 写检查点（tag = 最后执行帧；warmup 阶段 tag 为负也存）。
+            //   重放帧不走 here（runFrameDirect 不触发 afterFrame），不会重复记账。
+            val io = stateIo
+            if (io != null && netFrame >= 0) {
+                rbSaveCounter++
+                if (rbSaveCounter >= rbSaveEvery) {
+                    rbSaveCounter = 0
+                    rbSaveCheckpoint(io, netFrame - inputDelay)
+                }
+            }
+            if (netFrame % 30 == 0L) {
+                val cnt = rbCount.toInt(); val dep = rbMaxDepth
+                val il = inputDelay
+                dispatch { it.onNetplayStats(netFrame, il, cnt, dep) }
+            }
+            if (netFrame % 256 == 0L) {
+                cleanupHistory(netFrame)
+                val cutoff = netFrame - 512
+                if (cutoff > 0) inputLog.keys.removeAll { it < cutoff }
+            }
+        } else if (netFrame % 256 == 0L) {
             cleanupHistory(netFrame)
         }
+    }
+
+    // =========================================================================
+    // ★★ v4.4 回滚网络码（rollback netcode）：预测 + 检查点 + 纠错重放
+    // =========================================================================
+
+    /**
+     * 回滚模式每帧入口（引擎线程，beforeFramePads 内）。
+     *
+     * 1. 有待纠正帧 → 先回滚重放（装载检查点 + 修正后的输入重跑预测帧）；
+     *    覆盖不了（刚恢复/存档失败）→ 退化为阻塞等待实际输入。
+     * 2. 采样本地输入 + 发送（与延迟模式一致，帧号/槽位协议不变）。
+     * 3. 执行帧 = netFrame - inputDelay（服务器裁决值；各端一致保证同步）。
+     * 4. 远端输入未到 → 窗口内用“延续上一输入”预测；窗口外 → 阻塞等待。
+     */
+    private fun rbBeforeFrame(netFrame: Long): IntArray? {
+        val io = stateIo ?: return null
+        val n = net ?: return null
+
+        // 1. 待纠正帧处理（回滚重放；失败 → 阻塞等待退化）
+        val pending = rbPendingFrom.get()
+        if (pending != Long.MAX_VALUE) {
+            if (!rbPerformRollback(io, pending)) {
+                android.util.Log.w("NetplayController",
+                    "rollback unavailable (pending=$pending lastExec=$rbLastExecuted) → block-wait")
+                rbBlockWaitFor(pending)
+            }
+        }
+
+        // 2. 采样 + 发送
+        val localPad = currentLocalPad
+        if (mySlot in 1..4) {
+            padsHistory[mySlot][netFrame] = localPad
+            try {
+                n.sendInput(netFrame, localPad, mySlot)
+            } catch (t: Throwable) {
+                android.util.Log.w("NetplayController", "sendInput failed: ${t.message}")
+            }
+        }
+
+        // 3. 执行帧 = 网络帧 - inputDelay（服务器裁决，保证各端同序列）
+        inputDelay = n.inputDelay.coerceIn(0, 16)
+        val execFrame = netFrame - inputDelay
+        if (execFrame < 0) return IntArray(4) // warmup：全 0，各端一致
+
+        // 4. 组装 4 手柄（未到输入 → 窗口内预测；窗口外阻塞等待）
+        val pads = IntArray(4)
+        val confirmed = rbConfirmedFrame()
+        for (slot in 1..4) {
+            when {
+                slot == mySlot -> pads[slot - 1] = padsHistory[slot][execFrame] ?: localPad
+                activeSlots.contains(slot) -> {
+                    var pad = padsHistory[slot][execFrame]
+                    if (pad == null) {
+                        // 预测窗口：确认帧落后 ≤ RB_MAX_PREDICT 且有可用检查点才预测；
+                        // 否则阻塞等待（退化延迟模式 —— 绝不执行无法纠正的深预测）。
+                        val canPredict = confirmed >= 0 &&
+                            (execFrame - confirmed) <= RB_MAX_PREDICT &&
+                            rbBestCheckpointBelow(confirmed + 1) != RB_INVALID
+                        if (canPredict) {
+                            pad = rbLastKnownPad.get(slot) // 预测：延续对手上一输入
+                        } else {
+                            pad = awaitSlotInput(slot, execFrame)
+                            if (pad == null) return IntArray(4) // 断连：停模拟
+                        }
+                    }
+                    pads[slot - 1] = pad
+                }
+                else -> pads[slot - 1] = 0 // 未激活/接入中槽位恒 0（各端一致）
+            }
+        }
+        inputLog[execFrame] = pads.copyOf()
+        rbLastExecuted = execFrame
+        return pads
+    }
+
+    /** 回滚模式当前确认帧（全部活跃远端槽位输入都已到达的最大帧；无远端 = MAX）。 */
+    private fun rbConfirmedFrame(): Long {
+        var min = Long.MAX_VALUE
+        for (s in activeSlots) {
+            if (s != mySlot) {
+                val f = rbSlotLatest.get(s)
+                if (f < min) min = f
+            }
+        }
+        return min
+    }
+
+    /** 检查点环里 < [target] 的最新检查点帧号（RB_INVALID = 无）。仅引擎线程。 */
+    private fun rbBestCheckpointBelow(target: Long): Long {
+        var best = RB_INVALID
+        for (i in 0 until RB_RING) {
+            val f = rbCkFrame[i]
+            if (f != RB_INVALID && f < target && (best == RB_INVALID || f > best)) best = f
+        }
+        return best
+    }
+
+    /** 检查点环槽位（tag 可为负 → 归一化到 [0, RB_RING)）。 */
+    private fun rbSlot(tag: Long): Int = ((tag % RB_RING) + RB_RING).toInt() % RB_RING
+
+    /** 检查点存档文件（环槽 tag 归一化）。 */
+    private fun rbFile(io: StateIo, tag: Long) = File(io.stateDir(), "battle_rb_${rbSlot(tag)}.state")
+
+    /**
+     * 写检查点（引擎线程；调用时核心状态必须 = S(frame) —— afterFrame(netFrame)
+     * 或回滚重放刚跑完 rbLastExecuted 时）。存档慢的设备自适应升到每 2 帧一存。
+     */
+    private fun rbSaveCheckpoint(io: StateIo, tag: Long) {
+        val idx = rbSlot(tag)
+        val t0 = System.nanoTime()
+        val ok = try {
+            io.saveStateTo(rbFile(io, tag))
+        } catch (t: Throwable) {
+            android.util.Log.w("NetplayController", "checkpoint save failed: ${t.message}")
+            false
+        }
+        if (!ok) {
+            rbCkFrame[idx] = RB_INVALID
+            return
+        }
+        rbCkFrame[idx] = tag
+        val ms = (System.nanoTime() - t0) / 1_000_000.0
+        rbSaveMsAvg = rbSaveMsAvg * 0.9 + ms * 0.1
+        if (rbSaveMsAvg > 8.0 && rbSaveEvery < 2) {
+            rbSaveEvery = 2
+            android.util.Log.i("NetplayController", "checkpoint save slow (avg=${"%.1f".format(rbSaveMsAvg)}ms) → every 2 frames")
+        }
+    }
+
+    /**
+     * 执行回滚：装载 < [pendingFrom] 的最新检查点 → 丢弃预测帧待播音频 →
+     * 作废分叉后的旧检查点 → 用“最新到达的实际输入（有则）/延续预测”逐帧
+     * 重放 (base, lastExec]（★逐帧存档 —— 新时间线立即恢复密集覆盖，
+     * 连环纠正不会退化成单点幸存者被环形轮转挤掉）。
+     * 返回 false = 无法回滚（无检查点/存档失败）。
+     */
+    private fun rbPerformRollback(io: StateIo, pendingFrom: Long): Boolean {
+        val base = rbBestCheckpointBelow(pendingFrom)
+        if (base == RB_INVALID) return false
+        val lastExec = rbLastExecuted
+        if (lastExec - base > RB_MAX_REPLAY) {
+            // 超深重放：放弃纠正（画面与对手短暂不一致，网络恢复后一致）。
+            // 预测窗口上限 + 按序到达（TCP）使常规不可能到这里（仿真 0 次/30 万帧）。
+            android.util.Log.w("NetplayController", "replay too deep (${lastExec - base}f) — give up")
+            rbPendingFrom.set(Long.MAX_VALUE)
+            dispatch { it.onNetplayWait("网络深度抖动：已跳过纠正，可能短暂不同步…") }
+            return true // 已处置（不再重试），调用方继续跑帧
+        }
+        // 1) 丢掉预测帧产生的待播音频（防重复音效；重放的新样本随后入环）
+        try { io.discardPendingAudio() } catch (_: Throwable) {}
+        // 2) 装载检查点（此刻核心状态 = 执行帧 [0..base] 的折叠）
+        val loaded = try { io.loadStateFrom(rbFile(io, base)) } catch (_: Throwable) { false }
+        if (!loaded) {
+            rbCkFrame[rbSlot(base)] = RB_INVALID
+            return false
+        }
+        // 3) ★ 作废 tag > base 的全部旧检查点：时间线从 base+1 起分叉，
+        //    旧快照含“被纠正前的帧”，选中会复活错误输入（仿真抓出并验证）
+        for (i in 0 until RB_RING) {
+            val t = rbCkFrame[i]
+            if (t != RB_INVALID && t > base) rbCkFrame[i] = RB_INVALID
+        }
+        // 4) 重放 base+1 .. lastExec：每帧重读 padsHistory（吸收重放期间新到的输入）
+        var depth = 0
+        for (f in base + 1..lastExec) {
+            val pads = IntArray(4)
+            for (slot in 1..4) {
+                pads[slot - 1] = when {
+                    slot == mySlot -> padsHistory[slot][f] ?: 0
+                    activeSlots.contains(slot) -> padsHistory[slot][f] ?: rbLastKnownPad.get(slot)
+                    else -> 0
+                }
+            }
+            if (!io.runFrameDirect(pads)) {
+                rbInvalidateCheckpoints()
+                return false
+            }
+            inputLog[f] = pads.copyOf()
+            rbSaveCheckpoint(io, f)   // ★ 重放逐帧存档
+            depth++
+        }
+        rbPendingFrom.set(Long.MAX_VALUE)
+        rbCount++
+        if (depth > rbMaxDepth) rbMaxDepth = depth
+        return true
+    }
+
+    /** 回滚不可用时的退化：阻塞等待待纠正帧及之后的实际输入到齐（不预测）。 */
+    private fun rbBlockWaitFor(fromFrame: Long) {
+        val lastExec = rbLastExecuted
+        for (slot in activeSlots) {
+            if (slot == mySlot) continue
+            var f = fromFrame
+            while (f <= lastExec) {
+                if (padsHistory[slot][f] == null) {
+                    awaitSlotInput(slot, f) // 断连返回 null：后续门/onPeerLeft 兜底
+                }
+                f++
+            }
+        }
+        // 等到的实际输入覆盖了预测值 → 待纠正标记自然解除（不一致时会重新标记）
+    }
+
+    /** 作废全部检查点（存档失败/时间线重置）。 */
+    private fun rbInvalidateCheckpoints() {
+        java.util.Arrays.fill(rbCkFrame, RB_INVALID)
+    }
+
+    /**
+     * 请求时间线重置（任意线程）：[resumeFrame] > 0 = 存档同步到该帧（清 ≥ frame
+     * 的旧时间线残留）；-1 = 仅重置簿记（pause 阶段）。引擎线程过门后统一应用。
+     */
+    private fun rbRequestReset(resumeFrame: Long) {
+        // 后到的时间线信息更新（state → resume 两次请求，末次为准）
+        rbResetFrame = resumeFrame
+    }
+
+    /**
+     * 应用时间线重置（★仅引擎线程）：存档同步装载后的回滚簿记重建。
+     * 同时清 ≥ resumeFrame 的历史输入 —— 旧时间线残留会被新时间线重新采样覆盖，
+     * 主动清掉避免任何一端误用旧值（也修复了 v4.3 暂停前多采样一帧的极端不同步）。
+     */
+    private fun rbApplyReset(resumeFrame: Long) {
+        if (resumeFrame > 0) {
+            for (slot in 1..4) {
+                padsHistory[slot].keys.removeAll { it >= resumeFrame }
+                rbSlotLatest.set(slot, -1L)
+            }
+        }
+        inputLog.clear()
+        rbInvalidateCheckpoints()
+        rbPendingFrom.set(Long.MAX_VALUE)
+        rbLastExecuted = if (resumeFrame > 0) resumeFrame - 1 else -1L
+        rbSaveCounter = 0
     }
 
     private fun cleanupHistory(frame: Long) {
@@ -623,6 +1047,15 @@ class NetplayController(
         readySent = false
         started = false
         syncPaused = false
+        // ★★ v4.4：回滚状态清零
+        rollbackMode = false
+        inputLog.clear()
+        rbInvalidateCheckpoints()
+        rbPendingFrom.set(Long.MAX_VALUE)
+        rbLastExecuted = -1L
+        for (s in 1..4) rbSlotLatest.set(s, -1L)
+        rbCount = 0
+        rbMaxDepth = 0
     }
 
     /** 当前是否已收到同步开始信号。 */

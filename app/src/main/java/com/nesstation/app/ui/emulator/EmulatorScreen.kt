@@ -2699,6 +2699,16 @@ fun EmulatorScreen(
             override fun onSyncStatus(text: String) {
                 netplayStatusText = text
             }
+            // ★★ v4.4：观战者加入/离开 + 回滚统计（FBNeo 对战的手感/纠错可视化）
+            override fun onSpectatorJoined(username: String) {
+                netplayStatusText = "$username 开始观战"
+            }
+            override fun onSpectatorLeft(username: String) {
+                netplayStatusText = "观战者 $username 已离开"
+            }
+            override fun onNetplayStats(frame: Long, delayFrames: Int, rollbacks: Int, maxReplayDepth: Int) {
+                netplayStatusText = "对战中 · 帧 #$frame · 延迟 ${delayFrames}f · 回滚 $rollbacks 次（最深 $maxReplayDepth 帧）"
+            }
         }
     }
     LaunchedEffect(netplayController) {
@@ -2720,6 +2730,20 @@ fun EmulatorScreen(
                 val dir = java.io.File(context.filesDir, "battle_sync")
                 if (!dir.isDirectory) dir.mkdirs()
                 return dir
+            }
+            // ★★ v4.4 回滚联机：FBNeo 支持快速存档 + 直接跑帧 + 待播音频丢弃。
+            //   其它引擎返回 false → 控制器自动退回延迟锁步模式（行为不变）。
+            override fun runFrameDirect(pads: IntArray): Boolean =
+                try {
+                    (engine as? com.nesstation.app.core.engine.FbNeoEngine)
+                        ?.runFrameDirect(pads) ?: false
+                } catch (t: Throwable) {
+                    android.util.Log.w("EmulatorScreen", "runFrameDirect: ${t.message}"); false
+                }
+            override fun supportsRollback(): Boolean =
+                engine is com.nesstation.app.core.engine.FbNeoEngine
+            override fun discardPendingAudio() {
+                try { (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.discardPendingAudio() } catch (_: Throwable) {}
             }
         })
     }

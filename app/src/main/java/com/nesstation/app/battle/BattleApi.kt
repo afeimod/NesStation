@@ -31,7 +31,8 @@ class BattleApi(private val ctx: Context) {
 
     /** 房间信息
      *  ★ v4.3：players/slots —— 1P 可先单机开玩（房间保持可加入），
-     *  2P/3P/4P 中途接入（存档同步）；满员 = 4 人。 */
+     *  2P/3P/4P 中途接入（存档同步）；满员 = 4 人。
+     *  ★★ v4.4：spectators —— 观战人数（不占座位；满员房间仍可观战）。 */
     data class Room(
         val id: String,
         val gameId: String,
@@ -41,7 +42,8 @@ class BattleApi(private val ctx: Context) {
         val status: String,
         val createdAt: Long,
         val players: Int = 0,
-        val slots: List<Int> = emptyList()
+        val slots: List<Int> = emptyList(),
+        val spectators: Int = 0
     )
 
     /** 登录/注册结果 */
@@ -214,7 +216,8 @@ class BattleApi(private val ctx: Context) {
                     status = r.optString("status", ""),
                     createdAt = r.optLong("createdAt", 0),
                     players = r.optInt("players", 0),
-                    slots = parseSlots(r)
+                    slots = parseSlots(r),
+                    spectators = r.optInt("spectators", 0)
                 )
             }
         } finally {
@@ -235,8 +238,10 @@ class BattleApi(private val ctx: Context) {
         }
     }
 
-    fun joinRoom(roomId: String, token: String): Pair<Room, String> {
-        val conn = open("POST", "/api/rooms/$roomId/join", token = token)
+    /** ★★ v4.4：加入房间（spectate=true 观战模式 —— 不受 4 人上限约束，满员仅观战）。 */
+    fun joinRoom(roomId: String, token: String, spectate: Boolean = false): Pair<Room, String> {
+        val body = if (spectate) JSONObject().put("spectate", true) else null
+        val conn = open("POST", "/api/rooms/$roomId/join", body, token)
         try {
             val json = readJSON(conn)
             val room = parseRoom(json.getJSONObject("room"))
@@ -265,7 +270,8 @@ class BattleApi(private val ctx: Context) {
         status = o.optString("status", ""),
         createdAt = o.optLong("createdAt", 0),
         players = o.optInt("players", 0),
-        slots = parseSlots(o)
+        slots = parseSlots(o),
+        spectators = o.optInt("spectators", 0)
     )
 
     /** ★ v4.3：解析成员槽位列表 [1,2,4]（1P=1 … 4P=4）。 */

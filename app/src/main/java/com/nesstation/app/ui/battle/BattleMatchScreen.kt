@@ -98,7 +98,16 @@ fun BattleMatchScreen(
     var romFile by remember { mutableStateOf<File?>(null) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var showExitConfirm by remember { mutableStateOf(false) }
-    var roleText by remember { mutableStateOf(if (args.isHost) "房主 · 等待对手加入" else "挑战者 · 正在进入") }
+    // ★★ v4.4：观战模式文案（不占座位，同画面观战）
+    var roleText by remember {
+        mutableStateOf(
+            when {
+                args.spectate -> "观战 · 正在连接…"
+                args.isHost -> "房主 · 等待对手加入"
+                else -> "挑战者 · 正在进入"
+            }
+        )
+    }
 
     // 解析后的真实平台（服务端 args.platform + ROM 文件兜底检测）。
     var resolvedPlatform by remember(args.roomId) {
@@ -120,8 +129,13 @@ fun BattleMatchScreen(
     var netReady by remember { mutableStateOf(false) }
     var matchStarted by remember { mutableStateOf(false) }
 
-    val controller = remember(args.roomId) {
-        NetplayController(platform = resolvedPlatform)
+    val controller = remember(args.roomId, args.spectate, args.wantSlot) {
+        // ★★ v4.4：透传观战模式 + 期望座位（hello spectate/want 握手）
+        NetplayController(
+            platform = resolvedPlatform,
+            spectate = args.spectate,
+            wantSlot = args.wantSlot
+        )
     }
 
     // === 先注册 UI listener，再连接服务器 ===
@@ -157,23 +171,37 @@ fun BattleMatchScreen(
             override fun onNetplayLost(reason: String) { errorMsg = reason }
             // ★★ v4.3 后加入（1P 单机即开 + 2P/3P/4P 中途接入）状态展示
             override fun onReadyDetail(role: String, inputDelay: Int, slot: Int, players: List<Int>, playing: Boolean) {
-                roleText = if (playing) {
-                    "${slot}P · 房间对战中 —— 正在同步 1P 画面…"
-                } else {
-                    "${slot}P · 已连线（基础延迟 ${inputDelay}f · 在线 ${players.size} 人）"
+                roleText = when {
+                    args.spectate || role == "spectator" ->
+                        if (playing) "观战 · 房间对战中 —— 正在同步画面…"
+                        else "观战 · 已连线（延迟 ${inputDelay}f · 在线 ${players.size} 人）"
+                    playing -> "${slot}P · 房间对战中 —— 正在同步 1P 画面…"
+                    else -> "${slot}P · 已连线（基础延迟 ${inputDelay}f · 在线 ${players.size} 人）"
                 }
             }
             override fun onStartDetail(inputDelay: Int, players: List<Int>) {
-                roleText = if (players.size <= 1) {
-                    "1P · 已单机开跑，其他玩家可随时加入（延迟 ${inputDelay}f）"
-                } else {
-                    "${players.size} 人同场对战 · 延迟 ${inputDelay}f（同步开跑）"
+                roleText = when {
+                    args.spectate || controller.isSpectator ->
+                        if (players.size <= 1) "观战 · 1P 单机开跑中"
+                        else "观战 · ${players.size} 人同场对战（延迟 ${inputDelay}f）"
+                    players.size <= 1 -> "1P · 已单机开跑，其他玩家可随时加入（延迟 ${inputDelay}f）"
+                    else -> "${players.size} 人同场对战 · 延迟 ${inputDelay}f（同步开跑）"
                 }
             }
             override fun onPeerJoinedSlot(username: String, slot: Int) {
                 roleText = "$username 以 ${slot}P 接入 —— 同步画面中…"
             }
             override fun onSyncStatus(text: String) { roleText = text }
+            // ★★ v4.4：观战者加入/离开 + 回滚统计
+            override fun onSpectatorJoined(username: String) {
+                roleText = "$username 开始观战"
+            }
+            override fun onSpectatorLeft(username: String) {
+                roleText = "观战者 $username 已离开"
+            }
+            override fun onNetplayStats(frame: Long, delayFrames: Int, rollbacks: Int, maxReplayDepth: Int) {
+                roleText = "对战中 · 帧 #$frame · 延迟 ${delayFrames}f · 回滚 $rollbacks 次（最深 $maxReplayDepth 帧）"
+            }
         })
         onDispose { controller.setUiListener(null) }
     }
@@ -265,6 +293,7 @@ fun BattleMatchScreen(
         else -> {
             val text = when {
                 rom == null -> "正在准备 ROM…"
+                args.spectate -> "观战 · 正在接入画面…"
                 netReady && args.isHost -> "等待对手加入…"
                 netReady && !args.isHost -> "正在进入对战…"
                 else -> "正在连接对战服务器…"

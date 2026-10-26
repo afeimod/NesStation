@@ -148,6 +148,9 @@ fun BattleScreen(
     // 当前选中的游戏（null = 游戏库宫格；非 null = 该游戏的街机厅桌面）
     var selectedGame by remember { mutableStateOf<BattleApi.Game?>(null) }
 
+    // ★★ v4.4：座位选择对话框（点击已开的桌子弹出：2P/3P/4P 空闲座位 / 观战）
+    var seatDialogRoom by remember { mutableStateOf<BattleApi.Room?>(null) }
+
     // === 平台筛选（和本地游戏库一致） ===
     // 服务端的 games 列表可能包含多个平台（arcade / nes / snes / gba / md / pce ...），
     // 用户点 chip 切换平台，只看该平台的游戏。"全部" 显示所有平台。
@@ -195,6 +198,62 @@ fun BattleScreen(
         }
     }
 
+    // ★★ v4.4：进桌流程（统一入口）：room=null 创建新桌；否则按选定座位/观战加入。
+    //   spectate=true → 观战（不占座位，满员仍可）；wantSlot=2/3/4 → 用户点的座位
+    //   （服务器分配结果以 hello 回执为准 —— 被抢先占位时自动顺延到下一空闲座）。
+    fun startJoin(room: BattleApi.Room?, spectate: Boolean, wantSlot: Int) {
+        val targetGame = selectedGame ?: return
+        val has = BattleRomStore.hasRom(context, targetGame.fileName)
+        if (!has) {
+            statusMsg = "正在下载 ${targetGame.title}，完成后自动进入房间…"
+            downloading = DownloadTask(targetGame.id, targetGame.fileName, 0f)
+        }
+        scope.launch(Dispatchers.IO) {
+            try {
+                if (!has) {
+                    BattleApi(context).downloadRom(
+                        targetGame,
+                        BattleRomStore.romFile(context, targetGame.fileName)
+                    ) { done, total ->
+                        if (total > 0) {
+                            downloading = DownloadTask(
+                                targetGame.id, targetGame.fileName,
+                                (done.toFloat() / total).coerceIn(0f, 1f)
+                            )
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) { downloading = null }
+                // ROM 就绪，创建 / 加入房间
+                val token = BattleSession.getToken(context) ?: return@launch
+                val (joined, tcp) = if (room == null) {
+                    BattleApi(context).createRoom(targetGame.id, token)
+                } else {
+                    BattleApi(context).joinRoom(room.id, token, spectate)
+                }
+                withContext(Dispatchers.Main) {
+                    onOpenMatch(
+                        BattleMatchArgs(
+                            roomId = joined.id,
+                            gameId = joined.gameId,
+                            isHost = room == null,
+                            tcpAddr = tcp,
+                            platform = com.nesstation.app.core.model.GamePlatform.fromString(targetGame.platform),
+                            fileName = targetGame.fileName,
+                            spectate = spectate,
+                            wantSlot = wantSlot
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    downloading = null
+                    statusMsg = e.message
+                }
+            }
+        }
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
         // ★ Neon 主题：深空背景；FSD：像素浅色背景
         if (!AppBackgroundState.active) {
@@ -237,7 +296,7 @@ fun BattleScreen(
                         if (selectedGame == null) {
                             if (loggedIn) "已登录：$username" else "虚拟账号 · 实时联机"
                         } else {
-                            "选择街机桌加入对战 · 1P / 2P"
+                            "选桌入座 · 2P/3P/4P · 满员可观战"   // ★ v4.4：不再是只有 1P/2P
                         },
                         color = SecondaryText,
                         fontSize = 10.sp
@@ -268,63 +327,17 @@ fun BattleScreen(
                     game = selectedGame!!,
                     rooms = rooms,
                     onBackToLibrary = { selectedGame = null },
-                    onJoinTable = { room, isFull ->
+                    onJoinTable = { room ->
                         if (!BattleSession.isLoggedIn(context)) {
                             showLoginDialog = true
                             return@ArcadeHallGrid
                         }
-                        if (isFull) {
-                            statusMsg = "该桌已满（4 个座位都有人）"
-                            return@ArcadeHallGrid
-                        }
-                        val targetGame = selectedGame!!
-                        // 进入房间前先确保 ROM 已下载；未下载则提示并下载，完成后自动进入房间
-                        val has = BattleRomStore.hasRom(context, targetGame.fileName)
-                        if (!has) {
-                            statusMsg = "正在下载 ${targetGame.title}，完成后自动进入房间…"
-                            downloading = DownloadTask(targetGame.id, targetGame.fileName, 0f)
-                        }
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                if (!has) {
-                                    BattleApi(context).downloadRom(
-                                        targetGame,
-                                        BattleRomStore.romFile(context, targetGame.fileName)
-                                    ) { done, total ->
-                                        if (total > 0) {
-                                            downloading = DownloadTask(
-                                                targetGame.id, targetGame.fileName,
-                                                (done.toFloat() / total).coerceIn(0f, 1f)
-                                            )
-                                        }
-                                    }
-                                }
-                                withContext(Dispatchers.Main) { downloading = null }
-                                // ROM 就绪，创建 / 加入房间
-                                val token = BattleSession.getToken(context)!!
-                                val (joined, tcp) = if (room == null) {
-                                    BattleApi(context).createRoom(targetGame.id, token)
-                                } else {
-                                    BattleApi(context).joinRoom(room.id, token)
-                                }
-                                withContext(Dispatchers.Main) {
-                                    onOpenMatch(
-                                        BattleMatchArgs(
-                                            roomId = joined.id,
-                                            gameId = joined.gameId,
-                                            isHost = room == null,
-                                            tcpAddr = tcp,
-                                            platform = com.nesstation.app.core.model.GamePlatform.fromString(targetGame.platform),
-                                            fileName = targetGame.fileName
-                                        )
-                                    )
-                                }
-                            } catch (e: Exception) {
-                                withContext(Dispatchers.Main) {
-                                    downloading = null
-                                    statusMsg = e.message
-                                }
-                            }
+                        if (room == null) {
+                            // 空桌：直接创建（1P）
+                            startJoin(null, spectate = false, wantSlot = 0)
+                        } else {
+                            // ★★ v4.4 已开的桌子：弹座位选择（空闲 2P/3P/4P + 观战；满员仅观战）
+                            seatDialogRoom = room
                         }
                     }
                 )
@@ -366,6 +379,18 @@ fun BattleScreen(
                 loggedIn = true
                 username = name
                 refreshAll()
+            }
+        )
+    }
+
+    // ★★ v4.4 座位选择对话框（点击已开的桌子弹出）
+    seatDialogRoom?.let { room ->
+        JoinSeatDialog(
+            room = room,
+            onDismiss = { seatDialogRoom = null },
+            onPick = { spectate, wantSlot ->
+                seatDialogRoom = null
+                startJoin(room, spectate, wantSlot)
             }
         )
     }
@@ -649,7 +674,7 @@ private fun ArcadeHallGrid(
     game: BattleApi.Game,
     rooms: List<BattleApi.Room>,
     onBackToLibrary: () -> Unit,
-    onJoinTable: (BattleApi.Room?, Boolean) -> Unit
+    onJoinTable: (BattleApi.Room?) -> Unit
 ) {
     // 只显示当前游戏的房间，按创建时间排序，映射到 10 张桌子
     val gameRooms = remember(rooms, game.id) {
@@ -692,8 +717,8 @@ private fun ArcadeHallGrid(
                     game = game,
                     room = room,
                     accent = CabinetPalette[index % CabinetPalette.size],
-                    // ★ v4.3：4 人满员判定（1P 单机开玩中也可加入 —— 快速同步画面后接入）
-                    onClick = { onJoinTable(room, room != null && room.players >= 4) }
+                    // ★★ v4.4：点击已开的桌子弹座位选择（满员在对话框里仅提供观战）
+                    onClick = { onJoinTable(room) }
                 )
             }
         }
@@ -727,6 +752,8 @@ private fun ArcadeTableCard(
     val isFull = slots.size >= 4
     // 对战中但仍可加入（1P 单机开玩 / 已有人对战且 <4 人）
     val playingJoinable = room != null && (room.status == "playing" || room.status == "syncing") && !isFull
+    // ★★ v4.4：观战人数（不占座位）
+    val specCount = room?.spectators ?: 0
 
     Column(
         modifier = Modifier
@@ -777,7 +804,7 @@ private fun ArcadeTableCard(
                 )
                 Text(
                     when {
-                        isFull -> "4人满员·对战中"
+                        isFull -> if (specCount > 0) "4人满员·${specCount}人观战" else "4人满员·仅观战"
                         playingJoinable -> "对战中·可加入"
                         occupied1P -> "等待 ${slots.size + 1}P"
                         else -> "空桌"
@@ -786,6 +813,14 @@ private fun ArcadeTableCard(
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold
                 )
+                // ★★ v4.4：未满员但有观战者时也提示（满员行已并入上行文案）
+                if (!isFull && specCount > 0) {
+                    Text(
+                        "${specCount} 人观战中",
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 9.sp
+                    )
+                }
             }
         }
 
@@ -869,6 +904,129 @@ private fun SeatBadge(
             name?.take(6) ?: "空",
             color = if (occupied) PrimaryText else SecondaryTextLight,
             fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ★★ v4.4 座位选择对话框：点击已开的桌子弹出 —— 选 2P/3P/4P 空闲座位或观战；
+// 满员时只提供观战。被抢先占位时服务器自动顺延到下一空闲座（以 hello 回执为准）。
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun JoinSeatDialog(
+    room: BattleApi.Room,
+    onDismiss: () -> Unit,
+    onPick: (spectate: Boolean, wantSlot: Int) -> Unit
+) {
+    val slots = room.slots.ifEmpty {
+        // 老服务器无 slots 字段：回退到 host/guest 双座位判定
+        buildList {
+            add(1)
+            if (room.guest.isNotBlank()) add(2)
+        }
+    }
+    val isFull = slots.size >= 4
+    val statusText = when (room.status) {
+        "playing", "syncing" -> "对战中 · 接入后自动同步画面"
+        else -> "等待中 · 同步开跑"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("加入 · 桌 ${room.id}", color = PrimaryText, fontWeight = FontWeight.ExtraBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "${room.gameTitle} · $statusText · 在线 ${room.players} 人" +
+                        if (room.spectators > 0) " · 观战 ${room.spectators} 人" else "",
+                    color = SecondaryText, fontSize = 11.sp
+                )
+                // 1P（房主座位，只展示不可选）
+                SeatPickRow(
+                    label = "1P",
+                    name = room.host.ifBlank { "房主" },
+                    occupied = true,
+                    enabled = false,
+                    onClick = {}
+                )
+                // 2P / 3P / 4P：占用 → 禁用展示；空闲 → 点击入座
+                for (slot in 2..4) {
+                    val occupied = slots.contains(slot)
+                    SeatPickRow(
+                        label = "${slot}P",
+                        name = when {
+                            !occupied -> "空闲 · 点击入座"
+                            slot == 2 && room.guest.isNotBlank() -> room.guest
+                            else -> "占用中"
+                        },
+                        occupied = occupied,
+                        enabled = !occupied,
+                        onClick = { onPick(false, slot) }
+                    )
+                }
+                // 观战（始终可用 —— 满员时唯一选项）
+                Button(
+                    onClick = { onPick(true, 0) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White),
+                    modifier = Modifier.fillMaxWidth().height(44.dp)
+                ) {
+                    Text(
+                        if (isFull) "👁 观战（桌子已满）" else "👁 观战",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        },
+        containerColor = DialogBg,
+        titleContentColor = PrimaryText,
+        textContentColor = PrimaryText,
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消", color = SecondaryText) }
+        }
+    )
+}
+
+/** 座位选择行（1P/2P/3P/4P） */
+@Composable
+private fun SeatPickRow(
+    label: String,
+    name: String,
+    occupied: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                when {
+                    enabled -> Accent.copy(alpha = 0.12f)
+                    occupied -> Color(0xFFF2F4F8)
+                    else -> Color.Transparent
+                }
+            )
+            .let { if (enabled) it.clickable(onClick = onClick) else it }
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(14.dp)
+                .clip(CircleShape)
+                .background(if (occupied) Success else Accent)
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(label, color = PrimaryText, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            name,
+            color = if (enabled) Accent else SecondaryTextLight,
+            fontSize = 11.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1124,7 +1282,11 @@ data class BattleMatchArgs(
     val isHost: Boolean,
     val tcpAddr: String,
     val platform: com.nesstation.app.core.model.GamePlatform = com.nesstation.app.core.model.GamePlatform.ARCADE,
-    val fileName: String = ""
+    val fileName: String = "",
+    /** ★★ v4.4：观战模式（不占座位、只收不发） */
+    val spectate: Boolean = false,
+    /** ★★ v4.4：期望座位 2/3/4（0=自动） */
+    val wantSlot: Int = 0
 )
 
 /** ROM 下载任务状态（用于大厅进度显示） */
