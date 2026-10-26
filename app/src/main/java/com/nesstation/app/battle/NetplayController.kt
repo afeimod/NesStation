@@ -144,6 +144,10 @@ class NetplayController(
         private const val RTT_SAMPLES = 3
         private const val RTT_INTERVAL_MS = 60L
         private const val RTT_TIMEOUT_MS = 800L
+        /** ★★ v4.5 服务器侧存档：房主快照上传节奏 —— 第 60 帧（开局 1s）传首份，
+         *  之后每 900 帧（15s @60fps）一份 —— 服务器始终有近期档可供 2P/3P/4P/观战接入 */
+        private const val UPLOAD_FIRST_FRAME = 60L
+        private const val UPLOAD_EVERY_FRAMES = 900L
     }
 
     private fun dispatch(block: (UiListener) -> Unit) {
@@ -202,6 +206,14 @@ class NetplayController(
 
     // === 网络 ===
     @Volatile private var net: BattleNetplay? = null
+
+    // === ★★ v4.5 服务器侧存档：房主周期快照上传 ===
+    /** 上一次已上传的网络帧号（-1 = 还没传过；仅引擎线程写）。 */
+    private var lastUploadFrame = -1L
+    /** 上传进行中（防堆积：上一份还没发完就到了下一份 → 跳过本次）。 */
+    private val uploadInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** 存档文件读写串行化（引擎线程写 / 上传线程读）。 */
+    private val uploadLock = Any()
 
     // === ★★ v4.4 回滚网络码（rollback）状态 ===
     /** 回滚模式启用（引擎支持快速存档 && 非观战；notifyEngineReady 时评估）。 */
@@ -300,21 +312,26 @@ class NetplayController(
                 } catch (t: Throwable) {
                     android.util.Log.w("NetplayController", "hostProduceState failed", t)
                     // 存档失败也要解除暂停，否则全员卡死
+                    try { net?.sendStateFail() } catch (_: Throwable) {}
                     resumeInternal(null, inputDelay, activeSlots.toList())
                 }
             }, "battle-state-host").apply { isDaemon = true }.start()
         }
 
         override fun onStateData(frame: Long, dataBase64: String, hist: Map<Int, List<Int>>?, histEnd: Long) {
-            // 非房主成员：装载存档 + 对齐帧计数（引擎线程此刻挂在门上）
-            dispatch { it.onSyncStatus("同步画面完成：装载中…") }
-            Thread({
-                try {
-                    memberLoadState(frame, dataBase64, hist, histEnd)
-                } catch (t: Throwable) {
-                    android.util.Log.w("NetplayController", "memberLoadState failed", t)
-                }
-            }, "battle-state-join").apply { isDaemon = true }.start()
+            // ★★ v4.5：收到服务器转发的存档 —— 只做确认，不在这里装载。
+            //   装载统一放到 onResume（全员同一份档、同一帧号恢复）：
+            //   同步若中止（房主失败/超时/接入者离开），无人装载、全员从各自
+            //   暂停帧继续 —— 不会出现“有人装了旧档、有人继续原时间线”的分叉。
+            val n = net
+            if (!started && n != null) {
+                // 新玩家（还没开跑）：确认收到 → 服务器收到后广播全员 resume
+                n.sendStateOk()
+                dispatch { it.onSyncStatus("同步画面已就绪（帧 #$frame），等待全员恢复…") }
+            } else {
+                // 运行中的成员：等 resume 一起装载
+                dispatch { it.onSyncStatus("新玩家接入：等待全员装载恢复…") }
+            }
         }
 
         override fun onResume(frame: Long, inputDelay: Int, players: List<Int>,
@@ -377,22 +394,33 @@ class NetplayController(
         }
     }
 
-    /** 房主：等引擎暂停在帧 F → 存档 → 近 16 帧输入 → sendState。 */
+    /** 房主：等引擎暂停在帧 F → 存档 → 近 16 帧输入 → sendState。
+     * ★★ v4.5：任一失败路径都先向服务器上报 state_fail（服务器立即收尾同步：
+     * 有缓存档则全员按缓存档恢复，否则接入者劝退）—— 绝不让房间卡在“同步中”。 */
     private fun hostProduceState() {
-        val io = stateIo ?: run {
+        val io = stateIo
+        val n = net
+        if (io == null || n == null) {
             dispatch { it.onSyncStatus("同步失败：无存档通道") }
+            try { n?.sendStateFail() } catch (_: Throwable) {}
+            resumeInternal(null, inputDelay, activeSlots.toList())
             return
         }
-        // 1. 等待引擎线程挂到 syncGate（它记录 parkedLocalFrame）
+        // 1. 等待引擎线程挂到门上（它记录 parkedLocalFrame）
         var waitMs = 0L
         while (parkedLocalFrame < 0 && waitMs < 5000) {
-            if (!started) return // 尚未开跑（理论不可达：state_req 仅在 playing 时来）
+            if (!started) {
+                // 尚未开跑（理论不可达：state_req 仅在 playing 时来）—— 上报失败收尾
+                try { n.sendStateFail() } catch (_: Throwable) {}
+                return
+            }
             Thread.sleep(10); waitMs += 10
         }
         val parkedLocal = parkedLocalFrame
         if (parkedLocal < 0) {
-            // 引擎 5s 未暂停（异常）：放弃同步并解除暂停
+            // 引擎 5s 未暂停（异常）：上报失败 + 本地解除暂停
             dispatch { it.onSyncStatus("同步超时：继续对战") }
+            try { n.sendStateFail() } catch (_: Throwable) {}
             resumeInternal(null, inputDelay, activeSlots.toList())
             return
         }
@@ -401,16 +429,28 @@ class NetplayController(
         val file = File(io.stateDir(), "battle_join_sync.state")
         if (!io.saveStateTo(file)) {
             dispatch { it.onSyncStatus("同步失败：存档失败") }
+            try { n.sendStateFail() } catch (_: Throwable) {}
             resumeInternal(null, inputDelay, activeSlots.toList())
             return
         }
         val bytes = try { file.readBytes() } catch (_: Throwable) { null }
         if (bytes == null || bytes.isEmpty()) {
             dispatch { it.onSyncStatus("同步失败：存档为空") }
+            try { n.sendStateFail() } catch (_: Throwable) {}
             resumeInternal(null, inputDelay, activeSlots.toList())
             return
         }
         // 3. 近 16 帧各槽位输入（resume 后 inputDelay 窗口内要用）
+        val hist = buildHist(stateFrame)
+        // 4. 上报（base64 单行 JSON；FBNeo 街机存档一般几十~几百 KB）
+        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        n.sendState(stateFrame, b64, hist)
+        dispatch { it.onSyncStatus("已发送同步画面（${bytes.size / 1024}KB），等待装载…") }
+    }
+
+    /** 槽位 -> 近 16 帧 pad 序列（止于 stateFrame 前；缺帧按 0 —— 全员一致即可）。
+     *  房主同步出档（hostProduceState）与周期快照上传（uploadSnapshot）共用。 */
+    private fun buildHist(stateFrame: Long): Map<Int, List<Int>> {
         val hist = HashMap<Int, List<Int>>()
         for (slot in 1..4) {
             val pads = ArrayList<Int>(16)
@@ -419,73 +459,74 @@ class NetplayController(
             }
             hist[slot] = pads
         }
-        // 4. 上报（base64 单行 JSON；FBNeo 街机存档一般几十~几百 KB）
-        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-        net?.sendState(stateFrame, b64, hist)
-        dispatch { it.onSyncStatus("已发送同步画面（${bytes.size / 1024}KB），等待装载…") }
+        return hist
     }
 
-    /** 非房主成员（含新玩家）：装载存档 + 帧计数对齐 + 上报 state_ok。 */
-    private fun memberLoadState(frame: Long, dataBase64: String,
-                                hist: Map<Int, List<Int>>?, histEnd: Long) {
-        val io = stateIo
-        val n = net
-        if (io == null || n == null) return
-        val bytes = try {
-            android.util.Base64.decode(dataBase64, android.util.Base64.NO_WRAP)
-        } catch (_: Throwable) { null }
-        if (bytes == null || bytes.isEmpty()) return
-        // 引擎线程此刻必挂在门上（未 start → startGate；已 start → syncGate）。
-        // 等 parkedLocalFrame 就绪（joiner 为 0，运行成员为其暂停帧）。
-        var waitMs = 0L
-        while (parkedLocalFrame < 0 && waitMs < 5000) {
-            Thread.sleep(10); waitMs += 10
+    /** ★★ v4.5 房主周期快照上传（引擎线程调用）：出一份档 → 后台线程编码发送。
+     *  服务器缓存这份档 —— 2P/3P/4P/观战加入时直接从服务器拿（房主掉线或
+     *  加入瞬间出档失败也有档可用），不再依赖加入瞬间房主本地出档。
+     *  出档与读文件经 uploadLock 串行化（防文件被下一轮覆盖时读到半截）。 */
+    private fun uploadSnapshot(netFrame: Long) {
+        val io = stateIo ?: return
+        val n = net ?: return
+        if (!uploadInFlight.compareAndSet(false, true)) return // 上一份还在发：跳过本轮
+        val file = File(io.stateDir(), "battle_upload.state")
+        val ok = try {
+            synchronized(uploadLock) { io.saveStateTo(file) }
+        } catch (t: Throwable) {
+            android.util.Log.w("NetplayController", "upload saveState: ${t.message}"); false
         }
-        val parkedLocal = if (parkedLocalFrame >= 0) parkedLocalFrame else 0L
-        val file = File(io.stateDir(), "battle_join_sync.state")
-        try { file.writeBytes(bytes) } catch (_: Throwable) { return }
-        if (!io.loadStateFrom(file)) {
-            dispatch { it.onSyncStatus("装载同步画面失败") }
+        if (!ok) {
+            uploadInFlight.set(false)
             return
         }
-        // 对齐：网络帧号 = 本地帧 + offset → 恢复时从 frame 起
-        frameOffset = frame - parkedLocal
-        seedHist(hist, histEnd)
-        // ★★ v4.4：请求时间线重置（清 ≥ frame 的旧时间线残留 + 检查点作废；
-        //   实际重置在引擎线程过门后统一应用 —— rbCkFrame 等簿记仅引擎线程可写）
-        rbRequestReset(frame)
-        // 新玩家：装载完成即上报（服务器收到后全员 resume）
-        n.sendStateOk()
-        dispatch { it.onSyncStatus("同步画面已装载（帧 #$frame），等待全员恢复…") }
+        // afterFrame(netFrame)：帧 [0..netFrame] 已执行完 → 下一帧从 netFrame+1 起
+        val stateFrame = netFrame + 1
+        Thread({
+            try {
+                val bytes = synchronized(uploadLock) {
+                    try { file.readBytes() } catch (_: Throwable) { null }
+                }
+                if (bytes != null && bytes.isNotEmpty()) {
+                    val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    n.sendStateUpload(stateFrame, b64, buildHist(stateFrame))
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w("NetplayController", "upload send: ${t.message}")
+            } finally {
+                uploadInFlight.set(false)
+            }
+        }, "battle-state-upload").apply { isDaemon = true }.start()
     }
 
-    /** resume：全员按统一存档/帧号/延迟恢复。data 空 = 仅解除暂停（同步中断兜底）。 */
+    /** resume：全员按统一存档/帧号/延迟恢复。data 空 = 仅解除暂停（同步中止兜底）。
+     *
+     * ★★ v4.5 统一装载：房主也不再跳过 —— 服务器可能下发“缓存档”（房主出档
+     *   失败/掉线时的回退路径，比房主当前进度旧），全员装载同一份才能保证一致；
+     *   房主自己刚出的新鲜档装载 = 无操作，行为不变。帧号重对齐全员统一：
+     *   frameOffset = frame - parkedLocal（新鲜档 = 0；缓存档 = 负偏移回退，仍同帧）。 */
     private fun resumeInternal(dataBase64: String?, finalDelay: Int, players: List<Int>,
                                frame: Long = -1L, hist: Map<Int, List<Int>>? = null, histEnd: Long = 0L) {
-        // 已在 stateData 装载过（data 非空且本端非房主）→ 只需对齐；房主跳过装载
-        val amHost = role == "host"
-        if (dataBase64 != null && !amHost && frame >= 0) {
-            val io = stateIo
-            if (io != null) {
-                // 未及在 stateData 阶段装载（如掉线重试场景）→ 兜底装载
-                // 已装载则 loadState 同档重放，无害且保证一致
-                val bytes = try {
-                    android.util.Base64.decode(dataBase64, android.util.Base64.NO_WRAP)
-                } catch (_: Throwable) { null }
-                if (bytes != null && bytes.isNotEmpty()) {
-                    val parkedLocal = if (parkedLocalFrame >= 0) parkedLocalFrame else 0L
-                    val file = File(io.stateDir(), "battle_join_sync.state")
-                    try {
-                        file.writeBytes(bytes)
-                        io.loadStateFrom(file)
-                    } catch (_: Throwable) {}
-                    frameOffset = frame - parkedLocal
+        val io = stateIo
+        if (dataBase64 != null && frame >= 0 && io != null) {
+            val bytes = try {
+                android.util.Base64.decode(dataBase64, android.util.Base64.NO_WRAP)
+            } catch (_: Throwable) { null }
+            if (bytes != null && bytes.isNotEmpty()) {
+                // 引擎线程此刻挂在门上（未 start → startGate；已 start → syncGate）
+                val parkedLocal = if (parkedLocalFrame >= 0) parkedLocalFrame else 0L
+                val file = File(io.stateDir(), "battle_join_sync.state")
+                val loaded = try {
+                    file.writeBytes(bytes); io.loadStateFrom(file)
+                } catch (_: Throwable) { false }
+                if (!loaded) {
+                    // 装载失败 = 必然发散：干净退出（引导重进房间），绝不带病继续
+                    dispatch { it.onNetplayLost("同步画面装载失败，请退出后重新进入房间") }
+                    try { net?.close() } catch (_: Throwable) {}
+                    return
                 }
+                frameOffset = frame - parkedLocal
             }
-        }
-        if (frame >= 0 && amHost) {
-            // 房主：存档即本端状态，只对齐帧号（offset 恒 0）
-            frameOffset = 0
         }
         if (hist != null && frame >= 0) seedHist(hist, histEnd)
         // ★★ v4.4：resume 帧之后的历史输入全部作废（旧时间线残留会被重新采样
@@ -755,6 +796,17 @@ class NetplayController(
             val il = inputDelay
             val dc = desyncCount
             dispatch { it.onFrameInfo(netFrame, il, dc) }
+        }
+        // ★★ v4.5 服务器侧存档：房主周期上传快照 → 服务器缓存（供 2P/3P/4P/观战
+        //   加入时同步 —— “存档同步在服务器”）。引擎线程里出档、后台线程编码发送；
+        //   暂停/同步期间引擎不跑帧，自然不会上传。
+        if (started && !isSpectator && role == "host" && netFrame >= 0) {
+            val due = if (lastUploadFrame < 0L) netFrame >= UPLOAD_FIRST_FRAME
+                      else netFrame - lastUploadFrame >= UPLOAD_EVERY_FRAMES
+            if (due) {
+                lastUploadFrame = netFrame
+                uploadSnapshot(netFrame)
+            }
         }
         if (rollbackMode) {
             // ★★ v4.4 回滚：引擎刚跑完 netFrame → 核心状态 = 执行帧 [0..netFrame-inputDelay]

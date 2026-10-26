@@ -21,6 +21,9 @@ type roomResponse struct {
         Slots   []int `json:"slots"`
         // ★★ v4.4：观战人数（满员房间仍可观战 —— 客户端据此显示“满员·仅观战”）
         Spectators int `json:"spectators"`
+        // ★★ v4.5 桌号固定：开哪桌就是哪桌（客户端按桌号展示/点击加入；
+        //   0 = 旧客户端未指定桌号 —— 客户端按创建顺序填进空桌）
+        Table int `json:"table"`
 }
 
 func roomToResponse(cfg *Config, r *Room) roomResponse {
@@ -28,6 +31,7 @@ func roomToResponse(cfg *Config, r *Room) roomResponse {
                 ID:        r.ID,
                 GameID:    r.GameID,
                 CreatedAt: r.CreatedAt.Unix(),
+                Table:     r.TableNo,
         }
         // 找到游戏标题
         for _, g := range cfg.Games {
@@ -100,9 +104,14 @@ func (s *apiServer) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 
         var req struct {
                 GameID string `json:"gameId"`
+                Table  int    `json:"table"` // ★★ v4.5 桌号：点哪桌开哪桌（1 起；0 = 不指定，旧行为）
         }
         if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
                 writeErr(w, http.StatusBadRequest, "请求格式错误")
+                return
+        }
+        if req.Table < 0 || req.Table > maxTableNo {
+                writeErr(w, http.StatusBadRequest, "桌号不合法")
                 return
         }
         // 校验游戏存在（热重载后即时按最新列表校验）
@@ -125,6 +134,24 @@ func (s *apiServer) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
                 writeErr(w, http.StatusTooManyRequests, "房间数量已达上限")
                 return
         }
+        // ★★ v4.5 桌号唯一（同一游戏）：一张桌同时只能有一局 ——
+        //   开 2 桌就是 2 桌，点 2 桌加入的人一定落在 2 桌的房间。
+        //   "僵尸桌"（创建了但一直无人连上）超过 45s 自动让位。
+        if req.Table > 0 {
+                for id, other := range s.hub.rooms {
+                        if other.GameID != req.GameID || other.TableNo != req.Table {
+                                continue
+                        }
+                        if other.playerCount() == 0 && other.spectatorCount() == 0 &&
+                                time.Since(other.CreatedAt) > 45*time.Second {
+                                delete(s.hub.rooms, id) // 僵尸桌：清掉重开
+                                continue
+                        }
+                        s.hub.mu.Unlock()
+                        writeErr(w, http.StatusConflict, "该桌已开局，请点击该桌加入或换一桌")
+                        return
+                }
+        }
         rm := &Room{
                 ID:        randomID()[:8],
                 GameID:    req.GameID,
@@ -133,6 +160,7 @@ func (s *apiServer) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
                 // ★ 记录房主：中继握手时按它分配 host 角色（创建者 = 1P），
                 //   不再受"谁先连上 TCP"的连接顺序影响。
                 OwnerID:   user.ID,
+                TableNo:   req.Table, // ★★ v4.5 桌号固定：开哪桌就是哪桌
                 conns:     map[string]*relayConn{},
                 specs:     map[string]*relayConn{}, // ★★ v4.4 观战者连接表
         }

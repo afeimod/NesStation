@@ -150,6 +150,8 @@ fun BattleScreen(
 
     // ★★ v4.4：座位选择对话框（点击已开的桌子弹出：2P/3P/4P 空闲座位 / 观战）
     var seatDialogRoom by remember { mutableStateOf<BattleApi.Room?>(null) }
+    // ★★ v4.5：弹座位对话框的桌号（标题显示“加入 · 桌 N”）
+    var seatDialogTable by remember { mutableStateOf(0) }
 
     // === 平台筛选（和本地游戏库一致） ===
     // 服务端的 games 列表可能包含多个平台（arcade / nes / snes / gba / md / pce ...），
@@ -198,10 +200,11 @@ fun BattleScreen(
         }
     }
 
-    // ★★ v4.4：进桌流程（统一入口）：room=null 创建新桌；否则按选定座位/观战加入。
+    // ★★ v4.4：进桌流程（统一入口）：room=null 创建新桌（★ v4.5 带桌号 —— 点哪桌开哪桌）；
+    //   否则按选定座位/观战加入。
     //   spectate=true → 观战（不占座位，满员仍可）；wantSlot=2/3/4 → 用户点的座位
     //   （服务器分配结果以 hello 回执为准 —— 被抢先占位时自动顺延到下一空闲座）。
-    fun startJoin(room: BattleApi.Room?, spectate: Boolean, wantSlot: Int) {
+    fun startJoin(room: BattleApi.Room?, tableNo: Int, spectate: Boolean, wantSlot: Int) {
         val targetGame = selectedGame ?: return
         val has = BattleRomStore.hasRom(context, targetGame.fileName)
         if (!has) {
@@ -224,10 +227,10 @@ fun BattleScreen(
                     }
                 }
                 withContext(Dispatchers.Main) { downloading = null }
-                // ROM 就绪，创建 / 加入房间
+                // ROM 就绪，创建 / 加入房间（★ v4.5 创建时带桌号：开 2 桌就是 2 桌）
                 val token = BattleSession.getToken(context) ?: return@launch
                 val (joined, tcp) = if (room == null) {
-                    BattleApi(context).createRoom(targetGame.id, token)
+                    BattleApi(context).createRoom(targetGame.id, token, tableNo)
                 } else {
                     BattleApi(context).joinRoom(room.id, token, spectate)
                 }
@@ -327,17 +330,18 @@ fun BattleScreen(
                     game = selectedGame!!,
                     rooms = rooms,
                     onBackToLibrary = { selectedGame = null },
-                    onJoinTable = { room ->
+                    onJoinTable = { room, tableNo ->
                         if (!BattleSession.isLoggedIn(context)) {
                             showLoginDialog = true
                             return@ArcadeHallGrid
                         }
                         if (room == null) {
-                            // 空桌：直接创建（1P）
-                            startJoin(null, spectate = false, wantSlot = 0)
+                            // 空桌：在该桌创建（1P）—— ★ v4.5 开哪桌就是哪桌
+                            startJoin(null, tableNo, spectate = false, wantSlot = 0)
                         } else {
                             // ★★ v4.4 已开的桌子：弹座位选择（空闲 2P/3P/4P + 观战；满员仅观战）
                             seatDialogRoom = room
+                            seatDialogTable = tableNo
                         }
                     }
                 )
@@ -387,10 +391,11 @@ fun BattleScreen(
     seatDialogRoom?.let { room ->
         JoinSeatDialog(
             room = room,
+            tableNo = if (room.table in 1..TABLE_COUNT) room.table else seatDialogTable,
             onDismiss = { seatDialogRoom = null },
             onPick = { spectate, wantSlot ->
                 seatDialogRoom = null
-                startJoin(room, spectate, wantSlot)
+                startJoin(room, room.table, spectate, wantSlot)
             }
         )
     }
@@ -666,7 +671,10 @@ private fun BattleGameCard(
 }
 
 // ---------------------------------------------------------------------------
-// 街机厅房间桌面宫格（10 张桌子，1P / 2P 座位）
+// 街机厅房间桌面宫格（10 张桌子，1P - 4P 座位）
+// ★★ v4.5 桌号固定：房间的桌号由服务器下发（创建时点哪桌就是哪桌）——
+//   开 2 桌就显示在 2 桌、点 2 桌加入的一定是 2 桌的房间。
+//   旧服务器无桌号（table=0）的房间按创建顺序填进剩余空桌（兼容）。
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -674,12 +682,32 @@ private fun ArcadeHallGrid(
     game: BattleApi.Game,
     rooms: List<BattleApi.Room>,
     onBackToLibrary: () -> Unit,
-    onJoinTable: (BattleApi.Room?) -> Unit
+    onJoinTable: (BattleApi.Room?, tableNo: Int) -> Unit
 ) {
-    // 只显示当前游戏的房间，按创建时间排序，映射到 10 张桌子
+    // 当前游戏的房间，按创建时间排序（旧桌号兼容填充用）
     val gameRooms = remember(rooms, game.id) {
         rooms.filter { it.gameId == game.id }
             .sortedBy { it.createdAt }
+    }
+    // ★★ v4.5 桌号 → 房间映射：有桌号的房间固定在自己的桌上；
+    //   无桌号（旧服务器）/ 桌号冲突的房间按创建顺序填空桌。
+    val tableMap = remember(gameRooms) {
+        val placed = HashMap<Int, BattleApi.Room>()
+        val unplaced = ArrayList<BattleApi.Room>()
+        for (r in gameRooms) {
+            if (r.table in 1..TABLE_COUNT && r.table !in placed) {
+                placed[r.table] = r
+            } else {
+                unplaced.add(r)
+            }
+        }
+        for (t in 1..TABLE_COUNT) {
+            if (unplaced.isEmpty()) break
+            if (t !in placed) {
+                placed[t] = unplaced.removeAt(0)
+            }
+        }
+        placed
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -711,14 +739,16 @@ private fun ArcadeHallGrid(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             itemsIndexed((0 until TABLE_COUNT).toList(), key = { _, i -> i }) { index, _ ->
-                val room = gameRooms.getOrNull(index)
+                val tableNo = index + 1
+                val room = tableMap[tableNo]
                 ArcadeTableCard(
-                    tableNo = index + 1,
+                    tableNo = tableNo,
                     game = game,
                     room = room,
                     accent = CabinetPalette[index % CabinetPalette.size],
-                    // ★★ v4.4：点击已开的桌子弹座位选择（满员在对话框里仅提供观战）
-                    onClick = { onJoinTable(room) }
+                    // ★★ v4.4：点击已开的桌子弹座位选择（满员在对话框里仅提供观战）；
+                    //   ★★ v4.5 空桌带上桌号 —— 在这张桌创建房间
+                    onClick = { onJoinTable(room, tableNo) }
                 )
             }
         }
@@ -918,6 +948,7 @@ private fun SeatBadge(
 @Composable
 private fun JoinSeatDialog(
     room: BattleApi.Room,
+    tableNo: Int,
     onDismiss: () -> Unit,
     onPick: (spectate: Boolean, wantSlot: Int) -> Unit
 ) {
@@ -936,7 +967,7 @@ private fun JoinSeatDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("加入 · 桌 ${room.id}", color = PrimaryText, fontWeight = FontWeight.ExtraBold) },
+        title = { Text("加入 · 桌 $tableNo", color = PrimaryText, fontWeight = FontWeight.ExtraBold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(

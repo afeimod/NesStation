@@ -32,7 +32,8 @@ class BattleApi(private val ctx: Context) {
     /** 房间信息
      *  ★ v4.3：players/slots —— 1P 可先单机开玩（房间保持可加入），
      *  2P/3P/4P 中途接入（存档同步）；满员 = 4 人。
-     *  ★★ v4.4：spectators —— 观战人数（不占座位；满员房间仍可观战）。 */
+     *  ★★ v4.4：spectators —— 观战人数（不占座位；满员房间仍可观战）。
+     *  ★★ v4.5：table —— 桌号（开哪桌就是哪桌；0 = 旧服务器未绑定桌号）。 */
     data class Room(
         val id: String,
         val gameId: String,
@@ -43,7 +44,8 @@ class BattleApi(private val ctx: Context) {
         val createdAt: Long,
         val players: Int = 0,
         val slots: List<Int> = emptyList(),
-        val spectators: Int = 0
+        val spectators: Int = 0,
+        val table: Int = 0
     )
 
     /** 登录/注册结果 */
@@ -217,7 +219,8 @@ class BattleApi(private val ctx: Context) {
                     createdAt = r.optLong("createdAt", 0),
                     players = r.optInt("players", 0),
                     slots = parseSlots(r),
-                    spectators = r.optInt("spectators", 0)
+                    spectators = r.optInt("spectators", 0),
+                    table = r.optInt("table", 0)
                 )
             }
         } finally {
@@ -225,9 +228,10 @@ class BattleApi(private val ctx: Context) {
         }
     }
 
-    /** 创建房间，返回 (房间, 服务器公布的 TCP 中继地址) */
-    fun createRoom(gameId: String, token: String): Pair<Room, String> {
-        val body = JSONObject().put("gameId", gameId)
+    /** 创建房间，返回 (房间, 服务器公布的 TCP 中继地址)
+     *  ★★ v4.5：table = 点开的桌号（开哪桌就是哪桌；0 = 不指定）。 */
+    fun createRoom(gameId: String, token: String, table: Int = 0): Pair<Room, String> {
+        val body = JSONObject().put("gameId", gameId).put("table", table)
         val conn = open("POST", "/api/rooms", body, token)
         try {
             val json = readJSON(conn)
@@ -271,7 +275,8 @@ class BattleApi(private val ctx: Context) {
         createdAt = o.optLong("createdAt", 0),
         players = o.optInt("players", 0),
         slots = parseSlots(o),
-        spectators = o.optInt("spectators", 0)
+        spectators = o.optInt("spectators", 0),
+        table = o.optInt("table", 0)
     )
 
     /** ★ v4.3：解析成员槽位列表 [1,2,4]（1P=1 … 4P=4）。 */

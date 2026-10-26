@@ -39,6 +39,12 @@ import kotlin.concurrent.thread
  *   - 多人等待 → 全员 ready 后同时广播 start；
  *   - 对局中有人 ready → pause + 存档同步 + resume（后加入接入）。
  *
+ * ★★ v4.5 服务器侧存档同步（联机平台模式）：
+ *   - 房主周期 sendStateUpload 快照 → 服务器缓存（开局 1s 首份，之后每 15s 一份）；
+ *   - 加入者从服务器拿档（房主在 → 新鲜档零回退；房主不在 → 服务器缓存档）；
+ *   - 同步全程看门狗：房主 sendStateFail / 超时 / 掉线 → 服务器按缓存档收尾，
+ *     无档可用时接入者收 error 劝退 —— 绝不卡在“同步中”。
+ *
  * ★★ v4.4：
  *   - hello 可带 spectate=true（观战加入：不占 1P-4P 槽位、只收不发）；
  *   - hello 可带 want=2/3/4（用户在大厅选的座位，空闲则满足）；
@@ -337,6 +343,28 @@ class BattleNetplay(
     /** ★★ v4.3 后加入：新玩家已装载存档，等服务器广播 resume。 */
     fun sendStateOk() {
         sendLine(JSONObject().put("type", "state_ok").toString())
+    }
+
+    /** ★★ v4.5 服务器侧存档：房主周期上报快照（服务器缓存，供 2P/3P/4P/观战
+     *  加入时直接从服务器拿档同步 —— 联机平台模式）。字段语义与 sendState 一致。 */
+    fun sendStateUpload(frame: Long, dataBase64: String, hist: Map<Int, List<Int>>) {
+        val histJson = JSONObject()
+        for ((slot, pads) in hist) {
+            histJson.put(slot.toString(), pads)
+        }
+        sendLine(JSONObject()
+            .put("type", "state_upload")
+            .put("frame", frame)
+            .put("data", dataBase64)
+            .put("hist", histJson)
+            .put("histEnd", frame)
+            .toString())
+    }
+
+    /** ★★ v4.5：房主出档失败时主动上报 —— 服务器立即收尾同步（缓存档恢复全员 /
+     *  接入者劝退），不等看门狗，绝不让房间卡在“同步中”。 */
+    fun sendStateFail() {
+        sendLine(JSONObject().put("type", "state_fail").toString())
     }
 
     /** 通知服务器：我已就绪（引擎已加载完、帧循环就位，等 start/resume）。带建议 inputDelay（帧）。 */

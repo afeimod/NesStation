@@ -531,3 +531,274 @@ func TestV44DelayModes(t *testing.T) {
                 t.Fatalf("legacy mode finalDelay()=%d, want 4", d)
         }
 }
+
+// ===========================================================================
+// ★★ v4.5 测试：桌号固定 + 服务器侧存档同步（看门狗 / 缓存接入 / state_fail）
+// ===========================================================================
+
+// createRoomAtTable 带桌号创建房间，返回 (状态码, 房间 ID, 桌号)。
+func (e *v44Env) createRoomAtTable(t *testing.T, token, gameId string, table int) (int, string, int) {
+        t.Helper()
+        body := fmt.Sprintf(`{"gameId":%q,"table":%d}`, gameId, table)
+        req, _ := http.NewRequest("POST", e.srv.URL+"/api/rooms", strings.NewReader(body))
+        req.Header.Set("Authorization", "Bearer "+token)
+        req.Header.Set("Content-Type", "application/json")
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+                t.Fatal(err)
+        }
+        defer resp.Body.Close()
+        var out struct {
+                Room struct {
+                        ID    string `json:"id"`
+                        Table int    `json:"table"`
+                } `json:"room"`
+        }
+        _ = json.NewDecoder(resp.Body).Decode(&out)
+        return resp.StatusCode, out.Room.ID, out.Room.Table
+}
+
+// TestV45TableIdentity 桌号固定：开哪桌就是哪桌；同桌唯一；跨游戏不冲突；僵尸桌让位。
+func TestV45TableIdentity(t *testing.T) {
+        env := newEnv(t, 0)
+        tokA, _ := env.register(t, "tableA")
+        tokB, _ := env.register(t, "tableB")
+        // 第二个游戏（跨游戏同桌号不冲突）
+        env.cfg.store(&Config{
+                HTTPAddr: "127.0.0.1:0", TCPAddr: "127.0.0.1:0", JWTSecret: "test-secret",
+                DataDir: env.cfg.get().DataDir, InputDelay: 0, MaxRooms: 10,
+                Games: []Game{
+                        {ID: "kof97", Title: "拳皇97", Platform: "arcade", ROMURL: "http://x/k.zip"},
+                        {ID: "sfa3", Title: "街霸Zero3", Platform: "arcade", ROMURL: "http://x/s.zip"},
+                },
+        })
+
+        // 1. 开 2 桌 → 房间带桌号 2
+        code, room2, table := env.createRoomAtTable(t, tokA, "kof97", 2)
+        if code != 200 || room2 == "" || table != 2 {
+                t.Fatalf("create table2: code=%d room=%s table=%d", code, room2, table)
+        }
+        // 2. 再开 3 桌 → 桌号 3
+        code, room3, table := env.createRoomAtTable(t, tokA, "kof97", 3)
+        if code != 200 || room3 == "" || table != 3 {
+                t.Fatalf("create table3: code=%d room=%s table=%d", code, room3, table)
+        }
+        // 3. 同游戏再开 2 桌 → 409（该桌已开局）
+        code, _, _ = env.createRoomAtTable(t, tokB, "kof97", 2)
+        if code != http.StatusConflict {
+                t.Fatalf("same game same table should 409, got %d", code)
+        }
+        // 4. 不同游戏开 2 桌 → OK（桌号按游戏隔离）
+        code, roomS2, table := env.createRoomAtTable(t, tokB, "sfa3", 2)
+        if code != 200 || table != 2 {
+                t.Fatalf("other game same table should be ok, got %d", code)
+        }
+        // 5. 房间列表带桌号
+        lr, err := http.Get(env.srv.URL + "/api/rooms")
+        if err != nil {
+                t.Fatal(err)
+        }
+        defer lr.Body.Close()
+        var list struct {
+                Rooms []struct {
+                        ID    string `json:"id"`
+                        Table int    `json:"table"`
+                } `json:"rooms"`
+        }
+        _ = json.NewDecoder(lr.Body).Decode(&list)
+        found2, found3 := false, false
+        for _, r := range list.Rooms {
+                if r.ID == room2 && r.Table == 2 {
+                        found2 = true
+                }
+                if r.ID == room3 && r.Table == 3 {
+                        found3 = true
+                }
+        }
+        if !found2 || !found3 {
+                t.Fatalf("room list tables: room2@2=%v room3@3=%v", found2, found3)
+        }
+        _ = roomS2
+
+        // 6. 僵尸桌让位：把 3 桌房间改成 2 分钟前创建（一直无人连）→ 同桌重开成功
+        env.hub.mu.Lock()
+        if rm := env.hub.rooms[room3]; rm != nil {
+                rm.CreatedAt = time.Now().Add(-3 * time.Minute)
+        }
+        env.hub.mu.Unlock()
+        code, room3b, table := env.createRoomAtTable(t, tokB, "kof97", 3)
+        if code != 200 || room3b == "" || table != 3 || room3b == room3 {
+                t.Fatalf("stale table takeover failed: code=%d room=%s table=%d", code, room3b, table)
+        }
+}
+
+// playSolo 房主单开到 playing（B 路径）。
+func playSolo(t *testing.T, addr, token, roomID string) *testClient {
+        t.Helper()
+        host := dialRoom(t, addr, token, roomID, false, 0)
+        host.name = "host"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2})
+        host.wait("start", func(m relayMsg) bool { return m.Type == "start" })
+        return host
+}
+
+// TestV45SyncWatchdog 看门狗：房主死活不出档 → 超时后接入者被劝退、原玩家裸恢复，
+// 绝不卡在"同步中"。
+func TestV45SyncWatchdog(t *testing.T) {
+        env := newEnv(t, 0)
+        env.hub.watchdogMs = 400 // 测试注入短看门狗
+        tokH, _ := env.register(t, "wdHost")
+        tokJ, _ := env.register(t, "wdJoiner")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        host := playSolo(t, addr, tokH, roomID)
+
+        // 接入者 ready → 触发同步（pause + state_req），但房主故意不应答
+        joiner := dialRoom(t, addr, tokJ, roomID, false, 0)
+        joiner.name = "wdJoiner"
+        joiner.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        joiner.send(map[string]any{"type": "ready", "pad": 2})
+        host.wait("pause", func(m relayMsg) bool { return m.Type == "pause" })
+        host.wait("state_req", func(m relayMsg) bool { return m.Type == "state_req" })
+
+        // 看门狗到期：接入者收 error（连接被请出），原玩家收无档 resume
+        em := joiner.wait("watchdog abort error", func(m relayMsg) bool { return m.Type == "error" })
+        if !strings.Contains(em.Msg, "同步失败") {
+                t.Fatalf("joiner error = %+v", em)
+        }
+        // 接入者被请出（房主先收 peer_left，再收 bare resume）
+        host.wait("joiner left", func(m relayMsg) bool { return m.Type == "peer_left" && m.Msg == "wdJoiner" })
+        rm := host.wait("bare resume", func(m relayMsg) bool { return m.Type == "resume" })
+        if rm.Data != "" {
+                t.Fatalf("resume should have no data (no cache), got %+v", rm)
+        }
+        // 房间回到 playing，可继续接受输入
+        host.send(inputMsg(900, 0x11, 1))
+}
+
+// TestV45StateFailWithCache state_fail + 服务器缓存档：房主出档失败但服务器有
+// 近期上传的快照 → 全员（含接入者）按缓存档恢复 —— 联机平台式服务器同步。
+func TestV45StateFailWithCache(t *testing.T) {
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "cfHost")
+        tokJ, _ := env.register(t, "cfJoiner")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        host := playSolo(t, addr, tokH, roomID)
+
+        // ★ 房主周期快照上传（state_upload）→ 服务器缓存
+        host.send(map[string]any{
+                "type": "state_upload", "frame": 1200, "data": "Y2FjaGVkMTIz",
+                "hist": map[string][]int{"1": {1, 1}}, "histEnd": 1200,
+        })
+        time.Sleep(100 * time.Millisecond) // 等服务器落地缓存
+
+        // 接入者 ready → 同步开始；房主回 state_fail（出档失败）
+        joiner := dialRoom(t, addr, tokJ, roomID, false, 0)
+        joiner.name = "cfJoiner"
+        joiner.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        joiner.send(map[string]any{"type": "ready", "pad": 2})
+        host.wait("state_req", func(m relayMsg) bool { return m.Type == "state_req" })
+        host.send(map[string]any{"type": "state_fail"})
+
+        // 全员按缓存档恢复（含接入者 —— 随 resume 档一起接入）
+        for _, c := range []*testClient{host, joiner} {
+                rm := c.wait("cached resume", func(m relayMsg) bool { return m.Type == "resume" })
+                if rm.Frame != 1200 || rm.Data != "Y2FjaGVkMTIz" {
+                        t.Fatalf("[%s] resume = %+v (want cached frame 1200)", c.name, rm)
+                }
+        }
+}
+
+// TestV45OwnerlessCachedJoin 房主掉线后接入：服务器缓存档直接同步
+//（2P/3P/4P 加入时从服务器拿档 —— 不依赖房主在场上出档）。
+func TestV45OwnerlessCachedJoin(t *testing.T) {
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "olHost")
+        tokP2, _ := env.register(t, "olP2")
+        tokJ, _ := env.register(t, "olJoiner")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        // 房主 + 2P 同场开局（2 人全员 ready → start）
+        host := dialRoom(t, addr, tokH, roomID, false, 0)
+        host.name = "olHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2 := dialRoom(t, addr, tokP2, roomID, false, 0)
+        p2.name = "olP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2})
+        p2.send(map[string]any{"type": "ready", "pad": 2})
+        for _, c := range []*testClient{host, p2} {
+                c.wait("start", func(m relayMsg) bool { return m.Type == "start" })
+        }
+
+        // 房主上传快照后掉线（2P 还在 —— 房间继续）
+        host.send(map[string]any{
+                "type": "state_upload", "frame": 800, "data": "b3duZXJsZXNz",
+                "hist": map[string][]int{"1": {2, 2}}, "histEnd": 800,
+        })
+        time.Sleep(100 * time.Millisecond)
+        _ = host.conn.Close()
+        p2.wait("host left", func(m relayMsg) bool { return m.Type == "peer_left" && m.Msg == "olHost" })
+
+        // 接入者不会被拒（服务器有新鲜缓存档）
+        joiner := dialRoom(t, addr, tokJ, roomID, false, 0)
+        joiner.name = "olJoiner"
+        joiner.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        joiner.send(map[string]any{"type": "ready", "pad": 2})
+
+        // 服务器直接用缓存档编排：pause → state(缓存) → state_ok → resume(带档)
+        for _, c := range []*testClient{p2, joiner} {
+                c.wait("pause", func(m relayMsg) bool { return m.Type == "pause" })
+        }
+        sm := joiner.wait("cached state", func(m relayMsg) bool { return m.Type == "state" })
+        if sm.Frame != 800 || sm.Data != "b3duZXJsZXNz" {
+                t.Fatalf("state = %+v", sm)
+        }
+        joiner.send(map[string]any{"type": "state_ok"})
+        for _, c := range []*testClient{p2, joiner} {
+                rm := c.wait("resume", func(m relayMsg) bool { return m.Type == "resume" })
+                if rm.Frame != 800 || rm.Data != "b3duZXJsZXNz" {
+                        t.Fatalf("[%s] resume = %+v", c.name, rm)
+                }
+        }
+}
+
+// TestV45OwnerlessNoCacheReject 房主掉线且无缓存档：明确拒绝接入（不再发无档 resume
+// 让接入者掉进"各玩各的"鬼影对局）。
+func TestV45OwnerlessNoCacheReject(t *testing.T) {
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "ncHost")
+        tokP2, _ := env.register(t, "ncP2")
+        tokJ, _ := env.register(t, "ncJoiner")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        host := dialRoom(t, addr, tokH, roomID, false, 0)
+        host.name = "ncHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2 := dialRoom(t, addr, tokP2, roomID, false, 0)
+        p2.name = "ncP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2})
+        p2.send(map[string]any{"type": "ready", "pad": 2})
+        for _, c := range []*testClient{host, p2} {
+                c.wait("start", func(m relayMsg) bool { return m.Type == "start" })
+        }
+
+        _ = host.conn.Close()
+        p2.wait("host left", func(m relayMsg) bool { return m.Type == "peer_left" && m.Msg == "ncHost" })
+
+        joiner := dialRoom(t, addr, tokJ, roomID, false, 0)
+        joiner.name = "ncJoiner"
+        em := joiner.wait("reject at hello", func(m relayMsg) bool { return m.Type == "error" })
+        if !strings.Contains(em.Msg, "房主已离开") {
+                t.Fatalf("expected ownerless reject, got %+v", em)
+        }
+        // 2P 不受影响（没有 pause/resume 打扰）
+        p2.expectNone("no pause for surviving player", func(m relayMsg) bool { return m.Type == "pause" })
+}
