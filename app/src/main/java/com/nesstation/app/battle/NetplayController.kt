@@ -81,6 +81,9 @@ class NetplayController(
         fun supportsRollback(): Boolean = false
         /** ★★ v4.4 回滚：丢弃待播音频样本（回滚重放前调用，防重复音效）。 */
         fun discardPendingAudio() {}
+        /** ★★ v4.5.1 全员重开：核心复位到开机状态（引擎线程内调用；
+         *  false = 引擎不支持复位 → 重开不可用，控制器干净退出）。 */
+        fun resetToBoot(): Boolean = false
     }
 
     /**
@@ -144,10 +147,14 @@ class NetplayController(
         private const val RTT_SAMPLES = 3
         private const val RTT_INTERVAL_MS = 60L
         private const val RTT_TIMEOUT_MS = 800L
-        /** ★★ v4.5 服务器侧存档：房主快照上传节奏 —— 第 60 帧（开局 1s）传首份，
-         *  之后每 900 帧（15s @60fps）一份 —— 服务器始终有近期档可供 2P/3P/4P/观战接入 */
+        /** ★★ v4.5 服务器侧存档：房主快照上传节奏 —— 按档大小分级（小档传得勤，
+         *  回退窗口短；大档适当拉长间隔省流量）。首份在探测时（引擎就绪）就传。 */
+        private const val UPLOAD_GAP_SMALL = 360L   // ≤128KB → 每 6s（帧）
+        private const val UPLOAD_GAP_MEDIUM = 600L  // ≤512KB → 每 10s
+        private const val UPLOAD_GAP_LARGE = 900L   // 更大 → 每 15s
+        private const val UPLOAD_SIZE_SMALL = 128 * 1024
+        private const val UPLOAD_SIZE_MEDIUM = 512 * 1024
         private const val UPLOAD_FIRST_FRAME = 60L
-        private const val UPLOAD_EVERY_FRAMES = 900L
     }
 
     private fun dispatch(block: (UiListener) -> Unit) {
@@ -214,6 +221,18 @@ class NetplayController(
     private val uploadInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     /** 存档文件读写串行化（引擎线程写 / 上传线程读）。 */
     private val uploadLock = Any()
+    /** 下次上传的帧间隔（按上一份档大小自适应；探测/上传线程写、引擎线程读）。 */
+    @Volatile private var uploadGapFrames = UPLOAD_GAP_SMALL
+
+    // === ★★ v4.5.1 出档能力 + 全员重开 ===
+    /** 本端能否出存档快照（引擎就绪时探测；0 未知 / 1 能 / -1 不能）。
+     *  ★ 部分核心/驱动不支持快照（FBNeo 的 PGM/改版等）且 JNI 永远返回 true
+     *   —— 只能靠“存档文件非空”判定。探测失败 → 快照同步/回滚都不可用，
+     *   服务器会对这类房间改走“全员重开”（新人加入 = 新的一局）。 */
+    @Volatile private var stateCap = 0
+    /** 待应用的全员重开请求（网络线程置位；引擎线程在 beforeFrame 串行应用
+     *  —— 与核心复位（retro_reset）无并发）。 */
+    @Volatile private var restartPending = false
 
     // === ★★ v4.4 回滚网络码（rollback）状态 ===
     /** 回滚模式启用（引擎支持快速存档 && 非观战；notifyEngineReady 时评估）。 */
@@ -346,6 +365,43 @@ class NetplayController(
                     resumeInternal(null, inputDelay, players)
                 }
             }, "battle-resume").apply { isDaemon = true }.start()
+        }
+
+        override fun onRestart(inputDelay: Int, players: List<Int>) {
+            // ★★ v4.5.1 全员重开（本作核心不支持画面快照同步 —— 服务器编排）：
+            //   本端复位控制器簿记 + 置 restartPending（引擎线程下一个 beforeFrame
+            //   串行做核心复位 retro_reset，无并发），随后回到启动门等全员重新
+            //   ready → 服务器广播 start → 全员从帧 0（开机状态）同步开跑。
+            dispatch { it.onSyncStatus("新玩家接入：本作不支持画面快照，全员重新开局…") }
+            android.util.Log.i("NetplayController", "restart: 全员重开（players=$players delay=$inputDelay）")
+            val wasLoaded = engineLoaded
+            restartPending = true
+            // 先开门让引擎线程能走到复位点（同步暂停门/启动门都放行到重启检查）
+            synchronized(syncGate) { syncPaused = false; syncGate.notifyAll() }
+            synchronized(startGate) { started = false; startGate.notifyAll() }
+            readySent = false
+            engineLoaded = false
+            lastUploadFrame = -1L
+            uploadGapFrames = UPLOAD_GAP_SMALL
+            parkedLocalFrame = -1L
+            frameOffset = 0L
+            pendingSlots.clear()
+            if (players.isNotEmpty()) {
+                activeSlots.clear()
+                activeSlots.addAll(players)
+            }
+            if (wasLoaded) {
+                // 已加载完的端：等引擎线程应用完复位后重新探测能力 + 发 ready
+                Thread({
+                    var waitMs = 0L
+                    while (restartPending && waitMs < 5000) {
+                        Thread.sleep(10); waitMs += 10
+                    }
+                    notifyEngineReady()
+                }, "battle-restart-ready").apply { isDaemon = true }.start()
+            }
+            // 引擎还在加载的端：复位对它本来就是开机态，等自然加载完成 →
+            // EmulatorScreen 会调 notifyEngineReady（engineLoaded 已复位）
         }
 
         override fun onPeerReady(username: String) {
@@ -490,6 +546,9 @@ class NetplayController(
                 if (bytes != null && bytes.isNotEmpty()) {
                     val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                     n.sendStateUpload(stateFrame, b64, buildHist(stateFrame))
+                    uploadGapFrames = gapForSize(bytes.size.toLong())
+                    android.util.Log.i("NetplayController",
+                        "快照已上传（帧 $stateFrame，${bytes.size / 1024}KB）")
                 }
             } catch (t: Throwable) {
                 android.util.Log.w("NetplayController", "upload send: ${t.message}")
@@ -557,6 +616,40 @@ class NetplayController(
         }
     }
 
+    /**
+     * ★★ v4.5.1 全员重开：引擎线程串行应用（beforeFrame 顶部 —— 与核心无并发）。
+     * 核心复位到开机态（StateIo.resetToBoot：FBNeo = retro_reset + 重挂 frameHook
+     * 顺带清零引擎帧计数），控制器簿记全部归零；复位后引擎停回启动门，
+     * 等全员重新 ready → 服务器广播 start → 从帧 0 同步开跑。
+     */
+    private fun applyRestartOnEngineThread() {
+        restartPending = false
+        val io = stateIo
+        if (io != null) {
+            val ok = try { io.resetToBoot() } catch (t: Throwable) {
+                android.util.Log.w("NetplayController", "resetToBoot failed: ${t.message}"); false
+            }
+            if (!ok) {
+                // 引擎不支持复位（非 FBNeo 等）：干净退出，引导重进
+                dispatch { it.onNetplayLost("该核心不支持中途加入（无法重开），请全员退出后重新开局") }
+                try { net?.close() } catch (_: Throwable) {}
+                return
+            }
+        }
+        synchronized(startGate) { started = false }
+        parkedLocalFrame = -1L
+        frameOffset = 0L
+        for (s in 1..4) padsHistory[s].clear()
+        inputLog.clear()
+        pendingSlots.clear()
+        desyncCount = 0
+        rbRequestReset(-1L)   // 回滚簿记全部作废（rbApplyReset(-1)：清 inputLog + 检查点 + 置 rbLastExecuted=-1）
+        rbCount = 0L
+        rbMaxDepth = 0
+        dispatch { it.onSyncStatus("已重开：等待全员就绪同步开跑…") }
+        android.util.Log.i("NetplayController", "restart applied on engine thread")
+    }
+
     /** ★ v4.3 注入存档通道（EmulatorScreen 持有引擎，进入联机界面时调用）。 */
     fun setStateIo(io: StateIo?) { stateIo = io }
 
@@ -571,10 +664,16 @@ class NetplayController(
     }
 
     /**
-     * 引擎加载完毕通知（由 EmulatorScreen 在 ROM 加载完成、模拟循环就位后调用）。
-     * 触发：RTT 测量 → 建议 inputDelay → 发 ready。此后按服务器编排走三种开局。
-     * ★★ v4.4：StateIo 已注入（supportsRollback 可用）→ 评估回滚模式；
-     *   探测提速（3 样本 / 60ms 间隔 / 800ms 超时）。
+     * 引擎加载完毕通知（由 EmulatorScreen 在 ROM 加载完成、模拟循环就位后调用；
+     * ★★ v4.5.1 全员重开后也会再次调用）。触发：出档能力探测 → 首份快照上传
+     * （房主）→ RTT 测量 → 建议 inputDelay → 发 ready（带 stateCap）。
+     *
+     * ★★ v4.5.1 出档能力探测：此刻引擎线程正停在启动门（beforeFrame 阻塞）——
+     *   天然的安全窗口，跨线程出一份档验证能否快照（部分核心/驱动不支持，
+     *   且 JNI 的 saveState 永远返回 true，只能靠“文件存在且非空”判定）。
+     *   探测结果：① 随 ready 上报服务器（stateCap —— 服务器据此决定快照同步
+     *   还是全员重开）；② 门控回滚模式（出不了档就没法回滚）；③ 成功则这份
+     *   探测档直接当首份快照上传（服务器立刻有档可给后来者）。
      */
     fun notifyEngineReady() {
         if (engineLoaded) return
@@ -582,12 +681,45 @@ class NetplayController(
         val n = net ?: return
         if (readySent) return
         readySent = true
-        // ★★ v4.4：回滚模式评估 —— 引擎支持快速存档 + 直接跑帧，且非观战。
-        //   观战者始终走延迟等待模式（手感不重要，稳定第一）。
-        rollbackMode = !spectate && (stateIo?.supportsRollback() == true)
-        if (rollbackMode) {
-            android.util.Log.i("NetplayController", "rollback netcode ENABLED (platform=$platform)")
+
+        // ★★ v4.5.1 出档能力探测（引擎停在启动门的安全窗口内）
+        var capOk = false
+        var probeBytes: ByteArray? = null
+        val io = stateIo
+        if (io != null && !isSpectator) {
+            try {
+                val file = File(io.stateDir(), "battle_probe.state")
+                val saved = synchronized(uploadLock) { io.saveStateTo(file) }
+                probeBytes = if (saved) {
+                    synchronized(uploadLock) { try { file.readBytes() } catch (_: Throwable) { null } }
+                } else null
+                capOk = probeBytes != null && probeBytes!!.isNotEmpty()
+            } catch (t: Throwable) {
+                android.util.Log.w("NetplayController", "state capability probe: ${t.message}")
+                capOk = false
+            }
         }
+        stateCap = if (isSpectator) 0 else if (capOk) 1 else -1
+        // ★★ v4.4 回滚模式评估：必须真能出档（探测通过）才启用 —— 否则检查点
+        //   全是空档，回滚形同虚设还白费存档开销
+        rollbackMode = !spectate && capOk
+        android.util.Log.i("NetplayController",
+            "engine ready: stateCap=$stateCap rollback=$rollbackMode (platform=$platform)")
+
+        // ★★ v4.5.1 首份快照：房主且能出档 → 探测档（开机态，帧 0）直接上传，
+        //   服务器即刻有档 —— 加入者第一时间就能走“服务器存档同步”
+        if (capOk && role == "host" && !isSpectator && probeBytes != null) {
+            try {
+                val b64 = android.util.Base64.encodeToString(probeBytes, android.util.Base64.NO_WRAP)
+                n.sendStateUpload(0L, b64, emptyMap())
+                lastUploadFrame = 0L
+                uploadGapFrames = gapForSize(probeBytes.size.toLong())
+                android.util.Log.i("NetplayController", "首份快照已上传（${probeBytes.size / 1024}KB，开机态）")
+            } catch (t: Throwable) {
+                android.util.Log.w("NetplayController", "first upload: ${t.message}")
+            }
+        }
+
         Thread({
             var minRtt: Long? = null
             for (i in 0 until RTT_SAMPLES) {
@@ -609,8 +741,7 @@ class NetplayController(
             }
             // ★★ v4.4 建议公式（中继拓扑修正）：
             //   回滚模式 → 2（RTT 由预测+回滚吸收，各端一致由服务器裁决保证）；
-            //   延迟模式 → ceil(RTT/16.67)+1（全 RTT + 1 帧裕量 —— 旧公式
-            //   ceil(RTT/2/16.7)+2 只盖半 RTT，不够的部分全靠卡顿硬扛）；
+            //   延迟模式 → ceil(RTT/16.67)+1（全 RTT + 1 帧裕量）；
             //   观战 → 4（不参与手感，仅占位）。
             val suggested = when {
                 rollbackMode -> 2
@@ -622,9 +753,15 @@ class NetplayController(
             }
             android.util.Log.i("NetplayController",
                 "RTT min=${minRtt}ms rollback=$rollbackMode → suggestedDelay=${suggested}f")
-            try { n.sendReady(suggested) } catch (_: Throwable) {}
+            try { n.sendReady(suggested, stateCap) } catch (_: Throwable) {}
         }, "battle-rtt-probe").apply { isDaemon = true }.start()
     }
+
+    /** 按档大小选下次上传间隔（小档传得勤 —— 回退窗口短）。 */
+    private fun gapForSize(bytes: Long): Long =
+        if (bytes <= UPLOAD_SIZE_SMALL) UPLOAD_GAP_SMALL
+        else if (bytes <= UPLOAD_SIZE_MEDIUM) UPLOAD_GAP_MEDIUM
+        else UPLOAD_GAP_LARGE
 
     /** 本地玩家摇杆输入（bit 布局与平台 pad 一致，由 OnScreenController / 物理手柄推送）。 */
     fun setLocalPad(bits: Int) {
@@ -646,10 +783,15 @@ class NetplayController(
      * 5. 延迟模式（原逻辑）：阻塞等所有活跃远端槽位的 execFrame 输入【绝不兜底】。
      */
     private fun beforeFrameImpl(frame: Long): IntArray? {
-        // 1. 启动门
+        // 0. ★★ v4.5.1 全员重开（引擎线程串行应用 —— 与核心复位 retro_reset
+        //    无并发；复位后走启动门等全员重新 ready → start）
+        if (restartPending) {
+            applyRestartOnEngineThread()
+        }
+        // 1. 启动门（★ 重开请求 = 临时放行去应用复位，不死等）
         if (!started) {
             synchronized(startGate) {
-                while (!started) {
+                while (!started && !restartPending) {
                     parkedLocalFrame = frame
                     val now = System.currentTimeMillis()
                     if (now - lastWaitNoticeMs > 1500) {
@@ -663,7 +805,7 @@ class NetplayController(
         // 2. ★ v4.3 同步暂停门（后加入同步：房主/运行成员挂起在此）
         if (syncPaused) {
             synchronized(syncGate) {
-                while (syncPaused) {
+                while (syncPaused && !restartPending) {
                     parkedLocalFrame = frame
                     val now = System.currentTimeMillis()
                     if (now - lastSyncNoticeMs > 1500) {
@@ -673,6 +815,10 @@ class NetplayController(
                     try { syncGate.wait(500) } catch (_: InterruptedException) { return IntArray(4) }
                 }
             }
+        }
+        // 门放行后若又有重开请求 → 本次帧跳过（下一迭代在顶部应用复位）
+        if (restartPending) {
+            return IntArray(4)
         }
 
         val netFrame = frame + frameOffset
@@ -772,6 +918,8 @@ class NetplayController(
         var lastNotice = 0L
         while (true) {
             padsHistory[slot][targetFrame]?.let { return it }
+            // ★★ v4.5.1 全员重开请求：立即让路（引擎线程下一迭代应用复位）
+            if (restartPending) return null
             // 槽位已离开 / 掉线：不再等待
             if (!activeSlots.contains(slot)) return null
             val n = net
@@ -799,10 +947,10 @@ class NetplayController(
         }
         // ★★ v4.5 服务器侧存档：房主周期上传快照 → 服务器缓存（供 2P/3P/4P/观战
         //   加入时同步 —— “存档同步在服务器”）。引擎线程里出档、后台线程编码发送；
-        //   暂停/同步期间引擎不跑帧，自然不会上传。
-        if (started && !isSpectator && role == "host" && netFrame >= 0) {
+        //   暂停/同步期间引擎不跑帧，自然不会上传。间隔按档大小自适应。
+        if (started && !isSpectator && role == "host" && netFrame >= 0 && stateCap > 0) {
             val due = if (lastUploadFrame < 0L) netFrame >= UPLOAD_FIRST_FRAME
-                      else netFrame - lastUploadFrame >= UPLOAD_EVERY_FRAMES
+                      else netFrame - lastUploadFrame >= uploadGapFrames
             if (due) {
                 lastUploadFrame = netFrame
                 uploadSnapshot(netFrame)

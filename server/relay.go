@@ -19,9 +19,13 @@ const (
         roomWaiting string = "waiting"
         roomReady   string = "ready"
         roomPlaying string = "playing"
-        // ★★ v4.3 后加入（late join）：对局进行中允许新玩家加入。
+        // ★★ v4.5：后加入同步（late join）
         roomSyncing string = "syncing" // 正在为新加入玩家做画面(存档)同步
 )
+
+// ★★ v4.5.1：客户端协议版本（hello.v）。45 = 支持 restart 全员重开
+//（核心不支持快照的游戏：NeoGeo 改版/PGM 等 —— 存档同步不可用时的回退）。
+const clientProtoRestart = 45
 
 // maxRoomPlayers 最大玩家数（1P-4P）。FBNeo/街机支持 4 手柄；
 // 其他 2 手柄核心上 3/4P 的输入被客户端忽略（仍可观战同步画面）。
@@ -193,6 +197,12 @@ type relayMsg struct {
         Want int `json:"want,omitempty"`
         // ★★ v4.4：peer_joined/peer_left 附带 —— true = 观战者（客户端显示“xx 正在观战”）
         Spec bool `json:"spec,omitempty"`
+        // ★★ v4.5.1：hello 客户端协议版本（45 = 支持 restart 全员重开）
+        V int `json:"v,omitempty"`
+        // ★★ v4.5.1：ready 附带 —— 该端能否出存档快照（1 能 / -1 不能 / 0 未知=旧客户端）。
+        //   部分核心/驱动不支持快照（FBNeo 的 PGM/改版等，且 JNI 永远返回 true，
+        //   客户端只能靠“存档文件非空”探测）—— 服务器据此决定：快照同步 or 全员重开。
+        StateCap int `json:"stateCap,omitempty"`
 }
 
 type relayConn struct {
@@ -208,6 +218,10 @@ type relayConn struct {
         spectator bool
         // ★★ v4.5：drop 幂等标记（多路径重复 drop 防重复 peer_left）。
         dropped bool
+        // ★★ v4.5.1：客户端协议版本（hello.v；0 = 旧客户端）
+        v int
+        // ★★ v4.5.1：能否出存档快照（ready.stateCap；0 未知 / 1 能 / -1 不能）。
+        stateCap int
         // 同步启动：该端是否已发过 ready，以及它建议的 inputDelay（帧）。
         ready    bool
         readyPad int
@@ -376,7 +390,8 @@ func (h *relayHub) handleConn(conn net.Conn) {
                         return
                 }
                 if (room.Status == roomPlaying || room.Status == roomSyncing) &&
-                        ownerConn(room) == nil && room.freshCachedState() == nil {
+                        ownerConn(room) == nil && room.freshCachedState() == nil &&
+                        !h.roomSupportsRestart(room) {
                         h.mu.Unlock()
                         _ = json.NewEncoder(conn).Encode(relayMsg{Type: "error", Msg: "房主已离开且服务器暂无同步画面，无法接入；请稍后再试或另开一桌"})
                         return
@@ -390,6 +405,7 @@ func (h *relayHub) handleConn(conn net.Conn) {
                         user: h.users.byID(claims.Sub),
                         room: room,
                         slot: 0, spectator: true,
+                        v:    hello.V, // ★★ v4.5.1 客户端协议版本（restart 支持判定）
                 }
                 room.specs[claims.Sub] = rc
 
@@ -435,11 +451,13 @@ func (h *relayHub) handleConn(conn net.Conn) {
                 return
         }
 
-        // ★★ v4.5 对局中接入的先决条件：房主在（可即时出档）或服务器有新鲜缓存档。
-        //   旧行为：房主不在时发一份无档 resume，接入者从帧 0 独自开跑 ——
-        //   与原玩家各玩各的（“卡同步/画面错乱”的根源之一）。现在明确拒绝。
+        // ★★ v4.5 对局中接入的先决条件：房主在（可即时出档）或服务器有新鲜缓存档，
+        //   或全员支持重开（v≥45 —— 无档也能全员重开接入）。三者皆无才明确拒绝
+        //   （旧行为：房主不在时发一份无档 resume，接入者从帧 0 独自开跑 ——
+        //   与原玩家各玩各的“卡同步/画面错乱”根源之一）。
         if (room.Status == roomPlaying || room.Status == roomSyncing) &&
-                ownerConn(room) == nil && room.freshCachedState() == nil {
+                ownerConn(room) == nil && room.freshCachedState() == nil &&
+                !h.roomSupportsRestart(room) {
                 h.mu.Unlock()
                 _ = json.NewEncoder(conn).Encode(relayMsg{Type: "error", Msg: "房主已离开且服务器暂无同步画面，无法接入；请稍后再试或另开一桌"})
                 return
@@ -481,6 +499,7 @@ func (h *relayHub) handleConn(conn net.Conn) {
                 user: h.users.byID(claims.Sub),
                 room: room,
                 slot: slot,
+                v:    hello.V, // ★★ v4.5.1 客户端协议版本（restart 支持判定）
         }
         room.conns[claims.Sub] = rc
 
@@ -592,6 +611,10 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         if msg.Pad > rc.readyPad {
                                 rc.readyPad = msg.Pad
                         }
+                        // ★★ v4.5.1：出档能力上报（1 能 / -1 不能；0/缺省 = 旧客户端未知）
+                        if msg.StateCap != 0 {
+                                rc.stateCap = msg.StateCap
+                        }
                         room := rc.room
                         count := room.playerCount()
                         allReady := true
@@ -668,6 +691,8 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         }
                         st := msg
                         room.cacheState(&st)
+                        log.Printf("[存档] 房间 %s：房主快照已缓存（帧 %d，约 %dKB）",
+                                room.ID, st.Frame, len(st.Data)*3/4/1024)
 
                 case "state_fail":
                         // ★★ v4.5 房主出档失败（客户端主动上报）→ 服务器立即收尾，不等看门狗。
@@ -720,15 +745,17 @@ func (h *relayHub) broadcastState(room *Room, exclude *relayConn, st *relayMsg) 
 
 // beginSync 开始一轮后加入同步（★ 在未持锁时调用）。接入者 rc 已 ready、房间在 playing。
 //
-// 服务器主导（存档同步在服务器，联机平台模式）：
-//  1. 首选房主即时出档（零回退）：广播 pause → state_req 房主（引擎暂停后存档）→
-//     state 缓存并转发 → 接入者 state_ok → 全员 resume 带档同帧恢复。
-//  2. 房主不在但服务器有新鲜缓存档（房主周期 state_upload 上来的）：广播 pause →
-//     直接发缓存档 → state_ok → resume。★ 后加入/观战从服务器拿档，
-//     不再依赖加入瞬间房主本地出档。
-//  3. 两者皆无：★ 不广播 pause（不让全员白挂起）—— 接入者收 error 劝退。
+// 服务器主导（存档同步在服务器，联机平台模式；★★ v4.5.1 决策树）：
+//  1. 首选【服务器缓存档】（房主周期 state_upload 上来、引擎线程安全窗口出的档）：
+//     广播 pause → 直接发缓存档 → 接入者 state_ok → 全员 resume 带档同帧恢复
+//    （画面统一回到缓存帧，典型 3-10 秒内 —— 一致性优先）。
+//  2. 无缓存且房主能出档（或旧客户端能力未知）→ state_req 新鲜档（零回退）。
+//  3. 拿不到任何档（核心不支持快照 —— FBNeo 的 PGM/改版驱动等；或房主不在）
+//     → 全员重开 restartSync（v≥45 房间）：全员回开机状态从帧 0 重新同步开跑。
+//  4. 混合旧客户端房间（不能发 restart）→ 接入者劝退，绝不卡死。
 //
-// 全程看门狗（startSyncWatchdog）：超时/房主 state_fail/房主掉线 → abortSync 收尾。
+// 全程看门狗（startSyncWatchdog）：超时/房主 state_fail/房主掉线 → abortSync 收尾
+//（优先缓存档恢复，其次全员重开，最后旧收尾）。
 func (h *relayHub) beginSync(room *Room, rc *relayConn) {
         h.mu.Lock()
         if room.Status == roomSyncing {
@@ -746,14 +773,32 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
         }
         owner := ownerConn(room)
         cached := room.freshCachedState() // hub.mu → lastStateMu 锁序 ✓
-        if owner == nil && cached == nil {
-                // ★ 无档可同步（hello 拦截后缓存过期等边角）：不暂停任何人，
-                //   接入者劝退 —— 绝不广播 pause 让全员卡死
+        // ★★ v4.5.1 接入方式决策（存档同步在服务器 —— 能拿档绝不重开）：
+        //   1. 服务器有新鲜缓存档（房主周期上传）→ 缓存档接入（首选，稳定）；
+        //   2. 房主在且能出档（或旧客户端能力未知）→ state_req 新鲜档（零回退）；
+        //   3. 都不行（核心不支持快照 / 房主不在）→ 全员重开（v≥45 房间）；
+        //   4. 混合旧客户端房间 → 维持旧收尾（接入者劝退，绝不卡死）。
+        mode := ""
+        switch {
+        case cached != nil:
+                mode = "cache"
+        case owner != nil && owner.stateCap >= 0:
+                mode = "fresh"
+        case h.roomSupportsRestart(room):
+                mode = "restart"
+        }
+        if mode == "" {
+                // 无档可用且不能重开：不广播 pause，接入者劝退
                 h.mu.Unlock()
-                log.Printf("[同步] 房间 %s（桌 %d）：%s 接入失败（无房主且无新鲜缓存档）",
+                log.Printf("[同步] 房间 %s（桌 %d）：%s 接入失败（无可用同步画面且不可重开）",
                         room.ID, room.TableNo, rc.user.Username)
                 _ = rc.send(relayMsg{Type: "error", Msg: "暂时无法同步画面（服务器无近期存档），请稍后再试"})
                 h.drop(rc)
+                return
+        }
+        if mode == "restart" {
+                h.mu.Unlock()
+                h.restartSync(room, rc, "无可用同步画面")
                 return
         }
         room.Status = roomSyncing
@@ -765,15 +810,16 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
         gen := room.syncGen
         h.mu.Unlock()
 
-        log.Printf("[同步] 房间 %s（桌 %d）：%s 接入，开始画面同步", room.ID, room.TableNo, rc.user.Username)
+        log.Printf("[同步] 房间 %s（桌 %d）：%s 接入，开始画面同步（%s）",
+                room.ID, room.TableNo, rc.user.Username,
+                map[string]string{"cache": "服务器缓存档", "fresh": "房主即时出档"}[mode])
         // 1) 全员暂停在各自下一帧（引擎线程在 beforeFrame 里挂起；观战者同样暂停）
         h.broadcastExcept(room, nil, relayMsg{Type: "pause"})
-        if owner != nil {
-                // 2a) 房主即时出档（首选：零回退）
+        if mode == "fresh" {
+                // 2) 房主即时出档（零回退）
                 _ = owner.send(relayMsg{Type: "state_req"})
         } else {
-                // 2b) 服务器缓存档直接接入（房主不在）：全员同一份档、同帧恢复
-                log.Printf("[同步] 房间 %s：房主不在，用服务器缓存档（帧 %d）接入", room.ID, cached.Frame)
+                // 2) 服务器缓存档直接接入：全员同一份档、同帧恢复
                 h.broadcastState(room, nil, cached)
         }
         h.startSyncWatchdog(room, gen)
@@ -878,12 +924,14 @@ func (h *relayHub) abortSync(room *Room, reason string) {
         if d > 16 {
                 d = 16
         }
-        players := activeSlots(room)
         cached := room.freshCachedState() // hub.mu → lastStateMu 锁序 ✓
+        canRestart := h.roomSupportsRestart(room) // ★ 持锁内判定（只读 conns/specs）
+        players := activeSlots(room)
         h.mu.Unlock()
 
         log.Printf("[同步] 房间 %s：同步中止（%s，接入者 %d 名）—— %s",
-                room.ID, reason, len(joiners), map[bool]string{true: "按服务器缓存档恢复", false: "原玩家继续、接入者劝退"}[cached != nil])
+                room.ID, reason, len(joiners),
+                map[bool]string{true: "按服务器缓存档恢复", false: "全员重开/原玩家继续"}[cached != nil])
 
         if cached != nil {
                 // 缓存档恢复全员（含接入者 —— 随 resume 档一起接入）
@@ -893,12 +941,82 @@ func (h *relayHub) abortSync(room *Room, reason string) {
                 })
                 return
         }
-        // 无新鲜档：接入者劝退，原玩家裸恢复（先劝退后广播 —— 他们不再收 resume）
+        if canRestart {
+                // ★★ v4.5.1：拿不到档（核心不支持快照等）→ 全员重开（接入者留下一起重开）
+                h.restartSync(room, joiners, reason)
+                return
+        }
+        // 混合旧客户端房间：接入者劝退，原玩家裸恢复
         for _, j := range joiners {
                 _ = j.send(relayMsg{Type: "error", Msg: "同步失败：暂时拿不到房主画面，请稍后重试"})
-                h.drop(j)
         }
+        for _, j := range joiners {
+                h.drop(j) // 先 drop（peer_left 先到），再广播 resume —— 避免把已离开
+                // 接入者的槽位放进 players 让原玩家死等其输入
+        }
+        h.mu.Lock()
+        players = activeSlots(room) // ★ drop 后重算（不含已请出的接入者）
+        h.mu.Unlock()
         h.broadcastExcept(room, nil, relayMsg{Type: "resume", Pad: d, Players: players})
+}
+
+// roomSupportsRestart 全员（玩家+观战者）客户端协议 v≥45（★ 持 hub.mu 时调用）。
+// 旧客户端不认识 restart 消息会一直挂在暂停门 → 混合房间不能发 restart。
+func (h *relayHub) roomSupportsRestart(room *Room) bool {
+        for _, c := range room.conns {
+                if c.v < clientProtoRestart {
+                        return false
+                }
+        }
+        for _, c := range room.specs {
+                if c.v < clientProtoRestart {
+                        return false
+                }
+        }
+        return true
+}
+
+// restartSync 全员重开（★★ v4.5.1）：拿不到任何可用档（核心不支持快照，如
+// FBNeo 的 PGM/改版驱动；或房主不在且无缓存）时 —— 与其劝退接入者，不如
+// 全员回到开机状态、从帧 0 同步重新开跑（街机语义：新人加入 = 新的一局）。
+// 广播 restart 消息：各端引擎复位 + 重新就绪；服务器置回 waiting 等全员
+// re-ready → 走 A 路径（全员就绪 → 同时广播 start）从帧 0 同步开跑。
+// ★ 在未持锁时调用。trigger 可为单个接入者或多接入者列表（仅用于日志）。
+func (h *relayHub) restartSync(room *Room, trigger any, reason string) {
+        h.mu.Lock()
+        room.Status = roomWaiting // 重新走“全员 ready → start”开局流程
+        h.stopSyncTimerLocked(room)
+        room.syncJoiners = map[string]*relayConn{}
+        for _, c := range room.conns {
+                c.ready = false // 强制全员重新就绪（等各自的引擎复位完成）
+        }
+        players := activeSlots(room) // 含接入者（他们已入座）
+        d := h.finalDelay()
+        for _, c := range room.conns {
+                if c.readyPad > d {
+                        d = c.readyPad
+                }
+        }
+        if d > 16 {
+                d = 16
+        }
+        h.mu.Unlock()
+
+        who := ""
+        switch t := trigger.(type) {
+        case *relayConn:
+                who = t.user.Username
+        case []*relayConn:
+                for i, c := range t {
+                        if i > 0 {
+                                who += ","
+                        }
+                        who += c.user.Username
+                }
+        }
+        log.Printf("[重开] 房间 %s（桌 %d）：%s —— %s 触发全员重开（本作不支持画面快照同步）",
+                room.ID, room.TableNo, reason, who)
+        h.broadcastExcept(room, nil, relayMsg{Type: "restart", Pad: d, Players: players})
 }
 
 // drop 断开连接：通知其他成员、清理房间（★★ v4.5 幂等：重复 drop 只生效一次）

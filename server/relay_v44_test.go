@@ -678,12 +678,13 @@ func TestV45SyncWatchdog(t *testing.T) {
         host.send(inputMsg(900, 0x11, 1))
 }
 
-// TestV45StateFailWithCache state_fail + 服务器缓存档：房主出档失败但服务器有
-// 近期上传的快照 → 全员（含接入者）按缓存档恢复 —— 联机平台式服务器同步。
-func TestV45StateFailWithCache(t *testing.T) {
+// TestV45CachedSyncJoin 服务器缓存档接入（v4.5.1 首选路径）：房主周期上传快照 →
+// 加入者 ready → 不再麻烦房主出档，直接：pause → 服务器缓存档 → state_ok →
+// 全员带档同帧恢复 —— “存档同步在服务器”。
+func TestV45CachedSyncJoin(t *testing.T) {
         env := newEnv(t, 0)
-        tokH, _ := env.register(t, "cfHost")
-        tokJ, _ := env.register(t, "cfJoiner")
+        tokH, _ := env.register(t, "csHost")
+        tokJ, _ := env.register(t, "csJoiner")
         addr := env.tcp.Addr().String()
         roomID := env.createRoom(t, tokH)
 
@@ -696,19 +697,24 @@ func TestV45StateFailWithCache(t *testing.T) {
         })
         time.Sleep(100 * time.Millisecond) // 等服务器落地缓存
 
-        // 接入者 ready → 同步开始；房主回 state_fail（出档失败）
+        // 接入者 ready → 缓存档直接同步（无 state_req —— 不依赖房主出档）
         joiner := dialRoom(t, addr, tokJ, roomID, false, 0)
-        joiner.name = "cfJoiner"
+        joiner.name = "csJoiner"
         joiner.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
         joiner.send(map[string]any{"type": "ready", "pad": 2})
-        host.wait("state_req", func(m relayMsg) bool { return m.Type == "state_req" })
-        host.send(map[string]any{"type": "state_fail"})
-
-        // 全员按缓存档恢复（含接入者 —— 随 resume 档一起接入）
         for _, c := range []*testClient{host, joiner} {
-                rm := c.wait("cached resume", func(m relayMsg) bool { return m.Type == "resume" })
+                c.wait("pause", func(m relayMsg) bool { return m.Type == "pause" })
+        }
+        st := joiner.wait("cached state", func(m relayMsg) bool { return m.Type == "state" })
+        if st.Frame != 1200 || st.Data != "Y2FjaGVkMTIz" {
+                t.Fatalf("state = %+v", st)
+        }
+        host.expectNone("no state_req (cache-first)", func(m relayMsg) bool { return m.Type == "state_req" })
+        joiner.send(map[string]any{"type": "state_ok"})
+        for _, c := range []*testClient{host, joiner} {
+                rm := c.wait("resume with cache", func(m relayMsg) bool { return m.Type == "resume" })
                 if rm.Frame != 1200 || rm.Data != "Y2FjaGVkMTIz" {
-                        t.Fatalf("[%s] resume = %+v (want cached frame 1200)", c.name, rm)
+                        t.Fatalf("[%s] resume = %+v", c.name, rm)
                 }
         }
 }
@@ -801,4 +807,132 @@ func TestV45OwnerlessNoCacheReject(t *testing.T) {
         }
         // 2P 不受影响（没有 pause/resume 打扰）
         p2.expectNone("no pause for surviving player", func(m relayMsg) bool { return m.Type == "pause" })
+}
+
+// dialRoomV45 v4.5.1 客户端（hello 带 v=45）。
+func dialRoomV45(t *testing.T, addr, token, roomID string, spectate bool, want int) *testClient {
+        t.Helper()
+        conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+        if err != nil {
+                t.Fatalf("dial %s: %v", addr, err)
+        }
+        hello := map[string]any{"type": "hello", "token": token, "roomId": roomID, "v": 45}
+        if spectate {
+                hello["spectate"] = true
+        }
+        if want > 0 {
+                hello["want"] = want
+        }
+        b, _ := json.Marshal(hello)
+        fmt.Fprintf(conn, "%s\n", b)
+        c := &testClient{t: t, conn: conn, rd: bufio.NewReaderSize(conn, 1<<20), msgs: make(chan relayMsg, 256), closed: make(chan struct{})}
+        go func() {
+                defer close(c.closed)
+                for {
+                        line, err := c.rd.ReadString('\n')
+                        if err != nil {
+                                return
+                        }
+                        line = strings.TrimSpace(line)
+                        if line == "" {
+                                continue
+                        }
+                        var m relayMsg
+                        if json.Unmarshal([]byte(line), &m) == nil {
+                                c.msgs <- m
+                        }
+                }
+        }()
+        return c
+}
+
+// TestV45RestartFallback 全员重开回退（核心不支持快照）：房主 ready 上报
+// stateCap=-1（出档探测失败）→ 加入者 ready → 服务器不玩出档 dance，直接广播
+// restart（含接入者槽位）→ 全员重新 ready → A 路径同时广播 start（帧 0 重开）。
+func TestV45RestartFallback(t *testing.T) {
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "rsHost")
+        tokJ, _ := env.register(t, "rsJoiner")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        // v4.5.1 房主：单开（ready 带 stateCap=-1 —— 本作核心不支持快照）
+        host := dialRoomV45(t, addr, tokH, roomID, false, 0)
+        host.name = "rsHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": -1})
+        host.wait("start", func(m relayMsg) bool { return m.Type == "start" })
+
+        // v4.5.1 接入者 ready → 直接全员重开（无 pause / 无 state_req）
+        joiner := dialRoomV45(t, addr, tokJ, roomID, false, 0)
+        joiner.name = "rsJoiner"
+        joiner.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        joiner.send(map[string]any{"type": "ready", "pad": 2, "stateCap": -1})
+        for _, c := range []*testClient{host, joiner} {
+                rs := c.wait("restart broadcast", func(m relayMsg) bool { return m.Type == "restart" })
+                if len(rs.Players) != 2 {
+                        t.Fatalf("[%s] restart players = %v (want [1 2])", c.name, rs.Players)
+                }
+        }
+        for _, c := range []*testClient{host, joiner} {
+                c.expectNone("no pause in restart path", func(m relayMsg) bool { return m.Type == "pause" })
+                c.expectNone("no state_req in restart path", func(m relayMsg) bool { return m.Type == "state_req" })
+        }
+
+        // 全员重新 ready → A 路径同时广播 start（从帧 0 重开）
+        host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": -1})
+        joiner.send(map[string]any{"type": "ready", "pad": 2, "stateCap": -1})
+        for _, c := range []*testClient{host, joiner} {
+                st := c.wait("restart start", func(m relayMsg) bool { return m.Type == "start" })
+                if len(st.Players) != 2 {
+                        t.Fatalf("[%s] start players = %v", c.name, st.Players)
+                }
+        }
+}
+
+// TestV45AbortOrdering 同步中止（旧客户端混合房）时：接入者被请出后，裸 resume
+// 的 players 不得包含已请出者的槽位（否则原玩家死等一个已消失的槽位输入）。
+func TestV45AbortOrdering(t *testing.T) {
+        env := newEnv(t, 0)
+        env.hub.watchdogMs = 400
+        tokH, _ := env.register(t, "aoHost")
+        tokP2, _ := env.register(t, "aoP2")
+        tokJ, _ := env.register(t, "aoJoiner")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        // 旧式客户端（无 v 字段）：房主+2P 先开局（无缓存、无 stateCap —— 未知）
+        host := dialRoom(t, addr, tokH, roomID, false, 0)
+        host.name = "aoHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2 := dialRoom(t, addr, tokP2, roomID, false, 0)
+        p2.name = "aoP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2})
+        p2.send(map[string]any{"type": "ready", "pad": 2})
+        for _, c := range []*testClient{host, p2} {
+                c.wait("start", func(m relayMsg) bool { return m.Type == "start" })
+        }
+
+        // 接入者 ready → state_req（能力未知）→ 房主不应答 → 看门狗 → 旧式收尾：
+        // 接入者 error+请出；原玩家裸恢复，players 只含 [1 2]
+        joiner := dialRoom(t, addr, tokJ, roomID, false, 0)
+        joiner.name = "aoJoiner"
+        joiner.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        joiner.send(map[string]any{"type": "ready", "pad": 2})
+        host.wait("state_req", func(m relayMsg) bool { return m.Type == "state_req" })
+
+        joiner.wait("abort error", func(m relayMsg) bool { return m.Type == "error" })
+        rm := host.wait("bare resume without dropped slot", func(m relayMsg) bool { return m.Type == "resume" })
+        if rm.Data != "" {
+                t.Fatalf("resume should be bare, got %+v", rm)
+        }
+        for _, p := range rm.Players {
+                if p == 3 {
+                        t.Fatalf("resume players contains dropped joiner slot: %v", rm.Players)
+                }
+        }
+        if len(rm.Players) != 2 {
+                t.Fatalf("resume players = %v (want [1 2])", rm.Players)
+        }
 }

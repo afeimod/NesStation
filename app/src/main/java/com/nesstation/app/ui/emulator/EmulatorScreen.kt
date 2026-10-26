@@ -2745,6 +2745,16 @@ fun EmulatorScreen(
             override fun discardPendingAudio() {
                 try { (engine as? com.nesstation.app.core.engine.FbNeoEngine)?.discardPendingAudio() } catch (_: Throwable) {}
             }
+            // ★★ v4.5.1 全员重开：核心复位到开机状态（restart 用；引擎线程内调用）。
+            //   FBNeo = retro_reset（毫秒级，不用重载 ROM）；重挂 frameHook 顺带把
+            //   引擎帧计数清回 0（setter 复位 _netFrame）—— 全员从帧 0 重新同步开跑。
+            override fun resetToBoot(): Boolean = try {
+                engine.reset(true)
+                netplayController?.let { engine.frameHook = it }
+                true
+            } catch (t: Throwable) {
+                android.util.Log.w("EmulatorScreen", "battle resetToBoot: ${t.message}"); false
+            }
         })
     }
     // ★ 同步启动门：引擎加载成功（loaded=true）后通知控制器 → 测 RTT → 发 ready。

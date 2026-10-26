@@ -40,10 +40,16 @@ import kotlin.concurrent.thread
  *   - 对局中有人 ready → pause + 存档同步 + resume（后加入接入）。
  *
  * ★★ v4.5 服务器侧存档同步（联机平台模式）：
- *   - 房主周期 sendStateUpload 快照 → 服务器缓存（开局 1s 首份，之后每 15s 一份）；
- *   - 加入者从服务器拿档（房主在 → 新鲜档零回退；房主不在 → 服务器缓存档）；
+ *   - 房主周期 sendStateUpload 快照 → 服务器缓存（引擎就绪即首份，之后 6-15s 一份）；
+ *   - 加入者优先从服务器缓存档接入（房主在 → state_req 新鲜档零回退）；
  *   - 同步全程看门狗：房主 sendStateFail / 超时 / 掉线 → 服务器按缓存档收尾，
- *     无档可用时接入者收 error 劝退 —— 绝不卡在“同步中”。
+ *     无档可用时全员重开（v≥45）或接入者收 error 劝退 —— 绝不卡在“同步中”。
+ *
+ * ★★ v4.5.1：
+ *   - hello 带 v=45（协议版本 —— 服务器据此判断能否广播 restart 全员重开）；
+ *   - ready 带 stateCap（出档能力探测结果：1 能 / -1 不能 —— 核心不支持快照的
+ *     游戏服务器直接走全员重开，不再浪费出档尝试）；
+ *   - 新消息 restart：全员重开（回开机状态、重新就绪、从帧 0 同步开跑）。
  *
  * ★★ v4.4：
  *   - hello 可带 spectate=true（观战加入：不占 1P-4P 槽位、只收不发）；
@@ -102,6 +108,12 @@ class BattleNetplay(
          */
         fun onResume(frame: Long, inputDelay: Int, players: List<Int>,
                      dataBase64: String?, hist: Map<Int, List<Int>>?, histEnd: Long)
+        /**
+         * ★★ v4.5.1 全员重开（本作核心不支持画面快照 —— 服务器编排）：
+         * 复位引擎到开机态 → 回启动门 → 重新 ready；服务器等全员重新就绪后
+         * 广播 start，全员从帧 0 同步开跑（街机语义：新人加入 = 新的一局）。
+         */
+        fun onRestart(inputDelay: Int, players: List<Int>)
         /** 对方已 ready（引擎已加载完，正在等 start）。 */
         fun onPeerReady(username: String)
         /** 对方加入（slot = 其槽位；★ v4.4 spec=true 为观战者，不占槽位） */
@@ -112,6 +124,11 @@ class BattleNetplay(
         fun onError(message: String)
         /** 连接关闭（非主动） */
         fun onDisconnected()
+    }
+
+    companion object {
+        /** ★★ v4.5.1 客户端协议版本（hello.v）—— 服务器据此判定能否广播 restart */
+        const val PROTO_VERSION = 45
     }
 
     @Volatile private var socket: Socket? = null
@@ -152,11 +169,13 @@ class BattleNetplay(
                 reader = BufferedReader(InputStreamReader(s.getInputStream()), 1 shl 20)
                 writer = BufferedWriter(OutputStreamWriter(s.getOutputStream()), 1 shl 20)
 
-                // 握手（★★ v4.4：spectate=true 观战加入；want=2/3/4 指定座位）
+                // 握手（★★ v4.4：spectate=true 观战加入；want=2/3/4 指定座位；
+                // ★★ v4.5.1：v=45 协议版本 —— restart 全员重开支持判定）
                 val hello = JSONObject()
                     .put("type", "hello")
                     .put("token", token)
                     .put("roomId", roomId)
+                    .put("v", PROTO_VERSION)
                 if (spectate) hello.put("spectate", true)
                 if (wantSlot in 2..4) hello.put("want", wantSlot)
                 sendLine(hello.toString())
@@ -258,6 +277,10 @@ class BattleNetplay(
                     parseHist(msg),
                     msg.optLong("histEnd", msg.optLong("frame", 0))
                 )
+            }
+            "restart" -> {
+                // ★★ v4.5.1 全员重开（本作核心不支持画面快照）
+                listener.onRestart(msg.optInt("pad", 4).coerceIn(0, 16), parsePlayers(msg))
             }
             "peer_ready" -> listener.onPeerReady(msg.optString("msg", ""))
             "input" -> {
@@ -367,9 +390,14 @@ class BattleNetplay(
         sendLine(JSONObject().put("type", "state_fail").toString())
     }
 
-    /** 通知服务器：我已就绪（引擎已加载完、帧循环就位，等 start/resume）。带建议 inputDelay（帧）。 */
-    fun sendReady(suggestedDelay: Int = 0) {
-        sendLine(JSONObject().put("type", "ready").put("pad", suggestedDelay.coerceIn(0, 16)).toString())
+    /** 通知服务器：我已就绪（引擎已加载完、帧循环就位，等 start/resume）。
+     * 带建议 inputDelay（帧）+ ★★ v4.5.1 出档能力（1 能 / -1 不能 / 0 未知 ——
+     * 服务器据此决定快照同步还是全员重开）。 */
+    fun sendReady(suggestedDelay: Int = 0, stateCap: Int = 0) {
+        sendLine(JSONObject().put("type", "ready")
+            .put("pad", suggestedDelay.coerceIn(0, 16))
+            .put("stateCap", stateCap.coerceIn(-1, 1))
+            .toString())
     }
 
     fun sendPing() {
