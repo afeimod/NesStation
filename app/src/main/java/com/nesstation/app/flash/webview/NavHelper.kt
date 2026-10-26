@@ -40,7 +40,25 @@ object NavHelper {
     fun playerUrl(swfUrl: String, base: String? = null, title: String? = null): String {
         // 从 PrefsManager.sp 直接读取（不依赖 FlashPrefs），
         // 因为 PrefsManager.sp 才是真正的数据源。
-        val scale = PrefsManager.sp.getString("flash_scale", null) ?: "showAll"
+        // ★★ v4.3 根因修复「选拉伸依旧 4:3 黑边」：
+        //   旧版 scale 只读 flash_scale 偏好，而 game_aspect_ratio 与 flash_scale
+        //   是两个独立键 —— 旧版本/其他路径只写 game_aspect_ratio=stretch
+        //   而不写 flash_scale 时，scale 回退 showAll：
+        //   showAll + forceScale + letterbox=off = 游戏内容保持原比例居中、
+        //   影片背景铺满全屏 —— 正是用户反馈的“只能拉伸引擎自身画面，
+        //   游戏画面不拉伸”。且 verify() 重载只会重建同一个 URL（坏偏好源头
+        //   不变），重载多少次都修不好。
+        //   现在画面比例模式优先：aspect != auto 时强制 exactFit；
+        //   仅 auto（全屏自适应）时尊重 flash_scale 引擎缩放偏好。
+        val aspect = PrefsManager.gameAspectRatio
+        val scale = if (aspect != "auto") {
+            "exactFit"
+        } else {
+            when (val prefScale = PrefsManager.sp.getString("flash_scale", null)) {
+                "showAll", "noBorder", "exactFit", "noScale" -> prefScale
+                else -> "showAll"
+            }
+        }
         // ★★ v24 修复「SWF 按比例拉伸无效、各种黑边」：
         //   旧版 letterbox 完全不读 flash_letterbox 偏好（两处播放器的
         //   applyAspectRatio 写了却没人消费 = 死键），只从 game_aspect_ratio
@@ -57,7 +75,7 @@ object NavHelper {
         val letterbox: String =
             if (letterboxPref != null && letterboxPref in setOf("on", "off", "fullscreen")) {
                 letterboxPref
-            } else when (PrefsManager.gameAspectRatio) {
+            } else when (aspect) {
                 "stretch" -> "off"
                 // 比例模式同样 off：外层比例框 + exactFit 填满，引擎不再叠黑边
                 "4:3", "16:9", "16:10", "5:4" -> "off"

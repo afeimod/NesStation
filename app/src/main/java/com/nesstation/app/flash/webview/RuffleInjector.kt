@@ -72,9 +72,14 @@ object RuffleInjector {
         else -> "fullscreen"
     }
 
-    /** 当前 scale 字符串（已归一化） */
-    private fun currentScale(): String =
-        normalizeScale(PrefsManager.sp.getString("flash_scale", null))
+    /** 当前 scale 字符串（已归一化）
+     *  ★ v4.3：画面比例模式优先 —— game_aspect_ratio != auto 时强制 exactFit
+     *  （与 NavHelper.playerUrl 同源修复：flash_scale 偏好缺失/未同步时，
+     *  旧逻辑回退 showAll 导致“选拉伸依旧 4:3”）。仅 auto 时尊重引擎偏好。 */
+    private fun currentScale(): String {
+        if (PrefsManager.gameAspectRatio != "auto") return "exactFit"
+        return normalizeScale(PrefsManager.sp.getString("flash_scale", null))
+    }
 
     /**
      * letterbox 优先读 flash_letterbox 偏好（与 flash_scale 同源，applyAspectRatio

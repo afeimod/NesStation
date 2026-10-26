@@ -16,6 +16,9 @@ type roomResponse struct {
         Guest     string `json:"guest"` // 空 = 等待加入
         Status    string `json:"status"`
         CreatedAt int64  `json:"createdAt"`
+        // ★ v4.3：当前人数与槽位（1P 可先单机开玩，房间保持可加入）
+        Players int   `json:"players"`
+        Slots   []int `json:"slots"`
 }
 
 func roomToResponse(cfg *Config, r *Room) roomResponse {
@@ -60,8 +63,14 @@ func roomToResponse(cfg *Config, r *Room) roomResponse {
         case roomReady:
                 resp.Status = "ready"
         case roomPlaying:
+                // ★ v4.3：对局中仍可加入（后加入经存档同步接入）——
+                //   客户端显示为"对战中·可加入"
                 resp.Status = "playing"
+        case roomSyncing:
+                resp.Status = "syncing"
         }
+        resp.Players = r.playerCount()
+        resp.Slots = activeSlots(r)
         return resp
 }
 
@@ -69,10 +78,9 @@ func roomToResponse(cfg *Config, r *Room) roomResponse {
 func (s *apiServer) handleListRooms(w http.ResponseWriter, r *http.Request) {
         s.hub.mu.Lock()
         rooms := make([]roomResponse, 0, len(s.hub.rooms))
+        // ★ v4.3：对局中的房间也列出（可加入）—— 1P 可先单机开玩，
+        //   后来者进入房间后经存档同步"快速同步画面后接入"。
         for _, rm := range s.hub.rooms {
-                if rm.Status == roomPlaying {
-                        continue
-                }
                 rooms = append(rooms, roomToResponse(s.cfg, rm))
         }
         s.hub.mu.Unlock()
@@ -148,12 +156,9 @@ func (s *apiServer) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
                 writeErr(w, http.StatusNotFound, "房间不存在")
                 return
         }
-        if rm.Status == roomPlaying {
-                s.hub.mu.Unlock()
-                writeErr(w, http.StatusConflict, "对局已开始")
-                return
-        }
-        if rm.playerCount() >= 2 {
+        // ★ v4.3：对局中允许加入（后加入 = 连接 1P 画面，存档同步后接入）。
+        //   实际人数上限由 TCP 中继（4 人）执行，HTTP 侧同步校验。
+        if rm.playerCount() >= maxRoomPlayers {
                 s.hub.mu.Unlock()
                 writeErr(w, http.StatusConflict, "房间已满")
                 return

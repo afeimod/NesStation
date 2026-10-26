@@ -29,7 +29,9 @@ class BattleApi(private val ctx: Context) {
         val iconUrl: String = ""
     )
 
-    /** 房间信息 */
+    /** 房间信息
+     *  ★ v4.3：players/slots —— 1P 可先单机开玩（房间保持可加入），
+     *  2P/3P/4P 中途接入（存档同步）；满员 = 4 人。 */
     data class Room(
         val id: String,
         val gameId: String,
@@ -37,7 +39,9 @@ class BattleApi(private val ctx: Context) {
         val host: String,
         val guest: String,
         val status: String,
-        val createdAt: Long
+        val createdAt: Long,
+        val players: Int = 0,
+        val slots: List<Int> = emptyList()
     )
 
     /** 登录/注册结果 */
@@ -208,7 +212,9 @@ class BattleApi(private val ctx: Context) {
                     host = r.optString("host", ""),
                     guest = r.optString("guest", ""),
                     status = r.optString("status", ""),
-                    createdAt = r.optLong("createdAt", 0)
+                    createdAt = r.optLong("createdAt", 0),
+                    players = r.optInt("players", 0),
+                    slots = parseSlots(r)
                 )
             }
         } finally {
@@ -257,6 +263,19 @@ class BattleApi(private val ctx: Context) {
         host = o.optString("host", ""),
         guest = o.optString("guest", ""),
         status = o.optString("status", ""),
-        createdAt = o.optLong("createdAt", 0)
+        createdAt = o.optLong("createdAt", 0),
+        players = o.optInt("players", 0),
+        slots = parseSlots(o)
     )
+
+    /** ★ v4.3：解析成员槽位列表 [1,2,4]（1P=1 … 4P=4）。 */
+    private fun parseSlots(o: JSONObject): List<Int> {
+        val arr = o.optJSONArray("slots") ?: return emptyList()
+        val out = ArrayList<Int>(arr.length())
+        for (i in 0 until arr.length()) {
+            val v = arr.optInt(i, 0)
+            if (v in 1..4) out.add(v)
+        }
+        return out
+    }
 }

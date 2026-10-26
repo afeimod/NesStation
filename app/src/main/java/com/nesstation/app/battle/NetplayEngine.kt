@@ -139,7 +139,9 @@ class NetplayEngine(
                     // 1. 采样本地输入，带当前帧号发送（对方 delay 帧后使用）
                     val localPad = currentLocalPad
                     localHistory[frame] = localPad
-                    net.sendInput(frame, localPad)
+                    // ★ v4.3：BattleNetplay.sendInput 增加槽位参数（多玩家路由）。
+                    //   本引擎为遗留路径（未被任何界面构造），槽位取本端槽位即可。
+                    net.sendInput(frame, localPad, net.mySlot)
 
                     // 2. 执行帧 = 采样帧 - inputDelay（预热阶段不执行）
                     val execFrame = frame - inputDelay

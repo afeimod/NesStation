@@ -37,6 +37,16 @@
     font-family: "SimHei", "Microsoft YaHei", "SimSun", "Noto Sans CJK SC",
                  Arial, Helvetica, sans-serif !important;
   }
+  /* ★★ v4.3 画面比例模式：canvas 按比例框定位（类规则 + !important，
+     引擎 updateCanvasDimensions 只 removeProperty 内联样式，清不掉类规则） */
+  #canvas.waf-aspect-box {
+    position: fixed !important;
+    left: var(--waf-x, 0px) !important;
+    top: var(--waf-y, 0px) !important;
+    width: var(--waf-w, 100vw) !important;
+    height: var(--waf-h, 100vh) !important;
+    margin: 0 !important;
+  }
   #waflashStatus {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
     color: #beb5f9; font-family: -apple-system, "Microsoft YaHei", sans-serif;
@@ -65,10 +75,224 @@
     var SWF_URL = params.get('swf') || '';
     var BASE_URL = params.get('base') || '';
     var TITLE = params.get('title') || 'Flash 游戏';
+    // ★ v4.3：画面比例模式（NavHelper 透传）
+    //   auto = 引擎默认（showAll letterbox，保持原比例）
+    //   stretch = 全屏拉伸（无黑边铺满）
+    //   4:3 / 16:9 / 16:10 / 5:4 = 居中比例框内拉伸填满
+    var ASPECT = (params.get('aspect') || 'auto').toLowerCase();
     document.title = TITLE;
 
     var statusEl = document.getElementById('waflashStatus');
     var canvas = document.getElementById('canvas');
+
+    /* ==================================================================
+     * ★★ v4.3 画面比例系统（stretch / 4:3 / 16:9 / …）
+     *
+     * WAFlash 引擎在 canvas 内部按 showAll letterbox 游戏画面（影片背景
+     * 铺满整个 canvas），且引擎会跟随 canvas 的 getBoundingClientRect 变化
+     * 重新布局 —— 纯 CSS 缩放/定位 canvas 永远无法拉伸游戏内容（引擎会
+     * 反向再 letterbox 一次，已实测证伪 CSS transform 方案）。
+     *
+     * 实测有效的方案（本实现）：
+     *  1. 解析 SWF 头部 RECT 得到舞台原始比例 stageAR（FWS/CWS/ZWS 头 8
+     *     字节后的 RECT 均未压缩，可直接位解析）。
+     *  2. 给引擎一个"假视口"：override canvas.getBoundingClientRect /
+     *     clientWidth / clientHeight，返回与舞台等比例的 FW×FH —— 引擎
+     *     视口比例==舞台比例时 showAll 恰好铺满，canvas 内部不再有黑边。
+     *  3. canvas 元素本体 CSS 拉伸到目标框（比例框或全屏），FW×FH 的
+     *     backing store 被非均匀拉伸显示 = 游戏内容真正被拉伸。
+     *  4. 鼠标/触摸坐标换算：引擎把 (pageX-rect.left)×(canvas.width/
+     *     rect.width) 当 canvas 像素坐标；canvas.width==rect.width==FW，
+     *     故覆盖 MouseEvent/Touch 的 pageX/pageY/clientX/clientY getter，
+     *     按 (x-BX)×FW/BW 换算，保证输入与拉伸后的画面精确对齐。
+     *  5. 解析失败（远程 CORS 等）→ 回退引擎默认行为，不干预。
+     * ================================================================== */
+    var __waf = {
+      active: false,      // 假视口已安装
+      stageAR: 0,         // SWF 舞台宽高比
+      mode: 'auto',       // 当前比例模式
+      // 目标框（CSS 像素）
+      BX: 0, BY: 0, BW: 0, BH: 0,
+      // 假视口尺寸
+      FW: 0, FH: 0
+    };
+    window.__wafAspectState = function () {
+      return {
+        active: __waf.active, mode: __waf.mode, stageAR: __waf.stageAR,
+        box: [__waf.BX, __waf.BY, __waf.BW, __waf.BH], fake: [__waf.FW, __waf.FH]
+      };
+    };
+
+    /** 目标框计算：stretch=全屏；W:H=视口内居中比例框 */
+    function __wafTargetBox(mode) {
+      var W = window.innerWidth, H = window.innerHeight;
+      if (mode === 'stretch') return { x: 0, y: 0, w: W, h: H };
+      var m = /^(\d+(?:\.\d+)?)[:x](\d+(?:\.\d+)?)$/.exec(mode);
+      if (!m) return null;
+      var r = parseFloat(m[1]) / parseFloat(m[2]);
+      var w, h;
+      if (W / H > r) { h = H; w = H * r; } else { w = W; h = W / r; }
+      return { x: (W - w) / 2, y: (H - h) / 2, w: w, h: h };
+    }
+
+    /** 解析 SWF 头部舞台 RECT → 宽高比（失败返回 0）
+     *  FWS: RECT 在文件字节 8 起（未压缩）
+     *  CWS: 字节 8 起是 zlib 流，RECT 在【解压后】的字节 0 起
+     *  ZWS: LZMA 压缩，无法简单解 —— 返回 0 回退引擎默认
+     */
+    async function __wafParseStageAR(url) {
+      try {
+        var resp = await fetch(url, { cache: 'force-cache' });
+        if (!resp.ok) return 0;
+        var buf = new Uint8Array(await resp.arrayBuffer());
+        if (buf.length < 11) return 0;
+        var sig = String.fromCharCode(buf[0], buf[1], buf[2]);
+        var rectBytes, rectOff;
+        if (sig === 'FWS') {
+          rectBytes = buf; rectOff = 8;
+        } else if (sig === 'CWS') {
+          if (typeof DecompressionStream !== 'function') return 0;
+          // CWS = zlib(RFC1950)，DecompressionStream('deflate') 即 zlib 格式
+          var ds = new DecompressionStream('deflate');
+          var stream = new Blob([buf.slice(8)]).stream().pipeThrough(ds);
+          rectBytes = new Uint8Array(await new Response(stream).arrayBuffer());
+          rectOff = 0;
+          if (rectBytes.length < 3) return 0;
+        } else {
+          return 0; // ZWS(LZMA) 或非 SWF
+        }
+        // RECT 位解析：Nbits(5) + 4×Nbits 有符号位
+        var bit = 0; // 相对 rectBytes[rectOff] 的位指针
+        var self = this;
+        function ub(n) {
+          var v = 0;
+          for (var i = 0; i < n; i++) {
+            var byteIdx = rectOff + ((bit + i) >> 3);
+            var bitIdx = 7 - ((bit + i) & 7);
+            v = (v << 1) | ((rectBytes[byteIdx] >> bitIdx) & 1);
+          }
+          bit += n;
+          return v;
+        }
+        var nbits = ub(5);
+        if (nbits === 0 || nbits > 24) return 0;
+        var vals = [];
+        for (var k = 0; k < 4; k++) {
+          var v = ub(nbits);
+          if (v & (1 << (nbits - 1))) v -= (1 << nbits); // 符号扩展
+          vals.push(v);
+        }
+        var xmin = vals[0], xmax = vals[1], ymin = vals[2], ymax = vals[3];
+        var w = xmax - xmin, h = ymax - ymin;
+        if (w <= 0 || h <= 0) return 0;
+        return w / h;
+      } catch (e) {
+        return 0;
+      }
+    }
+
+    /** 安装/刷新假视口（引擎加载前后均可调用；引擎会按新视口重新布局） */
+    function __wafInstallFake(mode, stageAR) {
+      var box = __wafTargetBox(mode);
+      if (!box || !stageAR || stageAR <= 0.01) return false;
+      __waf.mode = mode;
+      __waf.stageAR = stageAR;
+      __waf.BX = box.x; __waf.BY = box.y; __waf.BW = box.w; __waf.BH = box.h;
+      // 假视口：与舞台等比，大小贴合目标框
+      var fw, fh;
+      if (box.w / box.h > stageAR) { fh = box.h; fw = box.h * stageAR; }
+      else { fw = box.w; fh = box.w / stageAR; }
+      __waf.FW = fw; __waf.FH = fh;
+      var c = canvas;
+      // 1) canvas 元素本体 = 目标框（类规则 + CSS 变量，引擎清不掉）
+      c.classList.add('waf-aspect-box');
+      c.style.setProperty('--waf-x', box.x + 'px');
+      c.style.setProperty('--waf-y', box.y + 'px');
+      c.style.setProperty('--waf-w', box.w + 'px');
+      c.style.setProperty('--waf-h', box.h + 'px');
+      // 2) 假视口：引擎读到的 canvas 几何 = 舞台等比尺寸
+      //    （plain object 已实测可行；引擎只读 left/top/width/height）
+      var fakeRect = {
+        x: box.x, y: box.y,
+        width: fw, height: fh,
+        left: box.x, top: box.y,
+        right: box.x + fw, bottom: box.y + fh,
+        toJSON: function () { return this; }
+      };
+      c.getBoundingClientRect = function () { return fakeRect; };
+      try {
+        Object.defineProperty(c, 'clientWidth', { get: function () { return fw; }, configurable: true });
+        Object.defineProperty(c, 'clientHeight', { get: function () { return fh; }, configurable: true });
+      } catch (e) { /* 部分内核重复定义，忽略 */ }
+      // 3) 输入坐标换算（引擎把 pageX 映射为 canvas 像素坐标：
+      //    (pageX-rect.left)×(canvas.width/rect.width)，两值均为 FW → 系数 1，
+      //    因此直接把事件坐标换算到假视口坐标系）
+      if (!__waf.active) {
+        var mapX = function (x) { return __waf.BX + (x - __waf.BX) * (__waf.FW / __waf.BW); };
+        var mapY = function (y) { return __waf.BY + (y - __waf.BY) * (__waf.FH / __waf.BH); };
+        function patchCoord(proto, name, mapper) {
+          try {
+            var desc = Object.getOwnPropertyDescriptor(proto, name);
+            var orig = desc && desc.get;
+            Object.defineProperty(proto, name, {
+              get: function () {
+                var v = orig ? orig.call(this) : 0;
+                return mapper(v);
+              },
+              configurable: true
+            });
+          } catch (e) { /* 忽略 */ }
+        }
+        [MouseEvent, Touch].forEach(function (Ctor) {
+          if (!Ctor || !Ctor.prototype) return;
+          patchCoord(Ctor.prototype, 'pageX', mapX);
+          patchCoord(Ctor.prototype, 'pageY', mapY);
+          patchCoord(Ctor.prototype, 'clientX', mapX);
+          patchCoord(Ctor.prototype, 'clientY', mapY);
+        });
+      }
+      __waf.active = true;
+      // 4) 通知引擎重新布局
+      try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+      return true;
+    }
+
+    /** 运行时切换比例（App 侧 buildAspectRatioScript 调用） */
+    window.__wafApplyAspect = function (mode) {
+      mode = String(mode || 'auto').toLowerCase();
+      if (mode === 'auto' || mode === 'stretch' ||
+          /^\d+(?:\.\d+)?[:x]\d+(?:\.\d+)?$/.test(mode)) {
+        if (mode === 'auto') {
+          // 还原：摘除假视口（getter 覆盖保留但映射恒等即可 —— 引擎
+          // 重新读真实 rect 后恢复自身布局）
+          var c = canvas;
+          var real = HTMLElement.prototype.getBoundingClientRect;
+          c.getBoundingClientRect = function () { return real.call(c); };
+          try {
+            delete c.clientWidth; delete c.clientHeight; // defineProperty 用 delete 恢复
+          } catch (e) {}
+          c.classList.remove('waf-aspect-box');
+          __waf.active = false; __waf.mode = 'auto';
+          try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+          return 'auto';
+        }
+        var ok = __wafInstallFake(mode, __waf.stageAR ||
+          (window.__wafCachedAR || 0));
+        return ok ? mode : 'fallback';
+      }
+      return 'ignored';
+    };
+
+    // 窗口尺寸变化：比例框重算 + 引擎重布局
+    window.addEventListener('resize', function () {
+      if (__waf.active) {
+        // 重算目标框（假视口尺寸随之更新）
+        var box = __wafTargetBox(__waf.mode);
+        if (box) {
+          __wafInstallFake(__waf.mode, __waf.stageAR);
+        }
+      }
+    });
 
     // === IME 输入法支持（解决 WAFlash 点击输入框不弹软键盘） ===
     // 优先使用 GameWebView 注入的 NativeIme.showIme()（最稳：直接拉起 Android 软键盘），
@@ -264,6 +488,7 @@
 
     console.log('[WAF] SWF_URL: ' + SWF_URL);
     console.log('[WAF] isLocalFile: ' + isLocalFile);
+    console.log('[WAF] aspect: ' + ASPECT);
 
     // 加载 WAFlash 引擎
     function loadEngine(swfUrlToLoad) {
@@ -292,16 +517,27 @@
       });
     }
 
-    if (isLocalFile) {
-      // 本地文件：SWF_URL 已被替换为 https://flash.local/local.swf
-      // shouldInterceptRequest 会拦截此 URL 并读取真实文件
-      // 直接传给 WAFlash 即可（WAFlash 的 fetch 能拦截 flash.local 的 HTTP 请求）
-      console.log('[WAF] 本地文件模式：虚拟 URL 代理');
+    // ★ v4.3 启动流程：比例模式非 auto 时，先解析 SWF 舞台比例并安装
+    // 假视口（必须在引擎 createWaflash 之前，引擎初始化即按假视口布局），
+    // 再加载引擎；解析失败则保持引擎默认（letterbox）行为。
+    (async function boot() {
+      if (SWF_URL && ASPECT !== 'auto' && ASPECT !== '') {
+        try {
+          statusEl.textContent = '正在读取画面比例...';
+          var ar = await __wafParseStageAR(SWF_URL);
+          console.log('[WAF] stage aspect = ' + ar + ' (mode=' + ASPECT + ')');
+          window.__wafCachedAR = ar;
+          if (ar > 0) {
+            var ok = __wafInstallFake(ASPECT, ar);
+            console.log('[WAF] fake viewport ' + (ok ? 'installed' : 'skipped'));
+          }
+        } catch (e) {
+          console.log('[WAF] aspect prep failed: ' + e);
+        }
+      }
+      // 本地文件与远程 SWF：直接传 URL 给 WAFlash
       loadEngine(SWF_URL);
-    } else {
-      // 远程 SWF：直接传 URL 给 WAFlash
-      loadEngine(SWF_URL);
-    }
+    })();
 
     document.addEventListener('contextmenu', function(e) { e.preventDefault(); e.stopPropagation(); return false; }, true);
     document.addEventListener('selectstart', function(e) { e.preventDefault(); });

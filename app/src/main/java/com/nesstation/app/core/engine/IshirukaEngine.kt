@@ -342,31 +342,75 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         }
     }
 
-    /** ★ 通用 SYSCONF BIGBYTE 条目补丁（IPL.LNG / IPL.AR 等）。
-     *   复用 [patchSysconfLanguage] 的字节布局：
-     *   [type=0x01][nameLen:2 BE][name][data:1]。找不到条目时静默跳过。 */
+    /** ★★ v4.3 根因修复：SYSCONF 条目补丁（IPL.LNG / IPL.AR 等）。
+     *
+     * 旧实现按【线性格式】扫描字节序列 [type=0x01][nameLen:2 BE][name] ——
+     * 但核心（libishiiruka.so，Dolphin 4.0.2 系 SysConf.cpp 血统，.so 内
+     * "SCv0" 头/"SCed" 尾 magic 与默认条目表 strings 实证）使用的是
+     * 【索引格式】：
+     *   [0x00] 4B  magic "SCv0"
+     *   [0x04] u16 BE  条目数 N-1
+     *   [0x06] N×u16 BE  各条目在文件内的偏移（最后一项指向数据区结尾）
+     *   条目 @offset：[desc: type<<5 | nameLen-1][name][按类型的数据]
+     *     type: 1=BigArray(u16 BE len + data + 0x00) 2=SmallArray(u8 len + data + 0x00)
+     *           3=Byte(1B) 4=Bool(1B) 5=Short(2B) 6=Long(4B)
+     *   文件固定 0x4000 字节，尾部 4B "SCed"，【无校验和】（改数据字节安全）。
+     * IPL.AR / IPL.LNG 均为 Byte 型（desc = 3<<5 | nameLen-1）。
+     * 旧模式从未匹配过任何真实 SYSCONF → v4.2 的 Wii 宽屏（IPL.AR）与
+     * Wii 主机语言（IPL.LNG）补丁【静默 no-op】= 用户实测"宽屏修正依旧
+     * 无效果"的直接根因。 */
     private fun patchSysconfBigByte(sysconf: File, name: String, value: Int) {
         val data = sysconf.readBytes()
-        if (data.size < 0x40 || data[0].toInt() != 'S'.code || data[1].toInt() != 'C'.code) return
+        // 头验证：magic "SCv0"（旧版只查 'S''C' 两字节，不够严谨）
+        if (data.size < 0x40 || data[0] != 'S'.toByte() || data[1] != 'C'.toByte() ||
+            data[2] != 'v'.toByte() || data[3] != '0'.toByte()
+        ) {
+            android.util.Log.w("IshirukaEngine", "SYSCONF bad magic: ${sysconf.path}")
+            return
+        }
+        if (data.size != 0x4000) {
+            // 尺寸异常 —— 核心会因 size != SYSCONF_SIZE 重建默认文件，补了也白补
+            android.util.Log.w("IshirukaEngine", "SYSCONF bad size ${data.size}: ${sysconf.path}")
+            return
+        }
         val nameBytes = name.toByteArray(Charsets.US_ASCII)
-        val prefix = ByteArray(3 + nameBytes.size)
-        prefix[0] = 0x01
-        prefix[1] = ((nameBytes.size shr 8) and 0xFF).toByte()
-        prefix[2] = (nameBytes.size and 0xFF).toByte()
-        nameBytes.copyInto(prefix, 3)
-        outer@ for (i in 0..data.size - prefix.size - 1) {
-            for (j in prefix.indices) {
-                if (data[i + j] != prefix[j]) continue@outer
+        val numEntries = ((data[4].toInt() and 0xFF) shl 8 or (data[5].toInt() and 0xFF)) + 1
+        if (numEntries <= 0 || numEntries > 128) return
+        for (i in 0 until numEntries) {
+            val offBase = 6 + 2 * i
+            val offset = ((data[offBase].toInt() and 0xFF) shl 8) or (data[offBase + 1].toInt() and 0xFF)
+            if (offset <= 0 || offset + 2 >= data.size) continue
+            val desc = data[offset].toInt() and 0xFF
+            val type = (desc and 0xE0) shr 5
+            val nameLen = (desc and 0x1F) + 1
+            if (nameLen != nameBytes.size) continue
+            var match = true
+            for (j in 0 until nameLen) {
+                if (data[offset + 1 + j] != nameBytes[j]) { match = false; break }
             }
-            val valueOffset = i + prefix.size
-            if (data[valueOffset].toInt() == value) return
-            data[valueOffset] = value.toByte()
+            if (!match) continue
+            // 数据区起点：desc(1) + name；Byte/Bool 直接 1 字节；
+            // BigArray/SmallArray 有长度前缀（跳过）
+            var valueOffset = offset + 1 + nameLen
+            when (type) {
+                1 -> valueOffset += 2   // BigArray: u16 BE len
+                2 -> valueOffset += 1   // SmallArray: u8 len
+                3, 4 -> { /* Byte/Bool: 无前缀 */ }
+                else -> { android.util.Log.w("IshirukaEngine", "SYSCONF $name type=$type 不适用字节补丁"); return }
+            }
+            if (valueOffset >= data.size) continue
+            if ((data[valueOffset].toInt() and 0xFF) == (value and 0xFF)) {
+                android.util.Log.i("IshirukaEngine", "SYSCONF $name already=$value (${sysconf.path})")
+                return
+            }
+            data[valueOffset] = (value and 0xFF).toByte()
             val tmp = File(sysconf.parentFile, "SYSCONF.tmp")
             tmp.writeBytes(data)
             if (!tmp.renameTo(sysconf)) {
                 tmp.copyTo(sysconf, overwrite = true)
                 tmp.delete()
             }
+            android.util.Log.i("IshirukaEngine", "SYSCONF $name -> $value @${"0x%04x".format(valueOffset)} (${sysconf.path})")
             return
         }
         android.util.Log.w("IshirukaEngine", "SYSCONF entry not found: $name")
@@ -427,28 +471,12 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
     }
 
     private fun patchSysconfFile(sysconf: File, language: Int) {
-        val data = sysconf.readBytes()
-        // SYSCONF 头验证（"SCv0"）
-        if (data.size < 0x40 || data[0].toInt() != 'S'.code || data[1].toInt() != 'C'.code) return
-        // IPL.LNG（BIGBYTE，nameLen=7）条目前缀：01 00 07 49 50 4C 2E 4C 4E 47
-        val pattern = byteArrayOf(0x01, 0x00, 0x07, 0x49, 0x50, 0x4C, 0x2E, 0x4C, 0x4E, 0x47)
-        outer@ for (i in 0..data.size - pattern.size - 1) {
-            for (j in pattern.indices) {
-                if (data[i + j] != pattern[j]) continue@outer
-            }
-            val valueOffset = i + pattern.size
-            if (data[valueOffset].toInt() == language) return
-            data[valueOffset] = language.toByte()
-            val tmp = File(sysconf.parentFile, "SYSCONF.tmp")
-            tmp.writeBytes(data)
-            if (!tmp.renameTo(sysconf)) {
-                tmp.copyTo(sysconf, overwrite = true)
-                tmp.delete()
-            }
-            android.util.Log.i("IshirukaEngine", "SYSCONF IPL.LNG -> $language (${sysconf.absolutePath})")
-            return
-        }
-        android.util.Log.w("IshirukaEngine", "IPL.LNG entry not found in SYSCONF")
+        // ★★ v4.3：改为走修正后的【索引格式】解析器 patchSysconfBigByte。
+        //   旧实现按线性格式硬扫 "01 00 07 'I''P''L''.''L''N''G'" ——
+        //   索引格式里根本没有这个布局 → IPL.LNG 从未被补过（与 IPL.AR
+        //   同源根因）。IPL.LNG 是 Byte 型（desc = 3<<5 | 6），数据紧跟
+        //   条目名，无长度前缀。
+        patchSysconfBigByte(sysconf, "IPL.LNG", language)
     }
 
     private fun filesRoot(): String {
@@ -707,6 +735,17 @@ class IshirukaEngine private constructor() : EmulatorEngine, NgcWiiCoreEngine {
         // 确保四个 GC 手柄位都是标准手柄（虚拟手柄 + 实体手柄共用 Touchscreen 通道 P1）
         try { NativeLibrary.SetConfig("Dolphin.ini", "Core", "SIDevice0", "6") } catch (_: Throwable) {}
         addTo(dolphinUpdates, "Core", "SIDevice0", "6")
+        // ★★ v4.3：强制关闭核心自带 HUD（帧数/统计/联机提示），统一使用
+        //   项目前端的 FPS 悬浮显示（EmulatorScreen 左上角 "FPS xx"）。
+        //   用户反馈"核心自带的帧数显示还在，应该关闭，使用项目的帧数显示"。
+        //   核心侧 ShowFPS 会在画面上叠加 "FPS: xx - VPS: xx - xx%" 文本，
+        //   与前端 HUD 重复且遮挡游戏画面。键名全部经 libishiiruka.so
+        //   字符串表核实（GFX.ini [Settings] 区）。EmulatorScreen 同步不再
+        //   把全局"显示帧数"映射到核心 ShowFPS（核心恒 False）。
+        for (hudKey in listOf("ShowFPS", "OverlayStats", "ShowNetPlayPing", "ShowNetPlayMessages")) {
+            try { NativeLibrary.SetConfig("GFX.ini", "Settings", hudKey, "False") } catch (_: Throwable) {}
+            addTo(gfxUpdates, "Settings", hudKey, "False")
+        }
         // 直写规范位置（核心启动唯一读取路径）
         writeIniMerged(File(configDir(), "Dolphin.ini"), dolphinUpdates)
         writeIniMerged(File(configDir(), "GFX.ini"), gfxUpdates)

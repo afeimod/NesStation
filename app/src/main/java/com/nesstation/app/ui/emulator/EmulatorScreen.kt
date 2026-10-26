@@ -2675,11 +2675,53 @@ fun EmulatorScreen(
             override fun onNetplayLost(reason: String) {
                 netplayStatusText = reason
             }
+            // ★★ v4.3 对战平台后加入（1P 单机即开 + 2P/3P/4P 中途接入）
+            override fun onReadyDetail(role: String, inputDelay: Int, slot: Int, players: List<Int>, playing: Boolean) {
+                netplayStatusText = if (playing) {
+                    "已连线（${slot}P · 房间对战中）—— 正在同步 1P 画面…"
+                } else {
+                    "已连线（${slot}P · 延迟 ${inputDelay}f · 在线 ${players.size} 人）"
+                }
+            }
+            override fun onStartDetail(inputDelay: Int, players: List<Int>) {
+                netplayStatusText = if (players.size <= 1) {
+                    "对战开始！你是 1P —— 已单机开跑，其他玩家可随时加入"
+                } else {
+                    "对战开始！${players.size} 人同场 · 延迟 ${inputDelay}f"
+                }
+            }
+            override fun onPeerJoinedSlot(username: String, slot: Int) {
+                netplayStatusText = "$username 以 ${slot}P 加入 —— 同步画面中…"
+            }
+            override fun onPeerLeftSlot(username: String, slot: Int) {
+                netplayStatusText = "${slot}P $username 已离开"
+            }
+            override fun onSyncStatus(text: String) {
+                netplayStatusText = text
+            }
         }
     }
     LaunchedEffect(netplayController) {
         engine.frameHook = netplayController
         netplayController?.addUiListener(netplayUiListener)
+        // ★★ v4.3 后加入：注入即时存档通道（房主出档 / 加入者装载）。
+        //   slot 0 为对战同步专用（不与玩家 1-4 快速存档位冲突）；
+        //   文件放引擎私有目录，跨进程不残留。
+        netplayController?.setStateIo(object : com.nesstation.app.battle.NetplayController.StateIo {
+            override fun saveStateTo(file: java.io.File): Boolean =
+                try { engine.saveState(0, file) } catch (t: Throwable) {
+                    android.util.Log.w("EmulatorScreen", "battle saveState: ${t.message}"); false
+                }
+            override fun loadStateFrom(file: java.io.File): Boolean =
+                try { engine.loadState(0, file) } catch (t: Throwable) {
+                    android.util.Log.w("EmulatorScreen", "battle loadState: ${t.message}"); false
+                }
+            override fun stateDir(): java.io.File {
+                val dir = java.io.File(context.filesDir, "battle_sync")
+                if (!dir.isDirectory) dir.mkdirs()
+                return dir
+            }
+        })
     }
     // ★ 同步启动门：引擎加载成功（loaded=true）后通知控制器 → 测 RTT → 发 ready。
     // 服务器等双方 ready 后同时广播 start，门才放行第一帧 —— 双方同帧从 0 开跑。
@@ -6499,13 +6541,14 @@ private fun applyCoreOptionsInner(
             //   PadLayoutStore.normalizeIrResolution 自动迁移。
             engine.setCoreOption("GFX.ini/Settings/InternalResolution", layout.irResolution)
             engine.setCoreOption("GFX.ini/Settings/MSAA", layout.irMsaa)
-            // ★ Ishiiruka 帧率：核心侧 GFX.ini/Settings/ShowFPS 开关（键
-            //   真实存在于 libishiiruka.so，strings 实证）—— 若核心在当前
-            //   设备上渲染 OSD 则为真实帧率；前端 HUD 同时常显（实测心跳
-            //   节拍，见 FPS 悬浮显示注释）。全局开关或核心专属 irShowFps
-            //   任一开启即打开。
-            engine.setCoreOption("GFX.ini/Settings/ShowFPS",
-                if (layout.irShowFps == "enabled" || layout.showFps) "true" else "false")
+            // ★★ v4.3：核心自带帧数 OSD 恒关（用户要求"关闭核心自带帧数
+            //   显示，使用项目的帧数显示"）。核心 ShowFPS 会在游戏画面上
+            //   叠加 "FPS: xx - VPS: xx - xx%" 文本，与前端左上角 FPS HUD
+            //   重复且遮挡画面 —— 全局"显示帧数"开关只控制前端 HUD 的
+            //   显隐（见全局 FPS 悬浮显示处），不再映射到核心。
+            //   引擎侧 writeCoreIni 同时强制 GFX.ini/Settings/
+            //   ShowFPS=False 双保险。
+            engine.setCoreOption("GFX.ini/Settings/ShowFPS", "false")
             engine.setCoreOption("GFX.ini/Settings/WaitForShadersBeforeStarting", b(layout.irWaitForShaders))
             // ★★★ NGC/WII 画面比例取消（本轮）：恒写 "3"（拉伸到窗口）★★★
             //   需求原话："ngcwii核心设置取消屏幕比例，要根据全局屏幕缩放来，

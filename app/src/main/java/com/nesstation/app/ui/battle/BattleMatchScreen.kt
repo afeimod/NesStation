@@ -155,6 +155,25 @@ fun BattleMatchScreen(
             override fun onDisconnected() { if (errorMsg == null) errorMsg = "与对战服务器断开连接" }
             override fun onNetplayWait(reason: String) { roleText = reason }
             override fun onNetplayLost(reason: String) { errorMsg = reason }
+            // ★★ v4.3 后加入（1P 单机即开 + 2P/3P/4P 中途接入）状态展示
+            override fun onReadyDetail(role: String, inputDelay: Int, slot: Int, players: List<Int>, playing: Boolean) {
+                roleText = if (playing) {
+                    "${slot}P · 房间对战中 —— 正在同步 1P 画面…"
+                } else {
+                    "${slot}P · 已连线（基础延迟 ${inputDelay}f · 在线 ${players.size} 人）"
+                }
+            }
+            override fun onStartDetail(inputDelay: Int, players: List<Int>) {
+                roleText = if (players.size <= 1) {
+                    "1P · 已单机开跑，其他玩家可随时加入（延迟 ${inputDelay}f）"
+                } else {
+                    "${players.size} 人同场对战 · 延迟 ${inputDelay}f（同步开跑）"
+                }
+            }
+            override fun onPeerJoinedSlot(username: String, slot: Int) {
+                roleText = "$username 以 ${slot}P 接入 —— 同步画面中…"
+            }
+            override fun onSyncStatus(text: String) { roleText = text }
         })
         onDispose { controller.setUiListener(null) }
     }

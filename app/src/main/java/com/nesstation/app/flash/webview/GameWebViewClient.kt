@@ -1456,6 +1456,11 @@ open class GameWebViewClient(
                 //   铺满 —— 与 auto 同为"清理外框"即可获得满屏拉伸效果。
                 return """
                 (function(){
+                  // ★ v4.3：优先走 waflash.html 页面内比例系统（假视口 + 输入映射）
+                  if (typeof window.__wafApplyAspect === 'function') {
+                    try { console.log('[WAF] applyAspect: ' + window.__wafApplyAspect('$ratio')); } catch(e) {}
+                    return;
+                  }
                   var old = document.getElementById('__aspectRatioStyle');
                   if (old) old.remove();
                   // 只清理 WAFlash 相关元素,Ruffle 不动(它走自身 letterbox 引擎)
@@ -1481,6 +1486,11 @@ open class GameWebViewClient(
             val targetRatio = w / h
             return """
             (function(){
+              // ★ v4.3：优先走 waflash.html 页面内比例系统（假视口 + 输入映射）
+              if (typeof window.__wafApplyAspect === 'function') {
+                try { console.log('[WAF] applyAspect: ' + window.__wafApplyAspect('$ratio')); } catch(e) {}
+                return;
+              }
               // Ruffle 引擎页面:Ruffle 自身 letterbox: "fullscreen" 已处理比例,不要外层 CSS 干预
               if (document.querySelector('ruffle-player')) {
                 return;

@@ -499,7 +499,7 @@ fun NeonSettingsScreen(
                                 NeonSettingsRow("Switch", "Eden 源码核心 · 密钥/固件/驱动管理/画面性能/主机模式", showArrow = true) { selectedCore = GamePlatform.NSWITCH }
                             }
                             selectedCategory == "about" -> NeonSettingsSection("关于") {
-                                NeonSettingsRow("版本", "4.2") { }
+                                NeonSettingsRow("版本", "4.3") { }
                                 NeonSettingsRow(
                                     "核心",
                                     "FCEUmm · Snes9x · mGBA · Genesis-Plus-GX · Geargrafx · DOSBox-Pure · FBNeo · melonDS · PCSX-ReARMed · PCEE2 (PCSX2) · Flycast (DC/NAOMI) · PPSSPP (PSP) · Azahar (3DS) · Ishiiruka (NGC/WII) · Cemu-AZ (Wii U)"

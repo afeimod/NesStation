@@ -125,12 +125,18 @@ class FbNeoEngine private constructor() : EmulatorEngine {
                     if (!running.get()) break
 
                     // === Netplay lockstep ===
+                    // ★★ v4.3 对战平台多玩家：FBNeo 支持 4 手柄 —— 走
+                    //   beforeFramePads（NetplayHook 新默认方法）取
+                    //   [pad1, pad2, pad3, pad4]，2P/3P/4P 各占一槽。
+                    //   旧 beforeFrame(pair) 由默认方法兜底转换，单机路径不受影响。
                     val npHook = _frameHook
                     if (npHook != null) {
-                        val pads = npHook.beforeFrame(_netFrame)
-                        if (pads != null) {
-                            FbNeoNative.setPad1(pads.first)
-                            FbNeoNative.setPad2(pads.second)
+                        val pads4 = npHook.beforeFramePads(_netFrame)
+                        if (pads4 != null) {
+                            FbNeoNative.setPad1(pads4[0])
+                            FbNeoNative.setPad2(pads4[1])
+                            FbNeoNative.setPad3(pads4[2])
+                            FbNeoNative.setPad4(pads4[3])
                         }
                     }
 

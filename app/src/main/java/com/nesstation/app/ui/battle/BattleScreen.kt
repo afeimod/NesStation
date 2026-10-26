@@ -274,7 +274,7 @@ fun BattleScreen(
                             return@ArcadeHallGrid
                         }
                         if (isFull) {
-                            statusMsg = "该桌已满（1P / 2P 都有人）"
+                            statusMsg = "该桌已满（4 个座位都有人）"
                             return@ArcadeHallGrid
                         }
                         val targetGame = selectedGame!!
@@ -692,7 +692,8 @@ private fun ArcadeHallGrid(
                     game = game,
                     room = room,
                     accent = CabinetPalette[index % CabinetPalette.size],
-                    onClick = { onJoinTable(room, room != null && room.guest.isNotBlank()) }
+                    // ★ v4.3：4 人满员判定（1P 单机开玩中也可加入 —— 快速同步画面后接入）
+                    onClick = { onJoinTable(room, room != null && room.players >= 4) }
                 )
             }
         }
@@ -711,9 +712,21 @@ private fun ArcadeTableCard(
     accent: Color,
     onClick: () -> Unit
 ) {
-    val occupied1P = room != null
-    val occupied2P = room != null && room.guest.isNotBlank()
-    val isFull = occupied1P && occupied2P
+    // ★ v4.3：4 座位（1P-4P）。slots 由服务器下发；老服务器缺字段时回退
+    //   到 host/guest 双座位判定。
+    val slots = room?.slots?.takeIf { it.isNotEmpty() } ?: run {
+        val s = ArrayList<Int>()
+        if (room != null) s.add(1)
+        if (room != null && room.guest.isNotBlank()) s.add(2)
+        s
+    }
+    val occupied1P = slots.contains(1)
+    val occupied2P = slots.contains(2)
+    val occupied3P = slots.contains(3)
+    val occupied4P = slots.contains(4)
+    val isFull = slots.size >= 4
+    // 对战中但仍可加入（1P 单机开玩 / 已有人对战且 <4 人）
+    val playingJoinable = room != null && (room.status == "playing" || room.status == "syncing") && !isFull
 
     Column(
         modifier = Modifier
@@ -764,11 +777,12 @@ private fun ArcadeTableCard(
                 )
                 Text(
                     when {
-                        isFull -> "对战中"
-                        occupied1P -> "等待 2P"
+                        isFull -> "4人满员·对战中"
+                        playingJoinable -> "对战中·可加入"
+                        occupied1P -> "等待 ${slots.size + 1}P"
                         else -> "空桌"
                     },
-                    color = if (isFull) Success else if (occupied1P) Warn else Color.White.copy(alpha = 0.6f),
+                    color = if (isFull) Success else if (playingJoinable) Color(0xFF64B5F6) else if (occupied1P) Warn else Color.White.copy(alpha = 0.6f),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -777,22 +791,36 @@ private fun ArcadeTableCard(
 
         Spacer(Modifier.height(8.dp))
 
-        // 1P / 2P 座位
+        // ★ v4.3：1P - 4P 四座位（3P/4P 徽章按服务器槽位显示占用）
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             SeatBadge(
                 label = "1P",
-                name = room?.host,
+                name = if (occupied1P) room?.host else null,
                 occupied = occupied1P,
                 accent = accent,
                 modifier = Modifier.weight(1f)
             )
             SeatBadge(
                 label = "2P",
-                name = room?.guest,
+                name = if (occupied2P) room?.guest else null,
                 occupied = occupied2P,
+                accent = accent,
+                modifier = Modifier.weight(1f)
+            )
+            SeatBadge(
+                label = "3P",
+                name = null,
+                occupied = occupied3P,
+                accent = accent,
+                modifier = Modifier.weight(1f)
+            )
+            SeatBadge(
+                label = "4P",
+                name = null,
+                occupied = occupied4P,
                 accent = accent,
                 modifier = Modifier.weight(1f)
             )

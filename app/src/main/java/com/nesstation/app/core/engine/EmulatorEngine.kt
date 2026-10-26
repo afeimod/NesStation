@@ -51,6 +51,19 @@ interface NetplayHook {
      */
     fun beforeFrame(frame: Long): Pair<Int, Int>?
 
+    /**
+     * ★★ v4.3 对战平台多玩家（1P-4P 后加入）：四手柄版本的每帧回调。
+     *
+     * 默认实现从 [beforeFrame] 的二元组推导（pad1/pad2）—— 单机与旧联机
+     * 路径行为不变。支持 4 手柄的核心（FBNeo 等）调用本方法并应用全部
+     * 4 个 pad；[NetplayController][com.nesstation.app.battle.NetplayController]
+     * 原生返回各槽位输入。
+     *
+     * @return `[pad1, pad2, pad3, pad4]` 位掩码数组；null = 引擎沿用当前 pad。
+     */
+    fun beforeFramePads(frame: Long): IntArray? =
+        beforeFrame(frame)?.let { intArrayOf(it.first, it.second) }
+
     /** Called on the emulation thread after each `runFrame()`. */
     fun afterFrame(frame: Long) {}
 }
