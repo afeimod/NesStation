@@ -846,6 +846,43 @@ func dialRoomV45(t *testing.T, addr, token, roomID string, spectate bool, want i
         return c
 }
 
+// dialRoomV47 v4.7 协议版本客户端（hello v=47 —— 新一代 restart 语义）。
+func dialRoomV47(t *testing.T, addr, token, roomID string, spectate bool, want int) *testClient {
+        t.Helper()
+        conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+        if err != nil {
+                t.Fatalf("dial %s: %v", addr, err)
+        }
+        hello := map[string]any{"type": "hello", "token": token, "roomId": roomID, "v": 47}
+        if spectate {
+                hello["spectate"] = true
+        }
+        if want > 0 {
+                hello["want"] = want
+        }
+        b, _ := json.Marshal(hello)
+        fmt.Fprintf(conn, "%s\n", b)
+        c := &testClient{t: t, conn: conn, rd: bufio.NewReaderSize(conn, 1<<20), msgs: make(chan relayMsg, 256), closed: make(chan struct{})}
+        go func() {
+                defer close(c.closed)
+                for {
+                        line, err := c.rd.ReadString('\n')
+                        if err != nil {
+                                return
+                        }
+                        line = strings.TrimSpace(line)
+                        if line == "" {
+                                continue
+                        }
+                        var m relayMsg
+                        if json.Unmarshal([]byte(line), &m) == nil {
+                                c.msgs <- m
+                        }
+                }
+        }()
+        return c
+}
+
 // TestV45RestartFallback 全员重开回退（核心不支持快照）：房主 ready 上报
 // stateCap=-1（出档探测失败）→ 加入者 ready → 服务器不玩出档 dance，直接广播
 // restart（含接入者槽位）→ 全员重新 ready → A 路径同时广播 start（帧 0 重开）。
@@ -856,15 +893,16 @@ func TestV45RestartFallback(t *testing.T) {
         addr := env.tcp.Addr().String()
         roomID := env.createRoom(t, tokH)
 
-        // v4.5.1 房主：单开（ready 带 stateCap=-1 —— 本作核心不支持快照）
-        host := dialRoomV45(t, addr, tokH, roomID, false, 0)
+        // v4.7 房主：单开（ready 带 stateCap=-1 —— 快照同步不可用：
+        //   v4.7 起非街机核心一律报 -1，PGM/改版街机同样 —— 服务器全员重开）
+        host := dialRoomV47(t, addr, tokH, roomID, false, 0)
         host.name = "rsHost"
         host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
         host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": -1})
         host.wait("start", func(m relayMsg) bool { return m.Type == "start" })
 
-        // v4.5.1 接入者 ready → 直接全员重开（无 pause / 无 state_req）
-        joiner := dialRoomV45(t, addr, tokJ, roomID, false, 0)
+        // v4.7 接入者 ready → 直接全员重开（无 pause / 无 state_req）
+        joiner := dialRoomV47(t, addr, tokJ, roomID, false, 0)
         joiner.name = "rsJoiner"
         joiner.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
         joiner.send(map[string]any{"type": "ready", "pad": 2, "stateCap": -1})
@@ -941,229 +979,301 @@ func TestV45AbortOrdering(t *testing.T) {
 
 // dialRoomV46 v4.6 协议版本客户端（hello v=46）。
 func dialRoomV46(t *testing.T, addr, token, roomID string, spectate bool, want int) *testClient {
-	t.Helper()
-	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
-	if err != nil {
-		t.Fatalf("dial %s: %v", addr, err)
-	}
-	hello := map[string]any{"type": "hello", "token": token, "roomId": roomID, "v": 46}
-	if spectate {
-		hello["spectate"] = true
-	}
-	if want > 0 {
-		hello["want"] = want
-	}
-	b, _ := json.Marshal(hello)
-	fmt.Fprintf(conn, "%s\n", b)
-	c := &testClient{t: t, conn: conn, rd: bufio.NewReaderSize(conn, 1<<20), msgs: make(chan relayMsg, 256), closed: make(chan struct{})}
-	go func() {
-		defer close(c.closed)
-		for {
-			line, err := c.rd.ReadString('\n')
-			if err != nil {
-				return
-			}
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			var m relayMsg
-			if json.Unmarshal([]byte(line), &m) == nil {
-				c.msgs <- m
-			}
-		}
-	}()
-	return c
+        t.Helper()
+        conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+        if err != nil {
+                t.Fatalf("dial %s: %v", addr, err)
+        }
+        hello := map[string]any{"type": "hello", "token": token, "roomId": roomID, "v": 46}
+        if spectate {
+                hello["spectate"] = true
+        }
+        if want > 0 {
+                hello["want"] = want
+        }
+        b, _ := json.Marshal(hello)
+        fmt.Fprintf(conn, "%s\n", b)
+        c := &testClient{t: t, conn: conn, rd: bufio.NewReaderSize(conn, 1<<20), msgs: make(chan relayMsg, 256), closed: make(chan struct{})}
+        go func() {
+                defer close(c.closed)
+                for {
+                        line, err := c.rd.ReadString('\n')
+                        if err != nil {
+                                return
+                        }
+                        line = strings.TrimSpace(line)
+                        if line == "" {
+                                continue
+                        }
+                        var m relayMsg
+                        if json.Unmarshal([]byte(line), &m) == nil {
+                                c.msgs <- m
+                        }
+                }
+        }()
+        return c
 }
 
 // TestV46MaxPlayersLimit 游戏人数上限（拳皇 2 人房）：
 // /api/games 与房间列表下发 maxPlayers=2；第 3 名玩家 TCP 握手被拒（含明确文案）；
 // want=3 超限同样被拒；观战不受人数上限约束；2 人正常开局。
 func TestV46MaxPlayersLimit(t *testing.T) {
-	env := newEnv(t, 0)
-	// 游戏列表改为 maxPlayers=2（拳皇类 2 人游戏）—— 热替换配置即生效
-	cur := env.cfg.get()
-	nc := *cur
-	nc.Games = []Game{{ID: "kof97", Title: "拳皇97", Platform: "arcade", ROMURL: "http://x/k.zip", MaxPlayers: 2}}
-	env.cfg.store(&nc)
+        env := newEnv(t, 0)
+        // 游戏列表改为 maxPlayers=2（拳皇类 2 人游戏）—— 热替换配置即生效
+        cur := env.cfg.get()
+        nc := *cur
+        nc.Games = []Game{{ID: "kof97", Title: "拳皇97", Platform: "arcade", ROMURL: "http://x/k.zip", MaxPlayers: 2}}
+        env.cfg.store(&nc)
 
-	tokH, _ := env.register(t, "mpHost")
-	tok2, _ := env.register(t, "mpP2")
-	tok3, _ := env.register(t, "mpP3")
-	addr := env.tcp.Addr().String()
-	roomID := env.createRoom(t, tokH)
+        tokH, _ := env.register(t, "mpHost")
+        tok2, _ := env.register(t, "mpP2")
+        tok3, _ := env.register(t, "mpP3")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
 
-	// 1. /api/games 下发 maxPlayers=2
-	req, _ := http.NewRequest("GET", env.srv.URL+"/api/games", nil)
-	req.Header.Set("Authorization", "Bearer "+tokH)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var gamesOut struct {
-		Games []struct {
-			ID         string `json:"id"`
-			MaxPlayers int    `json:"maxPlayers"`
-		} `json:"games"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&gamesOut); err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if len(gamesOut.Games) != 1 || gamesOut.Games[0].MaxPlayers != 2 {
-		t.Fatalf("games maxPlayers = %+v (want 2)", gamesOut.Games)
-	}
+        // 1. /api/games 下发 maxPlayers=2
+        req, _ := http.NewRequest("GET", env.srv.URL+"/api/games", nil)
+        req.Header.Set("Authorization", "Bearer "+tokH)
+        resp, err := http.DefaultClient.Do(req)
+        if err != nil {
+                t.Fatal(err)
+        }
+        var gamesOut struct {
+                Games []struct {
+                        ID         string `json:"id"`
+                        MaxPlayers int    `json:"maxPlayers"`
+                } `json:"games"`
+        }
+        if err := json.NewDecoder(resp.Body).Decode(&gamesOut); err != nil {
+                t.Fatal(err)
+        }
+        resp.Body.Close()
+        if len(gamesOut.Games) != 1 || gamesOut.Games[0].MaxPlayers != 2 {
+                t.Fatalf("games maxPlayers = %+v (want 2)", gamesOut.Games)
+        }
 
-	// 2. 房间列表 maxPlayers=2
-	req2, _ := http.NewRequest("GET", env.srv.URL+"/api/rooms", nil)
-	req2.Header.Set("Authorization", "Bearer "+tokH)
-	resp2, err := http.DefaultClient.Do(req2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var roomsOut struct {
-		Rooms []struct {
-			ID         string `json:"id"`
-			MaxPlayers int    `json:"maxPlayers"`
-		} `json:"rooms"`
-	}
-	if err := json.NewDecoder(resp2.Body).Decode(&roomsOut); err != nil {
-		t.Fatal(err)
-	}
-	resp2.Body.Close()
-	if len(roomsOut.Rooms) != 1 || roomsOut.Rooms[0].MaxPlayers != 2 {
-		t.Fatalf("room maxPlayers = %+v (want 2)", roomsOut.Rooms)
-	}
+        // 2. 房间列表 maxPlayers=2
+        req2, _ := http.NewRequest("GET", env.srv.URL+"/api/rooms", nil)
+        req2.Header.Set("Authorization", "Bearer "+tokH)
+        resp2, err := http.DefaultClient.Do(req2)
+        if err != nil {
+                t.Fatal(err)
+        }
+        var roomsOut struct {
+                Rooms []struct {
+                        ID         string `json:"id"`
+                        MaxPlayers int    `json:"maxPlayers"`
+                } `json:"rooms"`
+        }
+        if err := json.NewDecoder(resp2.Body).Decode(&roomsOut); err != nil {
+                t.Fatal(err)
+        }
+        resp2.Body.Close()
+        if len(roomsOut.Rooms) != 1 || roomsOut.Rooms[0].MaxPlayers != 2 {
+                t.Fatalf("room maxPlayers = %+v (want 2)", roomsOut.Rooms)
+        }
 
-	// 3. 1P 开桌 + 2P 加入（2 人房正常）
-	host := dialRoomV46(t, addr, tokH, roomID, false, 0)
-	host.name = "mpHost"
-	host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
-	host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
-	host.wait("start", func(m relayMsg) bool { return m.Type == "start" })
+        // 3. 1P 开桌 + 2P 加入（2 人房正常）
+        host := dialRoomV46(t, addr, tokH, roomID, false, 0)
+        host.name = "mpHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        host.wait("start", func(m relayMsg) bool { return m.Type == "start" })
 
-	p2 := dialRoomV46(t, addr, tok2, roomID, false, 0)
-	p2.name = "mpP2"
-	p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
-	p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        p2 := dialRoomV46(t, addr, tok2, roomID, false, 0)
+        p2.name = "mpP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
 
-	// 4. 第 3 名玩家想入座（自动槽位）→ 被拒（人数上限 2）
-	p3 := dialRoomV46(t, addr, tok3, roomID, false, 0)
-	p3.name = "mpP3"
-	em := p3.wait("p3 full error", func(m relayMsg) bool { return m.Type == "error" })
-	if !strings.Contains(em.Msg, "最多 2 人") {
-		t.Fatalf("p3 error = %+v (want 人数上限文案)", em)
-	}
+        // 4. 第 3 名玩家想入座（自动槽位）→ 被拒（人数上限 2）
+        p3 := dialRoomV46(t, addr, tok3, roomID, false, 0)
+        p3.name = "mpP3"
+        em := p3.wait("p3 full error", func(m relayMsg) bool { return m.Type == "error" })
+        if !strings.Contains(em.Msg, "最多 2 人") {
+                t.Fatalf("p3 error = %+v (want 人数上限文案)", em)
+        }
 
-	// 5. 第 3 名玩家指定 3P 座位 → 同样被拒（超上限）
-	p3b := dialRoomV46(t, addr, tok3, roomID, false, 3)
-	p3b.name = "mpP3b"
-	em2 := p3b.wait("want=3 reject", func(m relayMsg) bool { return m.Type == "error" })
-	if !strings.Contains(em2.Msg, "最多 2 人") {
-		t.Fatalf("want=3 error = %+v", em2)
-	}
+        // 5. 第 3 名玩家指定 3P 座位 → 同样被拒（超上限）
+        p3b := dialRoomV46(t, addr, tok3, roomID, false, 3)
+        p3b.name = "mpP3b"
+        em2 := p3b.wait("want=3 reject", func(m relayMsg) bool { return m.Type == "error" })
+        if !strings.Contains(em2.Msg, "最多 2 人") {
+                t.Fatalf("want=3 error = %+v", em2)
+        }
 
-	// 6. 第 3 名玩家观战 → 正常加入（观战不受人数上限约束）
-	p3s := dialRoomV46(t, addr, tok3, roomID, true, 0)
-	p3s.name = "mpP3s"
-	h := p3s.wait("spectator hello", func(m relayMsg) bool { return m.Type == "hello" })
-	if h.Msg != "spectator" {
-		t.Fatalf("spectator hello = %+v", h)
-	}
+        // 6. 第 3 名玩家观战 → 正常加入（观战不受人数上限约束）
+        p3s := dialRoomV46(t, addr, tok3, roomID, true, 0)
+        p3s.name = "mpP3s"
+        h := p3s.wait("spectator hello", func(m relayMsg) bool { return m.Type == "hello" })
+        if h.Msg != "spectator" {
+                t.Fatalf("spectator hello = %+v", h)
+        }
 
-	// 7. HTTP join（玩家模式）→ 409 + spectateOnly
-	req3, _ := http.NewRequest("POST", env.srv.URL+"/api/rooms/"+roomID+"/join", nil)
-	req3.Header.Set("Authorization", "Bearer "+tok3)
-	resp3, err := http.DefaultClient.Do(req3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp3.Body.Close()
-	if resp3.StatusCode != http.StatusConflict {
-		t.Fatalf("join status = %d (want 409)", resp3.StatusCode)
-	}
-	var joinOut struct {
-		SpectateOnly bool `json:"spectateOnly"`
-	}
-	_ = json.NewDecoder(resp3.Body).Decode(&joinOut)
-	if !joinOut.SpectateOnly {
-		t.Fatal("满员 join 未带 spectateOnly 引导观战")
-	}
+        // 7. HTTP join（玩家模式）→ 409 + spectateOnly
+        req3, _ := http.NewRequest("POST", env.srv.URL+"/api/rooms/"+roomID+"/join", nil)
+        req3.Header.Set("Authorization", "Bearer "+tok3)
+        resp3, err := http.DefaultClient.Do(req3)
+        if err != nil {
+                t.Fatal(err)
+        }
+        defer resp3.Body.Close()
+        if resp3.StatusCode != http.StatusConflict {
+                t.Fatalf("join status = %d (want 409)", resp3.StatusCode)
+        }
+        var joinOut struct {
+                SpectateOnly bool `json:"spectateOnly"`
+        }
+        _ = json.NewDecoder(resp3.Body).Decode(&joinOut)
+        if !joinOut.SpectateOnly {
+                t.Fatal("满员 join 未带 spectateOnly 引导观战")
+        }
 }
 
 // TestV46RestartReqSelfRescue 成员自救：对局中某成员同步画面装载失败 /
 // 核心复位失败 → 发 restart_req → 服务器广播全员重开 → 重新 ready → 同帧 start。
 func TestV46RestartReqSelfRescue(t *testing.T) {
-	env := newEnv(t, 0)
-	tokH, _ := env.register(t, "rrHost")
-	tokP2, _ := env.register(t, "rrP2")
-	addr := env.tcp.Addr().String()
-	roomID := env.createRoom(t, tokH)
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "rrHost")
+        tokP2, _ := env.register(t, "rrP2")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
 
-	// 两人先正常开局（A 路径：全员 ready → start）
-	host := dialRoomV46(t, addr, tokH, roomID, false, 0)
-	host.name = "rrHost"
-	host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
-	p2 := dialRoomV46(t, addr, tokP2, roomID, false, 0)
-	p2.name = "rrP2"
-	p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
-	host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
-	p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
-	for _, c := range []*testClient{host, p2} {
-		st := c.wait("initial start", func(m relayMsg) bool { return m.Type == "start" })
-		if len(st.Players) != 2 {
-			t.Fatalf("[%s] start players = %v", c.name, st.Players)
-		}
-	}
+        // 两人先正常开局（A 路径：全员 ready → start）
+        host := dialRoomV47(t, addr, tokH, roomID, false, 0)
+        host.name = "rrHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2 := dialRoomV47(t, addr, tokP2, roomID, false, 0)
+        p2.name = "rrP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        for _, c := range []*testClient{host, p2} {
+                st := c.wait("initial start", func(m relayMsg) bool { return m.Type == "start" })
+                if len(st.Players) != 2 {
+                        t.Fatalf("[%s] start players = %v", c.name, st.Players)
+                }
+        }
 
-	// p2 装载失败自救：restart_req → 全员收 restart（含房主）
-	p2.send(map[string]any{"type": "restart_req"})
-	for _, c := range []*testClient{host, p2} {
-		rs := c.wait("restart broadcast", func(m relayMsg) bool { return m.Type == "restart" })
-		if len(rs.Players) != 2 {
-			t.Fatalf("[%s] restart players = %v", c.name, rs.Players)
-		}
-	}
+        // p2 装载失败自救：restart_req → 全员收 restart（含房主）
+        p2.send(map[string]any{"type": "restart_req"})
+        for _, c := range []*testClient{host, p2} {
+                rs := c.wait("restart broadcast", func(m relayMsg) bool { return m.Type == "restart" })
+                if len(rs.Players) != 2 {
+                        t.Fatalf("[%s] restart players = %v", c.name, rs.Players)
+                }
+        }
 
-	// 重复 restart_req（状态已回 waiting）→ 幂等忽略，不再广播
-	p2.send(map[string]any{"type": "restart_req"})
-	host.expectNone("no duplicate restart", func(m relayMsg) bool { return m.Type == "restart" })
+        // 重复 restart_req（状态已回 waiting）→ 幂等忽略，不再广播
+        p2.send(map[string]any{"type": "restart_req"})
+        host.expectNone("no duplicate restart", func(m relayMsg) bool { return m.Type == "restart" })
 
-	// 全员重新 ready → 同帧 start（从帧 0 重开）
-	host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
-	p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
-	for _, c := range []*testClient{host, p2} {
-		c.wait("restart start", func(m relayMsg) bool { return m.Type == "start" })
-	}
+        // 全员重新 ready → 同帧 start（从帧 0 重开）
+        host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        for _, c := range []*testClient{host, p2} {
+                c.wait("restart start", func(m relayMsg) bool { return m.Type == "start" })
+        }
 }
 
 // TestV46RestartReqMixedOld 混合旧客户端房间：成员 restart_req → 不广播 restart
 // （旧客户端不认识 restart 会挂死），请求者收明确 error。
 func TestV46RestartReqMixedOld(t *testing.T) {
-	env := newEnv(t, 0)
-	tokH, _ := env.register(t, "roHost")
-	tokP2, _ := env.register(t, "roP2")
-	addr := env.tcp.Addr().String()
-	roomID := env.createRoom(t, tokH)
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "roHost")
+        tokP2, _ := env.register(t, "roP2")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
 
-	// 旧客户端房主（无 v 字段）+ v4.6 成员
-	host := dialRoom(t, addr, tokH, roomID, false, 0)
-	host.name = "roHost"
-	host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
-	p2 := dialRoomV46(t, addr, tokP2, roomID, false, 0)
-	p2.name = "roP2"
-	p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
-	host.send(map[string]any{"type": "ready", "pad": 2})
-	p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
-	for _, c := range []*testClient{host, p2} {
-		c.wait("initial start", func(m relayMsg) bool { return m.Type == "start" })
-	}
+        // 旧客户端房主（无 v 字段）+ v4.6 成员
+        host := dialRoom(t, addr, tokH, roomID, false, 0)
+        host.name = "roHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2 := dialRoomV46(t, addr, tokP2, roomID, false, 0)
+        p2.name = "roP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2})
+        p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        for _, c := range []*testClient{host, p2} {
+                c.wait("initial start", func(m relayMsg) bool { return m.Type == "start" })
+        }
 
-	// v4.6 成员自救请求 → 混合房间不能广播 restart → 请求者收 error
-	p2.send(map[string]any{"type": "restart_req"})
-	em := p2.wait("mixed old error", func(m relayMsg) bool { return m.Type == "error" })
-	if !strings.Contains(em.Msg, "升级") {
-		t.Fatalf("mixed old error = %+v", em)
-	}
-	host.expectNone("host must not receive restart", func(m relayMsg) bool { return m.Type == "restart" })
+        // v4.6 成员自救请求 → 混合房间不能广播 restart → 请求者收 error
+        p2.send(map[string]any{"type": "restart_req"})
+        em := p2.wait("mixed old error", func(m relayMsg) bool { return m.Type == "error" })
+        if !strings.Contains(em.Msg, "升级") {
+                t.Fatalf("mixed old error = %+v", em)
+        }
+        host.expectNone("host must not receive restart", func(m relayMsg) bool { return m.Type == "restart" })
+}
+
+// ---- ★★ v4.7：等待开局阶段掉线重开局 + 重开语义版本门槛 ----
+
+// TestV47DropWhileWaitingAllReady 等待开局（含 restart 重开后的再就绪）阶段
+// 有人离开：剩余玩家若已全部 ready → 服务器立即广播 start（不再“等一个
+// 已走掉的人”；房间状态与 players 槽位不漂移）。未全部 ready 不触发。
+func TestV47DropWhileWaitingAllReady(t *testing.T) {
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "dwHost")
+        tokP2, _ := env.register(t, "dwP2")
+        tokP3, _ := env.register(t, "dwP3")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        // 三人进房：host ready、P2 未 ready、P3 ready —— 不满足全员就绪
+        host := dialRoomV47(t, addr, tokH, roomID, false, 0)
+        host.name = "dwHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2 := dialRoomV47(t, addr, tokP2, roomID, false, 0)
+        p2.name = "dwP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p3 := dialRoomV47(t, addr, tokP3, roomID, false, 0)
+        p3.name = "dwP3"
+        p3.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        p3.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        // host/p3 互收 peer_ready，不应有 start
+        host.expectNone("not all ready, no start", func(m relayMsg) bool { return m.Type == "start" })
+
+        // P2 掉线 → 剩余（host、P3）已全部 ready → 立即广播 start
+        p2.send(map[string]any{"type": "bye"})
+        for _, c := range []*testClient{host, p3} {
+                st := c.wait("start after drop", func(m relayMsg) bool { return m.Type == "start" })
+                if len(st.Players) != 2 {
+                        t.Fatalf("[%s] start players = %v (want [1 3])", c.name, st.Players)
+                }
+                for _, s := range st.Players {
+                        if s == 2 {
+                                t.Fatalf("[%s] start players contains dropped slot: %v", c.name, st.Players)
+                        }
+                }
+        }
+}
+
+// TestV47RestartReqV46Rejected v4.6 客户端（旧重开语义）restart_req：
+// 房间不再视为支持重开 → 请求者收“升级”错误，不广播 restart。
+func TestV47RestartReqV46Rejected(t *testing.T) {
+        env := newEnv(t, 0)
+        tokH, _ := env.register(t, "vrHost")
+        tokP2, _ := env.register(t, "vrP2")
+        addr := env.tcp.Addr().String()
+        roomID := env.createRoom(t, tokH)
+
+        host := dialRoomV47(t, addr, tokH, roomID, false, 0)
+        host.name = "vrHost"
+        host.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        p2 := dialRoomV46(t, addr, tokP2, roomID, false, 0) // v4.6 成员（旧语义）
+        p2.name = "vrP2"
+        p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
+        host.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1})
+        for _, c := range []*testClient{host, p2} {
+                c.wait("initial start", func(m relayMsg) bool { return m.Type == "start" })
+        }
+
+        p2.send(map[string]any{"type": "restart_req"})
+        em := p2.wait("v46 rejected", func(m relayMsg) bool { return m.Type == "error" })
+        if !strings.Contains(em.Msg, "升级") {
+                t.Fatalf("v46 restart_req error = %+v", em)
+        }
+        host.expectNone("no restart for v46 room", func(m relayMsg) bool { return m.Type == "restart" })
 }

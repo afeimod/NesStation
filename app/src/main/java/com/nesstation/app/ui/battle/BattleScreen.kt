@@ -299,7 +299,8 @@ fun BattleScreen(
                         if (selectedGame == null) {
                             if (loggedIn) "已登录：$username" else "虚拟账号 · 实时联机"
                         } else {
-                            "选桌入座 · 2P/3P/4P · 满员可观战"   // ★ v4.4：不再是只有 1P/2P
+                            // ★★ v4.7 按本作人数上限动态显示（读取 /api/games 的 maxPlayers）
+                            "选桌入座 · 本作最多 ${selectedGame!!.maxPlayers} 人同玩 · 满员可观战"
                         },
                         color = SecondaryText,
                         fontSize = 10.sp
@@ -391,6 +392,7 @@ fun BattleScreen(
     seatDialogRoom?.let { room ->
         JoinSeatDialog(
             room = room,
+            gameMaxP = selectedGame?.maxPlayers ?: 4,
             tableNo = if (room.table in 1..TABLE_COUNT) room.table else seatDialogTable,
             onDismiss = { seatDialogRoom = null },
             onPick = { spectate, wantSlot ->
@@ -777,8 +779,11 @@ private fun ArcadeTableCard(
     }
     val occupied1P = slots.contains(1)
     val occupied2P = slots.contains(2)
-    // ★★ v4.6 本游戏人数上限（拳皇 2 人房只摆 1P/2P 两个座位；旧服务器 = 4）
-    val maxP = (room?.maxPlayers ?: 4).coerceIn(1, 4)
+    // ★★ v4.6 本游戏人数上限（拳皇 2 人房只摆 1P/2P 两个座位；旧服务器 = 4）。
+    //   ★★ v4.7 修复：空桌（无房间数据）此前回退 4 —— 2 人游戏也显示 3P/4P 座位。
+    //   现改用【游戏条目的 maxPlayers】（/api/games）兑底；有房间时与房间快照
+    //   取小（房间快照是开桌时的配置，改过配置的老桌不再误导摆座）。
+    val maxP = minOf(room?.maxPlayers ?: 4, game.maxPlayers).coerceIn(1, 4)
     val isFull = slots.size >= maxP
     // 对战中但仍可加入（1P 单机开玩 / 已有人对战且未满员）
     val playingJoinable = room != null && (room.status == "playing" || room.status == "syncing") && !isFull
@@ -934,6 +939,7 @@ private fun SeatBadge(
 @Composable
 private fun JoinSeatDialog(
     room: BattleApi.Room,
+    gameMaxP: Int = 4,
     tableNo: Int,
     onDismiss: () -> Unit,
     onPick: (spectate: Boolean, wantSlot: Int) -> Unit
@@ -947,10 +953,13 @@ private fun JoinSeatDialog(
     }
     // ★★ v4.6 本游戏人数上限：座位选项只列到这里（拳皇 2 人房只有 2P 入座；
     //   旧服务器缺字段 = 4）。服务器侧同样强制 —— 超限入座会在握手时被拒。
-    val maxP = room.maxPlayers.coerceIn(1, 4)
+    //   ★★ v4.7：与游戏条目 maxPlayers 取小 —— 房间快照是开桌瞬间的配置，
+    //   开桌后改过配置的老桌不再误导摆座（快照 4 + 当前配置 2 → 按当前 2 摆）。
+    val maxP = minOf(room.maxPlayers, gameMaxP).coerceIn(1, 4)
     val isFull = slots.size >= maxP
     val statusText = when (room.status) {
-        "playing", "syncing" -> "对战中 · 接入后自动同步画面"
+        // ★★ v4.7：街机（快照可用）接入 = 自动同步画面；其他核心 = 全员同时重开
+        "playing", "syncing" -> "对战中 · 接入后自动同步画面/全员重开"
         else -> "等待中 · 同步开跑"
     }
 

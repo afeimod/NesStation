@@ -23,8 +23,11 @@ import kotlin.math.max
  *  - **多槽位输入**：input 消息带槽位（1P=1…4P=4），padsHistory[1..4] 按槽位
  *    存输入；beforeFramePads 返回 4 手柄（FBNeo 等核心 setPad1..4 全用，
  *    2 手柄核心只用前两个 —— 3P/4P 仍可观战同画面）。
- *  - **帧计数对齐**：非房主端维护 frameOffset（本地帧 + offset = 网络帧号），
- *    恢复时 offset = 存档帧 - 本地暂停帧，保证全员网络帧号一致。
+ *  - **帧计数对齐**（★★ v4.7 重写）：网络帧号由控制器内部计数器发号，
+ *    不再用引擎本地帧换算 —— start（0）/resume 装载（存档帧）/restart
+ *    复位（0）三类对齐事件直接改写计数器，全员 (netFrame→输入) 序列
+ *    严格一致（旧版引擎计数器在重开复位瞬间错位 → “1p 等 2p、2p 等
+ *    1p” 互等死锁，v4.7 根治）。
  *
  * ## 设计要点（★ 同步启动门 + 阻塞锁步 + ★★ v4.4 预测回滚）
  *
@@ -173,8 +176,27 @@ class NetplayController(
     // === ★ v4.3 按槽位的帧历史：padsHistory[1..4] : 网络帧 -> pad ===
     private val padsHistory = Array(5) { ConcurrentHashMap<Long, Int>() }
 
-    /** 网络帧号 = 本地帧 + frameOffset（房主恒 0；后加入按存档帧对齐）。 */
+    /** ★★ v4.7 已废弃：旧版“网络帧号 = 引擎本地帧 + frameOffset”换算的偏移量。
+     *   仅作注释保留（新代码一律用内部帧号计数器 netFrameCounter）。
+     *   引擎线程当前（或即将）暂停处的本地帧号仅作“引擎已挂门”信号使用。 */
     @Volatile private var frameOffset = 0L
+
+    // === ★★ v4.7 控制器内部帧号（互等死锁根治） ===
+    // 背景：v4.5.1~v4.6 的 netFrame = 引擎本地帧 + frameOffset。全员重开（restart）
+    //   时 resetToBoot 把引擎帧计数器清回 0，但【正在飞行中的 beforeFrame 调用】
+    //   还携带着旧帧号（房主 ~N+1、接入者 1）—— 各端引擎计数器在复位瞬间错位，
+    //   frameOffset 又从不重对齐 → 重开后 1P 在 ~N-5 等 2P 的输入、2P 在 ~0 等
+    //   1P 的输入，谁也等不到 → “1p 等 2p，2p 等 1p” 互等死锁。
+    // 修复：网络帧号改由控制器【自己计数】（每次过门后发帧 +1）。引擎传什么帧号
+    //   只当参考（引擎计数器复位错位不再影响同步）；start/resume/restart 三类
+    //   对齐事件直接改写计数器，全员从同一帧号起跑。锁步所需的 (netFrame→pads)
+    //   序列在各端严格一致。
+    /** 下一个待发出的网络帧号（仅引擎线程消费；网络线程仅在引擎挂门时改写）。 */
+    @Volatile private var netFrameCounter = 0L
+    /** 最近一次 beforeFrame 已发出的网络帧号（afterFrame 记账用）。 */
+    @Volatile private var lastIssuedNetFrame = -1L
+    /** 本帧为零输入过渡帧（重启请求/无连接的让路帧）—— afterFrame 跳过记账。 */
+    @Volatile private var zeroPadFrame = false
 
     /** 活跃槽位（要等待其输入的远端槽位 = activeRemoteSlots；本地槽位除外）。 */
     private val activeSlots = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
@@ -201,26 +223,10 @@ class NetplayController(
     /** ★★ v4.3 后加入：同步暂停门（pause→resume 之间引擎线程挂起）。 */
     @Volatile private var syncPaused = false
     private val syncGate = Object()
-    /** 引擎线程当前（或即将）暂停处的本地帧号 —— resume 时据此换算 frameOffset。 */
+    /** 引擎线程当前（或即将）暂停处的本地帧号 —— ★★ v4.7 仅作“引擎已挂门”信号
+     *   （存档/装载的安全窗口判定）；不再参与网络帧号推算。 */
     @Volatile private var parkedLocalFrame: Long = -1L
     @Volatile private var lastWaitNoticeMs = 0L
-
-    /** ★★ v4.6.1 待应用的时间线恢复（resume 到达 → 网络线程只挂起+开门；
-     *   装载档/种子输入/frameOffset 对齐全部由引擎线程在 beforeFrame 安全点
-     *   串行应用 —— 根治 cache 模式竞态：resume 先于房主挂门到达时，
-     *   parkedLocalFrame 仍是 -1，旧实现兜底取 0 导致 frameOffset 错位存档帧
-     *   整数百帧 + 跨线程装载撕裂核心状态 → 双方互等输入死锁（FPS 0）。 */
-    @Volatile private var pendingResume: PendingResume? = null
-
-    /** v4.6.1 一次 resume 的全部待应用数据（网络线程写、引擎线程读后置空）。 */
-    private class PendingResume(
-        val dataBase64: String?,          // 存档（null = 无档裸恢复）
-        val frame: Long,                  // 存档帧号（-1 = 无档）
-        val finalDelay: Int,
-        val players: List<Int>,
-        val hist: Map<Int, List<Int>>?,
-        val histEnd: Long,
-    )
 
     /** 存档 I/O 桥（EmulatorScreen 注入）。 */
     @Volatile private var stateIo: StateIo? = null
@@ -322,8 +328,10 @@ class NetplayController(
             this@NetplayController.inputDelay = inputDelay.coerceIn(0, 16)
             activeSlots.clear()
             activeSlots.addAll(players)
-            // 房主单开 / 全员同步开跑：帧 0 起，offset 恒 0
-            frameOffset = 0
+            // 房主单开 / 全员同步开跑：帧 0 起（★★ v4.7 内部帧号计数器归零 ——
+            //   引擎本地帧号不再参与网络帧号推算，引擎计数器错位不再影响同步）
+            netFrameCounter = 0L
+            lastIssuedNetFrame = -1L
             parkedLocalFrame = -1
             android.util.Log.i("NetplayController", "onStart: delay=$inputDelay players=$players")
             synchronized(startGate) { started = true; startGate.notifyAll() }
@@ -388,13 +396,14 @@ class NetplayController(
         }
 
         override fun onRestart(inputDelay: Int, players: List<Int>) {
-            // ★★ v4.5.1 全员重开（本作核心不支持画面快照同步 —— 服务器编排）：
-            //   本端复位控制器簿记 + 置 restartPending（引擎线程下一个 beforeFrame
-            //   串行做核心复位 retro_reset，无并发），随后回到启动门等全员重新
-            //   ready → 服务器广播 start → 全员从帧 0（开机状态）同步开跑。
-            dispatch { it.onSyncStatus("新玩家接入：本作不支持画面快照，全员重新开局…") }
+            // ★★ v4.7 全员同时重开（服务器编排；非街机核心的中途接入一律走这里
+            //   ——  快照同步仅限 FBNeo，其余核心按"4.2 同时重开"语义）：
+            //   本端置 restartPending（引擎线程下一个 beforeFrame 串行做核心复位
+            //   retro_reset，无并发）→ 复位完成由 applyRestartOnEngineThread 直接触发
+            //   重新探测 + 发 ready → 服务器收齐全员 ready 广播 start → 全员从
+            //   帧 0（开机状态）同步开跑。
+            dispatch { it.onSyncStatus("新玩家接入：全员同时重开一局，回到开局状态…") }
             android.util.Log.i("NetplayController", "restart: 全员重开（players=$players delay=$inputDelay）")
-            val wasLoaded = engineLoaded
             restartPending = true
             restartFailed = false   // ★★ v4.6 每轮重开重置失败标记（上一轮失败不影响本轮）
             // 先开门让引擎线程能走到复位点（同步暂停门/启动门都放行到重启检查）
@@ -405,26 +414,17 @@ class NetplayController(
             lastUploadFrame = -1L
             uploadGapFrames = UPLOAD_GAP_SMALL
             parkedLocalFrame = -1L
-            pendingResume = null   // ★★ v4.6.1 重开优先：丢弃未应用的 resume
-            frameOffset = 0L
             pendingSlots.clear()
             if (players.isNotEmpty()) {
                 activeSlots.clear()
                 activeSlots.addAll(players)
             }
-            if (wasLoaded) {
-                // 已加载完的端：等引擎线程应用完复位后重新探测能力 + 发 ready
-                //（★★ v4.6 复位失败的端不重新 ready —— 防未复位核心从帧 0 发散）
-                Thread({
-                    var waitMs = 0L
-                    while (restartPending && waitMs < 5000) {
-                        Thread.sleep(10); waitMs += 10
-                    }
-                    if (!restartFailed) notifyEngineReady()
-                }, "battle-restart-ready").apply { isDaemon = true }.start()
-            }
-            // 引擎还在加载的端：复位对它本来就是开机态，等自然加载完成 →
-            // EmulatorScreen 会调 notifyEngineReady（engineLoaded 已复位）
+            // ★★ v4.7 已加载完的端：不再由定时线程等复位后发 ready ——
+            //   applyRestartOnEngineThread（引擎线程、复位成功后）直接调
+            //   notifyEngineReady（此刻核心刚复位、引擎线程就在现场 —— 探测/出档
+            //   天然安全，且不存在"5 秒没等到复位就发 ready"的带病开跑窗口）。
+            //   引擎还在加载的端：复位对它本来就是开机态，加载完成后
+            //   EmulatorScreen 会调 notifyEngineReady（engineLoaded 已复位）。
         }
 
         override fun onPeerReady(username: String) {
@@ -503,7 +503,9 @@ class NetplayController(
             resumeInternal(null, inputDelay, activeSlots.toList())
             return
         }
-        val stateFrame = parkedLocal + frameOffset   // 房主 offset 恒 0，双保险
+        // ★★ v4.7：存档对应的网络帧号 = 最近已执行帧 + 1（引擎此刻挂在同步门上，
+        //   帧号由控制器内部计数器推算 —— 引擎本地帧号复位错位不影响这里）
+        val stateFrame = lastIssuedNetFrame + 1L
         // 2. 即时存档（引擎线程挂在门上，安全）
         val file = File(io.stateDir(), "battle_join_sync.state")
         if (!io.saveStateTo(file)) {
@@ -586,81 +588,53 @@ class NetplayController(
      * ★★ v4.5 统一装载：房主也不再跳过 —— 服务器可能下发“缓存档”（房主出档
      *   失败/掉线时的回退路径，比房主当前进度旧），全员装载同一份才能保证一致；
      *   房主自己刚出的新鲜档装载 = 无操作，行为不变。
-     * ★★ v4.6.1 帧号重对齐挪引擎线程：frameOffset = frame - 引擎线程当前本地帧
-     *   （新鲜档 = 0；缓存档 = 负偏移回退，仍同帧）—— 本函数只挂起待应用数据
-     *   并开门，装载/种子/对齐见 applyTimelineResume（竞态免疫，见其注释）。 */
+     * ★★ v4.7 帧号对齐：装载成功 → 控制器内部帧号计数器直接改写为存档帧 ——
+     *   全员（含房主）下一个发出的网络帧号严格等于存档帧，不再依赖
+     *   “引擎本地帧 + frameOffset”换算（引擎计数器在 restart 复位等场合会错位）。
+     *   新鲜档 = 零回退；缓存档 = 回退到缓存帧，仍全员同帧。装载失败 → 计数器
+     *   不动（各端从各自暂停前的网络帧继续 —— 暂停前本就同帧一致）。 */
     private fun resumeInternal(dataBase64: String?, finalDelay: Int, players: List<Int>,
                                frame: Long = -1L, hist: Map<Int, List<Int>>? = null, histEnd: Long = 0L) {
-        // ★★ v4.6.1 全部应用挪到引擎线程（beforeFrame 安全点 —— applyTimelineResume）：
-        //   网络线程只挂起待应用数据 + 开门。旧实现在此线程直接装载档并读
-        //   parkedLocalFrame 换算 frameOffset，隐含“引擎线程已挂上暂停门”的假设；
-        //   cache 模式下服务器 pause 与 resume 几乎同发（pause+state → state_ok →
-        //   resume 全程 1 个 RTT），低端设备帧边界慢于 RTT 时假设不成立：
-        //   ① 装载与引擎跑帧并发撕裂核心状态；② parkedLocal 未写入（-1）兜底取 0，
-        //   frameOffset 错位存档帧数百帧 → 延迟锁步互等死锁（1P 等 2P、2P 等 1P）。
-        //   挪到引擎线程后：装载/对齐与跑帧天然串行，帧号由引擎线程自己掌握，
-        //   任何 pause/resume 到达时序下时间线都精确对齐到存档帧。
-        pendingResume = PendingResume(dataBase64, frame, finalDelay, players, hist, histEnd)
-        // 开门：引擎线程继续（syncPaused 先放行，started 兜底放行 joiner）；
-        // 过门后第一个 beforeFrame 即应用时间线恢复。
-        synchronized(syncGate) { syncPaused = false; syncGate.notifyAll() }
-        synchronized(startGate) { started = true; startGate.notifyAll() }
-    }
-
-    /** ★★ v4.6.1 引擎线程安全点应用时间线恢复（beforeFrame 挂门循环后调用）。
-     *  [localFrame] = 即将执行的本地帧号（引擎线程自己掌握，零竞态）：
-     *  装载成功 → frameOffset = frame - localFrame，本帧即时间线帧 frame。 */
-    private fun applyTimelineResume(pr: PendingResume, localFrame: Long) {
-        var loaded = false
-        if (pr.dataBase64 != null && pr.frame >= 0) {
-            val io = stateIo
+        val io = stateIo
+        if (dataBase64 != null && frame >= 0 && io != null) {
             val bytes = try {
-                android.util.Base64.decode(pr.dataBase64, android.util.Base64.NO_WRAP)
+                android.util.Base64.decode(dataBase64, android.util.Base64.NO_WRAP)
             } catch (_: Throwable) { null }
-            if (io != null && bytes != null && bytes.isNotEmpty()) {
+            if (bytes != null && bytes.isNotEmpty()) {
+                // 引擎线程此刻挂在门上（未 start → startGate；已 start → syncGate）
                 val file = File(io.stateDir(), "battle_join_sync.state")
-                loaded = try {
+                val loaded = try {
                     file.writeBytes(bytes); io.loadStateFrom(file)
                 } catch (_: Throwable) { false }
+                if (!loaded) {
+                    // ★★ v4.6 装载失败不再断开退出：向服务器请求全员重开
+                    //   （回开机态、从帧 0 同步重跑 —— 接入者留下一起重开）。
+                    //   本端先从各自暂停帧裸恢复（不装载），等 restart 到达接管；
+                    //   混合旧客户端的房间服务器会回 error 说明 —— 也不卡死。
+                    dispatch { it.onSyncStatus("同步画面装载失败，已请求全员重新开局…") }
+                    try { net?.sendRestartReq() } catch (_: Throwable) {}
+                } else {
+                    // ★★ v4.7 内部帧号计数器 = 存档帧：全员下一个发出的网络帧号
+                    //   严格一致（引擎此刻挂在门上，无并发消费 —— 改写安全）
+                    netFrameCounter = frame
+                }
             }
         }
-        if (pr.dataBase64 != null && pr.frame >= 0 && !loaded) {
-            // ★★ v4.6 装载失败不再断开退出：向服务器请求全员重开（回开机态、
-            //   从帧 0 同步重跑 —— 接入者留下一起重开）；本端从各自暂停帧裸恢复
-            //   （时间线不重置、簿记不动），等 restart 到达接管。
-            //   （v4.6.1 注：旧实现此处仍 seedHist + rbRequestReset(frame)，
-            //    但时间线未重置时种子帧轴对不上、还会把本端继续要用的历史输入
-            //    清掉 —— 裸恢复不该动时间线簿记，故不再执行。）
-            dispatch { it.onSyncStatus("同步画面装载失败，已请求全员重新开局…") }
-            try { net?.sendRestartReq() } catch (_: Throwable) {}
-            inputDelay = pr.finalDelay.coerceIn(0, 16)
-            applyResumePlayers(pr.players)
-            return
-        }
-        if (loaded) {
-            // ★ 对齐基准 = 引擎线程自己掌握的 localFrame（不再依赖 parkedLocal
-            //   的跨线程时序 —— 竞态免疫）
-            frameOffset = pr.frame - localFrame
-            if (pr.hist != null) seedHist(pr.hist, pr.histEnd)
-            // ★★ v4.4：resume 帧之后的历史输入全部作废（旧时间线残留会被重新
-            //   采样覆盖；房主与成员统一清理，避免任何一端误用旧值）；
-            //   回滚簿记重建（引擎线程过门后统一应用）。
-            rbRequestReset(pr.frame)
-        } else {
-            // 无档 resume（同步中止兜底 / 本地解除暂停）：不重置时间线，
-            //   只应用最终延迟与座位。
-            rbRequestReset(-1L)
-        }
-        inputDelay = pr.finalDelay.coerceIn(0, 16)
-        applyResumePlayers(pr.players)
-        parkedLocalFrame = -1
-    }
+        if (hist != null && frame >= 0) seedHist(hist, histEnd)
+        // ★★ v4.4：resume 帧之后的历史输入全部作废（旧时间线残留会被重新采样
+        //   覆盖 —— 房主与成员统一清理，避免任何一端误用旧值）；回滚簿记重建
+        //   （引擎线程过门后统一应用）。
+        rbRequestReset(if (frame >= 0) frame else -1L)
 
-    /** resume 应用座位集（活跃槽位更新 + 接入中槽位清空）。 */
-    private fun applyResumePlayers(players: List<Int>) {
+        inputDelay = finalDelay.coerceIn(0, 16)
         activeSlots.clear()
         activeSlots.addAll(players)
         pendingSlots.clear()
+
+        // 开门：引擎线程继续（syncPaused 先放行，started 兜底放行 joiner）
+        synchronized(syncGate) { syncPaused = false; syncGate.notifyAll() }
+        synchronized(startGate) { started = true; startGate.notifyAll() }
+        parkedLocalFrame = -1
     }
 
     /** hist（槽位→pad 序列，止于 histEnd 前）→ padsHistory 种子。 */
@@ -692,9 +666,8 @@ class NetplayController(
                 // ★★ v4.6 复位失败不再断开连接：不再重新 ready（本端无法回到开机态，
                 //   勉强重跑必然从帧 0 起就发散），引擎停在启动门、保持连接并明确
                 //   提示 —— 玩家手动退出重开是唯一一致的自救；服务器等其他人的
-                //   ready，本端离开后对局照常继续。（实测各核心 reset 都是原生
-                //   retro_reset/FCEUI_PowerNES，void 调用几乎不可能失败 —— 此为
-                //   防御性兑底，优先保证"绝不静默发散"。）
+                //   ready，本端离开后对局照常继续（v4.7 服务器在等待阶段有人
+                //   离开时会重算开局）。此为防御性兑底，优先保证"绝不静默发散"。
                 restartFailed = true
                 dispatch { it.onSyncStatus("核心复位失败：无法全员重开，请退出后重新开局") }
                 return
@@ -702,7 +675,10 @@ class NetplayController(
         }
         synchronized(startGate) { started = false }
         parkedLocalFrame = -1L
-        frameOffset = 0L
+        // ★★ v4.7 内部帧号计数器归零：重开后全员从帧 0 重新同步开跑 ——
+        //   引擎本地帧号（可能还停在重开前的几千帧）不再参与网络帧号推算
+        netFrameCounter = 0L
+        lastIssuedNetFrame = -1L
         for (s in 1..4) padsHistory[s].clear()
         inputLog.clear()
         pendingSlots.clear()
@@ -712,6 +688,11 @@ class NetplayController(
         rbMaxDepth = 0
         dispatch { it.onSyncStatus("已重开：等待全员就绪同步开跑…") }
         android.util.Log.i("NetplayController", "restart applied on engine thread")
+        // ★★ v4.7 复位成功后由引擎线程直接重新就绪（此刻核心刚复位、本线程
+        //   就在现场 —— 探测/出档天然安全；替代旧版"网络线程等 5 秒"方案，
+        //   不存在超时带病发 ready 的窗口）。notifyEngineReady 内部有
+        //   engineLoaded/readySent 守卫，与 EmulatorScreen 的加载完成通知幂等。
+        notifyEngineReady()
     }
 
     /** ★ v4.3 注入存档通道（EmulatorScreen 持有引擎，进入联机界面时调用）。 */
@@ -746,11 +727,23 @@ class NetplayController(
         if (readySent) return
         readySent = true
 
-        // ★★ v4.5.1 出档能力探测（引擎停在启动门的安全窗口内）
+        val io = stateIo
+        // ★★ v4.7 快照同步能力门控（用户指令："存档同步实在不行就用 4.2 的同时重开"）：
+        //   快照同步（服务器缓存档 / state_req 新鲜档 / 回滚）只对"可回滚核心"
+        //   （StateIo.supportsRollback —— 目前仅 FBNeo，实测稳定）开放；
+        //   其他核心（NES/SFC/GBA/MD/PCE）一律报 stateCap=-1 且不做出档探测 ——
+        //   服务器对这类房间改走"全员同时重开"（restart，4.2 语义：新人加入 =
+        //   新的一局，全员回开机态从帧 0 同步开跑）。
+        //   （v4.5~v4.6 这些核心的存档装载/帧号对齐在实测中反复翻车 —— 断开、
+        //   互等死锁均出在这条链上；快照文件本身诚实与否已无法逐一验证，
+        //   按用户要求直接降级，稳定优先。）
+        val rollbackCapable = !isSpectator && (io?.supportsRollback() ?: false)
+
+        // ★★ v4.5.1 出档能力探测（引擎停在启动门的安全窗口内）—— 仅对可回滚
+        //   核心执行；其余核心跳过（探测结果不影响降级决策，省一次开机出档）
         var capOk = false
         var probeBytes: ByteArray? = null
-        val io = stateIo
-        if (io != null && !isSpectator) {
+        if (rollbackCapable && io != null) {
             try {
                 val file = File(io.stateDir(), "battle_probe.state")
                 val saved = synchronized(uploadLock) { io.saveStateTo(file) }
@@ -763,16 +756,13 @@ class NetplayController(
                 capOk = false
             }
         }
+        // 非可回滚核心恒 -1（→ 服务器全员重开）；可回滚核心按探测结果（PGM/改版
+        // 出不了档的街机同样走重开）
         stateCap = if (isSpectator) 0 else if (capOk) 1 else -1
-        // ★★ v4.4 回滚模式评估：必须同时满足两个条件才启用 ——
-        //   ① 真能出档（探测通过，否则检查点全是空档）；
-        //   ② 注入的 StateIo 支持回滚（supportsRollback —— 目前仅 FBNeo：
-        //     回滚重放需要 runFrameDirect 直跑帧，其他核心没有；
-        //     ★★ v4.6 修复：v4.5.1 只判了 ① —— NES/SFC/GBA 等核心存档能用但
-        //     没法直跑帧重放，一旦网络抖动触发纠错：检查点装载成功→重放失败→
-        //     核心被留在过去的时间线→永久发散（其他核心联机必炸的根源）。
-        //     这些核心回退到经典延迟锁步模式 —— 行为与 v4.3 一致，稳定。）
-        rollbackMode = !spectate && capOk && (io?.supportsRollback() ?: false)
+        // 回滚模式 = 可回滚核心 && 探测通过（★★ v4.6 双重门控保留：
+        //   无 runFrameDirect 的核心绝不能进回滚 —— 检查点装载后重放失败会把
+        //   核心留在过去的时间线，永久发散）
+        rollbackMode = rollbackCapable && capOk
         android.util.Log.i("NetplayController",
             "engine ready: stateCap=$stateCap rollback=$rollbackMode (platform=$platform)")
 
@@ -888,19 +878,20 @@ class NetplayController(
         }
         // 门放行后若又有重开请求 → 本次帧跳过（下一迭代在顶部应用复位）
         if (restartPending) {
+            // ★★ v4.7 零输入过渡帧：本帧未发号（计数器未消费）—— afterFrame
+            //   跳过记账，防把“多跑的一帧”记到上一帧号头上
+            zeroPadFrame = true
             return IntArray(4)
         }
 
-        // ★★ v4.6.1 时间线恢复应用点（引擎线程安全点：与跑帧串行，零竞态）。
-        //   挂门循环之后、帧号计算之前 —— resume 到达（含竞态时序：先于挂门/
-        //   从未挂门）后，本帧在此装载存档并对齐时间线：本帧即存档帧。
-        val pr = pendingResume
-        if (pr != null) {
-            pendingResume = null
-            applyTimelineResume(pr, frame)
-        }
-
-        val netFrame = frame + frameOffset
+        // ★★ v4.7 内部帧号：网络帧号由控制器自己发号（不再用引擎本地帧换算 ——
+        //   引擎计数器在 restart 复位瞬间会错位，各端互不一致，“1p 等 2p、
+        //   2p 等 1p” 互等死锁的根源）。start（0）/resume 装载（存档帧）/restart
+        //   复位（0）三类对齐事件直接改写计数器 —— 全员发出的 (netFrame→pads)
+        //   序列严格一致。仅引擎线程在此消费；网络线程只在引擎挂门时改写。
+        val netFrame = netFrameCounter
+        netFrameCounter = netFrame + 1L
+        lastIssuedNetFrame = netFrame
         val n = net
 
         // ★★ v4.4 时间线重置应用（pause→state→resume 后新时间线首帧；
@@ -913,7 +904,7 @@ class NetplayController(
 
         // ★★ v4.4 观战模式：不占座位、不采样不发送；等全员输入同画面观战。
         if (isSpectator) {
-            if (n == null) return IntArray(4)
+            if (n == null) { zeroPadFrame = true; return IntArray(4) }
             inputDelay = n.inputDelay.coerceIn(0, 16)
             val execFrame = netFrame - inputDelay
             if (execFrame < 0) return IntArray(4) // warmup：全 0
@@ -939,6 +930,8 @@ class NetplayController(
         if (mySlot in 1..4) padsHistory[mySlot][netFrame] = localPad
 
         if (n == null) {
+            // 无网络（断连/未连上）：本帧已发号但未发送 —— 记零输入过渡帧
+            zeroPadFrame = true
             val pads = IntArray(4)
             if (mySlot in 1..4) pads[mySlot - 1] = localPad
             return pads
@@ -997,11 +990,6 @@ class NetplayController(
         var lastNotice = 0L
         while (true) {
             padsHistory[slot][targetFrame]?.let { return it }
-            // ★★ v4.6.1 时间线即将重置（resume 已到达待应用）：旧时间线的等待
-            //   作废 —— 返回 null 让本帧跳过，下一帧在安全点应用新时间线。
-            //   （多成员场景：3P 加入触发同步时，正在等 2P 旧帧输入的成员
-            //   会永远等不到 —— 2P 也暂停/重置了 —— 不作废即死锁。）
-            if (pendingResume != null) return null
             // ★★ v4.5.1 全员重开请求：立即让路（引擎线程下一迭代应用复位）
             if (restartPending) return null
             // 槽位已离开 / 掉线：不再等待
@@ -1023,7 +1011,16 @@ class NetplayController(
     }
 
     override fun afterFrame(frame: Long) {
-        val netFrame = frame + frameOffset
+        // ★★ v4.7 零输入过渡帧（重启让路/断连的无网络帧）：跳过记账 ——
+        //   这帧没有对应的网络帧号（计数器未消费），绝不能把检查点/上传
+        //   记到上一帧号头上（核心状态比帧号超前一帧 → 检查点 tag 错位）。
+        if (zeroPadFrame) {
+            zeroPadFrame = false
+            return
+        }
+        // ★★ v4.7 帧号取自本控制器刚发出的网络帧号（引擎传来的本地帧号
+        //   在 restart 复位等场合会错位，不再使用）
+        val netFrame = if (lastIssuedNetFrame >= 0) lastIssuedNetFrame else frame
         if (netFrame % 15 == 0L) {
             val il = inputDelay
             val dc = desyncCount
@@ -1325,8 +1322,10 @@ class NetplayController(
         pendingSlots.clear()
         currentLocalPad = 0
         frameOffset = 0
+        netFrameCounter = 0L
+        lastIssuedNetFrame = -1L
+        zeroPadFrame = false
         parkedLocalFrame = -1
-        pendingResume = null   // ★★ v4.6.1 清理待应用的时间线恢复
         desyncCount = 0
         engineLoaded = false
         readySent = false

@@ -24,9 +24,13 @@ const (
         roomSyncing string = "syncing" // 正在为新加入玩家做画面(存档)同步
 )
 
-// ★★ v4.5.1：客户端协议版本（hello.v）。45 = 支持 restart 全员重开
-//（核心不支持快照的游戏：NeoGeo 改版/PGM 等 —— 存档同步不可用时的回退）。
-const clientProtoRestart = 45
+// ★★ v4.7：客户端协议版本（hello.v）。47 = 新一代 restart 全员重开 ——
+//   客户端改用控制器内部帧号对齐（旧版重开后各端帧号错位 → “1P 等 2P、
+//   2P 等 1P” 互等死锁的根源），且非街机核心（NES/SFC/GBA/MD/PCE）一律
+//   上报 stateCap=-1（快照同步仅限 FBNeo —— 其余核心按用户要求走“全员
+//   同时重开”，4.2 语义）。v45/v46 客户端的重开语义与 v47 不兼容，
+//   混版本房间不再广播 restart。
+const clientProtoRestart = 47
 
 // maxRoomPlayers 最大玩家数（1P-4P）。FBNeo/街机支持 4 手柄；
 // 其他 2 手柄核心上 3/4P 的输入被客户端忽略（仍可观战同步画面）。
@@ -212,7 +216,8 @@ type relayMsg struct {
         Want int `json:"want,omitempty"`
         // ★★ v4.4：peer_joined/peer_left 附带 —— true = 观战者（客户端显示“xx 正在观战”）
         Spec bool `json:"spec,omitempty"`
-        // ★★ v4.5.1：hello 客户端协议版本（45 = 支持 restart 全员重开）
+        // ★★ v4.7：hello 客户端协议版本（47 = 新一代 restart 全员重开 +
+        //   非街机核心 stateCap=-1 快照同步降级；旧版本重开帧号语义不兼容）
         V int `json:"v,omitempty"`
         // ★★ v4.5.1：ready 附带 —— 该端能否出存档快照（1 能 / -1 不能 / 0 未知=旧客户端）。
         //   部分核心/驱动不支持快照（FBNeo 的 PGM/改版等，且 JNI 永远返回 true，
@@ -760,7 +765,7 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         } else if status == roomSyncing {
                                 h.abortSync(room, "成员报告同步失败")
                         } else {
-                                _ = rc.send(relayMsg{Type: "error", Msg: "同步失败：房间内有旧版本客户端，无法自动重开；请全员升级到 4.6 后重试"})
+                                _ = rc.send(relayMsg{Type: "error", Msg: "同步失败：房间内有旧版本客户端，无法自动重开；请全员升级到 4.7 后重试"})
                         }
 
                 case "state_ok":
@@ -1095,6 +1100,7 @@ func (h *relayHub) drop(rc *relayConn) {
         room := rc.room
         var abortAfterDrop bool  // 同步中房主掉线 → abortSync 收尾
         var bareResumeAfterDrop bool // 同步中接入者都走了 → 原玩家裸恢复
+        var startAfterDrop bool    // ★★ v4.7 等待开局阶段有人离开 → 剩余全员已 ready → 直接广播 start
         if room != nil {
                 // ★★ v4.4 观战者：从 specs 移除 + 通知（spec=true，不占槽位）
                 if rc.spectator {
@@ -1139,6 +1145,22 @@ func (h *relayHub) drop(rc *relayConn) {
                                 room.syncJoiners = map[string]*relayConn{}
                                 bareResumeAfterDrop = true
                         }
+                } else if room.Status == roomWaiting {
+                        // ★★ v4.7 等待开局阶段（首次开局 / restart 重开后的再就绪）有人离开：
+                        //   剩下的玩家若已全部 ready，立即广播 start —— 不再“等一个已
+                        //   走掉的人”（重开后有人复位失败/退出时，其余人照常开跑；
+                        //   客户端虽然会在 peer_left 时本地放行，但服务器侧一致广播 start
+                        //   才能保证房间状态与 players 槽位不漂移）。
+                        allReady := len(room.conns) > 0
+                        for _, c := range room.conns {
+                                if !c.ready {
+                                        allReady = false
+                                        break
+                                }
+                        }
+                        if allReady {
+                                startAfterDrop = true
+                        }
                 }
         }
         h.mu.Unlock()
@@ -1151,6 +1173,19 @@ func (h *relayHub) drop(rc *relayConn) {
                 players := activeSlots(room)
                 h.mu.Unlock()
                 h.broadcastExcept(room, nil, relayMsg{Type: "resume", Players: players})
+        } else if startAfterDrop {
+                h.mu.Lock()
+                room.Status = roomPlaying
+                players := activeSlots(room)
+                suggestions := []int{}
+                for _, c := range room.conns {
+                        suggestions = append(suggestions, c.readyPad)
+                }
+                h.mu.Unlock()
+                d := h.finalDelay(suggestions...)
+                log.Printf("[开局] 房间 %s（桌 %d）：等待阶段有玩家离开，剩余 %d 人已全部就绪，直接开局",
+                        room.ID, room.TableNo, len(players))
+                h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})
         }
 }
 

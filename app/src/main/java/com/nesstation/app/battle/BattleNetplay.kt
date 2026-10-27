@@ -134,9 +134,13 @@ class BattleNetplay(
     }
 
     companion object {
-        /** ★★ v4.6 客户端协议版本（hello.v）—— 服务器据此判定能否广播 restart /
-         *   受理 restart_req（v≥45 即支持 restart，v=46 增加自救请求与人数上限） */
-        const val PROTO_VERSION = 46
+        /** ★★ v4.7 客户端协议版本（hello.v）。
+         *  47 = 新一代 restart 全员重开：网络帧号改由控制器内部计数器发号
+         *  （旧版重开后各端引擎帧号错位 → “1P 等 2P、2P 等 1P” 互等死锁）；
+         *  非街机核心（NES/SFC/GBA/MD/PCE）快照同步降级 —— 一律上报
+         *  stateCap=-1，中途接入走“全员同时重开”（4.2 语义）。
+         *  服务器对 v<47 的房间不再广播 restart（旧客户端重开语义不兼容）。 */
+        const val PROTO_VERSION = 47
     }
 
     @Volatile private var socket: Socket? = null
