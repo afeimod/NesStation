@@ -61,8 +61,10 @@ class DPadView @JvmOverloads constructor(
     private val pressed = HashSet<Int>()              // 当前按下的方向 KeyCode
     private val pointerDir = HashMap<Int, Int>()      // 指针 ID → 方向 KeyCode（0 表示无）
 
-    // 方向阈值：触点偏离中心超过半径的 25% 才算按下方向（与 3.3 一致）
-    private val deadZoneRatio = 0.25f
+    // 方向阈值：触点偏离中心超过半径的 15% 才算按下方向
+    // ★★ v49：25% → 15% —— 旧版死区过大，轻推不出方向（搓招/快速转向吃亏）；
+    //   中心解锁门控（centerUnlockRatio）防抖机制保留，菜单不会跳格。
+    private val deadZoneRatio = 0.15f
     // 中心解锁阈值：再次触发同一方向前必须先回到这个半径以内，
     // 防止摇杆头在死区边界抖动时出现"down → up → down"短脉冲，
     // 避免菜单接收两次方向事件而多走几格。
@@ -409,15 +411,17 @@ class DPadView @JvmOverloads constructor(
         knobDx = dx
         knobDy = dy
 
-        // 计算方向（8 方向独立判定，与 3.3 一致）。
-        // 对角线：两轴都超过 35% 外环时同时激活 X 和 Y；
+        // 计算方向（8 方向独立判定）。
+        // 对角线：两轴都超过 30% 外环时同时激活 X 和 Y；
         // 否则按主轴兜底,避免对角线时两个轴同时触发导致菜单跳两格。
+        // ★★ v49：对角线阈值 35% → 30% —— 斜向（↘↙↗↖）更容易触发，
+        //   斜跑/搓招跟手；主轴兜底与中心解锁门控不变（菜单不跳格）。
         val active = HashSet<Int>()
         val norm = dist / outerR
         if (norm > deadZoneRatio) {
             val ax = abs(dx)
             val ay = abs(dy)
-            val diagRatio = 0.35f
+            val diagRatio = 0.30f
             if (ax > outerR * diagRatio) {
                 active.add(if (dx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
             }

@@ -1565,13 +1565,9 @@ open class GameWebViewClient(
          * (调 window.dispatchEvent('resize') 触发 ruffle-player 元素 resize 回调)。
          */
         fun buildRuffleAspectRatioScript(ratio: String): String {
-            if (ratio == "auto" || ratio == "stretch") {
-                // ★ stretch（全屏拉伸）：清掉外框 letterbox 样式、#stage 回归
-                //   player.html 默认的 fixed inset:0 全屏。真正的拉伸由加载
-                //   参数完成（scale=exactFit + letterbox=off，见 NavHelper/
-                //   SwfPlayerScreen.applyAspectRatio 的重载链）—— Ruffle 的
-                //   scale 模式是加载期配置，运行中改 CSS 无法热切换，因此
-                //   调用方在选 stretch 时会自动 reload 播放页。
+            if (ratio == "auto") {
+                // auto：清掉外框 letterbox 样式、#stage 回归 player.html 默认的
+                //   fixed inset:0 全屏（引擎 showAll + letterbox 属预期行为）。
                 return """
                 (function(){
                   var old = document.getElementById('__ruffleAspectRatioStyle');
@@ -1580,6 +1576,50 @@ open class GameWebViewClient(
                   if (stage && !stage.classList.contains('box-custom')) {
                     stage.style.cssText = '';
                   }
+                })();
+                """.trimIndent()
+            }
+            if (ratio == "stretch") {
+                // ★★ v49 全屏拉伸修复：与比例模式（16:9 等，实测有效）走【完全
+                //   相同的主动几何强制管线】—— 显式像素尺寸 + 强制 CSS
+                //   （html/body 复位 + #stage fixed 居中 + ruffle-player 100%）
+                //   + resize 派发。旧版只"被动清理"（清样式赌默认样式撑满 +
+                //   赌引擎 exactFit），任何残留（前次比例盒脚本挂的 resize
+                //   监听器会不断把比例盒样式加回来 / #stage 内联宽高残留 /
+                //   ruffle-player 未被强制 100%）都会让 stretch 悄悄失效 ——
+                //   正是"只有 16:9 生效、全屏拉伸没效果"的根因。
+                //   stretch = 视口尺寸的"比例盒"；真正的拉伸仍由加载参数完成
+                //   （scale=exactFit + letterbox=off，NavHelper/applyAspectRatio
+                //   的重载链），这里只保证外框几何严格铺满视口。
+                return """
+                (function(){
+                  var stage = document.getElementById('stage');
+                  if (!stage || stage.classList.contains('box-custom')) return;
+                  // 强制 CSS（与比例盒同款；重复注入无害——先清再加）
+                  var old = document.getElementById('__ruffleAspectRatioStyle');
+                  if (old) old.remove();
+                  var st = document.createElement('style');
+                  st.id = '__ruffleAspectRatioStyle';
+                  st.textContent = [
+                    'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;background:#000!important;overflow:hidden!important;}',
+                    '#stage{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;margin:auto!important;background:#000!important;box-sizing:border-box!important;}',
+                    '#stage > ruffle-player{display:block!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;}'
+                  ].join('\n');
+                  document.head.appendChild(st);
+                  function applyFull() {
+                    var w = Math.max(1, window.innerWidth);
+                    var h = Math.max(1, window.innerHeight);
+                    if (Math.abs(stage.clientWidth - w) > 2 || Math.abs(stage.clientHeight - h) > 2) {
+                      stage.style.width = w + 'px';
+                      stage.style.height = h + 'px';
+                      window.dispatchEvent(new Event('resize'));
+                    }
+                  }
+                  applyFull();
+                  window.addEventListener('resize', applyFull);
+                  setTimeout(applyFull, 300);
+                  setTimeout(applyFull, 1000);
+                  setTimeout(applyFull, 3000);
                 })();
                 """.trimIndent()
             }

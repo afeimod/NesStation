@@ -125,8 +125,11 @@ class BattleNetplay(
         fun onPeerReady(username: String)
         /** 对方加入（slot = 其槽位；★ v4.4 spec=true 为观战者，不占槽位） */
         fun onPeerJoined(username: String, slot: Int, spec: Boolean = false)
-        /** 对方断开（slot = 其槽位；★ v4.4 spec=true 为观战者离开） */
-        fun onPeerLeft(username: String, slot: Int, spec: Boolean = false)
+        /** 对方断开（slot = 其槽位；★ v4.4 spec=true 为观战者离开）
+         *  ★★ v48：lastFrame = 服务器 peer_left 携带的该槽位最后一次中继输入帧号
+         *  （-1 = 旧服务器未携带）。≤ lastFrame 的输入仍在途（TCP 有序必达，等到
+         *  再用），> lastFrame 的帧确定性归零 —— 各端对离队槽位的输入序列严格一致。 */
+        fun onPeerLeft(username: String, slot: Int, spec: Boolean = false, lastFrame: Long = -1L)
         /** 连接被拒绝 / 协议错误 */
         fun onError(message: String)
         /** 连接关闭（非主动） */
@@ -134,13 +137,17 @@ class BattleNetplay(
     }
 
     companion object {
-        /** ★★ v4.7 客户端协议版本（hello.v）。
+        /** ★★ v48 客户端协议版本（hello.v）。
+         *  48 = 3/4 人房不同步根治：peer_left 携带离队槽位最后一次中继的输入
+         *  帧号（frame 字段）—— 客户端对 ≤ frame 的在途输入等到再用、
+         *  > frame 的确定性归零，各端输入序列严格一致（旧版各端自行清零 →
+         *  单端永久发散）；配合服务器异步发送队列（慢客户端不再阻塞其他人）。
          *  47 = 新一代 restart 全员重开：网络帧号改由控制器内部计数器发号
          *  （旧版重开后各端引擎帧号错位 → “1P 等 2P、2P 等 1P” 互等死锁）；
          *  非街机核心（NES/SFC/GBA/MD/PCE）快照同步降级 —— 一律上报
          *  stateCap=-1，中途接入走“全员同时重开”（4.2 语义）。
          *  服务器对 v<47 的房间不再广播 restart（旧客户端重开语义不兼容）。 */
-        const val PROTO_VERSION = 47
+        const val PROTO_VERSION = 48
     }
 
     @Volatile private var socket: Socket? = null
@@ -177,6 +184,15 @@ class BattleNetplay(
                 val s = Socket()
                 s.connect(InetSocketAddress(host, port), 15_000)
                 s.tcpNoDelay = true
+                // ★★ v48 网络调优（联通/移动等运营商链路）：
+                //   - keepAlive：运营商 CGNAT 会回收"空闲"TCP 映射（暂停/存档同步
+                //     等间歇期无输入流量时），keepalive 探测包维持映射不中断；
+                //   - 收发缓冲加大：跨网链路拥塞时降低丢包重传概率。
+                try {
+                    s.keepAlive = true
+                    s.receiveBufferSize = 512 * 1024
+                    s.sendBufferSize = 512 * 1024
+                } catch (_: Throwable) { /* 部分系统不支持，忽略 */ }
                 socket = s
                 reader = BufferedReader(InputStreamReader(s.getInputStream()), 1 shl 20)
                 writer = BufferedWriter(OutputStreamWriter(s.getOutputStream()), 1 shl 20)
@@ -305,7 +321,8 @@ class BattleNetplay(
             "peer_joined" -> listener.onPeerJoined(
                 msg.optString("msg", ""), msg.optInt("slot", 0), msg.optBoolean("spec", false))
             "peer_left" -> listener.onPeerLeft(
-                msg.optString("msg", ""), msg.optInt("slot", 0), msg.optBoolean("spec", false))
+                msg.optString("msg", ""), msg.optInt("slot", 0), msg.optBoolean("spec", false),
+                msg.optLong("frame", -1L))
             "error" -> listener.onError(msg.optString("msg", "服务器错误"))
             "pong" -> {
                 // RTT 测量回显：交给等待中的测量请求

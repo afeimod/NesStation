@@ -520,16 +520,26 @@
     // ★ v4.3 启动流程：比例模式非 auto 时，先解析 SWF 舞台比例并安装
     // 假视口（必须在引擎 createWaflash 之前，引擎初始化即按假视口布局），
     // 再加载引擎；解析失败则保持引擎默认（letterbox）行为。
+    // ★★ v49：解析失败重试一次（fetch 瞬时失败/Range 缓存未命中等），
+    //   全屏拉伸（stretch）依赖 stageAR 计算假视口 —— 多一次机会少一次
+    //   “选拉伸没效果”。
     (async function boot() {
       if (SWF_URL && ASPECT !== 'auto' && ASPECT !== '') {
         try {
           statusEl.textContent = '正在读取画面比例...';
           var ar = await __wafParseStageAR(SWF_URL);
+          if (!(ar > 0)) {
+            await new Promise(function (r) { setTimeout(r, 400); });
+            ar = await __wafParseStageAR(SWF_URL + '');
+            console.log('[WAF] stage aspect retry = ' + ar);
+          }
           console.log('[WAF] stage aspect = ' + ar + ' (mode=' + ASPECT + ')');
           window.__wafCachedAR = ar;
           if (ar > 0) {
             var ok = __wafInstallFake(ASPECT, ar);
             console.log('[WAF] fake viewport ' + (ok ? 'installed' : 'skipped'));
+          } else if (ASPECT === 'stretch') {
+            console.log('[WAF] stageAR unknown, stretch falls back to engine default');
           }
         } catch (e) {
           console.log('[WAF] aspect prep failed: ' + e);

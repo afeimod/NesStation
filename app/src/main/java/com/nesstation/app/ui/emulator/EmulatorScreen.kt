@@ -8577,6 +8577,9 @@ fun OnScreenController(
     // for rendering. Updated by the analog gesture handler below.
     var analogThumbX by remember { mutableStateOf(0f) }
     var analogThumbY by remember { mutableStateOf(0f) }
+    // ★★★ v2 摇杆重制：摇杆当前方向位（滞回状态，computeDirection 读写；
+    //   松手/抬指时清零 —— 与 analogThumbX 同生命周期）
+    var stickLastBits by remember { mutableIntStateOf(0) }
 
     // 即时存档 / 即时读档按钮回调用 rememberUpdatedState 包装，
     // 手势协程重启期间始终拿到最新 lambda
@@ -9007,9 +9010,10 @@ fun OnScreenController(
                 }
 
                 // Compute direction bits from a touch position within the
-                // dpad/stick rect. For analog mode, use a radial deadzone
-                // and allow continuous thumb tracking. For D-Pad mode, use
-                // the quadrant hit-test (8-direction).
+                // dpad/stick rect. For analog mode, use the FBN-style angle
+                // sectors (see fbnStickBits) with engage/release deadzone
+                // hysteresis. For D-Pad mode, use the quadrant hit-test with
+                // slide-through hysteresis (8-direction).
                 // Returns (bits, thumbX, thumbY) where thumbX/Y are in [-1, 1].
                 fun computeDirection(pos: Offset): Triple<Int, Float, Float> {
                     // This is only reached when a touch landed on the dpad/stick
@@ -9036,34 +9040,27 @@ fun OnScreenController(
                             clampedDx = dx
                             clampedDy = dy
                         }
-                        // Radial deadzone: 0.25 of radius. Below this, no direction.
-                        val deadzone = 0.25f
-                        var bits = 0
-                        if (mag > deadzone) {
-                            // Use clamped values for direction test (so diagonals work)
-                            val absX = kotlin.math.abs(clampedDx)
-                            val absY = kotlin.math.abs(clampedDy)
-                            // Cardinal + diagonal: threshold at 0.4
-                            val cardThreshold = 0.4f
-                            if (clampedDx < -cardThreshold) bits = bits or BTN_LEFT
-                            else if (clampedDx > cardThreshold) bits = bits or BTN_RIGHT
-                            if (clampedDy < -cardThreshold) bits = bits or BTN_UP
-                            else if (clampedDy > cardThreshold) bits = bits or BTN_DOWN
-                            // If no cardinal direction triggered but we're past
-                            // the deadzone, fall back to the dominant axis so
-                            // small movements still register.
-                            if (bits == 0) {
-                                if (absX > absY) {
-                                    bits = bits or (if (clampedDx < 0) BTN_LEFT else BTN_RIGHT)
-                                } else {
-                                    bits = bits or (if (clampedDy < 0) BTN_UP else BTN_DOWN)
-                                }
-                            }
+                        // ★★★ v2（FBN 安卓官方摇杆风格）：
+                        //  - 触发死区 0.25 → 0.12（轻推即出方向，搓招不用推满）；
+                        //  - 释放死区 0.08（< 触发死区 = 滞回）：触发过方向后小幅
+                        //    回落不再闪断，必须回到更靠中心才真正松开；
+                        //  - 方向判定交给 fbnStickBits（纯角度 8 分区 + 对角线
+                        //    加宽 + 方向滞回）—— ↓ 滑到 → 必经的 ↘ 自然命中，
+                        //    波动拳/升龙拳的搓招轨迹连贯不断触。
+                        val ENGAGE = 0.12f
+                        val RELEASE = 0.08f
+                        val engaged = stickLastBits != 0
+                        if (mag < if (engaged) RELEASE else ENGAGE) {
+                            stickLastBits = 0
+                            return Triple(0, clampedDx, clampedDy)
                         }
+                        val bits = fbnStickBits(clampedDx, clampedDy, stickLastBits)
+                        stickLastBits = bits
                         return Triple(bits, clampedDx, clampedDy)
                     } else {
-                        // D-Pad mode: 8-direction quadrant hit-test.
-                        return Triple(computeDpadDirection(pos, rect), 0f, 0f)
+                        // D-Pad mode: 8-direction quadrant hit-test
+                        // (★★★ v2 带滑行滞回：搓招滑过中心区不断触).
+                        return Triple(computeDpadDirection(pos, rect, visualState and 0xF0), 0f, 0f)
                     }
                 }
 
@@ -9152,7 +9149,7 @@ fun OnScreenController(
                                 // NGC/WII 双十字键：GC dpadRect 与 wiiDpadRect
                                 // 各自独立，按触点落在哪个矩形选中心点
                                 val dirBits = if (isNgcWii && wiiDpadRect?.contains(pos) == true) {
-                                    Triple(computeDpadDirection(pos, wiiDpadRect!!), 0f, 0f)
+                                    Triple(computeDpadDirection(pos, wiiDpadRect!!, visualState and 0xF0), 0f, 0f)
                                 } else {
                                     computeDirection(pos)
                                 }
@@ -9168,7 +9165,7 @@ fun OnScreenController(
                                 }
                             }
                             BtnType.LSTICK -> {
-                                val (b, tx, ty) = computeStickDirection(pos, lStickRect!!)
+                                val (b, tx, ty) = computeStickDirection(pos, lStickRect!!, lStickDirs)
                                 lStickDirs = b
                                 lStickTX = tx
                                 lStickTY = ty
@@ -9176,7 +9173,7 @@ fun OnScreenController(
                                 stickOnly = true
                             }
                             BtnType.RSTICK -> {
-                                val (b, tx, ty) = computeStickDirection(pos, rStickRect!!)
+                                val (b, tx, ty) = computeStickDirection(pos, rStickRect!!, rStickDirs)
                                 rStickDirs = b
                                 rStickTX = tx
                                 rStickTY = ty
@@ -9313,6 +9310,7 @@ fun OnScreenController(
                                                 if (bt == BtnType.DPAD && useAnalogStick) {
                                                     analogThumbX = 0f
                                                     analogThumbY = 0f
+                                                    stickLastBits = 0   // ★ v2：清方向滞回状态
                                                 }
                                                 // ★★ 摇杆方向组合键：松手移除本指针的
                                                 //   轴贡献并重推（其它仍按住的组合键 /
@@ -9358,7 +9356,7 @@ fun OnScreenController(
                                         // NGC/WII 双十字键：拖动中按所在矩形重算方向
                                         val (newBits, tx, ty) =
                                             if (isNgcWii && wiiDpadRect?.contains(change.position) == true) {
-                                                Triple(computeDpadDirection(change.position, wiiDpadRect!!), 0f, 0f)
+                                                Triple(computeDpadDirection(change.position, wiiDpadRect!!, visualState and 0xF0), 0f, 0f)
                                             } else {
                                                 computeDirection(change.position)
                                             }
@@ -9372,14 +9370,14 @@ fun OnScreenController(
                                         sendStateNow(visualState, turboState)
                                     } else if (entry != null && entry.first == BtnType.LSTICK) {
                                         // PS2 左摇杆拖动：更新拇指位置 + 轴回调（不写 D-pad 数字位）
-                                        val (newBits, tx, ty) = computeStickDirection(change.position, lStickRect!!)
+                                        val (newBits, tx, ty) = computeStickDirection(change.position, lStickRect!!, lStickDirs)
                                         lStickDirs = newBits
                                         activePointers[pid] = BtnType.LSTICK to newBits
                                         lStickTX = tx
                                         lStickTY = ty
                                         pushAnalog()
                                     } else if (entry != null && entry.first == BtnType.RSTICK) {
-                                        val (newBits, tx, ty) = computeStickDirection(change.position, rStickRect!!)
+                                        val (newBits, tx, ty) = computeStickDirection(change.position, rStickRect!!, rStickDirs)
                                         rStickDirs = newBits
                                         activePointers[pid] = BtnType.RSTICK to newBits
                                         rStickTX = tx
@@ -10185,6 +10183,78 @@ fun OnScreenController(
     }
 }
 
+// ---------------------------------------------------------------------------
+// ★★★ v2 摇杆重制（FBN 安卓官方摇杆风格）★★★
+//
+// 旧逻辑（搓招难的三要素）：
+//  1) 死区 0.25 过大 —— 轻推不响应，↓↘→ 要推很远才出招；
+//  2) 对角线要求双轴都过 0.4 阈值 —— 对角区过窄，↘ 难命中（格斗游戏的命）；
+//  3) 无滞回 —— 方向边界抖动，慢速滑动时方向闪烁、连招断触。
+//
+// 新逻辑（参考 FBNeo Android 官方摇杆）：
+//  - 纯【角度分区】判定：过死区后方向只看角度、与幅度无关 —— 推满和轻推
+//    同样灵敏，快速小幅度滑动（搓招的实际手感）稳定出方向；
+//  - 小触发死区 0.12 + 更小释放死区 0.08（滞回）—— 既灵敏又不误触；
+//  - 对角线扇区加宽（对角约 51° / 主方向约 39°）—— ↘↙↗↖ 好命中，↓→ 过渡
+//    必经的 ↘ 自然衔接，波动拳/升龙拳一类搓招连贯；
+//  - 方向滞回：当前方向保持到角度明确越过相邻扇区（±6°）才切换 ——
+//    扇区边界附近的角度抖动不再产生方向闪烁。
+// ---------------------------------------------------------------------------
+
+/** 角度差（0..180°，处理 ±180° 环绕）。 */
+private fun angDistDeg(a: Float, b: Float): Float {
+    var d = kotlin.math.abs(a - b) % 360f
+    if (d > 180f) d = 360f - d
+    return d
+}
+
+/** 屏幕坐标角度（度）：右=0°，下=90°（y 向下），逆时针为负。 */
+private fun stickAngleDeg(dx: Float, dy: Float): Float =
+    Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+
+/**
+ * FBN 风格 8 向角度分区：返回方向位组合。
+ * @param dx dy 已归一化的偏移（幅度 ≤1）
+ * @param lastBits 上一次方向位（0=无）—— 用于方向滞回
+ */
+private fun fbnStickBits(dx: Float, dy: Float, lastBits: Int): Int {
+    if (dx == 0f && dy == 0f) return 0
+    val ang = stickAngleDeg(dx, dy)
+    // 8 扇区中心角与方向位（顺时针从"右"开始：右、右下、下、左下、左、左上、上、右上）
+    val centers = floatArrayOf(0f, 45f, 90f, 135f, 180f, -135f, -90f, -45f)
+    val bitsArr = intArrayOf(
+        BTN_RIGHT,
+        BTN_RIGHT or BTN_DOWN,
+        BTN_DOWN,
+        BTN_DOWN or BTN_LEFT,
+        BTN_LEFT,
+        BTN_LEFT or BTN_UP,
+        BTN_UP,
+        BTN_UP or BTN_RIGHT
+    )
+    val HYST = 6f          // 方向滞回角：越过扇区边界 6° 才切换
+    val DIAG_BIAS = 6f     // 对角线扇区加宽：距离减 6°（约 51° vs 39°）
+    // 1) 滞回：当前方向保持（在扩展扇区内不切换）
+    if (lastBits != 0) {
+        for (i in bitsArr.indices) {
+            if (bitsArr[i] == lastBits) {
+                val half = if (i % 2 == 0) 19.5f else 25.5f
+                if (angDistDeg(ang, centers[i]) <= half + HYST) return bitsArr[i]
+                break
+            }
+        }
+    }
+    // 2) 常规：最近中心角（对角线扇区带加宽偏置）
+    var best = 0
+    var bestDist = Float.MAX_VALUE
+    for (i in bitsArr.indices) {
+        val bias = if (i % 2 == 0) 0f else -DIAG_BIAS
+        val d = angDistDeg(ang, centers[i]) + bias
+        if (d < bestDist) { bestDist = d; best = i }
+    }
+    return bitsArr[best]
+}
+
 // Compute PS2 analog-stick direction + thumb offset from a touch position.
 // Returns (directionBits, thumbX, thumbY): bits are the digital direction
 // flags (BTN_UP/DOWN/LEFT/RIGHT, for games that read the d-pad), thumbX/Y
@@ -10192,7 +10262,8 @@ fun OnScreenController(
 // pushAnalog() 翻转后送给核心)。
 private fun computeStickDirection(
     pos: Offset,
-    rect: androidx.compose.ui.geometry.Rect
+    rect: androidx.compose.ui.geometry.Rect,
+    lastBits: Int = 0
 ): Triple<Int, Float, Float> {
     val cx = rect.center.x
     val cy = rect.center.y
@@ -10209,34 +10280,28 @@ private fun computeStickDirection(
         clampedDx = dx
         clampedDy = dy
     }
-    // Radial deadzone: 0.2 of radius (比 dpad analog 模式略小，PS2 摇杆更灵敏)
-    val deadzone = 0.2f
+    // ★★★ v2：触发死区 0.2 → 0.12（更灵敏）；方向位走 FBN 角度分区
+    //   （对角线加宽 + 方向滞回，与主摇杆同一手感）
+    val deadzone = 0.12f
     var bits = 0
     if (mag > deadzone) {
-        val absX = kotlin.math.abs(clampedDx)
-        val absY = kotlin.math.abs(clampedDy)
-        val cardThreshold = 0.4f
-        if (clampedDx < -cardThreshold) bits = bits or BTN_LEFT
-        else if (clampedDx > cardThreshold) bits = bits or BTN_RIGHT
-        if (clampedDy < -cardThreshold) bits = bits or BTN_UP
-        else if (clampedDy > cardThreshold) bits = bits or BTN_DOWN
-        if (bits == 0) {
-            // 死区内但未过阈值：主轴方向兑底，保证小位移也能触发方向
-            if (absX > absY) {
-                bits = bits or (if (clampedDx < 0) BTN_LEFT else BTN_RIGHT)
-            } else {
-                bits = bits or (if (clampedDy < 0) BTN_UP else BTN_DOWN)
-            }
-        }
+        bits = fbnStickBits(clampedDx, clampedDy, lastBits)
     }
     return Triple(bits, clampedDx, clampedDy)
 }
 
 // Compute D-pad direction from touch position within dpad rect.
 // Supports 8 directions: up, down, left, right, and 4 diagonals.
+// ★★★ v2 搓招友好改进：
+//  - 死区 15% → 12%（更灵敏）；
+//  - 滑行滞回 [lastBits]：从 ↓ 滑向 → 的途中经过中心区时，只要还没回到
+//    释放半径（6%）以内，就保持原方向的主轴分量 —— 搓招轨迹
+//    （↓↘→ / ←↙↓↘→）不再被中心死区切断；完全回到释放区才松开，
+//    菜单导航的松手体验不变。
 private fun computeDpadDirection(
     pos: Offset,
-    rect: androidx.compose.ui.geometry.Rect
+    rect: androidx.compose.ui.geometry.Rect,
+    lastBits: Int = 0
 ): Int {
     val cx = rect.center.x
     val cy = rect.center.y
@@ -10244,8 +10309,18 @@ private fun computeDpadDirection(
     val dy = pos.y - cy
     val absX = kotlin.math.abs(dx)
     val absY = kotlin.math.abs(dy)
-    val deadZone = rect.width * 0.15f
-    if (absX < deadZone && absY < deadZone) return 0
+    val deadZone = rect.width * 0.12f
+    if (absX < deadZone && absY < deadZone) {
+        // 死区内：滞回判定 —— 未完全回到释放半径时保持原方向的主轴分量
+        if (lastBits != 0) {
+            val release = rect.width * 0.06f
+            if (absX >= release || absY >= release) {
+                return if (absX > absY) (lastBits and (BTN_LEFT or BTN_RIGHT))
+                       else (lastBits and (BTN_UP or BTN_DOWN))
+            }
+        }
+        return 0
+    }
 
     var bits = 0
     if (absX > deadZone) {

@@ -64,6 +64,7 @@ import androidx.compose.ui.window.Dialog
 import com.nesstation.app.flash.data.PrefsManager
 import com.nesstation.app.flash.input.ActionButtonView
 import com.nesstation.app.flash.input.DPadView
+import com.nesstation.app.flash.input.WebStickView
 import com.nesstation.app.flash.input.KeyMapper
 import com.nesstation.app.flash.input.MouseControlView
 import com.nesstation.app.flash.download.SwfDownloadItem
@@ -130,6 +131,8 @@ fun SwfPlayerScreen(
     val webViewRef = remember { mutableStateOf<GameWebView?>(null) }
     LaunchedEffect(webViewRef.value) { _webView.value = webViewRef.value }
     val dpadRef = remember { mutableStateOf<DPadView?>(null) }
+    // ★★ v49：摇杆 WASD（stick_wasd 模式）—— 与在线游戏同款可改键摇杆
+    val stickRef = remember { mutableStateOf<WebStickView?>(null) }
     val actionRef = remember { mutableStateOf<ActionButtonView?>(null) }
     val mouseRef = remember { mutableStateOf<MouseControlView?>(null) }
     val floatingMenuRef = remember { mutableStateOf<FloatingMenuView?>(null) }
@@ -714,8 +717,14 @@ fun SwfPlayerScreen(
         val density = container.resources.displayMetrics.density
 
         listOfNotNull(
-            dpadRef.value, actionRef.value, mouseRef.value, floatingMenuRef.value
+            dpadRef.value, stickRef.value, actionRef.value, mouseRef.value, floatingMenuRef.value
         ).forEach { container.removeView(it) }
+
+        // ★★ v49：方向键模式 = stick_wasd（摇杆 WASD）时，十字键不再上屏，
+        //   由 WebStickView 摇杆取代（与在线游戏 WebGameScreen 同款：斜向
+        //   双键并按、四向可改键 web_stick_key_*、外环标注键名）。
+        //   DPadView 仍构造（引用链/编辑模式保持原状），只是不 addView。
+        val useStickMode = PrefsManager.dpadMode == "stick_wasd"
 
         val dpad = DPadView(container.context).apply {
             targetWebView = webViewRef.value
@@ -728,7 +737,25 @@ fun SwfPlayerScreen(
             bottomMargin = (24 * density).toInt()
             marginStart = (16 * density).toInt()
         }
-        if (gamepadVisible) container.addView(dpad, dpadLp)
+        if (gamepadVisible && !useStickMode) container.addView(dpad, dpadLp)
+
+        // ★★ v49：摇杆 WASD（可改键摇杆；dpad_scale 大小设置同样生效）
+        val stick = WebStickView(container.context).apply {
+            targetWebView = webViewRef.value
+            overlayAlpha = if (PrefsManager.gamepadAlpha > 100) {
+                PrefsManager.gamepadAlpha / 255f
+            } else {
+                PrefsManager.gamepadAlpha / 100f
+            }
+        }
+        stickRef.value = stick
+        val stickSize = (140 * density * (PrefsManager.dpadScale / 100f)).toInt()
+        val stickLp = android.widget.FrameLayout.LayoutParams(stickSize, stickSize).apply {
+            gravity = android.view.Gravity.BOTTOM or android.view.Gravity.START
+            bottomMargin = (24 * density).toInt()
+            marginStart = (16 * density).toInt()
+        }
+        if (gamepadVisible && useStickMode) container.addView(stick, stickLp)
 
         val action = ActionButtonView(container.context).apply {
             targetWebView = webViewRef.value
@@ -872,7 +899,8 @@ fun SwfPlayerScreen(
             "添加按键",
             "删除按键",
             "Start/Select 映射",
-            "方向键模式 (DPAD/WASD/摇杆)",
+            "方向键模式 (摇杆WASD/DPAD/WASD)",
+            "摇杆 WASD 映射 (四向改键)",
             "方向键大小",
             "动作按键大小",
             "显示/隐藏按键",
@@ -955,10 +983,18 @@ fun SwfPlayerScreen(
                             .setNegativeButton("取消", null)
                             .show()
                     }
-                    // 4: 方向键模式（摇杆/十字键/WASD）
+                    // 4: 方向键模式（摇杆WASD/摇杆/十字键/十字键WASD）
                     4 -> {
-                        val modes = arrayOf("摇杆 (joystick)", "十字键 (dpad)", "WASD (wasd)")
-                        val values = arrayOf("joystick", "dpad", "wasd")
+                        // ★★ v49 新增「摇杆 WASD」（推荐第一位）：可拖动摇杆，
+                        //   斜向 = 双键并按（如 W+D），四向可改键（摇杆 WASD 映射），
+                        //   与在线游戏同款 —— 补齐"方向键模式缺少摇杆的 WASD 选项"。
+                        val modes = arrayOf(
+                            "摇杆 WASD（推荐 · 斜向双键 · 四向可改键）",
+                            "摇杆 (joystick)",
+                            "十字键 (dpad)",
+                            "WASD (十字键发出 W/A/S/D)"
+                        )
+                        val values = arrayOf("stick_wasd", "joystick", "dpad", "wasd")
                         val checked = values.indexOf(PrefsManager.dpadMode).coerceAtLeast(0)
                         android.app.AlertDialog.Builder(context)
                             .setTitle("方向键模式")
@@ -971,8 +1007,34 @@ fun SwfPlayerScreen(
                             .setNegativeButton("取消", null)
                             .show()
                     }
-                    // 5: 方向键大小
+                    // ★★ v49：摇杆 WASD 四向改键（web_stick_key_*，默认 W/S/A/D；
+                    //   摇杆 WASD 模式下把四向改成方向键（UP/DOWN/LEFT/RIGHT）
+                    //   即得"摇杆发方向键"的组合）
                     5 -> {
+                        val dirNames = arrayOf("上", "下", "左", "右")
+                        val dirPrefKeys = arrayOf("web_stick_key_up", "web_stick_key_down", "web_stick_key_left", "web_stick_key_right")
+                        val dirDefaults = arrayOf("W", "S", "A", "D")
+                        val dirKeys = dirPrefKeys.mapIndexed { i, k ->
+                            PrefsManager.sp.getString(k, dirDefaults[i]) ?: dirDefaults[i]
+                        }
+                        android.app.AlertDialog.Builder(context)
+                            .setTitle("摇杆 WASD 映射")
+                            .setItems(dirNames.mapIndexed { i, d -> "${d}方向 (当前: ${dirKeys[i]})" }.toTypedArray()) { _, idx ->
+                                android.app.AlertDialog.Builder(context)
+                                    .setTitle("摇杆「${dirNames[idx]}」方向映射")
+                                    .setSingleChoiceItems(allKeys, allKeys.indexOf(dirKeys[idx]).coerceAtLeast(0)) { dlg2, w2 ->
+                                        PrefsManager.sp.edit().putString(dirPrefKeys[idx], allKeys[w2]).apply()
+                                        dlg2.dismiss()
+                                        rebuildGamepad()
+                                    }
+                                    .setNegativeButton("取消", null)
+                                    .show()
+                            }
+                            .setNegativeButton("取消", null)
+                            .show()
+                    }
+                    // 6: 方向键大小
+                    6 -> {
                         val sizes = arrayOf("小 (80%)", "中 (100%)", "大 (120%)", "超大 (150%)")
                         val values = intArrayOf(80, 100, 120, 150)
                         val current = PrefsManager.sp.getInt("dpad_scale", 100)
@@ -988,8 +1050,8 @@ fun SwfPlayerScreen(
                             .setNegativeButton("取消", null)
                             .show()
                     }
-                    // 6: 动作按键大小
-                    6 -> {
+                    // 7: 动作按键大小
+                    7 -> {
                         val sizes = arrayOf("小 (80%)", "中 (100%)", "大 (120%)", "超大 (150%)")
                         val values = intArrayOf(80, 100, 120, 150)
                         val current = PrefsManager.sp.getInt("gamepad_scale", 100)
@@ -1005,8 +1067,8 @@ fun SwfPlayerScreen(
                             .setNegativeButton("取消", null)
                             .show()
                     }
-                    // 7: 显示/隐藏按键（多选）
-                    7 -> {
+                    // 8: 显示/隐藏按键（多选）
+                    8 -> {
                         val keys = PrefsManager.gamepadKeys
                         val keyVisible = PrefsManager.gamepadKeyVisible
                         val labels = ArrayList<String>()
@@ -1040,8 +1102,8 @@ fun SwfPlayerScreen(
                             .setNegativeButton("取消", null)
                             .show()
                     }
-                    // 8: 添加/隐藏鼠标按钮
-                    8 -> {
+                    // 9: 添加/隐藏鼠标按钮
+                    9 -> {
                         val visible = !PrefsManager.isMouseButtonsVisible
                         PrefsManager.sp.edit()
                             .putBoolean("mouse_buttons_visible", visible)
@@ -1061,8 +1123,8 @@ fun SwfPlayerScreen(
                         }
                         Toast.makeText(context, if (visible) "鼠标按钮已显示" else "鼠标按钮已隐藏", Toast.LENGTH_SHORT).show()
                     }
-                    // 9: 位置编辑模式（拖动调整）
-                    9 -> {
+                    // 10: 位置编辑模式（拖动调整）
+                    10 -> {
                         isPositionEditMode = !isPositionEditMode
                         dpadRef.value?.isDragMode = isPositionEditMode
                         actionRef.value?.isDragMode = isPositionEditMode
@@ -1073,12 +1135,12 @@ fun SwfPlayerScreen(
                             Toast.LENGTH_SHORT
                         ).show()
                     }
-                    // 10: 视角旋转 (3D游戏)
-                    10 -> {
+                    // 11: 视角旋转 (3D游戏)
+                    11 -> {
                         toggleCameraRotation()
                     }
-                    // 11: 恢复默认
-                    11 -> {
+                    // 12: 恢复默认
+                    12 -> {
                         PrefsManager.sp.edit()
                             .putInt("gamepad_key_count", 6)
                             .putString("gamepad_key_1", "J")
@@ -1092,6 +1154,13 @@ fun SwfPlayerScreen(
                             .putString("dpad_mode", "joystick")
                             .putInt("dpad_scale", 100)
                             .putInt("gamepad_scale", 100)
+                            // ★★ v49：摇杆 WASD 键位与位置一并重置
+                            .putString("web_stick_key_up", "W")
+                            .putString("web_stick_key_down", "S")
+                            .putString("web_stick_key_left", "A")
+                            .putString("web_stick_key_right", "D")
+                            .putFloat("web_stick_pos_x", -1f)
+                            .putFloat("web_stick_pos_y", -1f)
                             .putFloat("dpad_pos_x", -1f)
                             .putFloat("dpad_pos_y", -1f)
                             .putFloat("action_pos_x", -1f)

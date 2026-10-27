@@ -159,6 +159,11 @@ func (r *Room) nextFreeSlot(want int) int {
 // 中继连接
 // ---------------------------------------------------------------------------
 
+// outboxSize 每连接 outbound 队列容量（条）。
+// 4 人房 + 观战：每客户端 ≈ 3 输入/帧×60fps = 180 条/s，1024 条 ≈ 5.7s 缓冲；
+// 超过即视为“慢到无法対战”的客户端 —— 丢弃该连接，绝不让它拖住其他人。
+const outboxSize = 1024
+
 // relayMsg 帧同步消息。输入用 JSON 编码（小巧且便于调试）。
 // 协议：客户端 -> 服务器 -> 其他成员。
 //   {"type":"hello","token":"...","roomId":"...",
@@ -228,11 +233,20 @@ type relayMsg struct {
 
 type relayConn struct {
         conn net.Conn
-        enc  *json.Encoder
+        // ★★ v48 异步发送队列：所有出站消息经 outbox 由专属 writer goroutine
+        //   写出。旧版 send() 直接在【调用方 goroutine】上同步写 socket ——
+        //   3/4 人房里只要有一个慢客户端（移动网络拥塞，写阻塞最长达 30s），
+        //   中继它的那条 goroutine 就被卡住，同一循环里排在后面的其他玩家
+        //   的输入转发全部被拖住 → 全员“等待 xP 输入”集体卡死。
+        //   （2 人房 targets 只有 1 个，从不排队 → 双人没问题、3/4 人必现。）
+        //   现在一条连接慢只堵它自己的队列，队列满 → 断开它，保护其他人。
+        outbox    chan []byte
+        closing   chan struct{} // 请求关闭（writer 刷完队列后真正断开）
+        closed    chan struct{} // 完全关闭（资源已释放）
+        closeOnce sync.Once
+        hardOnce  sync.Once
         user *User
         room *Room
-        // sendMu 保护 enc 的并发写入（多 goroutine 转发）。
-        sendMu sync.Mutex
         // 该玩家的槽位（1-4）。房主 = 1。★ v4.4：观战者 = 0。
         slot int
         // ★★ v4.4：观战者连接（不占槽位、不发输入、收全员广播）。
@@ -243,20 +257,110 @@ type relayConn struct {
         v int
         // ★★ v4.5.1：能否出存档快照（ready.stateCap；0 未知 / 1 能 / -1 不能）。
         stateCap int
+        // ★★ v48：该连接（槽位）最后一次被中继的输入帧号（hub.mu 保护）。
+        //   peer_left 时随消息下发 —— 客户端据此把离队槽位“帧号 > lastFrame”
+        //   的输入【确定性归零】（≤ lastFrame 的仍在途，TCP 有序必达，等它）。
+        //   旧版各端各自把离队槽位清 0，谁在途输入到得多谁就发散 ——
+        //   “三人/四人里一个人不同步”的直接根源。
+        lastFrame int64
         // 同步启动：该端是否已发过 ready，以及它建议的 inputDelay（帧）。
         ready    bool
         readyPad int
 }
 
-func (rc *relayConn) send(m relayMsg) error {
-        rc.sendMu.Lock()
-        defer rc.sendMu.Unlock()
-        rc.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-        return rc.enc.Encode(m)
+// startWriter 启动该连接的专属发送 goroutine（创建 relayConn 后立即调用）。
+// 关闭时先尽力刷完队列里的消息（短超时）再断开 —— 保证“发送后关闭”语义
+// （旧版同步写在 close() 前完成，天然不丢；异步化后必须显式兑底）。
+func (rc *relayConn) startWriter() {
+        if rc.outbox == nil {
+                rc.outbox = make(chan []byte, outboxSize)
+        }
+        if rc.closing == nil {
+                rc.closing = make(chan struct{})
+        }
+        if rc.closed == nil {
+                rc.closed = make(chan struct{})
+        }
+        go func() {
+                defer func() {
+                        if p := recover(); p != nil {
+                                log.Printf("[异常] 连接发送 goroutine 异常已隔离：%v", p)
+                        }
+                }()
+                for {
+                        select {
+                        case data := <-rc.outbox:
+                                rc.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+                                if _, err := rc.conn.Write(data); err != nil {
+                                        rc.hardClose()
+                                        return
+                                }
+                        case <-rc.closing:
+                                // 关闭请求：刷完队列再断（总量短超时，慢连接快速放弃）
+                                rc.conn.SetWriteDeadline(time.Now().Add(300 * time.Millisecond))
+                        flush:
+                                for {
+                                        select {
+                                        case data := <-rc.outbox:
+                                                if _, err := rc.conn.Write(data); err != nil {
+                                                        break flush
+                                                }
+                                        default:
+                                                break flush
+                                        }
+                                }
+                                rc.hardClose()
+                                return
+                        }
+                }
+        }()
 }
 
+// send 把消息序列化后投入 outbound 队列（非阻塞）。
+// 队列满 = 对端慢到积压超过 outboxSize —— 断开它保护房间其他人。
+// 返回 error 仅供调用方记录/触发 drop；消息顺序由单 writer + FIFO 队列保证。
+func (rc *relayConn) send(m relayMsg) error {
+        data, err := json.Marshal(m)
+        if err != nil {
+                return err
+        }
+        data = append(data, '\n')
+        if rc.outbox == nil || rc.closing == nil {
+                rc.startWriter() // 兑底（正常路径创建时已启动）
+        }
+        select {
+        case rc.outbox <- data:
+                return nil
+        case <-rc.closing:
+                return fmt.Errorf("connection closing")
+        case <-rc.closed:
+                return fmt.Errorf("connection closed")
+        default:
+                log.Printf("[中继] 连接 %s 发送队列满（慢客户端），断开以保护其他玩家", rc.conn.RemoteAddr())
+                rc.close()
+                return fmt.Errorf("outbox full")
+        }
+}
+
+// close 请求关闭：writer 刷完队列后真正断开（幂等）。
 func (rc *relayConn) close() {
-        _ = rc.conn.Close()
+        rc.closeOnce.Do(func() {
+                if rc.closing == nil {
+                        rc.closing = make(chan struct{})
+                }
+                close(rc.closing)
+        })
+}
+
+// hardClose 立即断开 socket 并标记完全关闭（幂等；writer/兑底路径调用）。
+func (rc *relayConn) hardClose() {
+        rc.hardOnce.Do(func() {
+                if rc.closed == nil {
+                        rc.closed = make(chan struct{})
+                }
+                close(rc.closed)
+                _ = rc.conn.Close()
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -374,8 +478,17 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
 
         // 关闭 Nagle 算法 —— 帧同步 input 每帧一个很小的 JSON 包，
         // Nagle 会把多个小包合并延迟发送，导致对端读不到输入（desync）。
+        // ★★ v48 网络调优（联通/移动等跨运营商链路）：
+        //   - 收发缓冲加大到 512KB（默认几十 KB 在跨境/跨网拥塞时易丢包重传）；
+        //   - TCP KeepAlive（30s）：部分运营商 NAT 会悄悄丢弃空闲映射，
+        //     对局中虽持续有输入流量，但暂停/存档同步等间歇期仍需保活；
+        //   - NoDelay 保持开启（小包立即发，输入延迟最低）。
         if tcp, ok := conn.(*net.TCPConn); ok {
                 _ = tcp.SetNoDelay(true)
+                _ = tcp.SetReadBuffer(512 * 1024)
+                _ = tcp.SetWriteBuffer(512 * 1024)
+                _ = tcp.SetKeepAlive(true)
+                _ = tcp.SetKeepAlivePeriod(30 * time.Second)
         }
 
         // ★ v4.3：缓冲调大 —— 后加入要经此收发 base64 即时存档（可达数百 KB 一行）。
@@ -436,7 +549,6 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
                 }
                 rc := &relayConn{
                         conn: conn,
-                        enc:  json.NewEncoder(conn),
                         user: h.users.byID(claims.Sub),
                         room: room,
                         slot: 0, spectator: true,
@@ -450,6 +562,9 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
                 h.mu.Unlock()
 
                 conn.SetReadDeadline(time.Time{}) // 清除超时
+
+                // ★★ v48：启动专属发送 goroutine（观战连接同样走异步队列）
+                rc.startWriter()
 
                 // hello 回执：角色 = spectator，槽位 0，成员槽位，是否已在跑
                 _ = rc.send(relayMsg{
@@ -540,7 +655,6 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
 
         rc := &relayConn{
                 conn: conn,
-                enc:  json.NewEncoder(conn),
                 user: h.users.byID(claims.Sub),
                 room: room,
                 slot: slot,
@@ -553,6 +667,9 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
         h.mu.Unlock()
 
         conn.SetReadDeadline(time.Time{}) // 清除超时
+
+        // ★★ v48：启动专属发送 goroutine（所有后续消息经 outbox 异步写出）
+        rc.startWriter()
 
         // hello 回执：角色（host=1P）、参考延迟、本端槽位、成员槽位、是否已在跑
         role := "guest"
@@ -577,6 +694,9 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
 // broadcastExcept 向房间内除 exclude 外的所有成员广播（exclude 为 nil = 全员）。
 // ★★ v4.4：广播覆盖观战者（specs）—— 观战者收全员 input/pause/state/resume/
 // peer_*，与玩家看到同一画面。
+// ★★ v48：发送全部走 outbox 异步队列 —— 任何慢客户端都不再阻塞广播本身
+//   （旧版同步串行 send，一个慢连接能把 pause/resume 拖住其他全员）。
+//   队列满（send 返回错）→ 断开该慢客户端（drop 收尾房间簿记）。
 func (h *relayHub) broadcastExcept(room *Room, exclude *relayConn, msg relayMsg) {
         h.mu.Lock()
         targets := make([]*relayConn, 0, maxRoomPlayers+maxSpectators)
@@ -592,7 +712,10 @@ func (h *relayHub) broadcastExcept(room *Room, exclude *relayConn, msg relayMsg)
         }
         h.mu.Unlock()
         for _, c := range targets {
-                _ = c.send(msg)
+                if err := c.send(msg); err != nil {
+                        c.close()
+                        h.drop(c)
+                }
         }
 }
 
@@ -622,6 +745,12 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         }
                         h.mu.Lock()
                         room := rc.room
+                        // ★★ v48：记录该槽位最后一次中继的输入帧号（hub.mu 保护；
+                        //   input 按序到达，帧号单调递增）—— peer_left 时随消息
+                        //   下发给客户端做“离队槽位确定性归零”。
+                        if msg.Frame > rc.lastFrame {
+                                rc.lastFrame = msg.Frame
+                        }
                         targets := make([]*relayConn, 0, maxRoomPlayers+maxSpectators)
                         for _, c := range room.conns {
                                 if c != rc {
@@ -635,6 +764,7 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         }
                         h.mu.Unlock()
                         out := relayMsg{Type: "input", Frame: msg.Frame, Pad: msg.Pad, Slot: rc.slot}
+                        // ★★ v48：非阻塞投递 —— 慢客户端不再拖住其他人的输入转发
                         for _, c := range targets {
                                 if err := c.send(out); err != nil {
                                         c.close()
@@ -1153,7 +1283,12 @@ func (h *relayHub) drop(rc *relayConn) {
                 }
                 for _, c := range room.conns {
                         if c != rc {
-                                _ = c.send(relayMsg{Type: "peer_left", Msg: rc.user.Username, Slot: rc.slot})
+                                // ★★ v48：peer_left 携带该槽位最后一次中继的输入帧号
+                                //   （frame 字段）。客户端据此区分“仍在途的最后几帧输入”
+                                //   （≤ frame，TCP 有序必达，等到再用）与“永不再来的帧”
+                                //   （> frame，确定性归零）—— 各端对离队槽位的输入
+                                //   序列完全一致，不再因各自提前清零而发散。
+                                _ = c.send(relayMsg{Type: "peer_left", Msg: rc.user.Username, Slot: rc.slot, Frame: rc.lastFrame})
                         }
                 }
                 delete(room.conns, rc.user.ID)

@@ -219,7 +219,14 @@
         // 漏掉校正 —— 表现为“设置屏幕比例不生效，一直有黑边保持原比例”。
         // 看门狗周期性把 #stage 校正到目标几何并 dispatch resize 让引擎重算
         // viewport，无论初始化时机如何错开，最终几何必然正确：
-        //   · stretch / 缺省 → #stage 铺满视口（引擎 exactFit 拉伸铺满）
+        //   · stretch / 缺省 → ★★ v49 全屏拉伸修复：与比例盒走【完全相同的
+        //     主动几何强制管线】（显式像素尺寸 + 强制 CSS + resize 派发）。
+        //     旧版 stretch 只“被动清理”（清样式赌 #stage 默认 100% 撑满 +
+        //     赌引擎 exactFit 填满），而 16:9 等比例模式是“主动强制” —— 这正是
+        //     “只有 16:9 生效、全屏拉伸没效果”的根因：任何残留样式（前次比例
+        //     盒的 resize 监听器重加的样式 / #stage 内联宽高 / ruffle-player
+        //     未被强制 100%）都会让被动链路悄悄失效。现在 stretch = 视口尺寸
+        //     的“比例盒”，与已验证有效的比例管线逐字节同构。
         //   · 4:3 / 16:9 / 16:10 / 5:4 → 居中比例盒（引擎 exactFit 填满盒）
         //   · auto → 不干预（引擎 showAll + letterbox 属预期）
         //   · box（自定义四角）→ 不干预（box 逻辑自管）
@@ -236,6 +243,18 @@
             if (sw / sh > r) { h = sh; w = sh * r; } else { w = sw; h = sw / r; }
             return { w: Math.floor(w), h: Math.floor(h), ratio: r };
           }
+          function ensureStageCss() {
+            if (!document.getElementById('__ruffleAspectRatioStyle')) {
+              var st = document.createElement('style');
+              st.id = '__ruffleAspectRatioStyle';
+              st.textContent = [
+                'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;background:#000!important;overflow:hidden!important;}',
+                '#stage{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;margin:auto!important;background:#000!important;box-sizing:border-box!important;}',
+                '#stage > ruffle-player{display:block!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;}'
+              ].join('\n');
+              document.head.appendChild(st);
+            }
+          }
           var ticks = 0;
           var timer = setInterval(function() {
             ticks++;
@@ -247,37 +266,26 @@
               }
               var box = ratioBox();
               if (!box) { if (ticks > 80) clearInterval(timer); return; }
+              // ★★ v49：stretch 与比例盒统一走“主动几何强制”
+              var bw, bh, w, h;
               if (box.ratio === 0) {
-                // stretch：清理任何残留的比例盒样式，回归全屏
-                var stale = document.getElementById('__ruffleAspectRatioStyle');
-                if (stale) stale.remove();
-                if (stage.style.width || stage.style.height) {
-                  stage.style.width = '';
-                  stage.style.height = '';
-                  window.dispatchEvent(new Event('resize'));
-                }
+                // stretch：目标 = 整个视口（无 4px 边距，铺满到边）
+                ensureStageCss();
+                bw = Math.max(1, window.innerWidth);
+                bh = Math.max(1, window.innerHeight);
+                w = bw; h = bh;
               } else {
-                // 比例盒：确保居中样式存在（与 GameWebViewClient 同款 CSS）
-                if (!document.getElementById('__ruffleAspectRatioStyle')) {
-                  var st = document.createElement('style');
-                  st.id = '__ruffleAspectRatioStyle';
-                  st.textContent = [
-                    'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;background:#000!important;overflow:hidden!important;}',
-                    '#stage{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;margin:auto!important;background:#000!important;box-sizing:border-box!important;}',
-                    '#stage > ruffle-player{display:block!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;}'
-                  ].join('\n');
-                  document.head.appendChild(st);
-                }
-                var bw = Math.max(1, window.innerWidth - 4);
-                var bh = Math.max(1, window.innerHeight - 4);
-                var w, h;
+                // 比例盒：视口内按比例居中（留 4px 安全边距）
+                ensureStageCss();
+                bw = Math.max(1, window.innerWidth - 4);
+                bh = Math.max(1, window.innerHeight - 4);
                 if (bw / bh > box.ratio) { h = bh; w = Math.floor(bh * box.ratio); }
                 else { w = bw; h = Math.floor(bw / box.ratio); }
-                if (Math.abs(stage.clientWidth - w) > 2 || Math.abs(stage.clientHeight - h) > 2) {
-                  stage.style.width = w + 'px';
-                  stage.style.height = h + 'px';
-                  window.dispatchEvent(new Event('resize'));
-                }
+              }
+              if (Math.abs(stage.clientWidth - w) > 2 || Math.abs(stage.clientHeight - h) > 2) {
+                stage.style.width = w + 'px';
+                stage.style.height = h + 'px';
+                window.dispatchEvent(new Event('resize'));
               }
             } catch (e) { /* 看门狗永不抛错 */ }
             if (ticks > 120) clearInterval(timer); // ~96s 后停止（几何已稳定）

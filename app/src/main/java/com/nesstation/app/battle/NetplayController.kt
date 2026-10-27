@@ -141,7 +141,10 @@ class NetplayController(
         /** 回滚检查点环大小（文件数 × 存档间隔 = 纠错覆盖窗口，32 帧 ≈ 533ms） */
         private const val RB_RING = 32
         /** 预测深度上限（帧）：确认帧落后超过它就不再预测 → 阻塞等待（退化延迟模式，防不可纠正的深预测） */
-        private const val RB_MAX_PREDICT = 12
+        /** ★★ v48：12 → 16 帧（≈267ms）。3-4 人房跨运营商（联通↔移动）RTT 波动
+         *  更大，单人最小确认帧更保守；窗口加大减少退化阻塞等待的频率
+         *  （回滚重放 ≤ RB_MAX_REPLAY 上限不变，检查点环 32 帧覆盖充足）。 */
+        private const val RB_MAX_PREDICT = 16
         /** 单次回滚最大重放帧数（性能保护；超过则放弃纠正并提示重进房间） */
         private const val RB_MAX_REPLAY = 96
         /** 检查点无效哨兵（tag 可为负 —— warmup 帧也存，作 frame 0 的重放基点） */
@@ -202,6 +205,20 @@ class NetplayController(
     private val activeSlots = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
     /** 同步接入中的槽位（peer_joined 后、resume 前 —— 不等待其输入）。 */
     private val pendingSlots = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+
+    /** ★★ v48 离队槽位的最后输入帧号（slot -> 服务器 peer_left 下发的 frame）。
+     *  旧版 peer_left 后各端立即把该槽位当作“不存在”：
+     *   - 有人还在等它在途的最后一帧输入（等到）
+     *   - 有人直接用 0 跑过去（没等）
+     *  → 同一帧在不同端用了不同输入 → 单端永久发散（“三人/四人里有一个人
+     *  不同步”的直接根源）。现在 ≤ lastFrame 的输入【TCP 有序必达，等到再用】，
+     *  > lastFrame 的帧【确定性归零】—— 各端输入序列严格一致。 */
+    private val deadSlotLastFrame = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
+    /** ★★ v48 门事件标记（仅引擎线程读写）：等待远端输入期间发生 pause/
+     *  restart —— 本帧作废，回到外层环重新过门对齐（存档装载/帧号改写
+     *  都在引擎挂门期间完成），绝不能带着旧时间线的帧号继续跑帧。 */
+    private var gateEventPending = false
 
     /** 本端槽位（1P=1…4P=4，服务器 hello 下发；★★ v4.4 观战者恒 0）。 */
     @Volatile var mySlot: Int = 1
@@ -438,17 +455,24 @@ class NetplayController(
                 return
             }
             if (slot in 1..4) pendingSlots.add(slot)
+            // ★★ v48：新玩家入座 —— 清除该槽位的离队记录（座位复用）
+            deadSlotLastFrame.remove(slot)
             dispatch { it.onPeerJoined(username) }
             dispatch { it.onPeerJoinedSlot(username, slot) }
         }
 
-        override fun onPeerLeft(username: String, slot: Int, spec: Boolean) {
+        override fun onPeerLeft(username: String, slot: Int, spec: Boolean, lastFrame: Long) {
             if (spec) {
                 dispatch { it.onSpectatorLeft(username) }
                 return
             }
             pendingSlots.remove(slot)
             activeSlots.remove(slot)
+            // ★★ v48 记录离队槽位最后输入帧：在途输入等到再用，其后归零
+            if (lastFrame >= 0) {
+                val old = deadSlotLastFrame[slot]
+                if (old == null || lastFrame > old) deadSlotLastFrame[slot] = lastFrame
+            }
             if (!started) {
                 // 等待阶段对端离开：开门（引擎不死等）
                 synchronized(startGate) { started = true; startGate.notifyAll() }
@@ -601,7 +625,15 @@ class NetplayController(
                 android.util.Base64.decode(dataBase64, android.util.Base64.NO_WRAP)
             } catch (_: Throwable) { null }
             if (bytes != null && bytes.isNotEmpty()) {
-                // 引擎线程此刻挂在门上（未 start → startGate；已 start → syncGate）
+                // ★★ v48 先等引擎真正挂门再装载：旧版假定“引擎此刻挂在门上”，
+                //   但引擎线程可能仍在跑帧 / 阻塞在等待远端输入（v48 门事件修复后
+                //   会主动回门，这里只作确定性等待）—— loadStateFrom 与 runFrame
+                //   并发 = 核心状态损坏（3-4 人房“全部卡死/一人永久不同步”根源之一）。
+                //   最多等 2s：超时放弃装载（各端从各自暂停帧继续，暂停前本就同帧）。
+                if (!waitForEngineParked(2000)) {
+                    dispatch { it.onSyncStatus("同步装载等待引擎超时，按当前进度恢复…") }
+                    android.util.Log.w("NetplayController", "resume: engine not parked in 2s, skip state load")
+                } else {
                 val file = File(io.stateDir(), "battle_join_sync.state")
                 val loaded = try {
                     file.writeBytes(bytes); io.loadStateFrom(file)
@@ -617,6 +649,7 @@ class NetplayController(
                     // ★★ v4.7 内部帧号计数器 = 存档帧：全员下一个发出的网络帧号
                     //   严格一致（引擎此刻挂在门上，无并发消费 —— 改写安全）
                     netFrameCounter = frame
+                }
                 }
             }
         }
@@ -635,6 +668,23 @@ class NetplayController(
         synchronized(syncGate) { syncPaused = false; syncGate.notifyAll() }
         synchronized(startGate) { started = true; startGate.notifyAll() }
         parkedLocalFrame = -1
+    }
+
+    /**
+     * ★★ v48 等待引擎线程挂到门上（启动门/同步门都算 —— 引擎挂门时核心必然
+     * 空闲，跨线程存档装载安全）。返回 false = 超时（引擎仍在跑帧/等待输入）。
+     * 仅在同步收尾线程（battle-resume / hostProduceState 后续）调用。
+     */
+    private fun waitForEngineParked(timeoutMs: Long): Boolean {
+        // 未开跑且无暂停请求：引擎要么还没进帧循环（加载中，核心空闲安全），
+        // 要么正挂在启动门上 —— 都可视为“已停”。
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < timeoutMs) {
+            if (parkedLocalFrame >= 0) return true
+            if (!started && !syncPaused) return true
+            try { Thread.sleep(5) } catch (_: InterruptedException) { return parkedLocalFrame >= 0 }
+        }
+        return parkedLocalFrame >= 0
     }
 
     /** hist（槽位→pad 序列，止于 histEnd 前）→ padsHistory 种子。 */
@@ -682,6 +732,8 @@ class NetplayController(
         for (s in 1..4) padsHistory[s].clear()
         inputLog.clear()
         pendingSlots.clear()
+        deadSlotLastFrame.clear()
+        gateEventPending = false
         desyncCount = 0
         rbRequestReset(-1L)   // 回滚簿记全部作废（rbApplyReset(-1)：清 inputLog + 检查点 + 置 rbLastExecuted=-1）
         rbCount = 0L
@@ -843,136 +895,191 @@ class NetplayController(
      * 5. 延迟模式（原逻辑）：阻塞等所有活跃远端槽位的 execFrame 输入【绝不兜底】。
      */
     private fun beforeFrameImpl(frame: Long): IntArray? {
-        // 0. ★★ v4.5.1 全员重开（引擎线程串行应用 —— 与核心复位 retro_reset
-        //    无并发；复位后走启动门等全员重新 ready → start）
-        if (restartPending) {
-            applyRestartOnEngineThread()
-        }
-        // 1. 启动门（★ 重开请求 = 临时放行去应用复位，不死等）
-        if (!started) {
-            synchronized(startGate) {
-                while (!started && !restartPending) {
-                    parkedLocalFrame = frame
-                    val now = System.currentTimeMillis()
-                    if (now - lastWaitNoticeMs > 1500) {
-                        lastWaitNoticeMs = now
-                        dispatch { it.onNetplayWait("等待同步开始（引擎就绪后自动开跑）…") }
+        // ★★ v48 外层重试环：等待远端输入期间若发生"门事件"（同步暂停 pause /
+        //   全员重开 restart），本帧作废 —— 回滚已消费的帧号、回到门上重新对齐
+        //   （存档装载/帧号改写都在引擎挂门期间安全完成）。
+        //   旧版缺陷：pause 到达时引擎线程可能正阻塞在 awaitSlotInput 里 ——
+        //   ① parkedLocalFrame 永不置位 → 房主出档 5s 超时；② resume 的
+        //   loadStateFrom/帧号改写与 runFrame 并发执行 → 核心状态损坏；
+        //   ③ 引擎带着旧时间线帧号继续跑 → 检查点 tag 错位 → 永久发散。
+        outer@ while (true) {
+            // 0. ★★ v4.5.1 全员重开（引擎线程串行应用 —— 与核心复位 retro_reset
+            //    无并发；复位后走启动门等全员重新 ready → start）
+            if (restartPending) {
+                applyRestartOnEngineThread()
+            }
+            // 1. 启动门（★ 重开请求 = 临时放行去应用复位，不死等）
+            if (!started) {
+                synchronized(startGate) {
+                    while (!started && !restartPending) {
+                        parkedLocalFrame = frame
+                        val now = System.currentTimeMillis()
+                        if (now - lastWaitNoticeMs > 1500) {
+                            lastWaitNoticeMs = now
+                            dispatch { it.onNetplayWait("等待同步开始（引擎就绪后自动开跑）…") }
+                        }
+                        try { startGate.wait(500) } catch (_: InterruptedException) { return IntArray(4) }
                     }
-                    try { startGate.wait(500) } catch (_: InterruptedException) { return IntArray(4) }
                 }
             }
-        }
-        // 2. ★ v4.3 同步暂停门（后加入同步：房主/运行成员挂起在此）
-        if (syncPaused) {
-            synchronized(syncGate) {
-                while (syncPaused && !restartPending) {
-                    parkedLocalFrame = frame
-                    val now = System.currentTimeMillis()
-                    if (now - lastSyncNoticeMs > 1500) {
-                        lastSyncNoticeMs = now
-                        dispatch { it.onSyncStatus("新玩家接入：画面同步中…") }
+            // 2. ★ v4.3 同步暂停门（后加入同步：房主/运行成员挂起在此）
+            if (syncPaused) {
+                synchronized(syncGate) {
+                    while (syncPaused && !restartPending) {
+                        parkedLocalFrame = frame
+                        val now = System.currentTimeMillis()
+                        if (now - lastSyncNoticeMs > 1500) {
+                            lastSyncNoticeMs = now
+                            dispatch { it.onSyncStatus("新玩家接入：画面同步中…") }
+                        }
+                        try { syncGate.wait(500) } catch (_: InterruptedException) { return IntArray(4) }
                     }
-                    try { syncGate.wait(500) } catch (_: InterruptedException) { return IntArray(4) }
                 }
             }
-        }
-        // 门放行后若又有重开请求 → 本次帧跳过（下一迭代在顶部应用复位）
-        if (restartPending) {
-            // ★★ v4.7 零输入过渡帧：本帧未发号（计数器未消费）—— afterFrame
-            //   跳过记账，防把“多跑的一帧”记到上一帧号头上
-            zeroPadFrame = true
-            return IntArray(4)
-        }
+            // 门放行后若又有重开请求 → 本次帧跳过（下一迭代在顶部应用复位）
+            if (restartPending) {
+                // ★★ v4.7 零输入过渡帧：本帧未发号（计数器未消费）—— afterFrame
+                //   跳过记账，防把“多跑的一帧”记到上一帧号头上
+                zeroPadFrame = true
+                return IntArray(4)
+            }
 
-        // ★★ v4.7 内部帧号：网络帧号由控制器自己发号（不再用引擎本地帧换算 ——
-        //   引擎计数器在 restart 复位瞬间会错位，各端互不一致，“1p 等 2p、
-        //   2p 等 1p” 互等死锁的根源）。start（0）/resume 装载（存档帧）/restart
-        //   复位（0）三类对齐事件直接改写计数器 —— 全员发出的 (netFrame→pads)
-        //   序列严格一致。仅引擎线程在此消费；网络线程只在引擎挂门时改写。
-        val netFrame = netFrameCounter
-        netFrameCounter = netFrame + 1L
-        lastIssuedNetFrame = netFrame
-        val n = net
+            // ★★ v4.7 内部帧号：网络帧号由控制器自己发号（不再用引擎本地帧换算 ——
+            //   引擎计数器在 restart 复位瞬间会错位，各端互不一致，"1p 等 2p、
+            //   2p 等 1p" 互等死锁的根源）。start（0）/resume 装载（存档帧）/restart
+            //   复位（0）三类对齐事件直接改写计数器 —— 全员发出的 (netFrame→pads)
+            //   序列严格一致。仅引擎线程在此消费；网络线程只在引擎挂门时改写。
+            val prevIssuedNetFrame = lastIssuedNetFrame
+            val netFrame = netFrameCounter
+            netFrameCounter = netFrame + 1L
+            lastIssuedNetFrame = netFrame
+            val n = net
 
-        // ★★ v4.4 时间线重置应用（pause→state→resume 后新时间线首帧；
-        //   仅此处（引擎线程）触碰 rbCkFrame/inputLog 结构性重置）
-        val resetFrame = rbResetFrame
-        if (resetFrame != java.lang.Long.MIN_VALUE) {
-            rbResetFrame = java.lang.Long.MIN_VALUE
-            rbApplyReset(resetFrame)
-        }
+            // ★★ v4.4 时间线重置应用（pause→state→resume 后新时间线首帧；
+            //   仅此处（引擎线程）触碰 rbCkFrame/inputLog 结构性重置）
+            val resetFrame = rbResetFrame
+            if (resetFrame != java.lang.Long.MIN_VALUE) {
+                rbResetFrame = java.lang.Long.MIN_VALUE
+                rbApplyReset(resetFrame)
+            }
 
-        // ★★ v4.4 观战模式：不占座位、不采样不发送；等全员输入同画面观战。
-        if (isSpectator) {
-            if (n == null) { zeroPadFrame = true; return IntArray(4) }
+            // ★★ v48 门事件中止处理：本帧已发号/已发送输入但【尚未被任何端执行】
+            //   （还在等某个对端的输入 = 所有端的执行进度都被它压在该帧之下），
+            //   回滚发号后重新过门 —— 裸恢复（无存档）时按新发号重跑同一帧，
+            //   带档恢复/重开时整个时间线被替换，作废帧自然丢弃。
+            fun abortFrameForGateEvent(): IntArray {
+                netFrameCounter = netFrame
+                lastIssuedNetFrame = prevIssuedNetFrame
+                gateEventPending = true
+                return IntArray(4)
+            }
+
+            // ★★ v4.4 观战模式：不占座位、不采样不发送；等全员输入同画面观战。
+            if (isSpectator) {
+                if (n == null) { zeroPadFrame = true; return IntArray(4) }
+                inputDelay = n.inputDelay.coerceIn(0, 16)
+                val execFrame = netFrame - inputDelay
+                if (execFrame < 0) return IntArray(4) // warmup：全 0
+                val pads = IntArray(4)
+                for (slot in 1..4) {
+                    if (slotNeedsInput(slot, execFrame)) {
+                        var pad = padsHistory[slot][execFrame]
+                        if (pad == null) pad = awaitSlotInput(slot, execFrame)
+                        if (pad == null) {
+                            // ★★ v48：null = 门事件（pause/restart）或断连。
+                            //   门事件：本帧作废（回滚发号）+ 回门重对齐 —— 绝不
+                            //   执行零输入帧（其他端会继续用真实输入 → 发散）。
+                            if (restartPending || syncPaused) {
+                                abortFrameForGateEvent()
+                                continue@outer
+                            }
+                            return IntArray(4) // 断连：停模拟
+                        }
+                        pads[slot - 1] = pad
+                    }
+                }
+                return pads
+            }
+
+            // ★★ v4.4 回滚模式（预测 + 纠错重放，手感 = 延迟帧级而非 RTT 级）
+            if (rollbackMode && stateIo != null) {
+                gateEventPending = false
+                val rbPads = rbBeforeFrame(netFrame)
+                if (gateEventPending && (restartPending || syncPaused)) {
+                    abortFrameForGateEvent()   // ★★ v48 门事件：回滚发号，本帧作废
+                    continue@outer
+                }
+                return rbPads ?: IntArray(4)
+            }
+
+            // ---- 延迟模式（v4.3 原逻辑）----
+            val localPad = currentLocalPad
+            if (mySlot in 1..4) padsHistory[mySlot][netFrame] = localPad
+
+            if (n == null) {
+                // 无网络（断连/未连上）：本帧已发号但未发送 —— 记零输入过渡帧
+                zeroPadFrame = true
+                val pads = IntArray(4)
+                if (mySlot in 1..4) pads[mySlot - 1] = localPad
+                return pads
+            }
+
             inputDelay = n.inputDelay.coerceIn(0, 16)
+
+            // 3. 发送本帧输入（带槽位，非阻塞）
+            if (mySlot in 1..4) {
+                try {
+                    n.sendInput(netFrame, localPad, mySlot)
+                } catch (t: Throwable) {
+                    android.util.Log.w("NetplayController", "sendInput failed: ${t.message}")
+                }
+            }
+
+            // 4. 执行帧 = 网络帧 - inputDelay
             val execFrame = netFrame - inputDelay
-            if (execFrame < 0) return IntArray(4) // warmup：全 0
+            if (execFrame < 0) {
+                return IntArray(4) // warmup：全 0，各端一致
+            }
+
+            // 5. 组装 4 手柄：本地槽位用本地历史；活跃远端槽位阻塞等待；
+            //    ★★ v48 离队槽位：≤ deadSlotLastFrame 的在途输入等到再用、
+            //    其后确定性归零（各端一致）；未激活/接入中槽位恒 0。
             val pads = IntArray(4)
             for (slot in 1..4) {
-                if (activeSlots.contains(slot)) {
+                if (slot == mySlot) {
+                    pads[slot - 1] = padsHistory[slot][execFrame] ?: localPad
+                } else if (slotNeedsInput(slot, execFrame)) {
                     var pad = padsHistory[slot][execFrame]
-                    if (pad == null) pad = awaitSlotInput(slot, execFrame)
-                    if (pad == null) return IntArray(4) // 断连：停模拟
+                    if (pad == null) {
+                        pad = awaitSlotInput(slot, execFrame)
+                    }
+                    if (pad == null) {
+                        // ★★ v48：null = 门事件（pause/restart，本帧作废回外层环）
+                        //   或断连（停模拟，后续 onPeerLeft/onNetplayLost 引导 UI）。
+                        //   旧版在这里直接 return IntArray(4) 用全 0 跑帧 —— 而其他
+                        //   端可能用离队者在途的真实输入 → 单端永久发散。
+                        if (restartPending || syncPaused) {
+                            abortFrameForGateEvent()
+                            continue@outer
+                        }
+                        zeroPadFrame = true
+                        return IntArray(4)
+                    }
                     pads[slot - 1] = pad
                 }
             }
             return pads
         }
+    }
 
-        // ★★ v4.4 回滚模式（预测 + 纠错重放，手感 = 延迟帧级而非 RTT 级）
-        if (rollbackMode && stateIo != null) {
-            return rbBeforeFrame(netFrame)
-        }
-
-        // ---- 延迟模式（v4.3 原逻辑）----
-        val localPad = currentLocalPad
-        if (mySlot in 1..4) padsHistory[mySlot][netFrame] = localPad
-
-        if (n == null) {
-            // 无网络（断连/未连上）：本帧已发号但未发送 —— 记零输入过渡帧
-            zeroPadFrame = true
-            val pads = IntArray(4)
-            if (mySlot in 1..4) pads[mySlot - 1] = localPad
-            return pads
-        }
-
-        inputDelay = n.inputDelay.coerceIn(0, 16)
-
-        // 3. 发送本帧输入（带槽位，非阻塞）
-        if (mySlot in 1..4) {
-            try {
-                n.sendInput(netFrame, localPad, mySlot)
-            } catch (t: Throwable) {
-                android.util.Log.w("NetplayController", "sendInput failed: ${t.message}")
-            }
-        }
-
-        // 4. 执行帧 = 网络帧 - inputDelay
-        val execFrame = netFrame - inputDelay
-        if (execFrame < 0) {
-            return IntArray(4) // warmup：全 0，各端一致
-        }
-
-        // 5. 组装 4 手柄：本地槽位用本地历史；活跃远端槽位阻塞等待；
-        //    未激活/接入中槽位恒 0。
-        val pads = IntArray(4)
-        for (slot in 1..4) {
-            if (slot == mySlot) {
-                pads[slot - 1] = padsHistory[slot][execFrame] ?: localPad
-            } else if (activeSlots.contains(slot)) {
-                var pad = padsHistory[slot][execFrame]
-                if (pad == null) {
-                    pad = awaitSlotInput(slot, execFrame)
-                }
-                if (pad == null) {
-                    // 断连：停止模拟（全 0），后续 onPeerLeft/onNetplayLost 引导 UI
-                    return IntArray(4)
-                }
-                pads[slot - 1] = pad
-            }
-        }
-        return pads
+    /** ★★ v48 该槽位在 [execFrame] 帧是否需要等待/使用其输入：
+     *  - 活跃槽位 → 需要；
+     *  - 离队槽位且 execFrame ≤ 最后中继帧（输入仍在途，TCP 有序必达）→ 需要；
+     *  - 其余（离队后的帧 / 从未激活）→ 不需要（确定性 0）。 */
+    private fun slotNeedsInput(slot: Int, execFrame: Long): Boolean {
+        if (activeSlots.contains(slot)) return true
+        val dead = deadSlotLastFrame[slot] ?: return false
+        return execFrame <= dead
     }
 
     /** 兼容旧 2 手柄路径（NES/SNES/GBA 等核心的 frameHook 调用）。 */
@@ -984,7 +1091,12 @@ class NetplayController(
     override fun beforeFramePads(frame: Long): IntArray? = beforeFrameImpl(frame)
 
     /**
-     * ★ 阻塞等待某槽位第 [targetFrame] 帧的输入，直到到达 / 槽位离开 / 连接断开。
+     * ★ 阻塞等待某槽位第 [targetFrame] 帧的输入。
+     * ★★ v48 返回值语义：
+     *  - 非 null：已解析的输入值 —— 真实输入，或【离队槽位在最后中继帧之后的
+     *    确定性归零 0】（各端一致）；
+     *  - null：门事件（restartPending / syncPaused —— 本帧作废，调用方回外层环）
+     *    或连接断开（停模拟）。
      */
     private fun awaitSlotInput(slot: Int, targetFrame: Long): Int? {
         var lastNotice = 0L
@@ -992,8 +1104,18 @@ class NetplayController(
             padsHistory[slot][targetFrame]?.let { return it }
             // ★★ v4.5.1 全员重开请求：立即让路（引擎线程下一迭代应用复位）
             if (restartPending) return null
-            // 槽位已离开 / 掉线：不再等待
-            if (!activeSlots.contains(slot)) return null
+            // ★★ v48 同步暂停：立即让路（本帧作废，回外层环重新过门 ——
+            //   旧版死等在途输入 → parkedLocalFrame 永不置位 → 房主出档超时 /
+            //   resume 装载与跑帧并发 → 状态损坏）
+            if (syncPaused) return null
+            // ★★ v48 离队槽位：帧号 > 最后中继帧的输入永不再来 → 确定性归 0
+            //   （≤ lastFrame 的仍在途，TCP 有序必达，继续等 —— 各端输入序列
+            //   严格一致，不再各自提前清零导致单端发散）
+            if (!activeSlots.contains(slot)) {
+                val dead = deadSlotLastFrame[slot] ?: -1L
+                if (targetFrame > dead) return 0
+                // targetFrame <= dead：在途输入，继续等
+            }
             val n = net
             val now = System.currentTimeMillis()
             if (n == null || !n.isConnected) return null
@@ -1125,8 +1247,26 @@ class NetplayController(
                             pad = rbLastKnownPad.get(slot) // 预测：延续对手上一输入
                         } else {
                             pad = awaitSlotInput(slot, execFrame)
-                            if (pad == null) return IntArray(4) // 断连：停模拟
+                            if (pad == null) {
+                                // ★★ v48：null = 门事件（pause/restart，本帧作废 ——
+                                //   置标记让外层环回滚发号回门）或断连（停模拟）。
+                                //   旧版直接 return 全 0 跑帧 —— 与其他端的在途
+                                //   真实输入不一致 → 单端永久发散。
+                                if (restartPending || syncPaused) gateEventPending = true
+                                return IntArray(4)
+                            }
                         }
+                    }
+                    pads[slot - 1] = pad
+                }
+                // ★★ v48 离队槽位：≤ deadSlotLastFrame 的在途输入等到再用、
+                //   其后确定性归零（与延迟模式同一语义，各端一致）
+                slotNeedsInput(slot, execFrame) -> {
+                    var pad = padsHistory[slot][execFrame]
+                    if (pad == null) pad = awaitSlotInput(slot, execFrame)
+                    if (pad == null) {
+                        if (restartPending || syncPaused) gateEventPending = true
+                        return IntArray(4) // 门事件/断连
                     }
                     pads[slot - 1] = pad
                 }
@@ -1233,7 +1373,12 @@ class NetplayController(
                 pads[slot - 1] = when {
                     slot == mySlot -> padsHistory[slot][f] ?: 0
                     activeSlots.contains(slot) -> padsHistory[slot][f] ?: rbLastKnownPad.get(slot)
-                    else -> 0
+                    // ★★ v48 离队槽位：≤ 最后中继帧的在途输入用真实值（未到则 0，
+                    //   后到会触发不一致→再回滚纠正）；其后确定性归零
+                    else -> {
+                        val dead = deadSlotLastFrame[slot] ?: -1L
+                        if (f > dead) 0 else padsHistory[slot][f] ?: 0
+                    }
                 }
             }
             if (!io.runFrameDirect(pads)) {
@@ -1250,15 +1395,18 @@ class NetplayController(
         return true
     }
 
-    /** 回滚不可用时的退化：阻塞等待待纠正帧及之后的实际输入到齐（不预测）。 */
+    /** 回滚不可用时的退化：阻塞等待待纠正帧及之后的实际输入到齐（不预测）。
+     *  ★★ v48：门事件（pause/restart）/断连立即返回（本帧作废，外层处理）。 */
     private fun rbBlockWaitFor(fromFrame: Long) {
         val lastExec = rbLastExecuted
-        for (slot in activeSlots) {
+        for (slot in activeSlots.toList()) {
             if (slot == mySlot) continue
             var f = fromFrame
             while (f <= lastExec) {
                 if (padsHistory[slot][f] == null) {
-                    awaitSlotInput(slot, f) // 断连返回 null：后续门/onPeerLeft 兜底
+                    val got = awaitSlotInput(slot, f) // null（门事件/断连）：立即让路
+                    if (got == null) return
+                    // 非 null：输入已到或离队归零 —— 继续
                 }
                 f++
             }
@@ -1320,6 +1468,8 @@ class NetplayController(
         for (slot in 1..4) padsHistory[slot].clear()
         activeSlots.clear()
         pendingSlots.clear()
+        deadSlotLastFrame.clear()
+        gateEventPending = false
         currentLocalPad = 0
         frameOffset = 0
         netFrameCounter = 0L
