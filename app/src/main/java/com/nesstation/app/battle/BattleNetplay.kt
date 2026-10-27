@@ -51,6 +51,13 @@ import kotlin.concurrent.thread
  *     游戏服务器直接走全员重开，不再浪费出档尝试）；
  *   - 新消息 restart：全员重开（回开机状态、重新就绪、从帧 0 同步开跑）。
  *
+ * ★★ v4.6：
+ *   - 协议版本 v=46；新消息 restart_req：成员同步画面装载失败 / 核心复位失败时
+ *     的自救通道 —— 不再断开退出，而是请求服务器编排全员重开（全员 v≥45 才生效；
+ *     混合旧客户端房间服务器回 error 说明）；
+ *   - 游戏人数上限（config.json maxPlayers）随 /api/games、房间列表下发 ——
+ *     拳皇等 2 人游戏只开 2 座（服务器强制 + 客户端按人数摆座位 UI）。
+ *
  * ★★ v4.4：
  *   - hello 可带 spectate=true（观战加入：不占 1P-4P 槽位、只收不发）；
  *   - hello 可带 want=2/3/4（用户在大厅选的座位，空闲则满足）；
@@ -127,8 +134,9 @@ class BattleNetplay(
     }
 
     companion object {
-        /** ★★ v4.5.1 客户端协议版本（hello.v）—— 服务器据此判定能否广播 restart */
-        const val PROTO_VERSION = 45
+        /** ★★ v4.6 客户端协议版本（hello.v）—— 服务器据此判定能否广播 restart /
+         *   受理 restart_req（v≥45 即支持 restart，v=46 增加自救请求与人数上限） */
+        const val PROTO_VERSION = 46
     }
 
     @Volatile private var socket: Socket? = null
@@ -388,6 +396,13 @@ class BattleNetplay(
      *  接入者劝退），不等看门狗，绝不让房间卡在“同步中”。 */
     fun sendStateFail() {
         sendLine(JSONObject().put("type", "state_fail").toString())
+    }
+
+    /** ★★ v4.6 成员自救：同步画面装载失败 / 核心复位失败等无法继续对齐的场景，
+     *  请求服务器编排全员重开（回开机态、从帧 0 同步重跑）—— 不再断开退出。
+     *  服务器只在全员 v≥45 时广播 restart；混合旧客户端房间回 error 说明。 */
+    fun sendRestartReq() {
+        sendLine(JSONObject().put("type", "restart_req").toString())
     }
 
     /** 通知服务器：我已就绪（引擎已加载完、帧循环就位，等 start/resume）。

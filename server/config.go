@@ -22,6 +22,24 @@ type Game struct {
         NeedsBIOS []string `json:"needsBios,omitempty"` // 需要的 BIOS 文件名列表（提示用）
         // 游戏封面图标地址（网络 URL，客户端用 Coil 加载展示在游戏库宫格 / 街机桌面）。
         IconURL string `json:"iconUrl,omitempty"`
+        // ★★ v4.6 本游戏房间人数上限（1-4；0/缺省 = 4）。
+        //   拳皇等 2 人游戏配 "maxPlayers": 2 —— 房间只开 2 个座位，
+        //   第 3 人点进来只能观战；三国战纪等 4 人机默认 4。
+        //   服务器读配置直接执行（HTTP 满员判定 + TCP 槽位分配都按它），
+        //   并随 games 列表下发给客户端按人数摆座位 UI。
+        MaxPlayers int `json:"maxPlayers,omitempty"`
+}
+
+// maxPlayersOf 返回游戏的有效人数上限（规范化到 1-4；0/缺省 = 4）。
+// 房间创建时快照到 Room.MaxPlayers（后续改配置不影响已开局房间）。
+func (g *Game) maxPlayersOf() int {
+        if g.MaxPlayers <= 0 {
+                return maxRoomPlayers
+        }
+        if g.MaxPlayers > maxRoomPlayers {
+                return maxRoomPlayers
+        }
+        return g.MaxPlayers
 }
 
 // Config 服务器配置
@@ -136,6 +154,11 @@ func parseConfig(data []byte, path string) (*Config, error) {
         if cfg.RomCacheMax <= 0 {
                 cfg.RomCacheMax = 64 * 1024 * 1024
         }
+        // ★★ v4.6 人数上限规范化（0/负 = 默认 4；>4 收到 4）。
+        //   规范化后 hotreload 的 describeChange / api 下发 / 房间创建都用同一份值。
+        for i := range cfg.Games {
+                cfg.Games[i].MaxPlayers = cfg.Games[i].maxPlayersOf()
+        }
         if err := cfg.validate(); err != nil {
                 return nil, err
         }
@@ -197,6 +220,21 @@ func describeChange(old, cur *Config) string {
                 parts = append(parts, "游戏改名 "+strings.Join(renamed, "、"))
         case sameGameSet(old.Games, cur.Games) && !sameGameOrder(old.Games, cur.Games):
                 parts = append(parts, "游戏顺序调整（客户端显示顺序已更新）")
+        }
+        // ★★ v4.6 人数上限变化（已开局房间沿用创建时快照，新开房间立即生效）
+        oldMax := map[string]int{}
+        for _, g := range old.Games {
+                oldMax[g.ID] = g.maxPlayersOf()
+        }
+        var mpChanged []string
+        for _, g := range cur.Games {
+                if om, ok := oldMax[g.ID]; ok && om != g.maxPlayersOf() {
+                        mpChanged = append(mpChanged, fmt.Sprintf("%s %d→%d 人", titleOrID(g.Title, g.ID), om, g.maxPlayersOf()))
+                }
+        }
+        if len(mpChanged) > 0 {
+                sort.Strings(mpChanged)
+                parts = append(parts, "游戏人数上限 "+strings.Join(mpChanged, "、")+"（新开桌生效）")
         }
         if old.InputDelay != cur.InputDelay {
                 parts = append(parts, fmt.Sprintf("inputDelay %d → %d（新对局/重新同步生效）", old.InputDelay, cur.InputDelay))

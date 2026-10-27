@@ -26,14 +26,19 @@ class BattleApi(private val ctx: Context) {
         val fileName: String,
         val size: Long,
         val needsBios: List<String>,
-        val iconUrl: String = ""
+        val iconUrl: String = "",
+        /** ★★ v4.6 本游戏房间人数上限（服务器 config.json maxPlayers；旧服务器缺省 = 4）。
+         *  拳皇等 2 人游戏 = 2：开桌只开 2 座，满员后只能观战。 */
+        val maxPlayers: Int = 4
     )
 
     /** 房间信息
      *  ★ v4.3：players/slots —— 1P 可先单机开玩（房间保持可加入），
      *  2P/3P/4P 中途接入（存档同步）；满员 = 4 人。
      *  ★★ v4.4：spectators —— 观战人数（不占座位；满员房间仍可观战）。
-     *  ★★ v4.5：table —— 桌号（开哪桌就是哪桌；0 = 旧服务器未绑定桌号）。 */
+     *  ★★ v4.5：table —— 桌号（开哪桌就是哪桌；0 = 旧服务器未绑定桌号）。
+     *  ★★ v4.6：maxPlayers —— 本游戏人数上限（拳皇 2 人房只显示 1P/2P；
+     *  旧服务器缺省 = 4，客户端按人数上限摆座位）。 */
     data class Room(
         val id: String,
         val gameId: String,
@@ -45,7 +50,8 @@ class BattleApi(private val ctx: Context) {
         val players: Int = 0,
         val slots: List<Int> = emptyList(),
         val spectators: Int = 0,
-        val table: Int = 0
+        val table: Int = 0,
+        val maxPlayers: Int = 4
     )
 
     /** 登录/注册结果 */
@@ -150,7 +156,8 @@ class BattleApi(private val ctx: Context) {
                     fileName = g.optString("fileName", "${g.getString("id")}.zip"),
                     size = g.optLong("size", 0),
                     needsBios = bios,
-                    iconUrl = g.optString("iconUrl", "")
+                    iconUrl = g.optString("iconUrl", ""),
+                    maxPlayers = g.optInt("maxPlayers", 4).coerceIn(1, 4) // ★★ v4.6
                 )
             }
         } finally {
@@ -276,7 +283,8 @@ class BattleApi(private val ctx: Context) {
         players = o.optInt("players", 0),
         slots = parseSlots(o),
         spectators = o.optInt("spectators", 0),
-        table = o.optInt("table", 0)
+        table = o.optInt("table", 0),
+        maxPlayers = o.optInt("maxPlayers", 4).coerceIn(1, 4) // ★★ v4.6 人数上限（旧服务器 = 4）
     )
 
     /** ★ v4.3：解析成员槽位列表 [1,2,4]（1P=1 … 4P=4）。 */

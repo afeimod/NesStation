@@ -777,10 +777,10 @@ private fun ArcadeTableCard(
     }
     val occupied1P = slots.contains(1)
     val occupied2P = slots.contains(2)
-    val occupied3P = slots.contains(3)
-    val occupied4P = slots.contains(4)
-    val isFull = slots.size >= 4
-    // 对战中但仍可加入（1P 单机开玩 / 已有人对战且 <4 人）
+    // ★★ v4.6 本游戏人数上限（拳皇 2 人房只摆 1P/2P 两个座位；旧服务器 = 4）
+    val maxP = (room?.maxPlayers ?: 4).coerceIn(1, 4)
+    val isFull = slots.size >= maxP
+    // 对战中但仍可加入（1P 单机开玩 / 已有人对战且未满员）
     val playingJoinable = room != null && (room.status == "playing" || room.status == "syncing") && !isFull
     // ★★ v4.4：观战人数（不占座位）
     val specCount = room?.spectators ?: 0
@@ -834,7 +834,7 @@ private fun ArcadeTableCard(
                 )
                 Text(
                     when {
-                        isFull -> if (specCount > 0) "4人满员·${specCount}人观战" else "4人满员·仅观战"
+                        isFull -> if (specCount > 0) "${maxP}人满员·${specCount}人观战" else "${maxP}人满员·仅观战"
                         playingJoinable -> "对战中·可加入"
                         occupied1P -> "等待 ${slots.size + 1}P"
                         else -> "空桌"
@@ -856,39 +856,25 @@ private fun ArcadeTableCard(
 
         Spacer(Modifier.height(8.dp))
 
-        // ★ v4.3：1P - 4P 四座位（3P/4P 徽章按服务器槽位显示占用）
+        // ★ v4.3：1P - 4P 座位（按服务器槽位显示占用）；★★ v4.6 按本游戏人数上限
+        //   摆座位 —— 拳皇 2 人房只有 1P/2P 两个徽章，不再显示用不上的 3P/4P
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            SeatBadge(
-                label = "1P",
-                name = if (occupied1P) room?.host else null,
-                occupied = occupied1P,
-                accent = accent,
-                modifier = Modifier.weight(1f)
-            )
-            SeatBadge(
-                label = "2P",
-                name = if (occupied2P) room?.guest else null,
-                occupied = occupied2P,
-                accent = accent,
-                modifier = Modifier.weight(1f)
-            )
-            SeatBadge(
-                label = "3P",
-                name = null,
-                occupied = occupied3P,
-                accent = accent,
-                modifier = Modifier.weight(1f)
-            )
-            SeatBadge(
-                label = "4P",
-                name = null,
-                occupied = occupied4P,
-                accent = accent,
-                modifier = Modifier.weight(1f)
-            )
+            for (slot in 1..maxP) {
+                SeatBadge(
+                    label = "${slot}P",
+                    name = when {
+                        slot == 1 && occupied1P -> room?.host
+                        slot == 2 && occupied2P -> room?.guest
+                        else -> null
+                    },
+                    occupied = slots.contains(slot),
+                    accent = accent,
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
     }
 }
@@ -959,7 +945,10 @@ private fun JoinSeatDialog(
             if (room.guest.isNotBlank()) add(2)
         }
     }
-    val isFull = slots.size >= 4
+    // ★★ v4.6 本游戏人数上限：座位选项只列到这里（拳皇 2 人房只有 2P 入座；
+    //   旧服务器缺字段 = 4）。服务器侧同样强制 —— 超限入座会在握手时被拒。
+    val maxP = room.maxPlayers.coerceIn(1, 4)
+    val isFull = slots.size >= maxP
     val statusText = when (room.status) {
         "playing", "syncing" -> "对战中 · 接入后自动同步画面"
         else -> "等待中 · 同步开跑"
@@ -971,7 +960,7 @@ private fun JoinSeatDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "${room.gameTitle} · $statusText · 在线 ${room.players} 人" +
+                    "${room.gameTitle} · $statusText · 在线 ${room.players}/${maxP} 人" +
                         if (room.spectators > 0) " · 观战 ${room.spectators} 人" else "",
                     color = SecondaryText, fontSize = 11.sp
                 )
@@ -983,8 +972,9 @@ private fun JoinSeatDialog(
                     enabled = false,
                     onClick = {}
                 )
-                // 2P / 3P / 4P：占用 → 禁用展示；空闲 → 点击入座
-                for (slot in 2..4) {
+                // 2P .. maxP：占用 → 禁用展示；空闲 → 点击入座
+                //（★★ v4.6 按本游戏人数上限：2 人游戏只列 2P，不再显示 3P/4P）
+                for (slot in 2..maxP) {
                     val occupied = slots.contains(slot)
                     SeatPickRow(
                         label = "${slot}P",
@@ -1005,7 +995,7 @@ private fun JoinSeatDialog(
                     modifier = Modifier.fillMaxWidth().height(44.dp)
                 ) {
                     Text(
-                        if (isFull) "👁 观战（桌子已满）" else "👁 观战",
+                        if (isFull) "👁 观战（${maxP}人已满）" else "👁 观战",
                         fontWeight = FontWeight.Bold
                     )
                 }

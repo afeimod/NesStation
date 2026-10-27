@@ -2,6 +2,7 @@ package main
 
 import (
         "encoding/json"
+        "fmt"
         "net/http"
         "time"
 )
@@ -24,16 +25,20 @@ type roomResponse struct {
         // ★★ v4.5 桌号固定：开哪桌就是哪桌（客户端按桌号展示/点击加入；
         //   0 = 旧客户端未指定桌号 —— 客户端按创建顺序填进空桌）
         Table int `json:"table"`
+        // ★★ v4.6 本游戏人数上限（config.json 游戏条目 maxPlayers，缺省 4）。
+        //   客户端据此摆座位（拳皇 2 人房只显示 1P/2P，满员仅观战）。
+        MaxPlayers int `json:"maxPlayers"`
 }
 
 func roomToResponse(cfg *Config, r *Room) roomResponse {
         resp := roomResponse{
-                ID:        r.ID,
-                GameID:    r.GameID,
-                CreatedAt: r.CreatedAt.Unix(),
-                Table:     r.TableNo,
+                ID:         r.ID,
+                GameID:     r.GameID,
+                CreatedAt:  r.CreatedAt.Unix(),
+                Table:      r.TableNo,
+                MaxPlayers: r.playerLimit(),
         }
-        // 找到游戏标题
+        // 找到游戏标题（★ v4.6：缺条目时回退到配置默认人数，与房间创建时一致）
         for _, g := range cfg.Games {
                 if g.ID == r.GameID {
                         resp.GameTitle = g.Title
@@ -117,9 +122,11 @@ func (s *apiServer) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
         // 校验游戏存在（热重载后即时按最新列表校验）
         cur := s.cfg.get()
         gameExists := false
+        maxP := maxRoomPlayers
         for _, g := range cur.Games {
                 if g.ID == req.GameID {
                         gameExists = true
+                        maxP = g.maxPlayersOf() // ★★ v4.6 人数上限快照（后续改配置不影响已开房间）
                         break
                 }
         }
@@ -153,16 +160,17 @@ func (s *apiServer) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
                 }
         }
         rm := &Room{
-                ID:        randomID()[:8],
-                GameID:    req.GameID,
-                Status:    roomWaiting,
-                CreatedAt: time.Now().UTC(),
+                ID:         randomID()[:8],
+                GameID:     req.GameID,
+                Status:     roomWaiting,
+                CreatedAt:  time.Now().UTC(),
                 // ★ 记录房主：中继握手时按它分配 host 角色（创建者 = 1P），
                 //   不再受"谁先连上 TCP"的连接顺序影响。
-                OwnerID:   user.ID,
-                TableNo:   req.Table, // ★★ v4.5 桌号固定：开哪桌就是哪桌
-                conns:     map[string]*relayConn{},
-                specs:     map[string]*relayConn{}, // ★★ v4.4 观战者连接表
+                OwnerID:    user.ID,
+                TableNo:    req.Table, // ★★ v4.5 桌号固定：开哪桌就是哪桌
+                MaxPlayers: maxP,     // ★★ v4.6 本游戏人数上限（拳皇 2 人房只开 2 座）
+                conns:      map[string]*relayConn{},
+                specs:      map[string]*relayConn{}, // ★★ v4.4 观战者连接表
         }
         s.hub.rooms[rm.ID] = rm
         s.hub.mu.Unlock()
@@ -198,12 +206,12 @@ func (s *apiServer) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
                 return
         }
         // ★ v4.3：对局中允许加入（后加入 = 连接 1P 画面，存档同步后接入）。
-        //   实际人数上限由 TCP 中继（4 人）执行，HTTP 侧同步校验。
-        if !req.Spectate && rm.playerCount() >= maxRoomPlayers {
+        //   ★★ v4.6：满员判定按【本游戏人数上限】（拳皇 2 人房第 3 人只能观战）。
+        if !req.Spectate && rm.playerCount() >= rm.playerLimit() {
                 s.hub.mu.Unlock()
                 // ★★ v4.4：满员改为引导观战（响应带 spectateOnly，客户端据此只给观战选项）
                 writeJSON(w, http.StatusConflict, map[string]any{
-                        "error":       "房间已满（4 个座位都有人）",
+                        "error":        fmt.Sprintf("房间已满（该游戏最多 %d 人）", rm.playerLimit()),
                         "spectateOnly": true,
                 })
                 return

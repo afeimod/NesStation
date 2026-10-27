@@ -233,6 +233,9 @@ class NetplayController(
     /** 待应用的全员重开请求（网络线程置位；引擎线程在 beforeFrame 串行应用
      *  —— 与核心复位（retro_reset）无并发）。 */
     @Volatile private var restartPending = false
+    /** ★★ v4.6 重开中核心复位失败（不再重新 ready —— 防止带着未复位的核心
+     *  "从帧 0"开跑造成全程发散；见 applyRestartOnEngineThread）。 */
+    @Volatile private var restartFailed = false
 
     // === ★★ v4.4 回滚网络码（rollback）状态 ===
     /** 回滚模式启用（引擎支持快速存档 && 非观战；notifyEngineReady 时评估）。 */
@@ -376,6 +379,7 @@ class NetplayController(
             android.util.Log.i("NetplayController", "restart: 全员重开（players=$players delay=$inputDelay）")
             val wasLoaded = engineLoaded
             restartPending = true
+            restartFailed = false   // ★★ v4.6 每轮重开重置失败标记（上一轮失败不影响本轮）
             // 先开门让引擎线程能走到复位点（同步暂停门/启动门都放行到重启检查）
             synchronized(syncGate) { syncPaused = false; syncGate.notifyAll() }
             synchronized(startGate) { started = false; startGate.notifyAll() }
@@ -392,12 +396,13 @@ class NetplayController(
             }
             if (wasLoaded) {
                 // 已加载完的端：等引擎线程应用完复位后重新探测能力 + 发 ready
+                //（★★ v4.6 复位失败的端不重新 ready —— 防未复位核心从帧 0 发散）
                 Thread({
                     var waitMs = 0L
                     while (restartPending && waitMs < 5000) {
                         Thread.sleep(10); waitMs += 10
                     }
-                    notifyEngineReady()
+                    if (!restartFailed) notifyEngineReady()
                 }, "battle-restart-ready").apply { isDaemon = true }.start()
             }
             // 引擎还在加载的端：复位对它本来就是开机态，等自然加载完成 →
@@ -579,12 +584,15 @@ class NetplayController(
                     file.writeBytes(bytes); io.loadStateFrom(file)
                 } catch (_: Throwable) { false }
                 if (!loaded) {
-                    // 装载失败 = 必然发散：干净退出（引导重进房间），绝不带病继续
-                    dispatch { it.onNetplayLost("同步画面装载失败，请退出后重新进入房间") }
-                    try { net?.close() } catch (_: Throwable) {}
-                    return
+                    // ★★ v4.6 装载失败不再断开退出：向服务器请求全员重开
+                    //   （回开机态、从帧 0 同步重跑 —— 接入者留下一起重开）。
+                    //   本端先从各自暂停帧裸恢复（不装载），等 restart 到达接管；
+                    //   混合旧客户端的房间服务器会回 error 说明 —— 也不卡死。
+                    dispatch { it.onSyncStatus("同步画面装载失败，已请求全员重新开局…") }
+                    try { net?.sendRestartReq() } catch (_: Throwable) {}
+                } else {
+                    frameOffset = frame - parkedLocal
                 }
-                frameOffset = frame - parkedLocal
             }
         }
         if (hist != null && frame >= 0) seedHist(hist, histEnd)
@@ -630,9 +638,14 @@ class NetplayController(
                 android.util.Log.w("NetplayController", "resetToBoot failed: ${t.message}"); false
             }
             if (!ok) {
-                // 引擎不支持复位（非 FBNeo 等）：干净退出，引导重进
-                dispatch { it.onNetplayLost("该核心不支持中途加入（无法重开），请全员退出后重新开局") }
-                try { net?.close() } catch (_: Throwable) {}
+                // ★★ v4.6 复位失败不再断开连接：不再重新 ready（本端无法回到开机态，
+                //   勉强重跑必然从帧 0 起就发散），引擎停在启动门、保持连接并明确
+                //   提示 —— 玩家手动退出重开是唯一一致的自救；服务器等其他人的
+                //   ready，本端离开后对局照常继续。（实测各核心 reset 都是原生
+                //   retro_reset/FCEUI_PowerNES，void 调用几乎不可能失败 —— 此为
+                //   防御性兑底，优先保证"绝不静默发散"。）
+                restartFailed = true
+                dispatch { it.onSyncStatus("核心复位失败：无法全员重开，请退出后重新开局") }
                 return
             }
         }
@@ -700,9 +713,15 @@ class NetplayController(
             }
         }
         stateCap = if (isSpectator) 0 else if (capOk) 1 else -1
-        // ★★ v4.4 回滚模式评估：必须真能出档（探测通过）才启用 —— 否则检查点
-        //   全是空档，回滚形同虚设还白费存档开销
-        rollbackMode = !spectate && capOk
+        // ★★ v4.4 回滚模式评估：必须同时满足两个条件才启用 ——
+        //   ① 真能出档（探测通过，否则检查点全是空档）；
+        //   ② 注入的 StateIo 支持回滚（supportsRollback —— 目前仅 FBNeo：
+        //     回滚重放需要 runFrameDirect 直跑帧，其他核心没有；
+        //     ★★ v4.6 修复：v4.5.1 只判了 ① —— NES/SFC/GBA 等核心存档能用但
+        //     没法直跑帧重放，一旦网络抖动触发纠错：检查点装载成功→重放失败→
+        //     核心被留在过去的时间线→永久发散（其他核心联机必炸的根源）。
+        //     这些核心回退到经典延迟锁步模式 —— 行为与 v4.3 一致，稳定。）
+        rollbackMode = !spectate && capOk && (io?.supportsRollback() ?: false)
         android.util.Log.i("NetplayController",
             "engine ready: stateCap=$stateCap rollback=$rollbackMode (platform=$platform)")
 
@@ -1247,6 +1266,8 @@ class NetplayController(
         readySent = false
         started = false
         syncPaused = false
+        restartPending = false
+        restartFailed = false
         // ★★ v4.4：回滚状态清零
         rollbackMode = false
         inputLog.clear()

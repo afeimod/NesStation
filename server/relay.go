@@ -3,6 +3,7 @@ package main
 import (
         "bufio"
         "encoding/json"
+        "fmt"
         "log"
         "net"
         "strings"
@@ -54,6 +55,10 @@ type Room struct {
         GameID    string
         CreatedAt time.Time
         Status    string // 房间状态：waiting / ready / playing / syncing
+        // ★★ v4.6 本房间人数上限（1-4；创建时从 config 游戏条目快照）。
+        //   拳皇等 2 人游戏 = 2：只开 1P/2P 两个座位，满了第 3 人只能观战。
+        //   0 = 旧房间（v4.6 前创建）兼容：按 4 人处理。
+        MaxPlayers int
         // ★ 房主（创建者）用户 ID —— 由 HTTP 创建房间时记录，
         //   中继握手时按它分配 host 角色（创建者 = 1P = 槽 1）。
         OwnerID string
@@ -116,7 +121,17 @@ func (r *Room) freshCachedState() *relayMsg {
 // nextFreeSlot 返回下一个空闲玩家槽位（1-4）。房主占用槽 1，
 // 加入者按顺序取 2/3/4；有人离开后槽位可被后来者复用。
 // ★★ v4.4：hello 可带 want（期望槽位 2/3/4）—— 空闲则优先满足。
+// ★★ v4.6：只在本房间人数上限内分配（拳皇 2 人房 = 只发 1/2 槽；
+//   want 超出上限的请求由 hello 握手层提前拒绝，这里防御性忽略）。
+func (r *Room) playerLimit() int {
+        if r.MaxPlayers < 1 || r.MaxPlayers > maxRoomPlayers {
+                return maxRoomPlayers
+        }
+        return r.MaxPlayers
+}
+
 func (r *Room) nextFreeSlot(want int) int {
+        limit := r.playerLimit()
         used := [maxRoomPlayers + 1]bool{}
         for _, c := range r.conns {
                 if c.slot >= 1 && c.slot <= maxRoomPlayers {
@@ -124,10 +139,10 @@ func (r *Room) nextFreeSlot(want int) int {
                 }
         }
         // ★ 指定座位：用户点桌子时选了 2P/3P/4P —— 想坐哪桌坐哪桌
-        if want >= 1 && want <= maxRoomPlayers && !used[want] {
+        if want >= 1 && want <= limit && !used[want] {
                 return want
         }
-        for s := 1; s <= maxRoomPlayers; s++ {
+        for s := 1; s <= limit; s++ {
                 if !used[s] {
                         return s
                 }
@@ -440,14 +455,24 @@ func (h *relayHub) handleConn(conn net.Conn) {
         // ---- 玩家加入 ----
         // ★ v4.3：上限 4 人；对局进行中（playing/syncing）同样允许加入 ——
         //   新玩家经存档同步流程"快速同步画面后接入"（见 relayLoop ready 分支）。
-        if room.playerCount() >= maxRoomPlayers {
+        // ★★ v4.6：满员判定按【本游戏人数上限】（拳皇 2 人房第 3 人拒绝；
+        //   上限来自 config.json 游戏条目 maxPlayers，缺省 4）。
+        if room.playerCount() >= room.playerLimit() {
                 h.mu.Unlock()
-                _ = json.NewEncoder(conn).Encode(relayMsg{Type: "error", Msg: "房间已满（可改用观战加入）"})
+                _ = json.NewEncoder(conn).Encode(relayMsg{Type: "error", Msg: fmt.Sprintf("该游戏最多 %d 人同玩（可改用观战加入）", room.playerLimit())})
                 return
         }
         if _, exists := room.conns[claims.Sub]; exists {
                 h.mu.Unlock()
                 _ = json.NewEncoder(conn).Encode(relayMsg{Type: "error", Msg: "已在房间中"})
+                return
+        }
+        // ★★ v4.6：指定座位超出本游戏人数上限 —— 明确拒绝
+        //   （客户端 UI 已按 maxPlayers 隐藏多余座位，这里兑底防旧客户端/手改请求）
+        if hello.Want > room.playerLimit() {
+                h.mu.Unlock()
+                _ = json.NewEncoder(conn).Encode(relayMsg{Type: "error",
+                        Msg: fmt.Sprintf("该游戏最多 %d 人同玩，请改选其他座位或观战", room.playerLimit())})
                 return
         }
 
@@ -703,6 +728,39 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         h.mu.Unlock()
                         if isOwner && syncing {
                                 h.abortSync(room, "房主出档失败")
+                        }
+
+                case "restart_req":
+                        // ★★ v4.6 成员自救：同步画面装载失败 / 核心复位失败等
+                        //   "本端无法继续对齐"的场景，客户端不再断开退出，
+                        //   而是请求全员重开 —— 服务器编排 restart（回开机态、
+                        //   从帧 0 同步重跑）。任何房内玩家（非观战）都可发起；
+                        //   只在 playing/syncing 受理（waiting/重复请求忽略）。
+                        //   混合旧客户端（v<45 不能处理 restart）的房间不广播，
+                        //   syncing 中走 abortSync 旧收尾，否则向请求者明确报错。
+                        h.mu.Lock()
+                        room := rc.room
+                        status := room.Status
+                        canRestart := h.roomSupportsRestart(room)
+                        h.mu.Unlock()
+                        if rc.spectator || room == nil {
+                                continue
+                        }
+                        if status != roomPlaying && status != roomSyncing {
+                                continue // 开局前/已重开中：忽略（避免重复触发）
+                        }
+                        uname := ""
+                        if rc.user != nil {
+                                uname = rc.user.Username
+                        }
+                        log.Printf("[重开] 房间 %s（桌 %d）：%s 请求全员重开（同步画面装载/复位失败自救）",
+                                room.ID, room.TableNo, uname)
+                        if canRestart {
+                                h.restartSync(room, rc, "成员请求重开（同步失败自救）")
+                        } else if status == roomSyncing {
+                                h.abortSync(room, "成员报告同步失败")
+                        } else {
+                                _ = rc.send(relayMsg{Type: "error", Msg: "同步失败：房间内有旧版本客户端，无法自动重开；请全员升级到 4.6 后重试"})
                         }
 
                 case "state_ok":
@@ -984,6 +1042,13 @@ func (h *relayHub) roomSupportsRestart(room *Room) bool {
 // ★ 在未持锁时调用。trigger 可为单个接入者或多接入者列表（仅用于日志）。
 func (h *relayHub) restartSync(room *Room, trigger any, reason string) {
         h.mu.Lock()
+        // ★★ v4.6 幂等守卫：多个成员同时 restart_req / 看门狗与自救并发时，
+        //   只受理第一轮（状态已回 waiting 的直接忽略，不重复广播 restart、
+        //   不重复重置 ready 标志）。
+        if room.Status != roomPlaying && room.Status != roomSyncing {
+                h.mu.Unlock()
+                return
+        }
         room.Status = roomWaiting // 重新走“全员 ready → start”开局流程
         h.stopSyncTimerLocked(room)
         room.syncJoiners = map[string]*relayConn{}

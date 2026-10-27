@@ -157,25 +157,27 @@ func (s *apiServer) requireAuth(r *http.Request) (*User, error) {
 
 func (s *apiServer) handleGames(w http.ResponseWriter, r *http.Request) {
         type gameResp struct {
-                ID        string   `json:"id"`
-                Title     string   `json:"title"`
-                Platform  string   `json:"platform"`
-                FileName  string   `json:"fileName"`
-                Size      int64    `json:"size"`
-                NeedsBIOS []string `json:"needsBios,omitempty"`
-                IconURL   string   `json:"iconUrl,omitempty"`
+                ID         string   `json:"id"`
+                Title      string   `json:"title"`
+                Platform   string   `json:"platform"`
+                FileName   string   `json:"fileName"`
+                Size       int64    `json:"size"`
+                NeedsBIOS  []string `json:"needsBios,omitempty"`
+                IconURL    string   `json:"iconUrl,omitempty"`
+                MaxPlayers int      `json:"maxPlayers"` // ★★ v4.6 人数上限（客户端按此摆座位 UI）
         }
         cur := s.cfg.get()
         games := make([]gameResp, 0, len(cur.Games))
         for _, g := range cur.Games {
                 games = append(games, gameResp{
-                        ID:        g.ID,
-                        Title:     g.Title,
-                        Platform:  g.Platform,
-                        FileName:  g.FileName,
-                        Size:      g.Size,
-                        NeedsBIOS: g.NeedsBIOS,
-                        IconURL:   g.IconURL,
+                        ID:         g.ID,
+                        Title:      g.Title,
+                        Platform:   g.Platform,
+                        FileName:   g.FileName,
+                        Size:       g.Size,
+                        NeedsBIOS:  g.NeedsBIOS,
+                        IconURL:    g.IconURL,
+                        MaxPlayers: g.maxPlayersOf(),
                 })
         }
         writeJSON(w, http.StatusOK, map[string]any{"games": games})
