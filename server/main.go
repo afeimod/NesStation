@@ -17,17 +17,27 @@
 //         → 自动优雅重启进程（这三类字段必须重建监听器/JWT/用户存储）
 //       · 新配置无效（写一半/语法错）→ 仅告警，继续用旧配置运行
 //       · kill -HUP 也可手动触发一次立即重载
+//
+// ★★ v4.7.1 启动健壮性（Windows 双击运行不再"闪退"）：
+//   - 所有日志同步写入 exe/config 同目录 server.log（控制台闪退后仍可查）；
+//   - config.json 缺失 → 自动生成模板配置并继续运行（不再秒退）；
+//   - 任何启动失败（配置无效/端口被占/存储初始化失败）→ 原因落盘 +
+//     Windows 交互式控制台暂停等回车（看得见原因再退出）。
 package main
 
 import (
         "context"
         "errors"
         "flag"
+        "fmt"
+        "io"
+        "io/fs"
         "log"
         "net"
         "net/http"
         "os"
         "os/signal"
+        "path/filepath"
         "syscall"
         "time"
 )
@@ -35,6 +45,13 @@ import (
 func main() {
         configPath := flag.String("config", "config.json", "配置文件路径")
         flag.Parse()
+
+        // ★★ v4.7.1 启动日志落盘：exe/config 同目录 server.log —— 控制台窗口
+        //   一闪而过（或远程断开）后，启动失败与运行期异常仍可事后查证。
+        //   进程生命周期内只打开一次（热重载自动重启不重复打开）。
+        if lf, err := os.OpenFile(serverLogPath(*configPath), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+                log.SetOutput(io.MultiWriter(os.Stderr, lf))
+        }
 
         // 服务生命周期循环：runServer 返回 true = 配置发生结构性变更，
         // 需要用新配置自动重启（重新走一遍完整启动流程）；false = 正常退出。
@@ -55,12 +72,24 @@ func main() {
 func runServer(configPath string) bool {
         cfg, err := loadConfig(configPath)
         if err != nil {
-                log.Fatalf("加载配置失败: %v", err)
+                // ★★ v4.7.1 缺配置 → 自动生成模板并继续运行（首次运行引导）：
+                //   双击 exe 秒退的"闪退"大多是 cwd 没有 config.json。
+                if errors.Is(err, fs.ErrNotExist) {
+                        if werr := writeTemplateConfig(configPath); werr != nil {
+                                startupFatal("未找到配置文件 %s，且自动生成模板失败：%v", configPath, werr)
+                        }
+                        log.Printf("[配置] 未找到 %s —— 已自动生成模板配置（示例游戏占位）", configPath)
+                        log.Printf("[配置] 请把它改成你的游戏列表与密钥后重启；改完会热重载，无需停服")
+                        cfg, err = loadConfig(configPath)
+                }
+                if err != nil {
+                        startupFatal("加载配置失败: %v", err)
+                }
         }
 
         store, err := newUserStore(cfg.DataDir)
         if err != nil {
-                log.Fatalf("初始化用户存储失败: %v", err)
+                startupFatal("初始化用户存储失败: %v", err)
         }
 
         jwter := newJWT(cfg.JWTSecret, 7*24*time.Hour)
@@ -81,7 +110,7 @@ func runServer(configPath string) bool {
         // TCP 中继服务器（帧同步）
         tcpLn, err := net.Listen("tcp", cfg.AddressTCP())
         if err != nil {
-                log.Fatalf("监听 TCP %s 失败: %v", cfg.AddressTCP(), err)
+                startupFatal("监听 TCP %s 失败: %v（端口被占用？旧服务器还在跑？）", cfg.AddressTCP(), err)
         }
         go func() {
                 log.Printf("帧同步中继监听: tcp://%s", cfg.AddressTCP())
@@ -114,7 +143,7 @@ func runServer(configPath string) bool {
         go func() {
                 log.Printf("HTTP API 监听: http://%s", cfg.AddressHTTP())
                 if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-                        log.Fatalf("HTTP 服务器错误: %v", err)
+                        startupFatal("HTTP 服务器错误: %v（端口被占用？旧服务器还在跑？）", err)
                 }
         }()
 
@@ -180,4 +209,21 @@ func shutdownServer(srv *http.Server, tcpLn net.Listener, store *userStore) {
         _ = srv.Shutdown(ctx)
         _ = tcpLn.Close()
         _ = store.Close()
+}
+
+// serverLogPath 启动/运行日志落盘路径：config.json 同目录 server.log
+//（双击 exe 时通常就是 exe 所在目录，最好找）。
+func serverLogPath(configPath string) string {
+        return filepath.Join(filepath.Dir(configPath), "server.log")
+}
+
+// startupFatal 启动失败收尾：原因写日志（含 server.log 落盘）+ 控制台加粗
+// 提示 + Windows 交互式控制台暂停等回车 —— 取代 log.Fatalf 的"秒退闪退"
+// （双击运行的窗口直接关闭，用户完全看不到失败原因）。
+func startupFatal(format string, args ...any) {
+        msg := fmt.Sprintf(format, args...)
+        log.Printf("[启动失败] %s", msg)
+        fmt.Fprintf(os.Stderr, "\n*** 启动失败：%s ***\n", msg)
+        pauseIfInteractive()
+        os.Exit(1)
 }

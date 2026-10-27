@@ -6,6 +6,7 @@ import (
         "fmt"
         "log"
         "net"
+        "runtime/debug"
         "strings"
         "sync"
         "time"
@@ -352,9 +353,23 @@ func ownerConn(room *Room) *relayConn {
         return room.conns[room.OwnerID]
 }
 
-// handleConn 处理一条 TCP 连接：先握手，再进入房间中继
+// handleConn 处理一条 TCP 连接：先握手，再进入房间中继。
+// ★★ v4.7.1 panic 装甲：单条连接处理中的任何异常（握手/中继循环/同步编排/
+//   掉线清理）都被隔离在这条连接内 —— 记日志（含 server.log 落盘）+ 断开
+//   该连接，绝不让一条连接的异常杀死整个服务器进程（Windows 下双击运行
+//   时进程直接消失 = "闪退"）。中继服务器必须永远活着。
 func (h *relayHub) handleConn(conn net.Conn) {
         defer conn.Close()
+        defer func() {
+                if p := recover(); p != nil {
+                        log.Printf("[异常] 连接 %s 处理异常已隔离（服务器继续运行）：%v\n%s",
+                                conn.RemoteAddr(), p, debug.Stack())
+                }
+        }()
+        h.handleConnInner(conn)
+}
+
+func (h *relayHub) handleConnInner(conn net.Conn) {
         conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 
         // 关闭 Nagle 算法 —— 帧同步 input 每帧一个很小的 JSON 包，
@@ -671,18 +686,30 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                                 //    start 广播给全员含观战者（观战者也同步开跑）。
                                 d := h.finalDelay(suggestions...)
                                 h.mu.Lock()
-                                room.Status = roomPlaying
-                                players := activeSlots(room)
-                                h.mu.Unlock()
-                                h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})
+                                // ★★ v4.7.1 竞态护栏：计算延迟期间房间状态可能已被
+                                //   drop 开局/新同步接管（waiting/ready → playing 才广播；
+                                //   已 playing/syncing 则让先到者胜，防双 start）。
+                                if room.Status == roomWaiting || room.Status == roomReady {
+                                        room.Status = roomPlaying
+                                        players := activeSlots(room)
+                                        h.mu.Unlock()
+                                        h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})
+                                } else {
+                                        h.mu.Unlock()
+                                }
                         case allReady:
                                 // A. 全员就绪同时开跑（★ v4.4：观战者随广播同步开跑）
                                 d := h.finalDelay(suggestions...)
                                 h.mu.Lock()
-                                room.Status = roomPlaying
-                                players := activeSlots(room)
-                                h.mu.Unlock()
-                                h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})
+                                // ★★ v4.7.1 竞态护栏：同上（防与 drop 开局路径并发双 start）
+                                if room.Status == roomWaiting || room.Status == roomReady {
+                                        room.Status = roomPlaying
+                                        players := activeSlots(room)
+                                        h.mu.Unlock()
+                                        h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})
+                                } else {
+                                        h.mu.Unlock()
+                                }
                         default:
                                 // 还有人在等：转发 peer_ready（UI 状态显示用；观战者 ready 不阻塞开局）
                                 h.broadcastExcept(room, rc, relayMsg{Type: "peer_ready", Msg: rc.user.Username})
@@ -745,12 +772,15 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         //   syncing 中走 abortSync 旧收尾，否则向请求者明确报错。
                         h.mu.Lock()
                         room := rc.room
+                        // ★★ v4.7.1 顺序修正：先判空再解引用（原代码先 room.Status 后判 nil，
+                        //   理论上 room 为 nil 时会空引用 panic —— 装甲内修补，防御性归位）。
+                        if room == nil || rc.spectator {
+                                h.mu.Unlock()
+                                continue
+                        }
                         status := room.Status
                         canRestart := h.roomSupportsRestart(room)
                         h.mu.Unlock()
-                        if rc.spectator || room == nil {
-                                continue
-                        }
                         if status != roomPlaying && status != roomSyncing {
                                 continue // 开局前/已重开中：忽略（避免重复触发）
                         }
@@ -895,6 +925,13 @@ func (h *relayHub) startSyncWatchdog(room *Room, gen uint64) {
         d := h.watchdogDuration()
         h.mu.Lock()
         room.syncTimer = time.AfterFunc(d, func() {
+                // ★★ v4.7.1 panic 装甲：看门狗回调也在独立 goroutine —— 异常
+                //   同样只记日志，不杀进程。
+                defer func() {
+                        if p := recover(); p != nil {
+                                log.Printf("[异常] 同步看门狗异常已隔离（服务器继续运行）：%v\n%s", p, debug.Stack())
+                        }
+                }()
                 h.mu.Lock()
                 if room.Status != roomSyncing || room.syncGen != gen {
                         h.mu.Unlock() // 本轮已收尾 / 已被新一轮同步取代
@@ -1175,6 +1212,12 @@ func (h *relayHub) drop(rc *relayConn) {
                 h.broadcastExcept(room, nil, relayMsg{Type: "resume", Players: players})
         } else if startAfterDrop {
                 h.mu.Lock()
+                // ★★ v4.7.1 竞态护栏：期间 ready 全员就绪路径可能已广播 start（
+                //   只在仍处 waiting 时广播，防客户端收到双 start 造成状态机错乱）。
+                if room.Status != roomWaiting {
+                        h.mu.Unlock()
+                        return
+                }
                 room.Status = roomPlaying
                 players := activeSlots(room)
                 suggestions := []int{}

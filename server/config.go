@@ -137,6 +137,35 @@ func loadConfig(path string) (*Config, error) {
         return parseConfig(data, path)
 }
 
+// templateConfig 首次运行（exe 旁边没有 config.json）自动生成的配置模板。
+// ★★ v4.7.1：Windows 下双击 exe 时若 cwd 没有 config.json，旧逻辑
+//   log.Fatalf 秒退 —— 窗口一闪而过、什么都看不到（"exe 无法运行/闪退"
+//   的第一根源）。现在改为自动生成模板并继续运行，日志里给出醒目指引。
+const templateConfig = `{
+  "httpAddr": ":8080",
+  "tcpAddr": ":9090",
+  "jwtSecret": "gamebox-请修改成你自己的密钥",
+  "dataDir": "",
+  "maxRooms": 200,
+  "inputDelay": 0,
+  "romCacheMax": 67108864,
+  "games": [
+    {
+      "id": "demo",
+      "title": "示例游戏（请换成你的游戏）",
+      "platform": "arcade",
+      "romUrl": "https://example.com/demo.zip",
+      "fileName": "demo.zip",
+      "maxPlayers": 4
+    }
+  ]
+}`
+
+// writeTemplateConfig 生成模板配置文件（首次运行引导）。
+func writeTemplateConfig(path string) error {
+        return os.WriteFile(path, []byte(templateConfig), 0o644)
+}
+
 // parseConfig 解析 + 补默认值 + 校验。
 // 首次启动（loadConfig）与热重载（configWatcher.check）共用同一套逻辑，
 // 保证"重启生效的配置"和"热生效的配置"行为完全一致。
