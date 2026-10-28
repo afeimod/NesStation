@@ -91,20 +91,21 @@ class NetplayController(
 
     /**
      * UI 回调接口（所有方法保证在主线程被调用）。
-     * ★ v4.3 新增的回调全部带默认空实现 —— 旧实现（EmulatorScreen /
-     * BattleMatchScreen）无需改动即可编译；需要展示新状态的界面按需覆写。
+     * 全部方法带默认空实现 —— 界面按需覆写（v51 聊天浮层这类"只关心个别事件"的
+     * 监听器不必再被迫实现全部回调，修复 EmulatorScreen.kt:8434 匿名 object
+     * 缺 onReady 抽象成员实现的编译错误；既有完整实现不受影响）。
      */
     interface UiListener {
-        fun onReady(role: String, inputDelay: Int)
-        fun onStart(inputDelay: Int)
-        fun onPeerReady(username: String)
-        fun onFrameInfo(frame: Long, inputDelay: Int, desyncCount: Int)
-        fun onPeerJoined(username: String)
-        fun onPeerLeft(username: String)
-        fun onError(message: String)
-        fun onDisconnected()
-        fun onNetplayWait(reason: String)
-        fun onNetplayLost(reason: String)
+        fun onReady(role: String, inputDelay: Int) {}
+        fun onStart(inputDelay: Int) {}
+        fun onPeerReady(username: String) {}
+        fun onFrameInfo(frame: Long, inputDelay: Int, desyncCount: Int) {}
+        fun onPeerJoined(username: String) {}
+        fun onPeerLeft(username: String) {}
+        fun onError(message: String) {}
+        fun onDisconnected() {}
+        fun onNetplayWait(reason: String) {}
+        fun onNetplayLost(reason: String) {}
 
         /** ★ v4.3：握手详情（槽位 / 成员 / 房间是否已在跑）。 */
         fun onReadyDetail(role: String, inputDelay: Int, slot: Int, players: List<Int>, playing: Boolean) {}
@@ -125,6 +126,9 @@ class NetplayController(
         /** ★★ v51 游戏内聊天收到（from = 发送者名字；slot = 其座位 1-4；spec = 观战者）。
          *  EmulatorScreen 据此显示消息气泡/更新聊天面板。 */
         fun onChat(from: String, text: String, slot: Int, spec: Boolean) {}
+        /** ★★ v52 本端观战者热转座成功（slot = 新座位；输入采样已解锁，
+         *  虚拟手柄立即生效）—— UI 显示提示/更新状态。 */
+        fun onSeatChanged(slot: Int) {}
     }
 
     @Volatile private var primaryListener: UiListener? = null
@@ -228,7 +232,8 @@ class NetplayController(
         private set
 
     /** ★★ v4.4：本端是否观战者（构造指定；不占座位、只收不发）。 */
-    val isSpectator: Boolean get() = spectate || role == "spectator"
+    /** ★★ v4.4 观战模式（★★ v52 起可运行时切换 —— 观战者热转座后置 false，输入采样解锁）。 */
+    val isSpectator: Boolean get() = spectatorMode
 
     @Volatile private var inputDelay = 4
     @Volatile private var desyncCount = 0
@@ -309,6 +314,22 @@ class NetplayController(
     @Volatile private var rbCount = 0L
     @Volatile private var rbMaxDepth = 0
 
+    // === ★★ v52 追赶接入（小马模拟器式“中途加入不暂停”）状态 ===
+    /** 追赶模式：装档完成、引擎开始离屏快放（每个可见帧重放一小段历史帧，屏幕表现为快进追赶）。 */
+    @Volatile private var catchupMode = false
+    /** 追赶目标帧（服务器组装的输入历史终点 = 追平即转正常锁步）。 */
+    @Volatile private var catchupHistEnd = 0L
+    /** 追赶起点（存档帧 —— 进度展示用）。 */
+    @Volatile private var catchupFromFrame = 0L
+    /** 每个可见帧离屏快放的帧数（小段推进 —— 屏幕上是可见的快进效果，
+     *  追赶净速度 = CHUNK × 60fps，远大于对局 60fps 推进 → 必能追上）。 */
+    private val CATCHUP_CHUNK = 8
+
+    /** v52 座位延迟激活：槽位 → 激活帧（该帧及之前其输入不被等待 —— 追赶/转座接入的无缝对接保证）。 */
+    private val slotActiveFrom = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    /** v52 观战模式（hello 时初始化；热转座后置 false）。 */
+    @Volatile private var spectatorMode = false
+
     private val netListener = object : BattleNetplay.Listener {
         override fun onRemoteInput(frame: Long, pad: Int, slot: Int) {
             if (slot in 1..4) {
@@ -338,6 +359,8 @@ class NetplayController(
             this@NetplayController.role = role
             // ★★ v4.4：观战者槽位恒 0（服务器下发 slot=0；防 coerceIn 把 0 抬成 1）
             mySlot = if (role == "spectator" || spectate) 0 else slot.coerceIn(1, 4)
+            // ★★ v52：观战模式运行时可切换（热转座后置 false —— 采样解锁）
+            spectatorMode = role == "spectator" || spectate
             activeSlots.clear()
             activeSlots.addAll(players)
             dispatch { it.onReady(role, inputDelay) }
@@ -353,6 +376,9 @@ class NetplayController(
             netFrameCounter = 0L
             lastIssuedNetFrame = -1L
             parkedLocalFrame = -1
+            // ★★ v52：全新开局 —— 追赶/座位激活簿记一并清零
+            catchupMode = false
+            slotActiveFrom.clear()
             android.util.Log.i("NetplayController", "onStart: delay=$inputDelay players=$players")
             synchronized(startGate) { started = true; startGate.notifyAll() }
             dispatch { it.onStart(inputDelay) }
@@ -385,7 +411,23 @@ class NetplayController(
             }, "battle-state-host").apply { isDaemon = true }.start()
         }
 
-        override fun onStateData(frame: Long, dataBase64: String, hist: Map<Int, List<Int>>?, histEnd: Long) {
+        override fun onStateData(frame: Long, dataBase64: String, hist: Map<Int, List<Int>>?, histEnd: Long,
+                                 catchup: Boolean) {
+            if (catchup) {
+                // ★★ v52 追赶模式存档（不暂停流 —— 只有接入者会收到，原玩家全程不暂停）：
+                //   后台线程装档 → 帧号对齐 → 种输入历史 → 开门进入离屏快放追赶。
+                dispatch { it.onSyncStatus("同步画面已就绪（帧 #$frame），准备快进追赶…") }
+                Thread({
+                    try {
+                        beginCatchup(frame, dataBase64, hist, histEnd)
+                    } catch (t: Throwable) {
+                        android.util.Log.w("NetplayController", "catchup begin failed", t)
+                        dispatch { it.onSyncStatus("追赶装载失败，已请求全员重新同步…") }
+                        try { net?.sendRestartReq() } catch (_: Throwable) {}
+                    }
+                }, "battle-catchup").apply { isDaemon = true }.start()
+                return
+            }
             // ★★ v4.5：收到服务器转发的存档 —— 只做确认，不在这里装载。
             //   装载统一放到 onResume（全员同一份档、同一帧号恢复）：
             //   同步若中止（房主失败/超时/接入者离开），无人装载、全员从各自
@@ -403,6 +445,9 @@ class NetplayController(
 
         override fun onResume(frame: Long, inputDelay: Int, players: List<Int>,
                               dataBase64: String?, hist: Map<Int, List<Int>>?, histEnd: Long) {
+            // ★★ v52：暂停流接管（追赶中遭遇 pause 的竞态）——
+            //   追赶作废，随全员一起装载恢复（resumeInternal 统一处理）
+            catchupMode = false
             // 全员恢复：按同一存档帧对齐、同一延迟继续
             dispatch { it.onSyncStatus("玩家接入完成，继续对战！") }
             Thread({
@@ -424,6 +469,9 @@ class NetplayController(
             //   帧 0（开机状态）同步开跑。
             dispatch { it.onSyncStatus("新玩家接入：全员同时重开一局，回到开局状态…") }
             android.util.Log.i("NetplayController", "restart: 全员重开（players=$players delay=$inputDelay）")
+            // ★★ v52：重开 = 全新时间线 —— 追赶/座位激活簿记清零
+            catchupMode = false
+            slotActiveFrom.clear()
             restartPending = true
             restartFailed = false   // ★★ v4.6 每轮重开重置失败标记（上一轮失败不影响本轮）
             // 先开门让引擎线程能走到复位点（同步暂停门/启动门都放行到重启检查）
@@ -445,6 +493,42 @@ class NetplayController(
             //   天然安全，且不存在"5 秒没等到复位就发 ready"的带病开跑窗口）。
             //   引擎还在加载的端：复位对它本来就是开机态，加载完成后
             //   EmulatorScreen 会调 notifyEngineReady（engineLoaded 已复位）。
+        }
+
+        override fun onSlotActive(frame: Long, slot: Int, players: List<Int>) {
+            // ★★ v52 座位延迟激活（追赶接入者追平 / 观战者转座）：
+            //   [slot] 座位从 [frame] 之后开始被等待其输入（之前全员对其槽位确定性归零 ——
+            //   只显示“xx 以 NP 接入”，不暂停不打断）。
+            if (slot in 1..4) slotActiveFrom[slot] = frame
+            if (players.isNotEmpty()) {
+                activeSlots.clear()
+                activeSlots.addAll(players)
+            }
+            pendingSlots.remove(slot)
+            deadSlotLastFrame.remove(slot)
+            dispatch { it.onSyncStatus(if (slot == mySlot) "${slot}P 座位已激活 —— 对战中！" else "${slot}P 已接入对战（无缝加入）") }
+        }
+
+        override fun onSeatGranted(frame: Long, slot: Int, players: List<Int>) {
+            // ★★ v52 观战转座确认（仅转座者本人收到）：本端已从观战
+            //   切到 [slot] 座 —— mySlot 从 0 切到座位、采样解锁，
+            //   从下一帧开始正常采样发送（画面本就是当前局）。
+            if (slot !in 1..4) return
+            mySlot = slot
+            spectatorMode = false
+            if (players.isNotEmpty()) {
+                activeSlots.clear()
+                activeSlots.addAll(players)
+            }
+            slotActiveFrom[slot] = frame
+            pendingSlots.remove(slot)
+            deadSlotLastFrame.remove(slot)
+            // 自己槽位 inputDelay 预热窗补零（转座前未采样的帧全员用 0
+            //   —— 不补会误用当前手柄状态跑旧帧 → 单端发散；只补空缺口，
+            //   不覆盖离队前辈的真实在途输入）
+            seedOwnZeroWindow(netFrameCounter, overwrite = false)
+            dispatch { it.onSyncStatus("已入座 ${slot}P —— 继续对战！") }
+            dispatch { it.onSeatChanged(slot) }
         }
 
         override fun onPeerReady(username: String) {
@@ -706,6 +790,107 @@ class NetplayController(
             }
         }
     }
+    // =========================================================================
+    // ★★ v52 追赶接入（小马模拟器式“中途加入不暂停”）
+    // =========================================================================
+
+    /**
+     * 追赶模式装载（battle-catchup 线程；引擎此刻挂在启动门 ——
+     * 跨线程装档安全，与 resumeInternal 同一模式）。
+     * 成功后开门：引擎线程下一帧进入 catchupMode 快放追赶。
+     * 失败抛异常 → 调用方自救（sendRestartReq 全员重开）。
+     */
+    private fun beginCatchup(frame: Long, dataBase64: String, hist: Map<Int, List<Int>>?, histEnd: Long) {
+        // 竞态护栏：装载过程中若又有暂停/重开接管（另一接入者触发
+        // 暂停同步）—— 本轮追赶作废，交给暂停流程统一收尾（resume 会
+        // 装载正确的档并清 catchupMode）。
+        if (syncPaused || restartPending) {
+            android.util.Log.w("NetplayController", "beginCatchup 被暂停/重开竞态接管，交给暂停流程")
+            return
+        }
+        val io = stateIo ?: throw IllegalStateException("无存档通道")
+        val bytes = try {
+            android.util.Base64.decode(dataBase64, android.util.Base64.NO_WRAP)
+        } catch (_: Throwable) { null }
+        if (bytes == null || bytes.isEmpty()) throw IllegalStateException("存档为空")
+        // 确认引擎挂门（启动门未开 = 核心空闲）
+        if (!waitForEngineParked(2000)) {
+            throw IllegalStateException("引擎未挂门")
+        }
+        val file = File(io.stateDir(), "battle_catchup.state")
+        val loaded = try { file.writeBytes(bytes); io.loadStateFrom(file) } catch (_: Throwable) { false }
+        if (!loaded) throw IllegalStateException("存档装载失败")
+        // 帧号对齐存档帧（引擎挂门期间改写安全 —— 与 resumeInternal 同一模式）
+        netFrameCounter = frame
+        lastIssuedNetFrame = frame - 1
+        // 种输入历史：16 帧热身窗 + [frame, histEnd) 重放窗（服务器
+        // 从环形缓冲组装、缺帧补 0 —— 与各端实际执行的输入序列严格一致）
+        seedHist(hist, histEnd)
+        // 回滚簿记重置（仅簿记 —— 不清 padsHistory：这里的历史是“将要重放的未来”）
+        rbRequestReset(-1L)
+        catchupFromFrame = frame
+        catchupHistEnd = histEnd
+        catchupMode = true
+        dispatch { it.onSyncStatus("快进追赶画面中…") }
+        // 开门（只开启动门 —— 同步门若因竞态已暂停则保持暂停，交给暂停流程收尾）
+        synchronized(startGate) { started = true; startGate.notifyAll() }
+        parkedLocalFrame = -1
+    }
+
+    /**
+     * 追赶重放帧 [f] 的 4 手柄输入。
+     * 服务器组装的历史是全员实际执行输入的地面真值（含离队
+     * 槽位的在途真实输入）—— 直接采用，不做槽位门控（门控会把“加入前离
+     * 队者”的历史输入误归零 → 重放出的画面与房主发散）。
+     * 窗口外缺帧才回退到门控+阻塞等待（不该发生 —— 服务器组装保证完整）。
+     * 返回 null = 门事件（pause/restart）或断连，调用方作废本帧。
+     */
+    private fun catchupPadsFor(f: Long): IntArray? {
+        val pads = IntArray(4)
+        for (slot in 1..4) {
+            val pad = padsHistory[slot][f]
+            if (pad != null) {
+                pads[slot - 1] = pad
+                continue
+            }
+            if (slot != mySlot && slotNeedsInput(slot, f)) {
+                val got = awaitSlotInput(slot, f)
+                if (got == null) return null
+                pads[slot - 1] = got
+            } else {
+                pads[slot - 1] = 0
+            }
+        }
+        return pads
+    }
+
+    /**
+     * 自己槽位 inputDelay 预热窗 [fromFrame-16, fromFrame) 归零：
+     * - 追赶者（overwrite=true）：强制清零 —— 服务器组装的历史里含上任者
+     *   的真实输入（重放阶段已消费完毕），而激活帧前全员对新座位用 0；
+     * - 观战转座者（overwrite=false）：只补空缺口 —— 离队前任 ≤ 最后中继帧
+     *   的在途真实输入保留（全员在途规则同样用真实值），只把“永不再来的帧”补 0。
+     * 不归零会让自己的预热帧误用当前手柄/旧输入 → 单端发散。
+     */
+    private fun seedOwnZeroWindow(fromFrame: Long, overwrite: Boolean) {
+        if (mySlot !in 1..4) return
+        for (f in maxOf(0L, fromFrame - 16) until fromFrame) {
+            if (overwrite || padsHistory[mySlot][f] == null) padsHistory[mySlot][f] = 0
+        }
+    }
+
+    /**
+     * ★★ v52 观战者热转座：请求入座（小马 UpdateRole 同款 ——
+     * 观战中随时点“入座”，不退出不重开：服务器分配空位 →
+     * seat_granted（本端切座位解锁采样）+ 全员 slot_active（从激活帧
+     * 后开始等它）。满座/混合旧版本房间服务器回 error → onError 提示。
+     */
+    fun requestSeat(want: Int = 0) {
+        val n = net ?: return
+        if (!spectatorMode) return
+        try { n.sendTakeSeat(want) } catch (_: Throwable) {}
+    }
+
 
     /**
      * ★★ v4.5.1 全员重开：引擎线程串行应用（beforeFrame 顶部 —— 与核心无并发）。
@@ -798,6 +983,10 @@ class NetplayController(
         //   互等死锁均出在这条链上；快照文件本身诚实与否已无法逐一验证，
         //   按用户要求直接降级，稳定优先。）
         val rollbackCapable = !isSpectator && (io?.supportsRollback() ?: false)
+        // ★★ v52 追赶能力：引擎支持装档 + runFrameDirect 离屏快放
+        //   （与回滚同一能力门控）；观战者也可追赶 —— 它是同一条输入流
+        //   的只读消费者（服务器据此决定接入者走“不暂停追赶”还是传统暂停同步）。
+        val catchupCapable = io?.supportsRollback() ?: false
 
         // ★★ v4.5.1 出档能力探测（引擎停在启动门的安全窗口内）—— 仅对可回滚
         //   核心执行；其余核心跳过（探测结果不影响降级决策，省一次开机出档）
@@ -873,7 +1062,7 @@ class NetplayController(
             }
             android.util.Log.i("NetplayController",
                 "RTT min=${minRtt}ms rollback=$rollbackMode → suggestedDelay=${suggested}f")
-            try { n.sendReady(suggested, stateCap) } catch (_: Throwable) {}
+            try { n.sendReady(suggested, stateCap, catchupCapable) } catch (_: Throwable) {}
         }, "battle-rtt-probe").apply { isDaemon = true }.start()
     }
 
@@ -968,6 +1157,66 @@ class NetplayController(
                 //   跳过记账，防把“多跑的一帧”记到上一帧号头上
                 zeroPadFrame = true
                 return IntArray(4)
+            }
+
+            // ★★ v52 追赶快放（小马式中途加入不暂停）：引擎每渲染一帧，
+            //   离屏重放一小段历史帧（runFrameDirect 不渲染不出声），屏幕表现
+            //   为快进追赶；追平服务器给的 histEnd 后无缝落入下方正常锁步。
+            if (catchupMode) {
+                val n0 = net
+                val io = stateIo
+                if (n0 == null) { zeroPadFrame = true; return IntArray(4) } // 断连：停模拟
+                if (io == null || !io.supportsRollback()) {
+                    // 引擎不支持快放（不该到这 —— ready 能力上报门控过）：自救重开
+                    catchupMode = false
+                    dispatch { it.onSyncStatus("追赶不可用，请求全员重新同步…") }
+                    try { n0.sendRestartReq() } catch (_: Throwable) {}
+                    zeroPadFrame = true
+                    return IntArray(4)
+                }
+                var replayed = 0
+                // 1）离屏快放本段（不含最后要渲染的一帧）
+                while (netFrameCounter < catchupHistEnd && replayed < CATCHUP_CHUNK - 1) {
+                    val f = netFrameCounter
+                    val pads = catchupPadsFor(f) ?: run {
+                        zeroPadFrame = true; return IntArray(4) // 门事件/断连：下一迭代过门
+                    }
+                    try { io.discardPendingAudio() } catch (_: Throwable) {}
+                    if (!io.runFrameDirect(pads)) {
+                        catchupMode = false
+                        dispatch { it.onSyncStatus("追赶重放失败，请求全员重新同步…") }
+                        try { n0.sendRestartReq() } catch (_: Throwable) {}
+                        zeroPadFrame = true
+                        return IntArray(4)
+                    }
+                    netFrameCounter++
+                    replayed++
+                    if (replayed % 30 == 0) {
+                        val done = netFrameCounter - catchupFromFrame
+                        val total = (catchupHistEnd - catchupFromFrame).coerceAtLeast(1)
+                        dispatch { it.onSyncStatus("快进追赶画面中… $done/$total 帧") }
+                    }
+                }
+                if (netFrameCounter < catchupHistEnd) {
+                    // 2）本段最后一帧交给引擎渲染（快进的可见画面）
+                    val f = netFrameCounter
+                    val pads = catchupPadsFor(f) ?: run {
+                        zeroPadFrame = true; return IntArray(4)
+                    }
+                    netFrameCounter = f + 1
+                    zeroPadFrame = true // 追赶帧：afterFrame 不记账不上传
+                    return pads
+                }
+                // 3）追平：自己槽位 inputDelay 预热窗归零（追赶期间
+                //   全员对本槽位用 0 —— 服务器组装的历史里含上任
+                //   者的真实输入，不清会误用 → 单端发散）；报告服务器
+                //   追平（广播座位激活）；无缝落入下方正常锁步流程。
+                catchupMode = false
+                seedOwnZeroWindow(netFrameCounter, overwrite = true)
+                lastIssuedNetFrame = netFrameCounter - 1
+                try { n0.sendStateOk() } catch (_: Throwable) {}
+                dispatch { it.onSyncStatus("画面已追平，接入完成 —— 对战中！") }
+                android.util.Log.i("NetplayController", "catchup done at frame $netFrameCounter")
             }
 
             // ★★ v4.7 内部帧号：网络帧号由控制器自己发号（不再用引擎本地帧换算 ——
@@ -1103,6 +1352,10 @@ class NetplayController(
      *  - 离队槽位且 execFrame ≤ 最后中继帧（输入仍在途，TCP 有序必达）→ 需要；
      *  - 其余（离队后的帧 / 从未激活）→ 不需要（确定性 0）。 */
     private fun slotNeedsInput(slot: Int, execFrame: Long): Boolean {
+        // ★★ v52：追赶/转座新激活的座位 —— 激活帧（含）之前不算活跃
+        //   （此前全员对其确定性归零；激活帧之后才开始等它 —— 各端一致）
+        val actFrom = slotActiveFrom[slot]
+        if (actFrom != null && execFrame <= actFrom) return false
         if (activeSlots.contains(slot)) return true
         val dead = deadSlotLastFrame[slot] ?: return false
         return execFrame <= dead
@@ -1261,6 +1514,7 @@ class NetplayController(
         for (slot in 1..4) {
             when {
                 slot == mySlot -> pads[slot - 1] = padsHistory[slot][execFrame] ?: localPad
+                !slotNeedsInput(slot, execFrame) -> pads[slot - 1] = 0 // ★★ v52 激活帧前不算活跃
                 activeSlots.contains(slot) -> {
                     var pad = padsHistory[slot][execFrame]
                     if (pad == null) {
@@ -1398,13 +1652,12 @@ class NetplayController(
             for (slot in 1..4) {
                 pads[slot - 1] = when {
                     slot == mySlot -> padsHistory[slot][f] ?: 0
+                    // ★★ v52 激活帧（含）之前不算活跃（全员对新座位确定性归零）
+                    !slotNeedsInput(slot, f) -> 0
                     activeSlots.contains(slot) -> padsHistory[slot][f] ?: rbLastKnownPad.get(slot)
                     // ★★ v48 离队槽位：≤ 最后中继帧的在途输入用真实值（未到则 0，
                     //   后到会触发不一致→再回滚纠正）；其后确定性归零
-                    else -> {
-                        val dead = deadSlotLastFrame[slot] ?: -1L
-                        if (f > dead) 0 else padsHistory[slot][f] ?: 0
-                    }
+                    else -> padsHistory[slot][f] ?: 0
                 }
             }
             if (!io.runFrameDirect(pads)) {

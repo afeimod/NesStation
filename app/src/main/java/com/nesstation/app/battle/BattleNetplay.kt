@@ -112,8 +112,24 @@ class BattleNetplay(
         /**
          * ★★ v4.3 后加入：收到存档（服务器转发的房主 state）。
          * 引擎装载存档 → 帧计数对齐到 frame → sendStateOk。
+         * ★★ v52：catchup=true = 追赶模式存档（不暂停流 —— 仅接入者收到）：
+         * 装档后不等 resume，直接离屏快放追赶，追平 histEnd 后自行 sendStateOk
+         * （服务器此时广播座位激活）。hist 覆盖 [frame-16, histEnd)。
          */
-        fun onStateData(frame: Long, dataBase64: String, hist: Map<Int, List<Int>>?, histEnd: Long)
+        fun onStateData(frame: Long, dataBase64: String, hist: Map<Int, List<Int>>?, histEnd: Long,
+                        catchup: Boolean = false)
+
+        /**
+         * ★★ v52 座位延迟激活：追赶接入者已追平（或观战者转座）—— [slot]
+         * 座位从 [frame] 之后开始被全员等待其输入。players = 最新活跃座位表。
+         */
+        fun onSlotActive(frame: Long, slot: Int, players: List<Int>) {}
+
+        /**
+         * ★★ v52 观战转座确认（仅转座者本人收到）：服务器已把本端从
+         * 观战切到 [slot] 座 —— 解锁输入采样，从下一帧开始正常采样发送。
+         */
+        fun onSeatGranted(frame: Long, slot: Int, players: List<Int>) {}
         /**
          * ★★ v4.3 后加入：全员恢复信号 —— 各端装载同一份存档、以 frame 对齐、
          * 按统一 inputDelay 继续。data 为空 = 直接恢复（无存档，如同步中断线兜底）。
@@ -155,7 +171,12 @@ class BattleNetplay(
          *  非街机核心（NES/SFC/GBA/MD/PCE）快照同步降级 —— 一律上报
          *  stateCap=-1，中途接入走“全员同时重开”（4.2 语义）。
          *  服务器对 v<47 的房间不再广播 restart（旧客户端重开语义不兼容）。 */
-        const val PROTO_VERSION = 48
+        // ★★ v52 小马模拟器式“中途加入不暂停追赶”：
+        //   state.catchup=true 追赶模式存档（仅接入者收到：装档 + 输入历史
+        //   离屏快放追赶，追平 state_ok 后座位激活 —— 原玩家全程不暂停）；
+        //   slot_active 座位延迟激活；seat_granted/take_seat 观战者热转座。
+        //   服务器对房间内全员 v≥52 才启用追赶；混合旧客户端自动退回 v4.5 暂停同步。
+        const val PROTO_VERSION = 52
     }
 
     @Volatile private var socket: Socket? = null
@@ -295,9 +316,18 @@ class BattleNetplay(
                     msg.optLong("frame", 0),
                     msg.optString("data", ""),
                     parseHist(msg),
-                    msg.optLong("histEnd", msg.optLong("frame", 0))
+                    msg.optLong("histEnd", msg.optLong("frame", 0)),
+                    // ★★ v52：catchup=true = 追赶模式存档（装档 + 离屏快放追赶）
+                    msg.optBoolean("catchup", false)
                 )
             }
+            // ★★ v52 座位延迟激活（追赶接入者追平 / 观战者转座）：
+            //   [slot] 座位从 frame 之后开始被等待输入
+            "slot_active" -> listener.onSlotActive(
+                msg.optLong("frame", 0), msg.optInt("slot", 0), parsePlayers(msg))
+            // ★★ v52 观战转座确认（仅转座者本人收到）
+            "seat_granted" -> listener.onSeatGranted(
+                msg.optLong("frame", 0), msg.optInt("slot", 0), parsePlayers(msg))
             "state_ok" -> {
                 // 服务器内部状态流转；客户端不需处理（resume 才是恢复信号）
             }
@@ -440,11 +470,24 @@ class BattleNetplay(
 
     /** 通知服务器：我已就绪（引擎已加载完、帧循环就位，等 start/resume）。
      * 带建议 inputDelay（帧）+ ★★ v4.5.1 出档能力（1 能 / -1 不能 / 0 未知 ——
-     * 服务器据此决定快照同步还是全员重开）。 */
-    fun sendReady(suggestedDelay: Int = 0, stateCap: Int = 0) {
+     * 服务器据此决定快照同步还是全员重开）。
+     * ★★ v52 追赶能力（catchup=true = 引擎支持装档 + runFrameDirect
+     * 离屏快放 —— 服务器据此决定该接入者走“不暂停追赶”还是传统暂停同步；
+     * 观战者也可追赶 —— 它是同一条输入流的只读消费者）。 */
+    fun sendReady(suggestedDelay: Int = 0, stateCap: Int = 0, catchup: Boolean = false) {
         sendLine(JSONObject().put("type", "ready")
             .put("pad", suggestedDelay.coerceIn(0, 16))
             .put("stateCap", stateCap.coerceIn(-1, 1))
+            .put("catchup", catchup)
+            .toString())
+    }
+
+    /** ★★ v52 观战者热转座：请求入座（服务器分配空位 → seat_granted
+     * + 全员 slot_active —— 不暂停不重开，转座者画面本就是当前局）。
+     * want=0 自动取下一空闲座；满座/旧版本房间服务器回 error。 */
+    fun sendTakeSeat(want: Int = 0) {
+        sendLine(JSONObject().put("type", "take_seat")
+            .put("slot", want.coerceIn(0, 4))
             .toString())
     }
 

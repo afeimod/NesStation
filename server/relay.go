@@ -33,6 +33,29 @@ const (
 //   混版本房间不再广播 restart。
 const clientProtoRestart = 47
 
+// ★★ v52 追赶接入（小马模拟器式"中途加入不暂停"）：客户端协议版本。
+//   52 = 理解 state.catchup（追赶模式存档）/ slot_active（座位延迟激活）/
+//   seat_granted（观战转座确认）/ take_seat（观战者请求入座）。
+//   房间内全员（玩家+观战者）都 ≥52 才启用不暂停追赶；混合旧客户端的
+//   房间自动退回 v4.5 暂停同步（老流程完整保留，互不干扰）。
+const clientProtoCatchup = 52
+
+// ★★ v52 追赶座位激活裕量（帧）：接入者追平后，其座位从「服务器观察到的
+//   最新输入帧 + 该裕量」之后开始被全员等待 —— 保证 slot_active 广播到达
+//   各端时（中继拓扑下几十至几百毫秒），大家都还没跑到激活帧，杜绝
+//   "有人已执行过激活帧却没等新座位输入"的单端发散窗口。
+const catchupActivateMargin = 45
+
+// ★★ v52 输入历史环形缓冲容量（帧）：60fps × 60s = 3600。房主快照上传
+//   间隔最大 15s（大档），缓冲远大于快照间隔 → 追赶重放历史永远完整。
+//   内存占用 ≈ 3600 帧 × 5 槽 int ≈ 150KB/房间，可忽略。
+const catchupHistFrames = 3600
+
+// ★★ v52 追赶看门狗：装档 + 离屏快放应在数十秒内完成（手机解码大档 +
+//   快放几百帧）。超时只劝退接入者 —— 原玩家全程未暂停、完全不受影响
+//   （不暂停模式的天然鲁棒性：失败者自己退场，别人无感）。
+const catchupWatchdog = 45 * time.Second
+
 // maxRoomPlayers 最大玩家数（1P-4P）。FBNeo/街机支持 4 手柄；
 // 其他 2 手柄核心上 3/4P 的输入被客户端忽略（仍可观战同步画面）。
 const maxRoomPlayers = 4
@@ -89,6 +112,15 @@ type Room struct {
         // ★★ v4.5 同步看门狗（超时 abort）与同步轮次（防旧定时器误杀新同步）。
         syncTimer *time.Timer
         syncGen   uint64
+        // ★★ v52 追赶接入：输入历史环形缓冲（帧号 → [5]int：slot1..4 的 pad，
+        //   下标 0 弃用）。relayLoop 每中继一条 input 记账一条 —— 供中途加入者
+        //   "装档后离屏快放追赶"重放 [快照帧, 当前帧) 的完整输入序列（小马模拟器
+        //   同款：房主不暂停，新人拿快照+输入历史自己追）。
+        inpHist map[int64][5]int
+        // 缓冲覆盖的最小帧号（更早的已丢弃；restart 复位时清零重建）。
+        inpHistStart int64
+        // 服务器观察到的最新输入帧号（追赶激活帧/历史组装的基准；restart 清零）。
+        maxFrame int64
 }
 
 func (r *Room) playerCount() int { return len(r.conns) }
@@ -235,6 +267,10 @@ type relayMsg struct {
         //   部分核心/驱动不支持快照（FBNeo 的 PGM/改版等，且 JNI 永远返回 true，
         //   客户端只能靠“存档文件非空”探测）—— 服务器据此决定：快照同步 or 全员重开。
         StateCap int `json:"stateCap,omitempty"`
+        // ★★ v52：ready 附带 —— 该端引擎支持追赶（装档 + runFrameDirect 离屏
+        //   快放）；state.catchup=true —— 追赶模式存档（仅接入者收到：装档 + 输入
+        //   历史离屏快放追赶，追平 state_ok 后座位激活）。
+        Catchup bool `json:"catchup,omitempty"`
 }
 
 type relayConn struct {
@@ -272,6 +308,13 @@ type relayConn struct {
         // 同步启动：该端是否已发过 ready，以及它建议的 inputDelay（帧）。
         ready    bool
         readyPad int
+        // ★★ v52 追赶接入：正在追赶中（不暂停流 —— 输入照常收发给它，但它
+        //   自己的输入被忽略、座位不算活跃，直到 state_ok 追平激活）。
+        catchingUp bool
+        // ★★ v52：ready.catchup —— 引擎支持追赶（装档 + 离屏快放）。
+        catchCap bool
+        // ★★ v52：追赶看门狗（超时劦退 —— 只影响接入者，其他人无感）。
+        catchTimer *time.Timer
 }
 
 // startWriter 启动该连接的专属发送 goroutine（创建 relayConn 后立即调用）。
@@ -746,7 +789,9 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         // ★★ v4.4：观战者不产生输入（忽略，防协议滥用）；
                         //   玩家输入带发送者槽位广播给房间内所有其他成员（含观战者 ——
                         //   观战者与玩家同帧同画运行）。
-                        if rc.spectator {
+                        // ★★ v52：追赶中的接入者同样忽略（它还在重放历史，此时
+                        //   发来的输入不属于任何真实时间线 —— 追平后才开始采样）。
+                        if rc.spectator || rc.catchingUp {
                                 continue
                         }
                         h.mu.Lock()
@@ -756,6 +801,27 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         //   下发给客户端做“离队槽位确定性归零”。
                         if msg.Frame > rc.lastFrame {
                                 rc.lastFrame = msg.Frame
+                        }
+                        // ★★ v52 追赶接入：输入历史环形缓冲记账（服务器侧，
+                        //   供中途加入者装档后离屏快放追赶重放；超出容量的
+                        //   最老帧同步丢弃，均摊 O(1)）。
+                        if msg.Frame > room.maxFrame {
+                                room.maxFrame = msg.Frame
+                        }
+                        if room.inpHist == nil {
+                                room.inpHist = map[int64][5]int{}
+                                room.inpHistStart = msg.Frame
+                        }
+                        if rc.slot >= 1 && rc.slot <= 4 {
+                                entry := room.inpHist[msg.Frame]
+                                entry[rc.slot] = msg.Pad
+                                room.inpHist[msg.Frame] = entry
+                        }
+                        if oldest := room.maxFrame - catchupHistFrames; oldest > room.inpHistStart {
+                                for f := room.inpHistStart; f <= oldest; f++ {
+                                        delete(room.inpHist, f)
+                                }
+                                room.inpHistStart = oldest + 1
                         }
                         targets := make([]*relayConn, 0, maxRoomPlayers+maxSpectators)
                         for _, c := range room.conns {
@@ -817,6 +883,12 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         //   C. 对局进行中（playing/syncing）新玩家 ready → 触发存档同步
                         //      （★★ v4.5 服务器主导 + 看门狗，详见 beginSync 注释）。
                         h.mu.Lock()
+                        // ★★ v52：追赶中的接入者重发 ready —— 忽略
+                        //   （防重复触发 beginSync 重发存档打断追赶状态机）。
+                        if rc.catchingUp {
+                                h.mu.Unlock()
+                                continue
+                        }
                         rc.ready = true
                         if msg.Pad > rc.readyPad {
                                 rc.readyPad = msg.Pad
@@ -825,6 +897,9 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         if msg.StateCap != 0 {
                                 rc.stateCap = msg.StateCap
                         }
+                        // ★★ v52：追赶能力上报（引擎支持装档 + 离屏快放；
+                        //   观战者也能追赶 —— 它是同一条输入流的只读消费者）。
+                        rc.catchCap = msg.Catchup
                         room := rc.room
                         count := room.playerCount()
                         allReady := true
@@ -964,9 +1039,59 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         }
 
                 case "state_ok":
+                        // ★★ v52：追赶流的 state_ok = 已追平实时画面
+                        //   → 广播座位激活（全员从激活帧后开始等它输入），
+                        //   观战者追赶完成则直接进入观战（无座位可激活）。
+                        //   老流程（暂停同步）的 state_ok 仍走 completeSync —— 两条路互不干扰。
+                        if rc.catchingUp {
+                                h.finishCatchup(rc)
+                                continue
+                        }
                         // 接入者已确认收到存档 → 全员广播 resume（带存档与最终延迟）。
                         // 各端在 resume 时统一装载同一份档、以 frame 对齐恢复 —— 画面完全一致。
                         h.completeSync(rc)
+
+                case "take_seat":
+                        // ★★ v52 观战者热转座（小马 UpdateRole 同款）：观战中点
+                        //   “入座” → specs → conns、分配空位、广播 slot_active
+                        //   —— 全员不暂停不重开：转座者此刻画面本就是当前局
+                        //   （观战流 = 同一条锁步输入流），只需从激活帧起开始
+                        //   采样发送、其他人开始等它。
+                        if !rc.spectator {
+                                continue
+                        }
+                        h.mu.Lock()
+                        room := rc.room
+                        if room == nil || room.Status != roomPlaying {
+                                h.mu.Unlock()
+                                _ = rc.send(relayMsg{Type: "error", Msg: "当前无法入座（对局未在进行中）"})
+                                continue
+                        }
+                        if !h.roomSupportsCatchup(room) {
+                                h.mu.Unlock()
+                                _ = rc.send(relayMsg{Type: "error", Msg: "房间内有旧版本客户端，无法入座；请全员升级后再试"})
+                                continue
+                        }
+                        seat := room.nextFreeSlot(msg.Slot)
+                        if seat == 0 {
+                                h.mu.Unlock()
+                                _ = rc.send(relayMsg{Type: "error", Msg: "座位已满，无法入座"})
+                                continue
+                        }
+                        delete(room.specs, rc.user.ID)
+                        rc.spectator = false
+                        rc.slot = seat
+                        rc.ready = true
+                        room.conns[rc.user.ID] = rc
+                        fAct := room.maxFrame + catchupActivateMargin
+                        players := activeSlots(room)
+                        h.mu.Unlock()
+                        log.Printf("[转座] 房间 %s（桌 %d）：%s 观战 → 入座 %dP（帧 %d 激活，全员不暂停）",
+                                room.ID, room.TableNo, rc.user.Username, seat, fAct)
+                        // 先给转座者发座位确认（它据此把 mySlot 从 0 切到座位、
+                        //   解锁输入采样、记录激活帧），再广播座位激活给其他成员
+                        _ = rc.send(relayMsg{Type: "seat_granted", Frame: fAct, Slot: seat, Players: players})
+                        h.broadcastExcept(room, rc, relayMsg{Type: "slot_active", Frame: fAct, Slot: seat, Players: players})
 
                 case "ping":
                         _ = rc.send(relayMsg{Type: "pong", Ts: msg.Ts})
@@ -1036,8 +1161,17 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
         //   2. 房主在且能出档（或旧客户端能力未知）→ state_req 新鲜档（零回退）；
         //   3. 都不行（核心不支持快照 / 房主不在）→ 全员重开（v≥45 房间）；
         //   4. 混合旧客户端房间 → 维持旧收尾（接入者劝退，绝不卡死）。
+        // ★★ v52 追赶接入优先（小马模拟器式“中途加入不暂停”）：
+        //   全员 v≥52 且接入者引擎能离屏快放（ready.catchup）且服务器有
+        //   新鲜缓存档且输入历史缓冲完整覆盖 → 不暂停追赶；任一条件不满足
+        //   自动退回 v4.5 暂停同步（老流程完整保留，混合版本房间互不干扰）。
+        histFrom := cachedFrame16(cached)
+        catchupOk := h.roomSupportsCatchup(room) && rc.catchCap && cached != nil &&
+                room.inpHist != nil && room.inpHistStart <= histFrom
         mode := ""
         switch {
+        case catchupOk:
+                mode = "catchup"
         case cached != nil:
                 mode = "cache"
         case owner != nil && owner.stateCap >= 0:
@@ -1058,6 +1192,38 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
                 h.mu.Unlock()
                 h.restartSync(room, rc, "无可用同步画面")
                 return
+        }
+        if mode == "catchup" {
+                // ★★ v52 不暂停追赶：不广播 pause（原玩家/观战者继续对战），
+                //   不发 state_req —— 仅接入者收到存档 + 完整输入历史
+                //   （16 帧热身窗 + [档帧, 最新帧) 重放窗），装档 → 离屏快放
+                //   → 追平 state_ok → 座位激活。原玩家的体验 = 完全无感知。
+                rc.catchingUp = true
+                histEnd := room.maxFrame + 1
+                if histEnd < cached.Frame {
+                        histEnd = cached.Frame
+                }
+                hist := room.composeCatchupHist(histFrom, histEnd)
+                st := *cached
+                st.Type = "state"
+                st.Catchup = true
+                st.Hist = hist
+                st.HistEnd = histEnd
+                h.mu.Unlock()
+                log.Printf("[追赶] 房间 %s（桌 %d）：%s 追赶接入（不暂停：档帧 %d → 追平帧 %d，重放 %d 帧）",
+                        room.ID, room.TableNo, rc.user.Username, cached.Frame, histEnd, histEnd-cached.Frame)
+                _ = rc.send(st)
+                h.startCatchupWatchdog(rc)
+                return
+        }
+        // ★★ v52 竞态护栏：进入暂停同步（cache/fresh）时，正在追赶中的
+        //   接入者一并并入本轮暂停流程（其追赶作废，随全员一起装载恢复；
+        //   它此后 stray 的 state_ok 由 completeSync 的 syncJoiners 名单校验挡住）。
+        for _, c := range room.conns {
+                c.catchingUp = false
+        }
+        for _, c := range room.specs {
+                c.catchingUp = false
         }
         room.Status = roomSyncing
         room.syncGen++
@@ -1128,6 +1294,13 @@ func (h *relayHub) completeSync(rc *relayConn) {
         if room.Status != roomSyncing {
                 // 重复 state_ok（多个接入者各发一条）：只在 syncing → playing 的
                 // 第一次广播 resume，其余忽略（他们已随广播装载）。
+                h.mu.Unlock()
+                return
+        }
+        // ★★ v52：追赶接入者的 stray state_ok（竞态：追赶中途被暂停流程
+        //   接管后补发）不得当作本轮同步完成 —— 只认本轮 syncJoiners
+        //   名单内的成员，防提前广播 resume 把未装载的接入者晾在启动门上。
+        if _, ok := room.syncJoiners[rc.user.ID]; !ok {
                 h.mu.Unlock()
                 return
         }
@@ -1241,6 +1414,124 @@ func (h *relayHub) roomSupportsRestart(room *Room) bool {
         return true
 }
 
+// ---------------------------------------------------------------------------
+// ★★ v52 追赶接入（小马模拟器式“中途加入不暂停”）
+// ---------------------------------------------------------------------------
+
+// cachedFrame16 追赶历史组装起点：max(0, 档帧-16)（16 帧热身窗起点 ——
+// 追平后 inputDelay 窗口内的帧要用到这些历史输入）。
+func cachedFrame16(st *relayMsg) int64 {
+        if st == nil {
+                return 0
+        }
+        f := st.Frame - 16
+        if f < 0 {
+                f = 0
+        }
+        return f
+}
+
+// composeCatchupHist 组装 [from, to) 每槽位的 pad 序列（缺帧补 0 —— 与各端
+// “离队/未激活槽位确定性 0”的语义一致，全员重放结果严格相同）。
+// ★ 已持 hub.mu 时调用。
+func (r *Room) composeCatchupHist(from, to int64) map[int][]int {
+        if from < 0 {
+                from = 0
+        }
+        if to <= from {
+                return map[int][]int{}
+        }
+        hist := make(map[int][]int, maxRoomPlayers)
+        for slot := 1; slot <= maxRoomPlayers; slot++ {
+                pads := make([]int, to-from)
+                for f := from; f < to; f++ {
+                        if entry, ok := r.inpHist[f]; ok {
+                                pads[f-from] = entry[slot]
+                        }
+                }
+                hist[slot] = pads
+        }
+        return hist
+}
+
+// roomSupportsCatchup 全员（玩家+观战者）都理解 v52 追赶/转座消息？
+// 混合旧客户端的房间自动退回 v4.5 暂停同步 —— slot_active 旧客户端不认识，
+// 广播了也会被丢弃 → 追赶者的座位永远不被等待 → 单端发散，必须门控。
+// ★ 持 hub.mu 时调用。
+func (h *relayHub) roomSupportsCatchup(room *Room) bool {
+        for _, c := range room.conns {
+                if c.v < clientProtoCatchup {
+                        return false
+                }
+        }
+        for _, c := range room.specs {
+                if c.v < clientProtoCatchup {
+                        return false
+                }
+        }
+        return true
+}
+
+// finishCatchup 追赶完成（★ 未持锁时调用）：接入者已追平实时画面。
+//   - 玩家：广播 slot_active（座位从激活帧起被全员等待 —— 此前它不算活跃）；
+//   - 观战者：无座位可激活，直接进入观战（什么都不广播）。
+func (h *relayHub) finishCatchup(rc *relayConn) {
+        h.mu.Lock()
+        if !rc.catchingUp {
+                h.mu.Unlock()
+                return
+        }
+        rc.catchingUp = false
+        if rc.catchTimer != nil {
+                rc.catchTimer.Stop()
+                rc.catchTimer = nil
+        }
+        room := rc.room
+        if room == nil {
+                h.mu.Unlock()
+                return
+        }
+        fAct := room.maxFrame + catchupActivateMargin
+        players := activeSlots(room)
+        spectator := rc.spectator
+        h.mu.Unlock()
+        if spectator {
+                log.Printf("[追赶] 房间 %s：%s 观战同步完成（不暂停接入）", room.ID, rc.user.Username)
+                return
+        }
+        log.Printf("[追赶] 房间 %s（桌 %d）：%s 已追平 —— %dP 座位于帧 %d 激活（全员全程未暂停）",
+                room.ID, room.TableNo, rc.user.Username, rc.slot, fAct)
+        h.broadcastExcept(room, nil, relayMsg{
+                Type: "slot_active", Frame: fAct, Slot: rc.slot, Players: players,
+        })
+}
+
+// startCatchupWatchdog 追赶看门狗：装档/快放超时 → 只劝退接入者
+//   （原玩家全程未受影响 —— 不暂停模式的天然鲁棒性：失败者自己退场，
+//   房间状态自始至终都是 playing，没有任何需要“收尾”的全局状态）。
+// ★ 未持锁时调用。
+func (h *relayHub) startCatchupWatchdog(rc *relayConn) {
+        h.mu.Lock()
+        rc.catchTimer = time.AfterFunc(catchupWatchdog, func() {
+                defer func() {
+                        if p := recover(); p != nil {
+                                log.Printf("[异常] 追赶看门狗异常已隔离（服务器继续运行）：%v\n%s", p, debug.Stack())
+                        }
+                }()
+                h.mu.Lock()
+                if !rc.catchingUp {
+                        h.mu.Unlock()
+                        return
+                }
+                h.mu.Unlock()
+                log.Printf("[追赶] 接入者 %s 追赶超时（%s），劝退（房间其他成员不受影响）",
+                        rc.user.Username, catchupWatchdog)
+                _ = rc.send(relayMsg{Type: "error", Msg: "同步画面超时（追赶未完成），请稍后再试"})
+                h.drop(rc)
+        })
+        h.mu.Unlock()
+}
+
 // restartSync 全员重开（★★ v4.5.1）：拿不到任何可用档（核心不支持快照，如
 // FBNeo 的 PGM/改版驱动；或房主不在且无缓存）时 —— 与其劝退接入者，不如
 // 全员回到开机状态、从帧 0 同步重新开跑（街机语义：新人加入 = 新的一局）。
@@ -1259,6 +1550,14 @@ func (h *relayHub) restartSync(room *Room, trigger any, reason string) {
         room.Status = roomWaiting // 重新走“全员 ready → start”开局流程
         h.stopSyncTimerLocked(room)
         room.syncJoiners = map[string]*relayConn{}
+        // ★★ v52：重开 = 新时间线 —— 输入历史缓冲与缓存档全部作废
+        //   （旧帧号属于上一条时间线，误用会让追赶者重放出完全错位的画面）。
+        room.inpHist = nil
+        room.inpHistStart = 0
+        room.maxFrame = 0
+        room.lastStateMu.Lock()
+        room.lastState = nil
+        room.lastStateMu.Unlock()
         for _, c := range room.conns {
                 c.ready = false // 强制全员重新就绪（等各自的引擎复位完成）
         }
@@ -1299,6 +1598,12 @@ func (h *relayHub) drop(rc *relayConn) {
                 return
         }
         rc.dropped = true
+        // ★★ v52：停掉追赶看门狗（追赶者掉线 —— 房间其他人完全无感，
+        //   这就是不暂停模式的天然鲁棒性：没有 syncing 状态需要收尾）。
+        if rc.catchTimer != nil {
+                rc.catchTimer.Stop()
+                rc.catchTimer = nil
+        }
         room := rc.room
         var abortAfterDrop bool  // 同步中房主掉线 → abortSync 收尾
         var bareResumeAfterDrop bool // 同步中接入者都走了 → 原玩家裸恢复

@@ -1669,11 +1669,20 @@ fun EmulatorScreen(
     // 历史注：此前的 Flycast 独立核心在此处提前 return 到
     // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
 
-    val engine = remember(ndsCoreChoice, n3dsCoreChoice) {
+    val engine = remember(ndsCoreChoice, n3dsCoreChoice, game.id) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
             com.nesstation.app.core.engine.DraSticEngine.get()
         } else if (platform == GamePlatform.N3DS && n3dsCoreChoice == "citra_mmj") {
             com.nesstation.app.core.engine.CitraMmjEngine.get()
+        } else if (platform == GamePlatform.ARCADE &&
+            com.nesstation.app.core.engine.Pgm3Engine.isPgm3Rom(game.romPath)) {
+            // ★★ v52 三国战记3 HD（IGS M027 / PGM2 世代）：FBNeo 拉模型核心
+            //   跑不了它 —— 路由到专用 libpgm3 推模型核心（GL 直绘 + 自持
+            //   OpenSLES 音频；仅 arm64）。ROM 布局：kov3hd.zip 与
+            //   kov3hd/kov3hd_m105.chd 同目录；直接选 CHD 启动亦可。
+            com.nesstation.app.core.engine.Pgm3Engine.get().apply {
+                attach(context.applicationContext)
+            }
         } else {
             EmulatorEngine.forPlatform(game.platform)
         }
@@ -2709,6 +2718,10 @@ fun EmulatorScreen(
             }
             override fun onNetplayStats(frame: Long, delayFrames: Int, rollbacks: Int, maxReplayDepth: Int) {
                 netplayStatusText = "对战中 · 帧 #$frame · 延迟 ${delayFrames}f · 回滚 $rollbacks 次（最深 $maxReplayDepth 帧）"
+            }
+            // ★★ v52：本端观战者热转座成功（输入采样已由控制器解锁，虚拟手柄立即生效）
+            override fun onSeatChanged(slot: Int) {
+                netplayStatusText = "已入座 ${slot}P —— 继续对战！"
             }
         }
     }
@@ -3850,7 +3863,7 @@ fun EmulatorScreen(
             // 显示帧号 / 延迟 / desync 计数 / 对手加入离开等提示。
             // 单机模式下不显示。
             if (netplayController != null && netplayStatusText.isNotBlank()) {
-                Box(
+                Row(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .statusBarsPadding()
@@ -3859,7 +3872,8 @@ fun EmulatorScreen(
                             Color(0xAA0E1626),
                             androidx.compose.foundation.shape.RoundedCornerShape(10.dp)
                         )
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = netplayStatusText,
@@ -3867,6 +3881,31 @@ fun EmulatorScreen(
                         fontSize = 10.sp,
                         maxLines = 1
                     )
+                    // ★★ v52 观战者热转座：观战中随时点"入座"（小马 UpdateRole 同款）——
+                    //   不退出不重开：服务器分配空位 → seat_granted（本端切座位解锁采样）
+                    //   + 全员 slot_active（从激活帧后开始等它）；满座/混合旧版本服务器回
+                    //   error → onError 提示。isSpectator 状态变化随 onSeatChanged 的
+                    //   状态文本更新触发重组，按钮自动隐藏。
+                    if (netplayController.isSpectator) {
+                        androidx.compose.foundation.layout.Spacer(
+                            modifier = Modifier.width(8.dp)
+                        )
+                        Text(
+                            text = "入座",
+                            color = androidx.compose.ui.graphics.Color(0xFF6EC8FF),
+                            fontSize = 11.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            modifier = Modifier
+                                .background(
+                                    androidx.compose.ui.graphics.Color(0x336EC8FF),
+                                    androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                                )
+                                .clickable {
+                                    netplayController.requestSeat(0)
+                                }
+                                .padding(horizontal = 10.dp, vertical = 3.dp)
+                        )
+                    }
                 }
             }
 
