@@ -4383,12 +4383,23 @@ fun EmulatorScreen(
                     onPadBits = { bits ->
                         // 联机对战：把本地输入送给 NetplayController，由它打包
                         // 发给对方；引擎线程在 beforeFrame 里会把 (local, remote)
-                        // 推回 setPad1/setPad2。本地路径：直接 routePadBits。
-                        if (netplayController != null) {
-                            netplayController.setLocalPad(bits)
-                        } else {
-                            routePadBits(engine, currentPlayer, bits, platform = platform)
-                        }
+                        // 推回 setPad1..setPad4。本地路径：直接 routePadBits。
+                        // ★★ v50 对战街机 B/C 相反修复：联机分支此前把【未转换
+                        //    的项目原始位】直推 setLocalPad —— 而 NetplayController
+                        //    把它原样经 padsHistory 推回 setPadN，FBNeo 核心把项目
+                        //    bit1(B) 当 JOYPAD_Y=街机键3(C)、bit8(X/C) 当
+                        //    JOYPAD_A=街机键2(B) → 对战平台虚拟按键 B/C 互换
+                        //    （A=bit0、D=bit9 与 libretro 位恰好同位才碰巧正常），
+                        //    方向/投币/开始不受影响 —— 这正是"对战街机 B 和 C
+                        //    反了、本地却正常"的根因：本地路径一直经 routePadBits
+                        //    转换，实体手柄联机路径也一直带 netplayController
+                        //    参数走 routePadBits，唯独虚拟按键联机时漏了转换。
+                        //    现在虚拟按键与实体手柄统一走 routePadBits（内含
+                        //    ARCADE/NDS/PSX/PS2/PSP/DC 平台位布局转换 + Wii 横持
+                        //    方向补偿），联机/本地行为完全一致。联机模式下
+                        //    玩家切换球隐藏、currentPlayer 恒为 0，与实体手柄
+                        //    同门（routePadBits 联机分支只接受本地 1P 输入）。
+                        routePadBits(engine, currentPlayer, bits, netplayController, platform)
                     },
                     // PS2 双摇杆：把归一化拇指位置转成 int16 libretro 轴值
                     // 直接推给 PCEE2 核心（数字位走上面的 onPadBits 链路）

@@ -875,7 +875,16 @@ class NetplayController(
         else if (bytes <= UPLOAD_SIZE_MEDIUM) UPLOAD_GAP_MEDIUM
         else UPLOAD_GAP_LARGE
 
-    /** 本地玩家摇杆输入（bit 布局与平台 pad 一致，由 OnScreenController / 物理手柄推送）。 */
+    /**
+     * 本地玩家输入。★ v50 起位格式与本地直推 [com.nesstation.app.core.engine.EmulatorEngine.setPad1]
+     * 完全一致 —— 即 EmulatorScreen.routePadBits 的输出：
+     *   - NES/SNES/GBA/MD/PCE 等直通平台：项目位布局（bit0=A…）；
+     *   - ARCADE/NDS/PSX/PS2/PSP/DC：已转换的标准 libretro JOYPAD 位
+     *     （如街机 B=bit8/JOYPAD_A、C=bit1/JOYPAD_Y，见 arcadeToLibretroLayout）。
+     * 此前虚拟按键联机时推的是未转换的项目原始位 → FBNeo 把项目 B 位当街机
+     * 键3(C) → 对战街机 B/C 相反（实体手柄路径一直正确）；v50 起虚拟按键也
+     * 统一走 routePadBits，本方法收到的即最终位布局，padsHistory 原样存转。
+     */
     fun setLocalPad(bits: Int) {
         currentLocalPad = bits
     }
