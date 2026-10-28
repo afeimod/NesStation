@@ -62,6 +62,11 @@ import kotlin.concurrent.thread
  *   - hello 可带 spectate=true（观战加入：不占 1P-4P 槽位、只收不发）；
  *   - hello 可带 want=2/3/4（用户在大厅选的座位，空闲则满足）；
  *   - peer_joined/peer_left 新增 spec 字段（true = 观战者加入/离开）。
+ *
+ * ★★ v51 游戏内聊天：
+ *   -> {"type":"chat","msg":"文本"}                    发聊天（玩家/观战者均可）
+ *   <- {"type":"chat","msg":"文本","from":"名字",
+ *       "slot":N,"spec":bool}                            服务器盖戳后转发给其他成员
  */
 class BattleNetplay(
     private val host: String,
@@ -130,6 +135,9 @@ class BattleNetplay(
          *  （-1 = 旧服务器未携带）。≤ lastFrame 的输入仍在途（TCP 有序必达，等到
          *  再用），> lastFrame 的帧确定性归零 —— 各端对离队槽位的输入序列严格一致。 */
         fun onPeerLeft(username: String, slot: Int, spec: Boolean = false, lastFrame: Long = -1L)
+        /** ★★ v51 游戏内聊天收到（from = 发送者名字（服务器盖戳）；slot = 其座位；
+         *  spec = 观战者）。*/
+        fun onChat(from: String, text: String, slot: Int, spec: Boolean = false) {}
         /** 连接被拒绝 / 协议错误 */
         fun onError(message: String)
         /** 连接关闭（非主动） */
@@ -323,6 +331,10 @@ class BattleNetplay(
             "peer_left" -> listener.onPeerLeft(
                 msg.optString("msg", ""), msg.optInt("slot", 0), msg.optBoolean("spec", false),
                 msg.optLong("frame", -1L))
+            // ★★ v51 游戏内聊天：服务器盖戳 from/slot/spec 后转发
+            "chat" -> listener.onChat(
+                msg.optString("from", ""), msg.optString("msg", ""),
+                msg.optInt("slot", 0), msg.optBoolean("spec", false))
             "error" -> listener.onError(msg.optString("msg", "服务器错误"))
             "pong" -> {
                 // RTT 测量回显：交给等待中的测量请求
@@ -433,6 +445,16 @@ class BattleNetplay(
         sendLine(JSONObject().put("type", "ready")
             .put("pad", suggestedDelay.coerceIn(0, 16))
             .put("stateCap", stateCap.coerceIn(-1, 1))
+            .toString())
+    }
+
+    /** ★★ v51 游戏内聊天：发送文本（服务器按连接盖戳 from/slot/spec 转发；
+     *  空白丢弃、限长 200 字符 —— 与服务器同一规则，两端一致）。 */
+    fun sendChat(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        sendLine(JSONObject().put("type", "chat")
+            .put("msg", if (t.length > 200) t.take(200) else t)
             .toString())
     }
 

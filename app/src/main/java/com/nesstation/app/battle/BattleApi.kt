@@ -51,7 +51,10 @@ class BattleApi(private val ctx: Context) {
         val slots: List<Int> = emptyList(),
         val spectators: Int = 0,
         val table: Int = 0,
-        val maxPlayers: Int = 4
+        val maxPlayers: Int = 4,
+        /** ★★ v51 座位占用者名单（1P-4P 各座位真实玩家名；旧服务器缺省 = 空表）
+         *  座位对话框据此显示每个座位上是谁（旧 guest 字段在 3/4 人房对不上座位）。 */
+        val slotNames: Map<Int, String> = emptyMap()
     )
 
     /** 登录/注册结果 */
@@ -227,7 +230,11 @@ class BattleApi(private val ctx: Context) {
                     players = r.optInt("players", 0),
                     slots = parseSlots(r),
                     spectators = r.optInt("spectators", 0),
-                    table = r.optInt("table", 0)
+                    table = r.optInt("table", 0),
+                    // ★★ v51 列表端补 maxPlayers（旧版漏解析恒为默认 4，
+                    //   2 人游戏可能在座位对话框里多摆 3P/4P 座位）
+                    maxPlayers = r.optInt("maxPlayers", 4).coerceIn(1, 4),
+                    slotNames = parseSlotNames(r)
                 )
             }
         } finally {
@@ -284,7 +291,8 @@ class BattleApi(private val ctx: Context) {
         slots = parseSlots(o),
         spectators = o.optInt("spectators", 0),
         table = o.optInt("table", 0),
-        maxPlayers = o.optInt("maxPlayers", 4).coerceIn(1, 4) // ★★ v4.6 人数上限（旧服务器 = 4）
+        maxPlayers = o.optInt("maxPlayers", 4).coerceIn(1, 4), // ★★ v4.6 人数上限（旧服务器 = 4）
+        slotNames = parseSlotNames(o) // ★★ v51 座位名单
     )
 
     /** ★ v4.3：解析成员槽位列表 [1,2,4]（1P=1 … 4P=4）。 */
@@ -294,6 +302,17 @@ class BattleApi(private val ctx: Context) {
         for (i in 0 until arr.length()) {
             val v = arr.optInt(i, 0)
             if (v in 1..4) out.add(v)
+        }
+        return out
+    }
+
+    /** ★★ v51：解析座位占用者名单 {"2":"张三","3":"李四"}（旧服务器缺省 = 空表）。 */
+    private fun parseSlotNames(o: JSONObject): Map<Int, String> {
+        val obj = o.optJSONObject("slotNames") ?: return emptyMap()
+        val out = HashMap<Int, String>()
+        for (key in obj.keys()) {
+            val slot = key.toIntOrNull() ?: continue
+            if (slot in 1..4) out[slot] = obj.optString(key, "")
         }
         return out
     }

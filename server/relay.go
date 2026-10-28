@@ -177,6 +177,10 @@ const outboxSize = 1024
 //   <- {"type":"start","pad":最终延迟帧,"players":[..]}      开跑（全员就绪 / 房主单开）
 //   -> {"type":"input","frame":N,"pad":0x..,"slot":1..4}    本端输入（带槽位）
 //   <- {"type":"input","frame":N,"pad":0x..,"slot":1..4}    其他玩家输入
+//   ★★ v51 游戏内聊天（玩家/观战者均可发；转发时服务器盖戳 from/slot/spec）：
+//   -> {"type":"chat","msg":"文本"}                        发聊天
+//   <- {"type":"chat","msg":"文本","from":"名字",
+//       "slot":N,"spec":bool}                                转发给其他成员
 //   <- {"type":"peer_joined"/"peer_left","msg":"名字","slot":N,
 //       "spec":true}                                        ★ v4.4：spec=true 为观战者加入/离开
 //   ★★ v4.3 后加入同步（服务器编排，★ v4.5 以服务器缓存档为准）：
@@ -222,6 +226,8 @@ type relayMsg struct {
         Want int `json:"want,omitempty"`
         // ★★ v4.4：peer_joined/peer_left 附带 —— true = 观战者（客户端显示“xx 正在观战”）
         Spec bool `json:"spec,omitempty"`
+        // ★★ v51 游戏内聊天：发送者显示名（chat 转发时由服务器按连接盖戳，防伪造）。
+        From string `json:"from,omitempty"`
         // ★★ v4.7：hello 客户端协议版本（47 = 新一代 restart 全员重开 +
         //   非街机核心 stateCap=-1 快照同步降级；旧版本重开帧号语义不兼容）
         V int `json:"v,omitempty"`
@@ -771,6 +777,35 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                                         h.drop(c)
                                 }
                         }
+
+                case "chat":
+                        // ★★ v51 游戏内聊天：转发给房间内其他成员（玩家+观战者都能聊）。
+                        //   From/Slot/Spec 由服务器按连接盖戳（不可伪造身份/座位）；
+                        //   文本限长 200 字符（防刷屏/超大包），空白消息丢弃。
+                        text := []rune(strings.TrimSpace(msg.Msg))
+                        if len(text) == 0 {
+                                continue
+                        }
+                        if len(text) > 200 {
+                                text = text[:200]
+                        }
+                        h.mu.Lock()
+                        room := rc.room
+                        h.mu.Unlock()
+                        if room == nil {
+                                continue
+                        }
+                        from := ""
+                        if rc.user != nil {
+                                from = rc.user.Username
+                        }
+                        h.broadcastExcept(room, rc, relayMsg{
+                                Type:  "chat",
+                                Msg:   string(text),
+                                Slot:  rc.slot,
+                                Spec:  rc.spectator,
+                                From:  from,
+                        })
 
                 case "ready":
                         // ★★ v4.3 三种开局（用户需求："1P 进房直接单机开玩；2P/3P/4P

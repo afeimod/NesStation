@@ -171,12 +171,18 @@ fun BattleMatchScreen(
             override fun onNetplayLost(reason: String) { errorMsg = reason }
             // ★★ v4.3 后加入（1P 单机即开 + 2P/3P/4P 中途接入）状态展示
             override fun onReadyDetail(role: String, inputDelay: Int, slot: Int, players: List<Int>, playing: Boolean) {
+                // ★★ v51 座位回执核对：所选座位（want 2/3/4）与服务器分配不一致
+                //   （多见于两人同时抢同一座位、被顺延到下一空闲位）—— 显式告知，
+                //   不再无声落座（用户现象："选 3P 还是落在 2P 位置"看不出来为什么）。
+                val seatNote = if (!args.spectate && role != "spectator" &&
+                    args.wantSlot in 2..4 && slot in 1..4 && slot != args.wantSlot
+                ) "（所选 ${args.wantSlot}P 刚被占用，本次为 ${slot}P）" else ""
                 roleText = when {
                     args.spectate || role == "spectator" ->
                         if (playing) "观战 · 房间对战中 —— 正在同步画面…"
                         else "观战 · 已连线（延迟 ${inputDelay}f · 在线 ${players.size} 人）"
-                    playing -> "${slot}P · 房间对战中 —— 正在同步 1P 画面…"
-                    else -> "${slot}P · 已连线（基础延迟 ${inputDelay}f · 在线 ${players.size} 人）"
+                    playing -> "${slot}P · 房间对战中 —— 正在同步 1P 画面…$seatNote"
+                    else -> "${slot}P · 已连线（基础延迟 ${inputDelay}f · 在线 ${players.size} 人）$seatNote"
                 }
             }
             override fun onStartDetail(inputDelay: Int, players: List<Int>) {

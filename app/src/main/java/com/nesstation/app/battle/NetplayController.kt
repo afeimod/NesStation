@@ -122,6 +122,9 @@ class NetplayController(
         fun onSpectatorLeft(username: String) {}
         /** ★★ v4.4 回滚统计（每 ~0.5s 一次：帧号 / 延迟帧 / 回滚次数 / 最深重放帧数）。 */
         fun onNetplayStats(frame: Long, delayFrames: Int, rollbacks: Int, maxReplayDepth: Int) {}
+        /** ★★ v51 游戏内聊天收到（from = 发送者名字；slot = 其座位 1-4；spec = 观战者）。
+         *  EmulatorScreen 据此显示消息气泡/更新聊天面板。 */
+        fun onChat(from: String, text: String, slot: Int, spec: Boolean) {}
     }
 
     @Volatile private var primaryListener: UiListener? = null
@@ -479,6 +482,11 @@ class NetplayController(
             }
             dispatch { it.onPeerLeft(username) }
             dispatch { it.onPeerLeftSlot(username, slot) }
+        }
+
+        // ★★ v51 游戏内聊天：服务器盖戳的 from/slot/spec 直接透传给 UI（EmulatorScreen）
+        override fun onChat(from: String, text: String, slot: Int, spec: Boolean) {
+            dispatch { it.onChat(from, text, slot, spec) }
         }
 
         override fun onError(message: String) {
@@ -891,6 +899,15 @@ class NetplayController(
 
     /** 本端槽位（1P=1…4P=4）。 */
     val slot: Int get() = mySlot
+
+    /** ★★ v51 游戏内聊天：发送文本给房间全员（玩家+观战者；服务器盖戳转发）。
+     *  空白丢弃、限长 200 字符（与服务器规则一致）。观战者同样可发。 */
+    fun sendChat(text: String) {
+        val n = net ?: return
+        try {
+            n.sendChat(text)
+        } catch (_: Throwable) { /* 断连时丢消息即可，不影响对战 */ }
+    }
 
     /**
      * 引擎在调用 runFrame 之前回调：采样本地输入 → 发给服务器 → 拿到所有

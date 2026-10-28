@@ -181,6 +181,18 @@ fun BattleScreen(
         }
     }
 
+    // ★★ v51 仅刷新房间列表（弹座位对话框时立即拉一次 —— 3s 轮询快照最多
+    //   满足 3s 前，座位可能已被抢；点开对话框时同步一次降低“选 3P 落 2P”
+    //   的抢座概率。被抢占时服务器会顺延，且 BattleMatchScreen 会显式提示。）
+    fun refreshRooms() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val r = BattleApi(context).rooms()
+                withContext(Dispatchers.Main) { rooms = r }
+            } catch (_: Exception) { }
+        }
+    }
+
     // 进入对战平台即加载游戏/房间（未登录也可浏览）
     LaunchedEffect(Unit) { refreshAll() }
 
@@ -341,6 +353,8 @@ fun BattleScreen(
                             startJoin(null, tableNo, spectate = false, wantSlot = 0)
                         } else {
                             // ★★ v4.4 已开的桌子：弹座位选择（空闲 2P/3P/4P + 观战；满员仅观战）
+                            // ★★ v51：点开瞬间立即刷一次房间（座位占用用最新数据摆座）
+                            refreshRooms()
                             seatDialogRoom = room
                             seatDialogTable = tableNo
                         }
@@ -389,15 +403,18 @@ fun BattleScreen(
     }
 
     // ★★ v4.4 座位选择对话框（点击已开的桌子弹出）
+    // ★★ v51：对话框期间轮询刷新的房间数据实时生效（rooms 是 3s 轮询状态）
+    //   —— 点开时 refreshRooms 已同步一次，之后轮询到达自动重组更新占用。
     seatDialogRoom?.let { room ->
+        val freshRoom = rooms.find { it.id == room.id } ?: room
         JoinSeatDialog(
-            room = room,
+            room = freshRoom,
             gameMaxP = selectedGame?.maxPlayers ?: 4,
-            tableNo = if (room.table in 1..TABLE_COUNT) room.table else seatDialogTable,
+            tableNo = if (freshRoom.table in 1..TABLE_COUNT) freshRoom.table else seatDialogTable,
             onDismiss = { seatDialogRoom = null },
             onPick = { spectate, wantSlot ->
                 seatDialogRoom = null
-                startJoin(room, room.table, spectate, wantSlot)
+                startJoin(freshRoom, freshRoom.table, spectate, wantSlot)
             }
         )
     }
@@ -974,9 +991,11 @@ private fun JoinSeatDialog(
                     color = SecondaryText, fontSize = 11.sp
                 )
                 // 1P（房主座位，只展示不可选）
+                // ★★ v51 优先用 slotNames（各座位真实玩家名）；旧服务器回退 host 字段
                 SeatPickRow(
                     label = "1P",
-                    name = room.host.ifBlank { "房主" },
+                    name = room.slotNames[1]?.takeIf { it.isNotBlank() }
+                        ?: room.host.ifBlank { "房主" },
                     occupied = true,
                     enabled = false,
                     onClick = {}
@@ -988,8 +1007,9 @@ private fun JoinSeatDialog(
                     SeatPickRow(
                         label = "${slot}P",
                         name = when {
+                            // ★★ v51 座位名单优先（旧 guest 字段在 3/4 人房对不上座位）
+                            room.slotNames[slot]?.takeIf { it.isNotBlank() } != null -> room.slotNames[slot] ?: ""
                             !occupied -> "空闲 · 点击入座"
-                            slot == 2 && room.guest.isNotBlank() -> room.guest
                             else -> "占用中"
                         },
                         occupied = occupied,

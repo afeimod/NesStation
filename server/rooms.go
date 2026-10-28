@@ -28,6 +28,10 @@ type roomResponse struct {
         // ★★ v4.6 本游戏人数上限（config.json 游戏条目 maxPlayers，缺省 4）。
         //   客户端据此摆座位（拳皇 2 人房只显示 1P/2P，满员仅观战）。
         MaxPlayers int `json:"maxPlayers"`
+        // ★★ v51 座位占用者名单（槽位 -> 用户名）：座位对话框显示每个座位
+        //   上到底是谁（旧字段 host/guest 在 3/4 人房里对不上座位 —— guest 是
+        //   任意一个非房主玩家，导致 2P 座位显示错人）。
+        SlotNames map[int]string `json:"slotNames"`
 }
 
 func roomToResponse(cfg *Config, r *Room) roomResponse {
@@ -83,6 +87,13 @@ func roomToResponse(cfg *Config, r *Room) roomResponse {
         resp.Players = r.playerCount()
         resp.Slots = activeSlots(r)
         resp.Spectators = r.spectatorCount()
+        // ★★ v51 按槽位列座位名单（1P-4P 各座位上的真实玩家名）
+        resp.SlotNames = map[int]string{}
+        for _, c := range r.conns {
+                if c.slot >= 1 && c.slot <= maxRoomPlayers && c.user != nil {
+                        resp.SlotNames[c.slot] = c.user.Username
+                }
+        }
         return resp
 }
 

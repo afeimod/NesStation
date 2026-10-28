@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
@@ -4589,6 +4590,13 @@ fun EmulatorScreen(
             )
         }
 
+        // ★★ v51 联机对战游戏内聊天：右上角悬浮按钮 + 聊天面板 + 新消息气泡。
+        //   消息经服务器 chat 消息中继（from/slot/spec 服务器盖戳），玩家和观战者都能聊。
+        if (netplayController != null && !showMenu && !showLayoutEditor && !showSettings &&
+            !showCustomLayoutEditor && !showNdsCustomLayoutEditor) {
+            NetplayChatOverlay(netplayController)
+        }
+
         // 全局 FPS 悬浮显示 —— 左上角小字，实时显示模拟帧率
         // ★★★ 本轮回退（用户反馈"mmj和ngcwii核心全局帧数显示直接消失了"）：
         //   上一版试图让核心自绘 FPS（MMJ ini show_fps / Ishiiruka GFX
@@ -8380,6 +8388,219 @@ private fun BoxScope.PlayerSwitchButton(
             fontSize = 11.sp,
             fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ★★ v51 联机对战游戏内聊天（参考联机模拟器通用设计：悬浮按钮 + 消息面板 +
+//     快捷短语 + 新消息气泡 —— 街机团战不用退出游戏/切后台即可沟通）。
+//     传输走既有 TCP 中继（新消息 type=chat，服务器盖戳 from/slot/spec 转发
+//     给房间其他成员，玩家和观战者都能发）。
+// ---------------------------------------------------------------------------
+
+/** 聊天消息条目（mine = 本端自己发的 —— 服务器不回显给自己，本地补录展示）。 */
+private data class NetplayChatMsg(
+    val from: String,
+    val text: String,
+    val slot: Int,
+    val spec: Boolean,
+    val mine: Boolean
+)
+
+/** 快捷短语（点一下即发送 —— 对战里来不及打字）。 */
+private val NETPLAY_CHAT_QUICK_PHRASES = listOf(
+    "准备好了", "等我一下", "开始吧", "打得好！", "小心背后", "集合打BOSS", "再来一局", "GG"
+)
+
+/** 消息展示徽标：3P·张三 / 观战·李四 / 我 */
+private fun netplayChatBadge(m: NetplayChatMsg): String = when {
+    m.mine -> "我"
+    m.spec && m.from.isNotBlank() -> "观战·${m.from}"
+    m.slot in 1..4 && m.from.isNotBlank() -> "${m.slot}P·${m.from}"
+    else -> m.from.ifBlank { "队友" }
+}
+
+@Composable
+private fun BoxScope.NetplayChatOverlay(
+    controller: com.nesstation.app.battle.NetplayController
+) {
+    var messages by remember(controller) { mutableStateOf<List<NetplayChatMsg>>(emptyList()) }
+    var panelOpen by remember(controller) { mutableStateOf(false) }
+    var bubble by remember(controller) { mutableStateOf<List<NetplayChatMsg>>(emptyList()) }
+    var inputText by remember(controller) { mutableStateOf("") }
+
+    // 接收房间聊天（NetplayController.dispatch 保证主线程回调，可直接改状态）
+    DisposableEffect(controller) {
+        val listener = object : com.nesstation.app.battle.NetplayController.UiListener {
+            override fun onChat(from: String, text: String, slot: Int, spec: Boolean) {
+                val m = NetplayChatMsg(from, text, slot, spec, mine = false)
+                messages = (messages + m).takeLast(50)
+                // 面板没开时在顶部弹气泡（最多 3 条），开了面板直接进列表
+                if (!panelOpen) bubble = (bubble + m).takeLast(3)
+            }
+        }
+        controller.addUiListener(listener)
+        onDispose { controller.removeUiListener(listener) }
+    }
+
+    fun doSend(raw: String) {
+        val t = raw.trim()
+        if (t.isEmpty()) return
+        // 历史保留 50 条，输入框清空；发送失败静默（服务器断连时丢消息即可）
+        controller.sendChat(t)
+        messages = (messages + NetplayChatMsg(
+            from = "我", text = t,
+            slot = controller.slot, spec = controller.isSpectator, mine = true
+        )).takeLast(50)
+        inputText = ""
+    }
+
+    // 新消息气泡：5 秒无新消息自动消失（有新消息重新计时）
+    LaunchedEffect(bubble) {
+        if (bubble.isNotEmpty()) {
+            kotlinx.coroutines.delay(5000)
+            bubble = emptyList()
+        }
+    }
+
+    // 面板关闭时：顶部消息气泡（半透明底，不打断游戏）
+    if (!panelOpen && bubble.isNotEmpty()) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 10.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xB3000000))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            bubble.forEach { m ->
+                Text(
+                    "${netplayChatBadge(m)}  ${m.text}",
+                    color = if (m.mine) Color(0xFF80D8FF) else Color.White,
+                    fontSize = 12.sp,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+
+    // 右上角聊天悬浮按钮
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(8.dp)
+            .size(34.dp)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .background(Color(0x880E1626))
+            .clickable { panelOpen = !panelOpen },
+        contentAlignment = Alignment.Center
+    ) {
+        Text("💬", fontSize = 15.sp)
+    }
+
+    // 聊天面板（右侧半透明竖条；游戏继续跑，不打断对战）
+    if (panelOpen) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight(0.85f)
+                .width(280.dp)
+                .padding(end = 10.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xE60E1626))
+                .padding(10.dp)
+        ) {
+            // 标题行
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "聊天",
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "×",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 18.sp,
+                    modifier = Modifier
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .clickable { panelOpen = false }
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            // 消息列表（最近 50 条）
+            LazyColumn(
+                modifier = Modifier.weight(1f)
+            ) {
+                items(messages.size) { i ->
+                    val m = messages[i]
+                    Text(
+                        "${netplayChatBadge(m)}  ${m.text}",
+                        color = when {
+                            m.mine -> Color(0xFF80D8FF)
+                            m.spec -> Color(0xFFFFD54F)
+                            else -> Color.White
+                        },
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(vertical = 3.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            // 快捷短语（横滑）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+            ) {
+                NETPLAY_CHAT_QUICK_PHRASES.forEach { ph ->
+                    Text(
+                        ph,
+                        color = Color(0xFF80D8FF),
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0x33FFFFFF))
+                            .clickable { doSend(ph) }
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            // 输入行：文本框 + 发送
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { if (it.length <= 200) inputText = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("说点什么…", fontSize = 12.sp, color = Color(0x88FFFFFF)) },
+                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 13.sp),
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Send
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onSend = { doSend(inputText) }
+                    )
+                )
+                Text(
+                    "发送",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF4A90D9))
+                        .clickable { doSend(inputText) }
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                )
+            }
+        }
     }
 }
 

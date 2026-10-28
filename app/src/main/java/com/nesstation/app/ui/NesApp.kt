@@ -73,7 +73,8 @@ object Routes {
     const val SWF_LIST = "swf_list"
     const val ONLINE_GAMES = "online_games"
     const val BATTLE = "battle"
-    const val BATTLE_MATCH = "battle_match/{roomId}/{gameId}/{isHost}/{tcpAddr}/{platform}/{fileName}"
+    // ★★ v51：路由补 spectate/wantSlot —— 旧路由丢参导致“选 3P 落 2P”（观战也失效）
+    const val BATTLE_MATCH = "battle_match/{roomId}/{gameId}/{isHost}/{tcpAddr}/{platform}/{fileName}/{spectate}/{wantSlot}"
     const val WEB_GAME = "web_game/{url}/{uaMode}"
     const val ABOUT = "about"
     const val EMULATOR = "emulator/{gameId}"
@@ -85,8 +86,8 @@ object Routes {
     fun swfPlayer(path: String) = "swf_player/${java.net.URLEncoder.encode(path, "UTF-8")}"
     fun webGame(url: String, uaMode: String) =
         "web_game/${java.net.URLEncoder.encode(url, "UTF-8")}/$uaMode"
-    fun battleMatch(roomId: String, gameId: String, isHost: Boolean, tcpAddr: String, platform: String = "arcade", fileName: String = "") =
-        "battle_match/$roomId/$gameId/$isHost/${java.net.URLEncoder.encode(tcpAddr, "UTF-8")}/${java.net.URLEncoder.encode(platform, "UTF-8")}/${java.net.URLEncoder.encode(fileName, "UTF-8")}"
+    fun battleMatch(roomId: String, gameId: String, isHost: Boolean, tcpAddr: String, platform: String = "arcade", fileName: String = "", spectate: Boolean = false, wantSlot: Int = 0) =
+        "battle_match/$roomId/$gameId/$isHost/${java.net.URLEncoder.encode(tcpAddr, "UTF-8")}/${java.net.URLEncoder.encode(platform, "UTF-8")}/${java.net.URLEncoder.encode(fileName, "UTF-8")}/$spectate/$wantSlot"
 }
 
 @Composable
@@ -393,7 +394,7 @@ private fun PhoneNavHost(
                 onBack = { nav.popBackStack() },
                 onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
                 onOpenMatch = { args ->
-                    nav.navigate(Routes.battleMatch(args.roomId, args.gameId, args.isHost, args.tcpAddr, args.platform.name, args.fileName))
+                    nav.navigate(Routes.battleMatch(args.roomId, args.gameId, args.isHost, args.tcpAddr, args.platform.name, args.fileName, args.spectate, args.wantSlot))
                 }
             )
         }
@@ -405,7 +406,9 @@ private fun PhoneNavHost(
                 navArgument("isHost") { type = NavType.BoolType },
                 navArgument("tcpAddr") { type = NavType.StringType },
                 navArgument("platform") { type = NavType.StringType },
-                navArgument("fileName") { type = NavType.StringType }
+                navArgument("fileName") { type = NavType.StringType },
+                navArgument("spectate") { type = NavType.BoolType },
+                navArgument("wantSlot") { type = NavType.IntType }
             )
         ) { entry ->
             val roomId = entry.arguments?.getString("roomId") ?: ""
@@ -423,6 +426,9 @@ private fun PhoneNavHost(
                 entry.arguments?.getString("fileName") ?: "",
                 "UTF-8"
             )
+            // ★★ v51：补读 spectate/wantSlot（旧路由丢参 = 选 3P 落 2P 根因）
+            val spectate = entry.arguments?.getBoolean("spectate") ?: false
+            val wantSlot = entry.arguments?.getInt("wantSlot") ?: 0
             BattleMatchScreen(
                 args = BattleMatchArgs(
                     roomId = roomId,
@@ -430,7 +436,9 @@ private fun PhoneNavHost(
                     isHost = isHost,
                     tcpAddr = tcpAddr,
                     platform = com.nesstation.app.core.model.GamePlatform.fromString(platformStr),
-                    fileName = fileName
+                    fileName = fileName,
+                    spectate = spectate,
+                    wantSlot = wantSlot
                 ),
                 onExit = {
                     nav.popBackStack(Routes.BATTLE, inclusive = false)
@@ -629,7 +637,7 @@ private fun TvNavHost(
                 onBack = { nav.popBackStack() },
                 onHome = { nav.popBackStack(Routes.HOME, inclusive = false) },
                 onOpenMatch = { args ->
-                    nav.navigate(Routes.battleMatch(args.roomId, args.gameId, args.isHost, args.tcpAddr, args.platform.name, args.fileName))
+                    nav.navigate(Routes.battleMatch(args.roomId, args.gameId, args.isHost, args.tcpAddr, args.platform.name, args.fileName, args.spectate, args.wantSlot))
                 }
             )
         }
@@ -641,7 +649,9 @@ private fun TvNavHost(
                 navArgument("isHost") { type = NavType.BoolType },
                 navArgument("tcpAddr") { type = NavType.StringType },
                 navArgument("platform") { type = NavType.StringType },
-                navArgument("fileName") { type = NavType.StringType }
+                navArgument("fileName") { type = NavType.StringType },
+                navArgument("spectate") { type = NavType.BoolType },
+                navArgument("wantSlot") { type = NavType.IntType }
             )
         ) { entry ->
             val roomId = entry.arguments?.getString("roomId") ?: ""
@@ -659,6 +669,9 @@ private fun TvNavHost(
                 entry.arguments?.getString("fileName") ?: "",
                 "UTF-8"
             )
+            // ★★ v51：补读 spectate/wantSlot（旧路由丢参 = 选 3P 落 2P 根因）
+            val spectate = entry.arguments?.getBoolean("spectate") ?: false
+            val wantSlot = entry.arguments?.getInt("wantSlot") ?: 0
             BattleMatchScreen(
                 args = BattleMatchArgs(
                     roomId = roomId,
@@ -666,7 +679,9 @@ private fun TvNavHost(
                     isHost = isHost,
                     tcpAddr = tcpAddr,
                     platform = com.nesstation.app.core.model.GamePlatform.fromString(platformStr),
-                    fileName = fileName
+                    fileName = fileName,
+                    spectate = spectate,
+                    wantSlot = wantSlot
                 ),
                 onExit = {
                     nav.popBackStack(Routes.BATTLE, inclusive = false)
