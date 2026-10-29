@@ -733,11 +733,15 @@ class NetplayController(
     /** ★★ v4.5 房主周期快照上传（引擎线程调用）：出一份档 → 后台线程编码发送。
      *  服务器缓存这份档 —— 2P/3P/4P/观战加入时直接从服务器拿（房主掉线或
      *  加入瞬间出档失败也有档可用），不再依赖加入瞬间房主本地出档。
-     *  出档与读文件经 uploadLock 串行化（防文件被下一轮覆盖时读到半截）。 */
-    private fun uploadSnapshot(netFrame: Long) {
-        val io = stateIo ?: return
-        val n = net ?: return
-        if (!uploadInFlight.compareAndSet(false, true)) return // 上一份还在发：跳过本轮
+     *  出档与读文件经 uploadLock 串行化（防文件被下一轮覆盖时读到半截）。
+     *  ★★ v55 返回是否已启动上传：false = 上一份还在发（in-flight 跳过）——
+     *    拉档请求（state_pull）被跳过时调用方恢复 pullSnapshotRequested
+     *    下一帧重试（v54 缺陷：拉档请求被 in-flight 周期上传吞掉 → 拉档等待
+     *    接入者在启动门上干等下一轮周期上传（最长 15s）才拿到档）。 */
+    private fun uploadSnapshot(netFrame: Long): Boolean {
+        val io = stateIo ?: return true
+        val n = net ?: return true
+        if (!uploadInFlight.compareAndSet(false, true)) return false // 上一份还在发：跳过本轮（调用方重试拉档）
         val file = File(io.stateDir(), "battle_upload.state")
         val ok = try {
             synchronized(uploadLock) { io.saveStateTo(file) }
@@ -746,7 +750,7 @@ class NetplayController(
         }
         if (!ok) {
             uploadInFlight.set(false)
-            return
+            return true
         }
         // afterFrame(netFrame)：帧 [0..netFrame] 已执行完 → 下一帧从 netFrame+1 起
         val stateFrame = netFrame + 1
@@ -768,6 +772,7 @@ class NetplayController(
                 uploadInFlight.set(false)
             }
         }, "battle-state-upload").apply { isDaemon = true }.start()
+        return true   // 上传已启动（启动后的一切失败由后台线程自行记录）
     }
 
     /** resume：全员按统一存档/帧号/延迟恢复。data 空 = 仅解除暂停（同步中止兜底）。
@@ -1302,7 +1307,16 @@ class NetplayController(
                         val now = System.currentTimeMillis()
                         if (now - lastWaitNoticeMs > 1500) {
                             lastWaitNoticeMs = now
-                            dispatch { it.onNetplayWait("等待同步开始（引擎就绪后自动开跑）…") }
+                            // ★★ v55 提示语区分场景（用户实测“等待同步开始太久”
+                            //   的截图误导性提示）：已加入在跑的房间 = 在等
+                            //   服务器发同步画面包（马上快进追赶）；初始开局 =
+                            //   在等全员就绪统一开跑。
+                            val inPlayingRoom = net?.roomPlaying == true
+                            dispatch {
+                                it.onNetplayWait(if (inPlayingRoom)
+                                    "已加入对战，正在获取同步画面（马上开始快进追赶）…"
+                                else "等待同步开始（全员就绪后自动开跑）…")
+                            }
                         }
                         try { startGate.wait(500) } catch (_: InterruptedException) { return IntArray(4) }
                     }
@@ -1676,7 +1690,12 @@ class NetplayController(
                       else netFrame - lastUploadFrame >= uploadGapFrames)
             if (due) {
                 lastUploadFrame = netFrame
-                uploadSnapshot(netFrame)
+                // ★★ v55 拉档不被 in-flight 周期上传吞掉：上一份还在发时
+                //   恢复 pullSnapshotRequested，下一帧重试（拉档请求意味着
+                //   有接入者在启动门上等这份档 —— 绝不能等下一轮周期间隔）
+                if (!uploadSnapshot(netFrame) && pullDue) {
+                    pullSnapshotRequested = true
+                }
             }
         }
         if (rollbackMode) {

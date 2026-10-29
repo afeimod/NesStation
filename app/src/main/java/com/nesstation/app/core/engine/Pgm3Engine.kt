@@ -175,8 +175,20 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 return false
             }
 
-            // 4. 启动（root 需在 nativeRun 前存在；nativeRun 返回 0 = 成功）
+            // 4. 启动（root 及核心要求的子目录需在 nativeRun 前存在；返回 0 = 成功）
+            // ★★ v55 FRAM 存档目录修复（用户实测 "FAIL FRAM: cannot open app save
+            //    directory: No such file or directory" 的根因）：libpgm3 的
+            //    nativeRun 解析 FRAM 存档目录 = getenv("PGM3_FRAM_SAVE")，未设置时
+            //    默认 <root>/fram-save（二进制核实：0x7fe6a0 处 root+"/fram-save"
+            //    拼接 + setenv(PGM3_FRAM_SAVE)）→ FRAM 服务以 O_DIRECTORY 打开该
+            //    目录（fstat 校验 S_IFDIR —— 绝不自动创建）。v52 桩只建了 root 与
+            //    root/runtime，没建 fram-save → "cannot open app save directory"。
+            //    同理建 memcard/kov3hd（核心虚拟记忆卡目录："新卡必须位于
+            //    memcard/kov3hd 目录"）。均为空目录（核心自己写 fram.bin/
+            //    fram.pending/fram.lock）。
             root.mkdirs()
+            File(root, "fram-save").apply { if (!isDirectory) mkdirs() }
+            File(root, "memcard/kov3hd").apply { if (!isDirectory) mkdirs() }
             val rc = try {
                 Pgm3Activity.nativeRun(root.absolutePath, romZip.absolutePath, romChd.absolutePath, "")
             } catch (t: Throwable) {

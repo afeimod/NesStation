@@ -1766,11 +1766,22 @@ fun EmulatorScreen(
     // 历史注：此前的 Flycast 独立核心在此处提前 return 到
     // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
 
-    val engine = remember(ndsCoreChoice, n3dsCoreChoice, game.id) {
+    val engine = remember(ndsCoreChoice, n3dsCoreChoice, game.id, afbnFallback) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
             com.nesstation.app.core.engine.DraSticEngine.get()
         } else if (platform == GamePlatform.N3DS && n3dsCoreChoice == "citra_mmj") {
             com.nesstation.app.core.engine.CitraMmjEngine.get()
+        } else if (afbnFallback > 0 && platform == GamePlatform.ARCADE) {
+            // ★★ v55 afbn 引擎兜底（用户实测“三剑圣等改版游戏依旧打不开”的
+            //   根治）：FBNeo 核心报 Romset is unknown 且 afbn 核心有该驱动时，
+            //   afbnFallback++ 触发本 remember 重算 —— 切换到参考 APK 专用
+            //   核心（libarcade.so，8378 驱动，含 666 个 FBNeo 没有的改版：
+            //   三剑圣/kov2pshpd/kovshzlzy/orlegend 系列等）。FBNeo 能跑的
+            //   7712 个街机游戏永远轮不到这里（它们在 FBNeo 上加载成功），
+            //   联机对战不受影响；afbn 引擎游戏暂不支持联机（推模型核心）。
+            com.nesstation.app.core.engine.AfbnEngine.get().apply {
+                attach(context.applicationContext)
+            }
         } else if ((platform == GamePlatform.ARCADE || platform == GamePlatform.DC) &&
             (com.nesstation.app.core.engine.Pgm3Engine.isPgm3Rom(game.romPath) ||
              looksLikePgm3Rom(game.romPath))) {
@@ -1819,6 +1830,10 @@ fun EmulatorScreen(
     //   选 .keys → installKeysFromUri 即时生效）；安装成功后自动重试
     //   启动（edenBootRetry 加入加载 effect 的 key，无需玩家退出重进）。
     var edenBootRetry by remember { mutableStateOf(0) }
+    // ★★ v55 afbn 引擎兜底重试：FBNeo 报 Romset unknown 且 afbn 有驱动 →
+    //   切引擎重进加载 effect（与 edenBootRetry 同一模式）；>0 时引擎
+    //   remember 选择 AfbnEngine。只重试一次（AFBN 引擎内已二次报错则不再循环）。
+    var afbnFallback by remember { mutableStateOf(0) }
     val edenKeyPickLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -3333,6 +3348,9 @@ fun EmulatorScreen(
             // ★★ v54 PGM3 布局归一化：CHD 在 zip 内 / 散落旁边 / 子目录名不匹配时，
             //   找到或抽出 CHD 直接启动（Pgm3Engine 支持 CHD 直启）—— 修复
             //   "三国战记3HD 依旧 Romset is unknown"（此前落到 FBNeo 核心报错）。
+            // ★★ v55 兜底：PGM3 核心自身启动失败（如 CHD 缺伴生文件）时同样
+            //   走 afbn 引擎兜底（kov3hd 在 afbn 驱动表内，参考核心自带 PGM3
+            //   支持）—— 见下方 loadRom 失败分支的统一兜底逻辑。
             if (engine is com.nesstation.app.core.engine.Pgm3Engine) {
                 val normalized = withContext(Dispatchers.IO) {
                     normalizePgm3RomLayout(effectiveRom, context.filesDir)
@@ -3345,6 +3363,28 @@ fun EmulatorScreen(
                 engine.loadRom(effectiveRom, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
             }
             if (!ok) {
+                // ★★ v55 afbn 引擎兜底（三剑圣等 666 个 FBNeo 没有的改版）：
+                //   FBNeo 核心不认识该 romset（"Romset is unknown"）而 afbn 核心
+                //   （参考 APK libarcade.so，8378 驱动）有同名驱动 → 切换引擎
+                //   重试一次（afbnFallback 计入引擎 remember 与本 effect 的 key）。
+                //   hasDriver 首次调用会加载 afbn 核心 .so 家族并解析驱动表
+                //   （一次性，之后进程内缓存）；FBNeo 正常加载的游戏永远到不了这。
+                if (platform == GamePlatform.ARCADE && afbnFallback == 0 &&
+                    engine !is com.nesstation.app.core.engine.AfbnEngine) {
+                    val afbnHasIt = withContext(Dispatchers.IO) {
+                        try {
+                            com.nesstation.app.core.engine.AfbnEngine.get()
+                                .attach(context.applicationContext)
+                            com.nesstation.app.core.engine.AfbnEngine.hasDriver(effectiveRom.name)
+                        } catch (_: Throwable) { false }
+                    }
+                    if (afbnHasIt) {
+                        android.util.Log.i("EmulatorScreen",
+                            "FBNeo 不支持 ${effectiveRom.name}，切换 afbn 核心重试（改版驱动兜底）")
+                        afbnFallback++
+                        return@LaunchedEffect
+                    }
+                }
                 val err = engine.lastError()
                 errorMsg = err.ifEmpty { "ROM 加载失败" }
             } else {
@@ -3758,6 +3798,26 @@ fun EmulatorScreen(
                         engine.loadRom(tempFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
                     }
                     if (!ok) {
+                        // ★★ v55 afbn 引擎兜底（SAF content:// 街机分支 —— 与直读
+                        //   分支同一逻辑：FBNeo 不认识 romset 而 afbn 有驱动 →
+                        //   切引擎重试一次；tempFile 已按原始 zip 名复制，驱动名
+                        //   可从文件名解析）
+                        if (platform == GamePlatform.ARCADE && afbnFallback == 0 &&
+                            engine !is com.nesstation.app.core.engine.AfbnEngine) {
+                            val afbnHasIt = withContext(Dispatchers.IO) {
+                                try {
+                                    com.nesstation.app.core.engine.AfbnEngine.get()
+                                        .attach(context.applicationContext)
+                                    com.nesstation.app.core.engine.AfbnEngine.hasDriver(tempFile.name)
+                                } catch (_: Throwable) { false }
+                            }
+                            if (afbnHasIt) {
+                                android.util.Log.i("EmulatorScreen",
+                                    "FBNeo 不支持 ${tempFile.name}（SAF），切换 afbn 核心重试")
+                                afbnFallback++
+                                return@LaunchedEffect
+                            }
+                        }
                         val err = engine.lastError()
                         errorMsg = err.ifEmpty { "ROM 加载失败" }
                     } else {
