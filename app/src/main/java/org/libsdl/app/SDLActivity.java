@@ -1540,8 +1540,17 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
 
     /**
      * This method is called by SDL using JNI.
+     *
+     * ★ v57 afbn 桥合并：优先返回 AfbnEngine.setSurface 注入的渲染面
+     * （nativeSurface —— afbn 核心 libarcade.so 的 android 视频驱动经本
+     * getter 取 ANativeWindow 直接 EGL 直绘）；无注入时回落 SDL3 运行时
+     * 路径（mSurface —— 原行为不变；本应用不跑 SDL Activity，恒 null）。
+     * 两个消费者（afbn 核心 / SDL3）共用同名 JNI 入口，语义一致。
      */
     public static Surface getNativeSurface() {
+        if (nativeSurface != null) {
+            return nativeSurface;
+        }
         if (SDLActivity.mSurface == null) {
             return null;
         }
@@ -2235,6 +2244,230 @@ class SDLClipboardHandler implements
     @Override
     public void onPrimaryClipChanged() {
         SDLActivity.onNativeClipboardChanged();
+    }
+
+    // ======================================================================
+    // ★★★ v57 afbn 桥区段（自 SDLActivity.kt 1:1 合并 —— 修复 kapt
+    //      "duplicate class: org.libsdl.app.SDLActivity" 构建错误）★★★
+    //
+    // 背景：v55 为接入 afbn 引擎（AfbnEngine.kt，核心 libarcade.so —— 与
+    // libSDL2 家族同批次加载）新增了 Kotlin 桥类 org.libsdl.app.SDLActivity，
+    // 与本文件（v5 vendored 的 SDL3 java 桥，Eden/Switch 引擎
+    // SDL.setupJNI 的静态面）同包同类名 —— kapt 生成注解处理 stub 时
+    // javac 报 duplicate class（app/build/tmp/kapt3/stubs/release/
+    // org/libsdl/app/SDLActivity.java:28），app 构建失败。
+    //
+    // v57 解法：两个桥面合并进本类（唯一存活），SDLActivity.kt 置为空壳。
+    // 本区段 = 原 SDLActivity.kt companion 的逐成员 Java 移植，语义零变化。
+    // AfbnEngine.kt（v56）的全部调用点（rompath/datapath 静态、
+    // nativeInitWithArgs、setPadData、emustop、nativeGetEmulatedFrameCount、
+    // setfskip、nativeSetFastForward、nativeRequestSoftReset、audioClose、
+    // nativePause(布尔) 等）在合并后全部解析到本类，无需改动 AfbnEngine.kt。
+    //
+    // nativePause(boolean) 说明：libarcade.so 不导出带参 nativePause
+    // （nm -D 核实 —— 其导出面为 pauseemu/resumeemu/ispaused）；libSDL2.so
+    // 的无参 nativePause() 是 SDL2 事件循环暂停，与本处语义不同。故本处
+    // 的 nativePause(boolean) 是【非 JNI 的便捷包装】：true → pauseemu()
+    // 挂起模拟主循环，false → resumeemu() 恢复 —— 对应 AfbnEngine v56 的
+    // “surface 未就绪/外部暂停时挂起模拟”语义（pauseemu/resumeemu 为
+    // libarcade.so 导出的真 JNI 入口，与参考 APK 暂停键同源）。
+    //
+    // 注：onNativeSurfaceChanged/onNativeSurfaceDestroyed、nativeGetHint
+    // 等 SDL 标准面本文件原本已声明（Eden 路径使用），此处不再重复。
+    // ======================================================================
+
+    // ===== afbn：核心回调读取的静态路径/游戏字段（AfbnEngine.loadRom 前赋值）=====
+    // 参考 APK 语义（反编译核实）：rompath = ROM 目录；datapath = 数据根；
+    // statespath = 存档目录；rom = romset 名；romDriverName = 驱动名
+    // （nativeInitWithArgs 入参同款）；selectedArchiveName = 启动 zip 名（可空）；
+    // selectedStateName = 启动存档（空）；romSystemName/romBoardName = 输入
+    // 配置分类用（取驱动名即可）。
+    public static String rompath = "";
+    public static String datapath = "";
+    public static String romdatapath = "";
+    public static String statespath = "";
+    public static String cachepath = "";
+    public static String rom = "";
+    public static String romDriverName = "";
+    public static String selectedArchiveName = null;
+    public static String selectedStateName = null;
+    public static String parentRomName = null;
+    public static String romSystemName = null;
+    public static String romBoardName = null;
+    public static String openBorDriverName = null;
+    public static String tempExtractDir = null;
+    public static boolean vertical = false;
+    public static int buttonCount = 4;
+    public static int mScreenEmuSizeX = 320;
+    public static int mScreenEmuSizeY = 240;
+
+    /** afbn：渲染目标 Surface（AfbnEngine.setSurface 注入；核心 EGL 直绘）。 */
+    public static Surface nativeSurface = null;
+
+    /** afbn：AudioTrack（核心音频线程回调 audioOpen/audioWrite 驱动）。 */
+    public static android.media.AudioTrack mAudioTrack = null;
+
+    // ===== afbn：路径/元数据 getter（核心 JNI 方法 ID 缓存表逐个回调）=====
+    public static String getRomsPath() { return rompath; }
+    public static String getDataPath() { return datapath; }
+    public static String getRomDataPath() { return romdatapath; }
+    public static String getCachePath() { return cachepath; }
+    public static String getSelectedArchiveName() {
+        return (selectedStateName != null && !selectedStateName.trim().isEmpty())
+                ? selectedStateName : selectedArchiveName;
+    }
+    public static String getSelectedLaunchArchiveName() { return selectedArchiveName; }
+    public static String getEmuCoreName() {
+        return romSystemName != null ? romSystemName : romDriverName;
+    }
+    public static String getOpenBorDriverName() { return openBorDriverName; }
+
+    // ===== afbn：音频（参考实现同语义的 AudioTrack 管理）=====
+    /**
+     * afbn 核心音频线程打开音频设备时回调（参考 APK SDLActivity.audioOpen
+     * 同语义）。@param sampleRate 采样率（如 44100）；@param is16Bit
+     * true=16bit(SHORT) false=8bit(BYTE)；@param stereo true=双声道；
+     * @param desiredFrames 期望帧数（SDL 缓冲语义）。@return 0=成功/-1=失败。
+     */
+    public static int audioOpen(int sampleRate, boolean is16Bit, boolean stereo, int desiredFrames) {
+        try {
+            audioClose();
+            int channelConfig = stereo
+                    ? android.media.AudioFormat.CHANNEL_OUT_STEREO
+                    : android.media.AudioFormat.CHANNEL_OUT_MONO;
+            int encoding = is16Bit
+                    ? android.media.AudioFormat.ENCODING_PCM_16BIT
+                    : android.media.AudioFormat.ENCODING_PCM_8BIT;
+            int bytesPerSample = is16Bit ? 2 : 1;
+            int channels = stereo ? 2 : 1;
+            int bytesPerFrame = bytesPerSample * channels;
+            int minBuf = android.media.AudioTrack.getMinBufferSize(sampleRate, channelConfig, encoding);
+            if (minBuf <= 0) return -1;
+            int frameCount = desiredFrames > 0 ? desiredFrames : sampleRate / 60;
+            int bufFrames = (minBuf + bytesPerFrame - 1) / bytesPerFrame;
+            if (frameCount < bufFrames) frameCount = bufFrames;
+            android.media.AudioTrack track = new android.media.AudioTrack(
+                    new android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_GAME)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    new android.media.AudioFormat.Builder()
+                            .setSampleRate(sampleRate)
+                            .setEncoding(encoding)
+                            .setChannelMask(channelConfig)
+                            .build(),
+                    frameCount * bytesPerFrame,
+                    android.media.AudioTrack.MODE_STREAM,
+                    android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
+            );
+            if (track.getState() != android.media.AudioTrack.STATE_INITIALIZED) {
+                track.release();
+                return -1;
+            }
+            track.play();
+            mAudioTrack = track;
+            return 0;
+        } catch (Throwable t) {
+            Log.w("SDLActivity", "audioOpen: " + t.getMessage());
+            return -1;
+        }
+    }
+
+    /** afbn 核心音频线程阻塞写（short 缓冲 —— 16bit 模式）。 */
+    public static void audioWriteShortBuffer(short[] buffer) {
+        android.media.AudioTrack track = mAudioTrack;
+        if (track == null) return;
+        try {
+            int off = 0;
+            while (off < buffer.length) {
+                int n = track.write(buffer, off, buffer.length - off);
+                if (n > 0) off += n;
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** afbn 核心音频线程阻塞写（byte 缓冲 —— 8bit 模式）。 */
+    public static void audioWriteByteBuffer(byte[] buffer) {
+        android.media.AudioTrack track = mAudioTrack;
+        if (track == null) return;
+        try {
+            int off = 0;
+            while (off < buffer.length) {
+                int n = track.write(buffer, off, buffer.length - off);
+                if (n > 0) off += n;
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** afbn：关闭音频设备（释放 AudioTrack）。 */
+    public static void audioClose() {
+        try {
+            if (mAudioTrack != null) {
+                mAudioTrack.stop();
+                mAudioTrack.release();
+            }
+        } catch (Throwable ignored) { }
+        mAudioTrack = null;
+    }
+
+    // ===== afbn：进度条回调（核心加载大 ROM 时回调；本应用无全局对话框 —— 空实现）=====
+    // 反编译核实签名：showProgressBar(String message, int max) / hideProgressBar() /
+    // setProgressBar(String message, int pct)。
+    public static void showProgressBar(String message, int max) { }
+    public static void hideProgressBar() { }
+    public static void setProgressBar(String message, int pct) { }
+
+    // ===== afbn：生命周期/输入 native（实现在 libarcade.so；nm -D 导出面核实）=====
+    /** 启动模拟主循环（SDLMain 线程调用）：args = [驱动名]。核心返回后模拟结束。 */
+    public static native void nativeInitWithArgs(String[] args);
+
+    /** 应用完整性（反篡改）：核心信任调用方提供的摘要+包名（AfbnEngine 传入
+     *  参考 APK 的官方签名摘要 + 包名，与原应用行为完全一致）。 */
+    public static native void nativeSetAppIntegrity(byte[] digest, String packageName);
+
+    /** 输入（libarcade 核心；位布局见 AfbnEngine.toAfbnPad）。 */
+    public static native void setPadData(int player, long bits);
+
+    /** 停止模拟并卸载（引擎 unload 调用）。 */
+    public static native void emustop();
+    public static native int ispaused();
+    public static native int getslotnum();
+
+    /** 当前模拟帧号（FPS 计数用）。 */
+    public static native int nativeGetEmulatedFrameCount();
+
+    /** 快进开关（追帧/快进按钮）。 */
+    public static native void nativeSetFastForward(boolean on);
+
+    /** 旧版帧跳（与 nativeSetFastForward 配合）。 */
+    public static native void setfskip(int skip);
+
+    /** 软复位（内部触发核心级 reset 请求）。 */
+    public static native boolean nativeRequestSoftReset();
+
+    /** 捕获当前帧（ARGB int[]；核心内部帧缓冲 —— 与 GL 直绘独立）。 */
+    public static native int[] nativeCaptureFrameArgb();
+
+    /** afbn 真正的模拟暂停/恢复入口（libarcade.so 导出，参考 APK 暂停键同源）。 */
+    public static native void pauseemu();
+    public static native void resumeemu();
+
+    /**
+     * afbn 桥便捷包装（非 JNI）：AfbnEngine v56 以 nativePause(布尔)
+     * 形参挂起/恢复模拟 —— true → pauseemu()（surface 未就绪/外部暂停时
+     * 挂起模拟主循环），false → resumeemu()。异常内部吞掉（核心未起跑时
+     * 调用无害 —— 与 AfbnEngine 侧 try/catch 同语义）。
+     */
+    public static void nativePause(boolean paused) {
+        try {
+            if (paused) {
+                pauseemu();
+            } else {
+                resumeemu();
+            }
+        } catch (Throwable t) {
+            Log.w("SDLActivity", "afbn nativePause(boolean): " + t.getMessage());
+        }
     }
 }
 
