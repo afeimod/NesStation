@@ -87,12 +87,15 @@ const catchupWatchdog = 45 * time.Second
 //   又绝不让坏连接无限占用房间状态。
 const catchupMaxExtends = 3
 
-// ★★ v54 旧档阈值：缓存档距现在超过它 → 优先向房主拉一份新档再追赶。
-//   v53 直接用旧档追赶：档龄 × 60 帧的追赶距离（实测几十秒前的档 →
-//   接入者从早期画面开始可见快进 —— 用户实测“启动游戏慢慢追赶”的根因
-//   之一）。拉新档后追赶距离 ≈ 90 帧（v54 客户端亚秒级追平）；拉档失败
-//   由追赶看门狗兑底降级旧档追赶（不再直接劝退）。
-const catchupStalePull = 4 * time.Second
+// ★★ v55 立即追赶：v54 的“旧档优先拉新档”实测翻车 —— 拉档往返（state_pull →
+//   房主下一帧边界出档 → base64/上传 → 组装追赶包）叠加房主出档被周期上传
+//   占用（uploadInFlight 跳过）或低端机出档慢时，接入者在启动门上“等待同步
+//   开始”可达数秒到 45s（看门狗兑底才降级旧档）—— 用户实测“等待同步开始太久，
+//   应该直接进行同步追赶”。v55 回归 v53 语义：【历史覆盖到的档直接立即发
+//   追赶包】—— v54+ 客户端紧循环离屏快放（数百帧/秒）把档龄追赶距离
+//   （≤ 7200 帧）压到秒级，拉新档省下的追赶时间远抵不上等待房主出档的
+//   往返延迟。拉档（state_pull）仅保留给【无档/历史缺口】场景（那里没有
+//   可立即追赶的档，拉档是唯一出路）。
 
 // maxRoomPlayers 最大玩家数（1P-4P）。FBNeo/街机支持 4 手柄；
 // 其他 2 手柄核心上 3/4P 的输入被客户端忽略（仍可观战同步画面）。
@@ -1250,6 +1253,12 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
         //      只发房主，不广播 pause），房主引擎线程下一帧边界出快照上传，
         //      服务器重试组装追赶包（小马同款“零感知拉档”）；
         //   c) 有 v52 客户端的混合房间（不认识 state_pull）→ 维持 v52 降级链。
+        // ★★ v55 立即追赶（v54“旧档优先拉新档”实测翻车）：历史覆盖到的档
+        //   【直接立即发追赶包】，绝不为了新档让接入者多等拉档往返 ——
+        //   v54+ 客户端紧循环离屏快放数百帧/秒，旧档追赶距离秒级追平，
+        //   而等房主出档的往返（出档被周期上传占用/低端机出档慢/看门狗 45s
+        //   兑底）比追赶本身慢得多（用户实测“等待同步开始太久”）。
+        //   拉档仅保留给 !histReady（无档/历史缺口 —— 没有可立即追赶的档）。
         histFromAny := cachedFrame16(cachedAny)
         catchupCapable := h.roomSupportsCatchup(room) && rc.catchCap && room.inpHist != nil
         histReady := cachedAny != nil && room.inpHistStart <= histFromAny
@@ -1268,17 +1277,6 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
                 mode = "fresh"
         case h.roomSupportsRestart(room):
                 mode = "restart"
-        }
-        // ★★ v54 旧档优先拉新（黑屏极速追赶的关键）：catchup 可用但缓存档
-        //   距现在太旧（> catchupStalePull）且房主能秒级响应拉档（全员 v53 +
-        //   房主在 + 能出档）→ 改走拉档路径拿【最新】档 —— 接入者追赶距离从
-        //   “档龄×60 帧”缩到 ≈90 帧（v54 客户端紧循环快放亚秒级追平）。
-        //   v53 直接用旧档追赶：实测接入者从几十秒前的画面开始可见快进 ——
-        //   用户实测“启动游戏慢慢追赶”的根因之一。拉档失败由追赶看门狗
-        //   兑底（降级旧档追赶，不再直接劝退）。
-        if mode == "catchup" && time.Since(room.cachedStateAt()) > catchupStalePull &&
-                owner != nil && h.roomSupportsPull(room) && owner.stateCap != -1 {
-                mode = "pull"
         }
         if mode == "" {
                 // 无档可用且不能重开：不广播 pause，接入者劝退

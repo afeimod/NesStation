@@ -286,12 +286,12 @@ func TestV53MixedV52NoPull(t *testing.T) {
 }
 
 // TestV53StaleCacheStillCatches 旧档 + 历史完整 + 全员 v53：
-// ★★ v54 语义更新（黑屏极速追赶配套）：缓存档距现在 > catchupStalePull(4s)
-// 且房主能响应拉档 → 优先静默拉【新】档（state_pull → 房主 state_upload →
-// 新档追赶包），追赶距离从"档龄×60 帧"缩到 ≈90 帧 —— 用户实测
-// "启动游戏慢慢追赶"（v53 直接用几十秒前的旧档追赶）的根治。
-// （v53 行为：直接用旧档追赶。"拉档失败仍能用旧档追赶"的保证由
-// TestV54WatchdogFallsBackToStaleCache 锁定 —— 看门狗降级链。）
+// ★★ v55 语义（立即追赶）：历史覆盖到的缓存档【无论多旧】直接立即发追赶包
+//   （v54 曾改为“>4s 旧档优先拉新档”，实测接入者在启动门上等拉档往返
+//   数秒到 45s —— 用户实测“等待同步开始太久，应该直接进行同步追赶”）。
+//   v55：不 state_pull、不 pause，接入者立即收旧档追赶包（v54+ 客户端
+//   黑屏紧循环快放数秒追平），后续链路（state_ok → 座位激活、迟到快照
+//   不二次发包、输入照常中继）全部锁定。
 func TestV53StaleCacheStillCatches(t *testing.T) {
         env := newEnv(t, 0)
         tokH, _ := env.register(t, "host")
@@ -306,7 +306,7 @@ func TestV53StaleCacheStillCatches(t *testing.T) {
         host.send(map[string]any{"type": "state_upload", "frame": 20, "data": "QUJD", "histEnd": 20})
         time.Sleep(120 * time.Millisecond)
 
-        // 白盒：把缓存时间拨回 60s 前（等价"不新鲜"，但历史缓冲 7200 仍完整覆盖）
+        // 白盒：把缓存时间拨回 60s 前（等价“不新鲜”，但历史缓冲 7200 仍完整覆盖）
         env.hub.mu.Lock()
         for _, r := range env.hub.rooms {
                 if r.ID == roomID {
@@ -322,15 +322,33 @@ func TestV53StaleCacheStillCatches(t *testing.T) {
         p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
         p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1, "catchup": true})
 
-        // ★ v54：旧档 → 优先拉新档（不直接发旧档追赶包，不 pause）
-        host.wait("state_pull", func(m relayMsg) bool { return m.Type == "state_pull" })
+        // ★ v55：旧档 + 历史完整 → 立即追赶包（绝不 state_pull、绝不 pause）
+        st := p2.wait("immediate catchup state", func(m relayMsg) bool { return m.Type == "state" })
+        if !st.Catchup || st.Frame != 20 {
+                t.Fatalf("state = %+v, want catchup=1 frame=20（旧档立即追赶）", st)
+        }
+        if len(st.Hist[1]) != 30-4 {
+                t.Fatalf("hist[1] len=%d, want %d（[4,30) 完整历史）", len(st.Hist[1]), 30-4)
+        }
+        host.expectNone("no state_pull (v55 立即追赶)", func(m relayMsg) bool { return m.Type == "state_pull" })
         host.expectNone("no pause", func(m relayMsg) bool { return m.Type == "pause" })
 
-        // 房主响应拉档：上传最新档（帧 31 = 最新帧 + 1）
-        host.send(map[string]any{"type": "state_upload", "frame": 31, "data": "QUJD", "histEnd": 31})
-        st := p2.wait("catchup state", func(m relayMsg) bool { return m.Type == "state" })
-        if !st.Catchup || st.Frame != 31 {
-                t.Fatalf("state = %+v, want catchup=1 frame=31（拉新档后追赶距离 ≈ 90 帧）", st)
+        // 追平 state_ok → 座位激活；迟到快照不二次发追赶包；输入照常中继
+        p2.send(map[string]any{"type": "state_ok"})
+        sa := host.wait("slot_active", func(m relayMsg) bool { return m.Type == "slot_active" })
+        if sa.Slot != 2 {
+                t.Fatalf("slot_active.slot=%d, want 2", sa.Slot)
+        }
+        host.send(map[string]any{"type": "state_upload", "frame": 40, "data": "QUJD", "histEnd": 40})
+        p2.expectNone("no double catchup state", func(m relayMsg) bool {
+                return m.Type == "state" && m.Catchup
+        })
+        host.send(inputMsg(50, 0x33, 1))
+        ri := p2.wait("input relay", func(m relayMsg) bool {
+                return m.Type == "input" && m.Slot == 1 && m.Frame == 50
+        })
+        if ri.Pad != 0x33 {
+                t.Fatalf("relay pad=%x, want 0x33", ri.Pad)
         }
 }
 
