@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *    在 nativeInitWithArgs 前设置；
  *  - BIOS：核心 assets 内置（pgm.zip/neogeo.zip 等 34 文件版随参考 APK
  *    分发）—— 本引擎从 jniLibs 同包的 assets 不可得，改为首次启动从
- *    应用 assets/fbn-bios/* 解包到 datapath（与参考实现 defaults 同结构）。
+ *    应用 assets/fbn-bios 目录解包到 datapath（与参考实现 defaults 同结构）。
  *
  * 联机对战：本核心为推模型（模拟循环在原生线程内），无法接入 frameHook
  * 锁步 —— afbn 引擎游戏暂不支持联机（FBNeo 核心覆盖的 7712 个街机游戏
@@ -282,7 +282,7 @@ class AfbnEngine private constructor() : EmulatorEngine {
             return true
         }
 
-    /** assets/fbn-bios/* → <romsDir>（缺失才解包；原子写防半截）。 */
+    /** assets/fbn-bios 目录内容 → <romsDir>（缺失才解包；原子写防半截）。 */
     private fun prepareBios(ctx: Context, romsDir: File) {
         if (!romsDir.isDirectory) romsDir.mkdirs()
         for (name in BIOS_ASSETS) {

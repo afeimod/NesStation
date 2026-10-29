@@ -162,6 +162,12 @@ type Room struct {
         inpHistStart int64
         // 服务器观察到的最新输入帧号（追赶激活帧/历史组装的基准；restart 清零）。
         maxFrame int64
+        // ★★ v56 本局当前生效的 inputDelay（start/resume 广播时记录；restart 清零）。
+        //   hello 回执下发给中途加入者 —— 追赶者必须与本局实际延迟一致：
+        //   重放/锁步的执行帧映射 = 网络帧 - inputDelay，延迟不一致则输入序列
+        //   整体错位 → 画面永久发散（旧版 hello 恒发 finalDelay() 默认值，
+        //   房间因 RTT 建议抬高过延迟时追赶者必然错位）。
+        curDelay int
         // ★★ v53 静默拉档：等待房主新快照的追赶接入者（userId → 连接）。
         //   beginSync 发现无缓存档/历史缺口时不降级 —— 发 state_pull 给房主
         //   （不广播 pause！），房主引擎线程下一帧边界直接出快照上传；
@@ -683,6 +689,13 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
                 playing := room.Status == roomPlaying || room.Status == roomSyncing
                 players := activeSlots(room)
                 specCount := len(room.specs)
+                // ★★ v56：对局中的房间下发【本局实际 inputDelay】（start/resume 时
+                //   记录）—— 观战/追赶者的执行帧映射与本局严格一致；
+                //   未开跑房间发默认值。
+                helloPad := room.curDelay
+                if helloPad <= 0 {
+                        helloPad = h.finalDelay()
+                }
                 h.mu.Unlock()
 
                 conn.SetReadDeadline(time.Time{}) // 清除超时
@@ -694,7 +707,7 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
                 _ = rc.send(relayMsg{
                         Type:    "hello",
                         Msg:     "spectator",
-                        Pad:     h.finalDelay(),
+                        Pad:     helloPad, // ★★ v56 本局实际延迟（追赶对齐用）
                         Slot:    0,
                         Players: players,
                         Playing: playing,
@@ -789,6 +802,12 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
 
         playing := room.Status == roomPlaying || room.Status == roomSyncing
         players := activeSlots(room)
+        // ★★ v56：对局中的房间下发【本局实际 inputDelay】（start/resume 时记录）——
+        //   中途加入者（追赶接入）的执行帧映射与本局严格一致；未开跑房间发默认值。
+        helloPad := room.curDelay
+        if helloPad <= 0 {
+                helloPad = h.finalDelay()
+        }
         h.mu.Unlock()
 
         conn.SetReadDeadline(time.Time{}) // 清除超时
@@ -804,7 +823,7 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
         _ = rc.send(relayMsg{
                 Type:    "hello",
                 Msg:     role,
-                Pad:     h.finalDelay(),
+                Pad:     helloPad, // ★★ v56 本局实际延迟（追赶对齐用）
                 Slot:    rc.slot,
                 Players: players,
                 Playing: playing,
@@ -885,20 +904,27 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         if msg.Frame > room.maxFrame {
                                 room.maxFrame = msg.Frame
                         }
-                        if room.inpHist == nil {
-                                room.inpHist = map[int64][5]int{}
-                                room.inpHistStart = msg.Frame
-                        }
-                        if rc.slot >= 1 && rc.slot <= 4 {
-                                entry := room.inpHist[msg.Frame]
-                                entry[rc.slot] = msg.Pad
-                                room.inpHist[msg.Frame] = entry
-                        }
-                        if oldest := room.maxFrame - catchupHistFrames; oldest > room.inpHistStart {
-                                for f := room.inpHistStart; f <= oldest; f++ {
-                                        delete(room.inpHist, f)
+                        // ★★ v56 防御：负帧号 input = 老客户端聊天兑底编码（v54
+                        //   sendChatFallback），只转发、绝不进历史簿记 —— 否则房间
+                        //   首条 input 若是负帧（等待阶段先发了句聊天），
+                        //   inpHistStart 会被拉到 -100000，环形清理此后每条 input
+                        //   都要展开十万次 delete 迭代（持 hub.mu）→ 全房卡死。
+                        if msg.Frame >= 0 {
+                                if room.inpHist == nil {
+                                        room.inpHist = map[int64][5]int{}
+                                        room.inpHistStart = msg.Frame
                                 }
-                                room.inpHistStart = oldest + 1
+                                if rc.slot >= 1 && rc.slot <= 4 {
+                                        entry := room.inpHist[msg.Frame]
+                                        entry[rc.slot] = msg.Pad
+                                        room.inpHist[msg.Frame] = entry
+                                }
+                                if oldest := room.maxFrame - catchupHistFrames; oldest > room.inpHistStart {
+                                        for f := room.inpHistStart; f <= oldest; f++ {
+                                                delete(room.inpHist, f)
+                                        }
+                                        room.inpHistStart = oldest + 1
+                                }
                         }
                         targets := make([]*relayConn, 0, maxRoomPlayers+maxSpectators)
                         for _, c := range room.conns {
@@ -1008,6 +1034,7 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                                 //   已 playing/syncing 则让先到者胜，防双 start）。
                                 if room.Status == roomWaiting || room.Status == roomReady {
                                         room.Status = roomPlaying
+                                        room.curDelay = d // ★★ v56 记录本局生效延迟（追赶者 hello 对齐用）
                                         players := activeSlots(room)
                                         h.mu.Unlock()
                                         h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})
@@ -1021,6 +1048,7 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                                 // ★★ v4.7.1 竞态护栏：同上（防与 drop 开局路径并发双 start）
                                 if room.Status == roomWaiting || room.Status == roomReady {
                                         room.Status = roomPlaying
+                                        room.curDelay = d // ★★ v56 记录本局生效延迟（追赶者 hello 对齐用）
                                         players := activeSlots(room)
                                         h.mu.Unlock()
                                         h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})
@@ -1445,6 +1473,7 @@ func (h *relayHub) completeSync(rc *relayConn) {
         if d > 16 {
                 d = 16
         }
+        room.curDelay = d // ★★ v56 记录本局生效延迟（追赶者 hello 对齐用）
         room.lastStateMu.Lock()
         ls := room.lastState
         room.lastStateMu.Unlock()
@@ -1491,6 +1520,7 @@ func (h *relayHub) abortSync(room *Room, reason string) {
         if d > 16 {
                 d = 16
         }
+        room.curDelay = d // ★★ v56 记录本局生效延迟（追赶者 hello 对齐用）
         cached := room.freshCachedState() // hub.mu → lastStateMu 锁序 ✓
         canRestart := h.roomSupportsRestart(room) // ★ 持锁内判定（只读 conns/specs）
         players := activeSlots(room)
@@ -1836,6 +1866,7 @@ func (h *relayHub) restartSync(room *Room, trigger any, reason string) {
         room.inpHist = nil
         room.inpHistStart = 0
         room.maxFrame = 0
+        room.curDelay = 0 // ★★ v56 新时间线：延迟回到未定（重新 start 时记录）
         room.lastStateMu.Lock()
         room.lastState = nil
         room.lastStateMu.Unlock()
@@ -1985,8 +2016,9 @@ func (h *relayHub) drop(rc *relayConn) {
                 for _, c := range room.conns {
                         suggestions = append(suggestions, c.readyPad)
                 }
+                d := h.finalDelay(suggestions...) // ★★ v56 锁内计算并记录本局生效延迟
+                room.curDelay = d
                 h.mu.Unlock()
-                d := h.finalDelay(suggestions...)
                 log.Printf("[开局] 房间 %s（桌 %d）：等待阶段有玩家离开，剩余 %d 人已全部就绪，直接开局",
                         room.ID, room.TableNo, len(players))
                 h.broadcastExcept(room, nil, relayMsg{Type: "start", Pad: d, Players: players})

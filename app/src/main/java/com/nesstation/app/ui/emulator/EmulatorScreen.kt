@@ -2775,6 +2775,12 @@ fun EmulatorScreen(
     // 没有这个 hook 而按单机模式跑。Compose 中 LaunchedEffect 按声明顺序执行，
     // 所以这里放在 LaunchedEffect(game) 之前即可。
     var netplayStatusText by remember { mutableStateOf("") }
+    // ★★ v56 聊天面板开合状态（提升到本层）：纳入 uiBlocked —— 面板打开期间
+    //   游戏视图不再抢焦点。根因：GameSurfaceView 的 AndroidView update 回调
+    //   每次重组都会执行（联机时 netplayStatusText 每 15 帧刷新 → ~4Hz 重组），
+    //   其中 requestFocus() 会把聊天输入框的焦点反复夺走 → 输入法弹出即被
+    //   收起（“点击输入框输入法弹出又消失”）。聊天面板此前不在 uiBlocked 里。
+    var netplayChatPanelOpen by remember { mutableStateOf(false) }
     val netplayUiListener = remember {
         object : com.nesstation.app.battle.NetplayController.UiListener {
             override fun onReady(role: String, inputDelay: Int) {
@@ -3999,7 +4005,8 @@ fun EmulatorScreen(
                     currentPlayer = currentPlayer,
                     gamepadBitsHolder = gamepadBitsHolder,
                     uiBlocked = showMenu || showLayoutEditor || showSettings || showCustomLayoutEditor ||
-                                showNdsCustomLayoutEditor || showSlotPicker != null || showFFSpeedPicker,
+                                showNdsCustomLayoutEditor || showSlotPicker != null || showFFSpeedPicker ||
+                                netplayChatPanelOpen,
                     onMenuToggle = { showMenu = !showMenu },
                     customRect = customRect,
                     netplayController = netplayController,
@@ -4820,9 +4827,15 @@ fun EmulatorScreen(
 
         // ★★ v51 联机对战游戏内聊天：右上角悬浮按钮 + 聊天面板 + 新消息气泡。
         //   消息经服务器 chat 消息中继（from/slot/spec 服务器盖戳），玩家和观战者都能聊。
+        //   ★★ v56：面板开合状态提升到 EmulatorScreen 层（纳入 uiBlocked ——
+        //   面板打开期间游戏视图不抢焦点，输入法才能稳定弹出）。
         if (netplayController != null && !showMenu && !showLayoutEditor && !showSettings &&
             !showCustomLayoutEditor && !showNdsCustomLayoutEditor) {
-            NetplayChatOverlay(netplayController)
+            NetplayChatOverlay(
+                netplayController,
+                netplayChatPanelOpen,
+                { netplayChatPanelOpen = it }
+            )
         }
 
         // 全局 FPS 悬浮显示 —— 左上角小字，实时显示模拟帧率
@@ -8700,10 +8713,13 @@ private fun netplayChatBadge(m: NetplayChatMsg): String = when {
 
 @Composable
 private fun BoxScope.NetplayChatOverlay(
-    controller: com.nesstation.app.battle.NetplayController
+    controller: com.nesstation.app.battle.NetplayController,
+    // ★★ v56 面板开合状态提升（hoisted state）：上层纳入 uiBlocked，
+    //   面板打开期间游戏视图不抢焦点 → 输入法稳定。
+    panelOpen: Boolean,
+    onPanelOpenChange: (Boolean) -> Unit
 ) {
     var messages by remember(controller) { mutableStateOf<List<NetplayChatMsg>>(emptyList()) }
-    var panelOpen by remember(controller) { mutableStateOf(false) }
     var bubble by remember(controller) { mutableStateOf<List<NetplayChatMsg>>(emptyList()) }
     var inputText by remember(controller) { mutableStateOf("") }
     // ★★ v53 服务器能力提示：hello 回执 srv 字段（-1 = 还没收到 hello；
@@ -8790,7 +8806,7 @@ private fun BoxScope.NetplayChatOverlay(
             .size(34.dp)
             .clip(androidx.compose.foundation.shape.CircleShape)
             .background(Color(0x880E1626))
-            .clickable { panelOpen = !panelOpen },
+            .clickable { onPanelOpenChange(!panelOpen) },
         contentAlignment = Alignment.Center
     ) {
         Text("💬", fontSize = 15.sp)
@@ -8823,7 +8839,7 @@ private fun BoxScope.NetplayChatOverlay(
                     fontSize = 18.sp,
                     modifier = Modifier
                         .clip(androidx.compose.foundation.shape.CircleShape)
-                        .clickable { panelOpen = false }
+                        .clickable { onPanelOpenChange(false) }
                         .padding(horizontal = 8.dp, vertical = 2.dp)
                 )
             }

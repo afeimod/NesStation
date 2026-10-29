@@ -358,6 +358,11 @@ class NetplayController(
 
     /** v52 座位延迟激活：槽位 → 激活帧（该帧及之前其输入不被等待 —— 追赶/转座接入的无缝对接保证）。 */
     private val slotActiveFrom = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    /** ★★ v56 座位激活过渡：追赶追平（state_ok 已发）到 slot_active 到达之间，
+     *  本端对自己的槽位同样确定性用 0（全员此刻都把它当“未激活”，
+     *  不门控则该窗口内一按键即单端永久发散）。slot_active / seat_granted /
+     *  resume / restart / start 到达即解除。 */
+    @Volatile private var pendingOwnActivation = false
     /** v52 观战模式（hello 时初始化；热转座后置 false）。 */
     @Volatile private var spectatorMode = false
 
@@ -428,6 +433,7 @@ class NetplayController(
             catchupProgressText = ""
             pullSnapshotRequested = false
             slotActiveFrom.clear()
+            pendingOwnActivation = false
             android.util.Log.i("NetplayController", "onStart: delay=$inputDelay players=$players")
             synchronized(startGate) { started = true; startGate.notifyAll() }
             dispatch { it.onStart(inputDelay) }
@@ -498,6 +504,21 @@ class NetplayController(
             //   追赶作废，随全员一起装载恢复（resumeInternal 统一处理）
             catchupMode = false
             catchupProgressText = ""
+            // ★★ v56：暂停流装载恢复后全员立即活跃 —— 解除激活过渡门控
+            pendingOwnActivation = false
+            // ★★ v56 旧时间线残留清理（在读线程内执行 —— 消息有序，此刻之后
+            //   到达的 input 全是各端恢复后重新采样的新时间线值，不会被误清）：
+            //   时间线回滚（存档帧 < 各端暂停前进度）后，存活玩家槽位上 ≥ 恢复帧
+            //   的历史输入是旧时间线残留 —— 不清的话读端直接命中旧值而不再等待
+            //   新采样值（远端重采样值与本端残留旧值不一致 → 单端永久发散）。
+            //   离队槽位不清（≤ deadSlotLastFrame 的在途真实输入语义保留，各端一致）。
+            if (frame >= 0) {
+                for (s in 1..4) {
+                    if (s == mySlot || players.contains(s)) {
+                        padsHistory[s].keys.removeAll { it >= frame }
+                    }
+                }
+            }
             // 全员恢复：按同一存档帧对齐、同一延迟继续
             dispatch { it.onSyncStatus("玩家接入完成，继续对战！") }
             Thread({
@@ -527,6 +548,7 @@ class NetplayController(
             catchupProgressText = ""
             pullSnapshotRequested = false
             slotActiveFrom.clear()
+            pendingOwnActivation = false
             restartPending = true
             restartFailed = false   // ★★ v4.6 每轮重开重置失败标记（上一轮失败不影响本轮）
             // 先开门让引擎线程能走到复位点（同步暂停门/启动门都放行到重启检查）
@@ -555,6 +577,8 @@ class NetplayController(
             //   [slot] 座位从 [frame] 之后开始被等待其输入（之前全员对其槽位确定性归零 ——
             //   只显示“xx 以 NP 接入”，不暂停不打断）。
             if (slot in 1..4) slotActiveFrom[slot] = frame
+            // ★★ v56：自己的座位激活确认到位 —— 解除激活过渡门控
+            if (slot == mySlot) pendingOwnActivation = false
             if (players.isNotEmpty()) {
                 activeSlots.clear()
                 activeSlots.addAll(players)
@@ -571,6 +595,8 @@ class NetplayController(
             if (slot !in 1..4) return
             mySlot = slot
             spectatorMode = false
+            // ★★ v56：seat_granted 自带激活帧 —— 无需过渡门控（slotActiveFrom 已就位）
+            pendingOwnActivation = false
             if (players.isNotEmpty()) {
                 activeSlots.clear()
                 activeSlots.addAll(players)
@@ -654,6 +680,7 @@ class NetplayController(
             if (started) {
                 dispatch { it.onNetplayLost("与对战服务器的连接已断开") }
             }
+            pendingOwnActivation = false   // ★★ v56 卫生清理（断连后不再有激活广播）
             synchronized(startGate) { started = true; startGate.notifyAll() }
             synchronized(syncGate) { syncPaused = false; syncGate.notifyAll() }
             dispatch { it.onDisconnected() }
@@ -941,6 +968,9 @@ class NetplayController(
      *  （历史缺口自救，详见追赶主循环）。 */
     private fun catchupPadsFor(f: Long, timeoutMs: Long): IntArray? {
         val pads = IntArray(4)
+        // ★★ v56 防御：负执行帧（理论不可达 —— 首份快照在帧 61 之后，远大于
+        //   inputDelay ≤ 16）—— 直接全 0，绝不为负帧阻塞等待。
+        if (f < 0) return pads
         val deadline = if (timeoutMs > 0) System.currentTimeMillis() + timeoutMs else 0L
         for (slot in 1..4) {
             var pad = padsHistory[slot][f]
@@ -1379,7 +1409,15 @@ class NetplayController(
                     }
                     val f = netFrameCounter
                     catchupTimedOut = false
-                    val pads = catchupPadsFor(f, CATCHUP_INPUT_TIMEOUT_MS)
+                    // ★★ v56 重放输入按【执行帧】索引（f - inputDelay）—— 与全员锁步
+                    //   同一映射：存档代表 [0..f-1-inputDelay] 已执行完，核心下一帧应
+                    //   消费 pads(f-inputDelay)。旧版直接取 pads(f)（网络帧索引），
+                    //   重放输入序列比原玩家超前 inputDelay 帧 —— 重放窗口内任何
+                    //   一端有按键，追赶者的画面就从接轨点起与原玩家永久错开
+                    //   （“同步追赶成功后有时候各打各的”的头号根因）。
+                    //   服务器 hist 自带 16 帧热身窗（[档帧-16, 档帧)），正是为覆盖
+                    //   [档帧-inputDelay, 档帧) 这段执行窗（与暂停流 resume 同一语义）。
+                    val pads = catchupPadsFor(f - inputDelay, CATCHUP_INPUT_TIMEOUT_MS)
                     if (pads == null) {
                         if (catchupTimedOut) {
                             // ★★ v54 历史缺口自救：等待重放输入超时（服务器组装的
@@ -1431,6 +1469,12 @@ class NetplayController(
                 catchupProgressText = ""
                 seedOwnZeroWindow(netFrameCounter, overwrite = true)
                 lastIssuedNetFrame = netFrameCounter - 1
+                // ★★ v56：state_ok 发出后到 slot_active 到达前，全员都把本座位当
+                //   “未激活”（确定性 0）—— 本端同样归零（下方 mySlot 分支的
+                //   pendingOwnActivation/slotActiveFrom 门控），激活帧之后才用
+                //   实时输入。旧版本端在此窗口直接吃实时输入 → 只要按了键就
+                //   单端永久发散。采样与发送不受影响（上方照常发 input）。
+                if (mySlot in 1..4 && !isSpectator) pendingOwnActivation = true
                 try { n0.sendStateOk() } catch (_: Throwable) {}
                 dispatch { it.onSyncStatus("画面已追平，接入完成 —— 对战中！") }
                 android.util.Log.i("NetplayController", "catchup done at frame $netFrameCounter")
@@ -1539,7 +1583,14 @@ class NetplayController(
             val pads = IntArray(4)
             for (slot in 1..4) {
                 if (slot == mySlot) {
-                    pads[slot - 1] = padsHistory[slot][execFrame] ?: localPad
+                    // ★★ v56 座位激活门控：激活帧（含）之前全员对本槽位确定性用 0
+                    //   （其他端 slotNeedsInput 同一判定）—— 追赶/转座并入后的激活
+                    //   窗口内，本端若直接用实时输入，一旦按键即与全员错开（永久
+                    //   发散）。采样与发送不受影响（上方照常发 input）。
+                    val actFrom = slotActiveFrom[mySlot]
+                    pads[slot - 1] =
+                        if (pendingOwnActivation || (actFrom != null && execFrame <= actFrom)) 0
+                        else padsHistory[slot][execFrame] ?: localPad
                 } else if (slotNeedsInput(slot, execFrame)) {
                     var pad = padsHistory[slot][execFrame]
                     if (pad == null) {
@@ -1773,7 +1824,14 @@ class NetplayController(
         val confirmed = rbConfirmedFrame()
         for (slot in 1..4) {
             when {
-                slot == mySlot -> pads[slot - 1] = padsHistory[slot][execFrame] ?: localPad
+                slot == mySlot -> {
+                    // ★★ v56 座位激活门控（与延迟模式同一判定）：激活帧前全员对
+                    //   本槽位确定性 0 —— 回滚重放/inputLog 记录同样一致。
+                    val actFrom = slotActiveFrom[mySlot]
+                    pads[slot - 1] =
+                        if (pendingOwnActivation || (actFrom != null && execFrame <= actFrom)) 0
+                        else padsHistory[slot][execFrame] ?: localPad
+                }
                 !slotNeedsInput(slot, execFrame) -> pads[slot - 1] = 0 // ★★ v52 激活帧前不算活跃
                 activeSlots.contains(slot) -> {
                     var pad = padsHistory[slot][execFrame]
