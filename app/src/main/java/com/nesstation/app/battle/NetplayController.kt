@@ -168,6 +168,10 @@ class NetplayController(
         private const val UPLOAD_SIZE_SMALL = 128 * 1024
         private const val UPLOAD_SIZE_MEDIUM = 512 * 1024
         private const val UPLOAD_FIRST_FRAME = 60L
+        /** ★★ v54 老服务器聊天兑底（详见 sendChatFallback）：结束条帧号（负帧号 input 编码）。 */
+        private const val CHAT_FALLBACK_END_FRAME = -100000L
+        /** ★★ v54 老服务器聊天兑底：单条消息分片上限（200 汉字 UTF-8 ≈ 600B ≈ 200 条）。 */
+        private const val CHAT_FALLBACK_MAX_CHUNKS = 220
     }
 
     private fun dispatch(block: (UiListener) -> Unit) {
@@ -315,7 +319,11 @@ class NetplayController(
     @Volatile private var rbMaxDepth = 0
 
     // === ★★ v52 追赶接入（小马模拟器式“中途加入不暂停”）状态 ===
-    /** 追赶模式：装档完成、引擎开始离屏快放（每个可见帧重放一小段历史帧，屏幕表现为快进追赶）。 */
+    /** 追赶模式：装档完成、引擎开始离屏快放追赶。★★ v54 起为【黑屏极速追赶】：
+     *  引擎线程紧循环离屏快放（runFrameDirect 不渲染不出声）直到追平 ——
+     *  屏幕保持黑屏（EmulatorScreen 全屏黑底进度浮层），追平后落入锁步，
+     *  画面以同步状态直接出现（用户实测反馈：“应该黑屏快速直接追赶而不是
+     *  启动游戏慢慢追赶，追赶成功再同步画面”）。 */
     @Volatile private var catchupMode = false
     /** 追赶目标帧下限（服务器组装的输入历史终点 —— v53 起只是【下限】：
      *  追赶期间服务器照常广播 input，onRemoteInput 持续更新 catchupLatestSeen，
@@ -323,20 +331,22 @@ class NetplayController(
     @Volatile private var catchupHistEnd = 0L
     /** 追赶起点（存档帧 —— 进度展示用）。 */
     @Volatile private var catchupFromFrame = 0L
-    /** 每个可见帧离屏快放的帧数（小段推进 —— 屏幕上是可见的快进效果，
-     *  追赶净速度 = CHUNK × 60fps，远大于对局 60fps 推进 → 必能追上）。
-     *  ★★ v53：8 → 16 —— v52 实测追赶耗时过长（64 秒差距 × 8 倍速 = 8 秒+，
-     *  期间原玩家又跑 480+ 帧 → 追平后帧号错开 8 秒（用户看到“追赶后
-     *  没同步”）。16 倍速 + 动态目标双管齐下：追平时刻与原玩家仅差
-     *  CATCHUP_TAIL（1.5 秒），观感同步。快放帧不渲染不出声，
-     *  UI 帧率不受影响（每可见帧仍 60fps 渲染）。 */
-    private val CATCHUP_CHUNK = 16
     /** ★★ v53 追赶动态目标：追平判定不追到 histEnd 就停（那是装档时刻的
      *  冻结值），而是追到【最新已见远端输入帧 - 该尾距】—— 追赶期间
      *  onRemoteInput 持续刷新 catchupLatestSeen，目标随实时帧滚动前移，
      *  追平时与原玩家仅差 1.5 秒（锁步无缝并入，观感同步）。90 帧 = 60fps × 1.5s。 */
     @Volatile private var catchupLatestSeen = 0L
     private val CATCHUP_TAIL = 90L
+    /** ★★ v54 黑屏极速追赶进度（"1234/5678"，UI 轮询显示；引擎线程写）。 */
+    @Volatile var catchupProgressText: String = ""
+        private set
+    /** ★★ v54 当前是否在黑屏快速追赶中（EmulatorScreen 全屏黑底进度浮层依据）。 */
+    val isCatchingUp: Boolean get() = catchupMode
+    /** ★★ v54 追赶历史缺口标记：追赶重放等待某帧输入超时（仅引擎线程置位/读）。 */
+    private var catchupTimedOut = false
+    /** ★★ v54 追赶单帧输入等待上限：服务器组装的历史有缺口（老服务器/竞态）时
+     *  自救 —— 超时请求全员重开（v52 降级语义的客户端兑底），绝不无限黑屏挂起。 */
+    private val CATCHUP_INPUT_TIMEOUT_MS = 15000L
     /** ★★ v53 静默拉档：服务器 state_pull 请求（无缓存档/历史缺口时）——
      *  置标志，引擎线程 afterFrame 下一帧立即 uploadSnapshot（出档与跑帧
      *  同线程天然安全，无需挂门 —— 小马同款“零感知拉档”）。 */
@@ -353,6 +363,12 @@ class NetplayController(
 
     private val netListener = object : BattleNetplay.Listener {
         override fun onRemoteInput(frame: Long, pad: Int, slot: Int) {
+            // ★★ v54 老服务器聊天兑底：聊天分片编码在负帧号 input 上（详见
+            //   sendChatFallback）—— 先于 padsHistory/回滚簿记拦截，绝不污染。
+            if (frame < 0) {
+                handleChatFragment(frame, pad, slot)
+                return
+            }
             if (slot in 1..4) {
                 padsHistory[slot][frame] = pad
                 // ★★ v53 追赶动态目标：追赶期间持续记录最新已见远端输入帧 ——
@@ -409,6 +425,7 @@ class NetplayController(
             // ★★ v53：追赶动态目标/拉档簿记一并清零（新时间线从帧 0 起）
             catchupLatestSeen = 0L
             catchupHistEnd = 0L
+            catchupProgressText = ""
             pullSnapshotRequested = false
             slotActiveFrom.clear()
             android.util.Log.i("NetplayController", "onStart: delay=$inputDelay players=$players")
@@ -480,6 +497,7 @@ class NetplayController(
             // ★★ v52：暂停流接管（追赶中遭遇 pause 的竞态）——
             //   追赶作废，随全员一起装载恢复（resumeInternal 统一处理）
             catchupMode = false
+            catchupProgressText = ""
             // 全员恢复：按同一存档帧对齐、同一延迟继续
             dispatch { it.onSyncStatus("玩家接入完成，继续对战！") }
             Thread({
@@ -506,6 +524,7 @@ class NetplayController(
             // ★★ v53：追赶动态目标/拉档簿记一并清零
             catchupLatestSeen = 0L
             catchupHistEnd = 0L
+            catchupProgressText = ""
             pullSnapshotRequested = false
             slotActiveFrom.clear()
             restartPending = true
@@ -887,7 +906,8 @@ class NetplayController(
         //   随实时帧滚动前移（绝不在冻结的 histEnd 提前收兵）。
         catchupLatestSeen = histEnd
         catchupMode = true
-        dispatch { it.onSyncStatus("快进追赶画面中…") }
+        catchupProgressText = ""
+        dispatch { it.onSyncStatus("黑屏快速追赶中…") }
         // 开门（只开启动门 —— 同步门若因竞态已暂停则保持暂停，交给暂停流程收尾）
         synchronized(startGate) { started = true; startGate.notifyAll() }
         parkedLocalFrame = -1
@@ -910,21 +930,25 @@ class NetplayController(
      * 窗口外缺帧才回退到门控+阻塞等待（不该发生 —— 服务器组装保证完整）。
      * 返回 null = 门事件（pause/restart）或断连，调用方作废本帧。
      */
-    private fun catchupPadsFor(f: Long): IntArray? {
+    private fun catchupPadsFor(f: Long): IntArray? = catchupPadsFor(f, 0L)
+
+    /** ★★ v54 timeoutMs > 0 时等待输入带截止时间：超时置 catchupTimedOut 并返回 null
+     *  （历史缺口自救，详见追赶主循环）。 */
+    private fun catchupPadsFor(f: Long, timeoutMs: Long): IntArray? {
         val pads = IntArray(4)
+        val deadline = if (timeoutMs > 0) System.currentTimeMillis() + timeoutMs else 0L
         for (slot in 1..4) {
-            val pad = padsHistory[slot][f]
-            if (pad != null) {
-                pads[slot - 1] = pad
-                continue
+            var pad = padsHistory[slot][f]
+            if (pad == null) {
+                if (slot != mySlot && slotNeedsInput(slot, f)) {
+                    pad = if (deadline > 0) awaitSlotInputDeadline(slot, f, deadline)
+                          else awaitSlotInput(slot, f)
+                    if (pad == null) return null
+                } else {
+                    pad = 0
+                }
             }
-            if (slot != mySlot && slotNeedsInput(slot, f)) {
-                val got = awaitSlotInput(slot, f)
-                if (got == null) return null
-                pads[slot - 1] = got
-            } else {
-                pads[slot - 1] = 0
-            }
+            pads[slot - 1] = pad
         }
         return pads
     }
@@ -1155,12 +1179,94 @@ class NetplayController(
     val slot: Int get() = mySlot
 
     /** ★★ v51 游戏内聊天：发送文本给房间全员（玩家+观战者；服务器盖戳转发）。
-     *  空白丢弃、限长 200 字符（与服务器规则一致）。观战者同样可发。 */
+     *  空白丢弃、限长 200 字符（与服务器规则一致）。观战者同样可发。
+     *  ★★ v54 老服务器兜底：服务器 <v51（srv 字段缺失/更小 = 无 chat 中继）时
+     *  自动改走输入通道编码（详见 [sendChatFallback]）—— 任何服务器版本都能送达。 */
     fun sendChat(text: String) {
         val n = net ?: return
+        val t = text.trim()
+        if (t.isEmpty()) return
+        if (sendChatFallback(t)) return
         try {
-            n.sendChat(text)
+            n.sendChat(t)
         } catch (_: Throwable) { /* 断连时丢消息即可，不影响对战 */ }
+    }
+
+    // =========================================================================
+    // ★★ v54 老服务器聊天兜底：聊天编码进 input 通道（帧号 < 0）
+    // =========================================================================
+    // 背景：chat 中继是 v51+ 服务器能力。线上服务器若还跑着 <v51 的旧二进制，
+    //   客户端发出的 chat 消息被静默丢弃（用户连续多轮实测"聊天对方收不到"
+    //   的最顽固根因 —— 服务器代码本身正确，但没重新编译部署）。
+    //   input 中继是 v1 起的核心功能（所有服务器版本都转发）—— 把聊天编码成
+    //   "帧号 < 0 的 input"即可在任意服务器版本上送达：
+    //   - 服务器 input 转发原样透传 frame（真实输入帧号恒 >= 0，负帧号天然
+    //     区分）；slot 由服务器盖戳为发送者真实座位（顺带提供可信身份）；
+    //   - 旧客户端收到负帧号 input：帧号永不被等待、不进 padsHistory ——
+    //     静默忽略，混合版本安全；
+    //   - 服务器侧 inpHist 记账对负帧号无害（环形清理会带走；
+    //     composeCatchupHist 只取正帧段）。
+    //   注意：v48+ 服务器忽略观战者/追赶中连接的 input —— 这两类连接的
+    //   兜底消息会丢（观战者聊天需 v51+ 服务器；追赶者追平后即可聊）。
+    // 编码：文本 → UTF-8 字节（≤200 字符 ≈ ≤600 字节）→ 3 字节/条：
+    //   数据条 i（0..n-1）：frame = -(i+1)，pad = (b0<<16)|(b1<<8)|b2（恒 ≥ 0）；
+    //   结束条：frame = CHAT_FALLBACK_END_FRAME，pad = 条数 n。
+    // 解码：按 slot 缓冲数据条，收到结束条按序拼装 UTF-8 解码 → onChat。
+    //（CHAT_FALLBACK_* 常量在 companion object）
+
+    /** 各槽位在途聊天分片（slot → index → 3 字节数据；仅网络线程访问）。 */
+    private val chatFragments = HashMap<Int, java.util.TreeMap<Int, Int>>()
+
+    /** 老服务器聊天兜底发送：返回 true = 已走兜底通道（false = 服务器支持原生 chat）。 */
+    private fun sendChatFallback(text: String): Boolean {
+        val n = net ?: return true   // 无连接：吞掉（与 sendChat 断连语义一致）
+        if (serverProtoVersion >= 51) return false   // v51+ 服务器：原生 chat 中继
+        val bytes = try { text.toByteArray(Charsets.UTF_8) } catch (_: Throwable) { return true }
+        if (bytes.isEmpty()) return true
+        val chunks = (bytes.size + 2) / 3
+        if (chunks > CHAT_FALLBACK_MAX_CHUNKS) return true   // 超限（sendChat 已截 200 字）
+        try {
+            for (i in 0 until chunks) {
+                val b0 = bytes[i * 3].toInt() and 0xFF
+                val b1 = if (i * 3 + 1 < bytes.size) bytes[i * 3 + 1].toInt() and 0xFF else 0
+                val b2 = if (i * 3 + 2 < bytes.size) bytes[i * 3 + 2].toInt() and 0xFF else 0
+                n.sendInput(-((i + 1).toLong()), (b0 shl 16) or (b1 shl 8) or b2, mySlot)
+            }
+            n.sendInput(CHAT_FALLBACK_END_FRAME, chunks, mySlot)
+        } catch (_: Throwable) { /* 断连丢消息即可 */ }
+        return true
+    }
+
+    /** 收到负帧号 input → 聊天分片解码（仅网络线程调用）。 */
+    private fun handleChatFragment(frame: Long, pad: Int, slot: Int) {
+        if (slot !in 1..4) return
+        if (frame == CHAT_FALLBACK_END_FRAME) {
+            val count = pad
+            val buf = chatFragments.remove(slot) ?: return
+            if (count <= 0 || count > CHAT_FALLBACK_MAX_CHUNKS || buf.size != count) return
+            val bytes = ByteArray(count * 3)
+            for (i in 0 until count) {
+                val v = buf[i] ?: return   // 缺片：丢弃（不作半截消息）
+                bytes[i * 3] = (v shr 16).toByte()
+                bytes[i * 3 + 1] = (v shr 8).toByte()
+                bytes[i * 3 + 2] = v.toByte()
+            }
+            val text = try {
+                var end = bytes.size
+                while (end > 0 && bytes[end - 1].toInt() == 0) end--   // 去掉尾部补零
+                String(bytes, 0, end, Charsets.UTF_8)
+            } catch (_: Throwable) { return }
+            if (text.isNotBlank()) {
+                android.util.Log.i("NetplayController", "chat(fallback) from ${slot}P: $text")
+                dispatch { it.onChat("${slot}P", text, slot, false) }
+            }
+            return
+        }
+        val idx = (-frame).toInt()
+        if (idx <= 0 || idx > CHAT_FALLBACK_MAX_CHUNKS) return
+        val buf = chatFragments.getOrPut(slot) { java.util.TreeMap() }
+        if (idx == 1) buf.clear()   // 新消息开始：覆盖旧缓冲（发送端顺序发送）
+        buf[idx] = pad
     }
 
     /**
@@ -1224,12 +1330,16 @@ class NetplayController(
                 return IntArray(4)
             }
 
-            // ★★ v52 追赶快放（小马式中途加入不暂停）：引擎每渲染一帧，
-            //   离屏重放一小段历史帧（runFrameDirect 不渲染不出声），屏幕表现
-            //   为快进追赶；追平后无缝落入下方正常锁步。
-            // ★★ v53 动态目标：追平目标不再是装档时刻冻结的 histEnd，而是
-            //   catchupTarget() = max(histEnd, 最新已见远端输入帧-90) ——
-            //   追赶期间服务器照常广播 input、onRemoteInput 持续刷新
+            // ★★ v52 追赶接入（小马式中途加入不暂停）。★★ v54 黑屏极速追赶：
+            //   引擎线程在此【紧循环离屏快放直到追平】（runFrameDirect 不渲染
+            //   不出声），屏幕保持黑屏（EmulatorScreen 全屏黑底进度浮层），
+            //   追平后落入下方正常锁步 —— 画面以同步状态直接出现。
+            //   （v52/v53 为“每可见帧快放 15 帧”的可见快进，受引擎 60fps
+            //   渲染节奏限制净速度只有 ~15 倍速 —— 用户实测“启动游戏慢慢
+            //   追赶”；v54 改为不受渲染节奏约束的纯速度追赶，几十秒差距
+            //   亚秒级追平，追赶期间黑屏 + 进度，追平即同步画面。）
+            // ★★ v53 动态目标：追平目标 = max(histEnd, 最新已见远端输入帧-90)
+            //   —— 追赶期间服务器照常广播 input、onRemoteInput 持续刷新
             //   catchupLatestSeen，目标随实时帧滚动前移：追平时与原玩家仅差
             //   1.5 秒，锁步无缝并入（v52 冻结目标追平后永久错开“追赶耗时×60
             //   帧”——用户实测“追赶后没同步”的根治）。
@@ -1240,49 +1350,71 @@ class NetplayController(
                 if (io == null || !io.supportsRollback()) {
                     // 引擎不支持快放（不该到这 —— ready 能力上报门控过）：自救重开
                     catchupMode = false
+                    catchupProgressText = ""
                     dispatch { it.onSyncStatus("追赶不可用，请求全员重新同步…") }
                     try { n0.sendRestartReq() } catch (_: Throwable) {}
                     zeroPadFrame = true
                     return IntArray(4)
                 }
-                var replayed = 0
-                // 1）离屏快放本段（不含最后要渲染的一帧）
-                while (netFrameCounter < catchupTarget() && replayed < CATCHUP_CHUNK - 1) {
+                var lastReport = 0L
+                while (netFrameCounter < catchupTarget()) {
+                    // 门事件（暂停/重开接管追赶）：作废本轮追赶，回外层环过门重新
+                    // 对齐（时间线将被存档装载/复位替换，已快放的帧自然作废）
+                    if (syncPaused || restartPending) {
+                        continue@outer
+                    }
                     val f = netFrameCounter
-                    val pads = catchupPadsFor(f) ?: run {
-                        zeroPadFrame = true; return IntArray(4) // 门事件/断连：下一迭代过门
+                    catchupTimedOut = false
+                    val pads = catchupPadsFor(f, CATCHUP_INPUT_TIMEOUT_MS)
+                    if (pads == null) {
+                        if (catchupTimedOut) {
+                            // ★★ v54 历史缺口自救：等待重放输入超时（服务器组装的
+                            //   历史有缺口 / 老服务器）—— 追赶永不能完成，请求全员
+                            //   重开（绝不无限黑屏挂起；旧版这里会永久卡死追赶）
+                            catchupMode = false
+                            catchupProgressText = ""
+                            dispatch { it.onSyncStatus("追赶失败（输入历史缺口），已请求全员重新同步…") }
+                            try { n0.sendRestartReq() } catch (_: Throwable) {}
+                            zeroPadFrame = true
+                            return IntArray(4)
+                        }
+                        if (syncPaused || restartPending) {
+                            // 门事件：作废本轮追赶，回外层环过门重新对齐
+                            //（时间线将被存档装载/复位替换，已快放的帧自然作废）
+                            continue@outer
+                        }
+                        // 断连：清追赶 + 零输入过渡帧（引擎按自身节奏跑帧 ——
+                        //   绝不 continue 空转烧 CPU；后续 onNetplayLost 引导 UI）
+                        catchupMode = false
+                        catchupProgressText = ""
+                        zeroPadFrame = true
+                        return IntArray(4)
                     }
                     try { io.discardPendingAudio() } catch (_: Throwable) {}
                     if (!io.runFrameDirect(pads)) {
                         catchupMode = false
+                        catchupProgressText = ""
                         dispatch { it.onSyncStatus("追赶重放失败，请求全员重新同步…") }
                         try { n0.sendRestartReq() } catch (_: Throwable) {}
                         zeroPadFrame = true
                         return IntArray(4)
                     }
                     netFrameCounter++
-                    replayed++
-                    if (replayed % 60 == 0) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastReport >= 200) {
+                        lastReport = now
                         val done = netFrameCounter - catchupFromFrame
                         val total = (catchupTarget() - catchupFromFrame).coerceAtLeast(1)
-                        dispatch { it.onSyncStatus("快进追赶画面中… $done/$total 帧") }
+                        catchupProgressText = "$done/$total"
+                        dispatch { it.onSyncStatus("黑屏快速追赶中… $done/$total 帧") }
                     }
                 }
-                if (netFrameCounter < catchupTarget()) {
-                    // 2）本段最后一帧交给引擎渲染（快进的可见画面）
-                    val f = netFrameCounter
-                    val pads = catchupPadsFor(f) ?: run {
-                        zeroPadFrame = true; return IntArray(4)
-                    }
-                    netFrameCounter = f + 1
-                    zeroPadFrame = true // 追赶帧：afterFrame 不记账不上传
-                    return pads
-                }
-                // 3）追平：自己槽位 inputDelay 预热窗归零（追赶期间
+                // 追平：自己槽位 inputDelay 预热窗归零（追赶期间
                 //   全员对本槽位用 0 —— 服务器组装的历史里含上任
                 //   者的真实输入，不清会误用 → 单端发散）；报告服务器
                 //   追平（广播座位激活）；无缝落入下方正常锁步流程。
                 catchupMode = false
+                catchupProgressText = ""
                 seedOwnZeroWindow(netFrameCounter, overwrite = true)
                 lastIssuedNetFrame = netFrameCounter - 1
                 try { n0.sendStateOk() } catch (_: Throwable) {}
@@ -1477,6 +1609,39 @@ class NetplayController(
             } else if (now - lastNotice >= 1000) {
                 lastNotice = now
                 dispatch { it.onNetplayWait("网络抖动：等待 ${slot}P 输入中…（画面短暂停顿属正常）") }
+            }
+            try { Thread.sleep(2) } catch (_: InterruptedException) { return null }
+        }
+    }
+
+    /** ★★ v54 追赶输入等待（带截止时间，与 [awaitSlotInput] 同语义 + 超时）：
+     *  - 非 null：输入已到（历史或实时）；
+     *  - null + catchupTimedOut=true：超时（输入历史缺口 —— 追赶永不能完成，
+     *    调用方自救请求全员重开）；
+     *  - null + 未超时：门事件（pause/restart，追赶作废回门）或断连。 */
+    private fun awaitSlotInputDeadline(slot: Int, targetFrame: Long, deadline: Long): Int? {
+        var lastNotice = 0L
+        while (true) {
+            padsHistory[slot][targetFrame]?.let { return it }
+            if (restartPending) return null
+            if (syncPaused) return null
+            if (!activeSlots.contains(slot)) {
+                val dead = deadSlotLastFrame[slot] ?: -1L
+                if (targetFrame > dead) return 0
+                // targetFrame <= dead：在途输入，继续等
+            }
+            val n = net
+            if (n == null || !n.isConnected) return null
+            val now = System.currentTimeMillis()
+            if (now >= deadline) {
+                catchupTimedOut = true
+                android.util.Log.w("NetplayController",
+                    "catchup input wait timeout: slot=$slot frame=$targetFrame")
+                return null
+            }
+            if (now - lastNotice >= 1000) {
+                lastNotice = now
+                dispatch { it.onNetplayWait("追赶：等待 ${slot}P 输入中…") }
             }
             try { Thread.sleep(2) } catch (_: InterruptedException) { return null }
         }

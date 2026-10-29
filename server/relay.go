@@ -76,7 +76,23 @@ const catchupHistFrames = 7200
 // ★★ v52 追赶看门狗：装档 + 离屏快放应在数十秒内完成（手机解码大档 +
 //   快放几百帧）。超时只劝退接入者 —— 原玩家全程未暂停、完全不受影响
 //   （不暂停模式的天然鲁棒性：失败者自己退场，别人无感）。
+// ★★ v54 看门狗不再“一超时就劝退”：
+//   1) 接入者还没拿到追赶包（拉档流程房主无响应）→ 降级用服务器缓存档
+//      组装追赶包（v54 客户端黑屏极速追赶数秒追平）；无档可用才劝退；
+//   2) 已拿到追赶包仍在追赶（超大差距/低端机）→ 续期最多 catchupMaxExtends 轮。
 const catchupWatchdog = 45 * time.Second
+
+// ★★ v54 追赶看门狗续期上限（轮）：已发追赶包但仍在追赶时最多续这么
+//   多轮（45s × 4 = 3 分钟硬上限），超过才劝退 —— 给大差距追赶足够时间，
+//   又绝不让坏连接无限占用房间状态。
+const catchupMaxExtends = 3
+
+// ★★ v54 旧档阈值：缓存档距现在超过它 → 优先向房主拉一份新档再追赶。
+//   v53 直接用旧档追赶：档龄 × 60 帧的追赶距离（实测几十秒前的档 →
+//   接入者从早期画面开始可见快进 —— 用户实测“启动游戏慢慢追赶”的根因
+//   之一）。拉新档后追赶距离 ≈ 90 帧（v54 客户端亚秒级追平）；拉档失败
+//   由追赶看门狗兑底降级旧档追赶（不再直接劝退）。
+const catchupStalePull = 4 * time.Second
 
 // maxRoomPlayers 最大玩家数（1P-4P）。FBNeo/街机支持 4 手柄；
 // 其他 2 手柄核心上 3/4P 的输入被客户端忽略（仍可观战同步画面）。
@@ -181,6 +197,15 @@ func (r *Room) freshCachedState() *relayMsg {
                 return r.lastState
         }
         return nil
+}
+
+// cachedStateAt 缓存档的落档时刻（无档 = 零值）。★★ v54 旧档拉新判定用
+//（追赶模式下缓存档越旧 → 追赶距离越长；超过 catchupStalePull 改拉新档）。
+// ★ 锁序约定：持有 hub.mu 时调用（hub.mu → lastStateMu），不得反向。
+func (r *Room) cachedStateAt() time.Time {
+        r.lastStateMu.Lock()
+        defer r.lastStateMu.Unlock()
+        return r.lastStateAt
 }
 
 // nextFreeSlot 返回下一个空闲玩家槽位（1-4）。房主占用槽 1，
@@ -343,6 +368,11 @@ type relayConn struct {
         // ★★ v52 追赶接入：正在追赶中（不暂停流 —— 输入照常收发给它，但它
         //   自己的输入被忽略、座位不算活跃，直到 state_ok 追平激活）。
         catchingUp bool
+        // ★★ v54：已给该接入者发过追赶包（看门狗兑底判定：未发过 = 拉档流程
+        //   无响应 → 降级缓存档追赶；发过 = 仍在追赶 → 续期）。
+        catchupFed bool
+        // ★★ v54：追赶看门狗续期轮次（超过 catchupMaxExtends 才劝退）。
+        catchupExtends int
         // ★★ v52：ready.catchup —— 引擎支持追赶（装档 + 离屏快放）。
         catchCap bool
         // ★★ v52：追赶看门狗（超时劦退 —— 只影响接入者，其他人无感）。
@@ -461,6 +491,8 @@ type relayHub struct {
 
         // ★★ v4.5 同步看门狗时长（测试可注入短值；0 = 默认 defaultSyncWatchdog）。
         watchdogMs int
+        // ★★ v54 追赶看门狗时长（测试可注入短值；0 = 默认 catchupWatchdog）。
+        catchupWatchdogMs int
 }
 
 func newRelayHub(cfg *configStore, jwt *jwt, users *userStore) *relayHub {
@@ -473,6 +505,14 @@ func (h *relayHub) watchdogDuration() time.Duration {
                 return time.Duration(h.watchdogMs) * time.Millisecond
         }
         return defaultSyncWatchdog
+}
+
+// catchupWatchdogDuration 追赶看门狗时长（★ v54 测试可注入）。 */
+func (h *relayHub) catchupWatchdogDuration() time.Duration {
+        if h.catchupWatchdogMs > 0 {
+                return time.Duration(h.catchupWatchdogMs) * time.Millisecond
+        }
+        return catchupWatchdog
 }
 
 // roomByID 获取房间
@@ -1229,6 +1269,17 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
         case h.roomSupportsRestart(room):
                 mode = "restart"
         }
+        // ★★ v54 旧档优先拉新（黑屏极速追赶的关键）：catchup 可用但缓存档
+        //   距现在太旧（> catchupStalePull）且房主能秒级响应拉档（全员 v53 +
+        //   房主在 + 能出档）→ 改走拉档路径拿【最新】档 —— 接入者追赶距离从
+        //   “档龄×60 帧”缩到 ≈90 帧（v54 客户端紧循环快放亚秒级追平）。
+        //   v53 直接用旧档追赶：实测接入者从几十秒前的画面开始可见快进 ——
+        //   用户实测“启动游戏慢慢追赶”的根因之一。拉档失败由追赶看门狗
+        //   兑底（降级旧档追赶，不再直接劝退）。
+        if mode == "catchup" && time.Since(room.cachedStateAt()) > catchupStalePull &&
+                owner != nil && h.roomSupportsPull(room) && owner.stateCap != -1 {
+                mode = "pull"
+        }
         if mode == "" {
                 // 无档可用且不能重开：不广播 pause，接入者劝退
                 h.mu.Unlock()
@@ -1285,6 +1336,7 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
                 st.Catchup = true
                 st.Hist = hist
                 st.HistEnd = histEnd
+                rc.catchupFed = true // ★★ v54：已发追赶包（看门狗兑底：超时续期而非劝退）
                 h.mu.Unlock()
                 log.Printf("[追赶] 房间 %s（桌 %d）：%s 追赶接入（不暂停：档帧 %d → 追平帧 %d，重放 %d 帧）",
                         room.ID, room.TableNo, rc.user.Username, cachedAny.Frame, histEnd, histEnd-cachedAny.Frame)
@@ -1624,6 +1676,7 @@ func (h *relayHub) servePendingCatchups(room *Room) {
         targets := make([]*relayConn, 0, len(room.pendingCatchup))
         for _, c := range room.pendingCatchup {
                 if c.catchingUp && c.room == room {
+                        c.catchupFed = true // ★★ v54：已发追赶包（看门狗兑底：超时续期而非劝退）
                         targets = append(targets, c)
                 }
         }
@@ -1676,13 +1729,16 @@ func (h *relayHub) finishCatchup(rc *relayConn) {
         })
 }
 
-// startCatchupWatchdog 追赶看门狗：装档/快放超时 → 只劝退接入者
-//   （原玩家全程未受影响 —— 不暂停模式的天然鲁棒性：失败者自己退场，
-//   房间状态自始至终都是 playing，没有任何需要“收尾”的全局状态）。
-// ★ 未持锁时调用。
+// startCatchupWatchdog 追赶看门狗（★ 未持锁时调用）。
+// ★★ v54 兑底次序（不再“一超时就劝退”）：
+//  1) 接入者还没拿到任何追赶包（拉档流程房主无响应 / 降级链）→ 服务器
+//     仍有可用缓存档 + 历史覆盖 → 直接降级组装旧档追赶包发给接入者
+//     （v54 客户端黑屏极速追赶数秒追平）；实在无档才劝退（v53 行为）；
+//  2) 已拿到追赶包仍在追赶（超大差距/低端机）→ 看门狗续期（最多
+//     catchupMaxExtends 轮），给足追赶时间；超过硬上限才劝退。
 func (h *relayHub) startCatchupWatchdog(rc *relayConn) {
         h.mu.Lock()
-        rc.catchTimer = time.AfterFunc(catchupWatchdog, func() {
+        rc.catchTimer = time.AfterFunc(h.catchupWatchdogDuration(), func() {
                 defer func() {
                         if p := recover(); p != nil {
                                 log.Printf("[异常] 追赶看门狗异常已隔离（服务器继续运行）：%v\n%s", p, debug.Stack())
@@ -1693,9 +1749,63 @@ func (h *relayHub) startCatchupWatchdog(rc *relayConn) {
                         h.mu.Unlock()
                         return
                 }
+                room := rc.room
+                if room == nil {
+                        h.mu.Unlock()
+                        return
+                }
+                if !rc.catchupFed {
+                        // 1) 拉档无响应：降级旧档追赶（有档 + 历史覆盖才降级）
+                        var st *relayMsg
+                        if room.Status == roomPlaying {
+                                if cached := room.cachedState(); cached != nil {
+                                        hf := cachedFrame16(cached)
+                                        if room.inpHistStart <= hf {
+                                                histEnd := room.maxFrame + 1
+                                                if histEnd < cached.Frame {
+                                                        histEnd = cached.Frame
+                                                }
+                                                s := *cached
+                                                s.Type = "state"
+                                                s.Catchup = true
+                                                s.Hist = room.composeCatchupHist(hf, histEnd)
+                                                s.HistEnd = histEnd
+                                                st = &s
+                                        }
+                                }
+                        }
+                        if st != nil {
+                                rc.catchupFed = true
+                                // 从拉档名单移除（防房主迟到快照触发 servePendingCatchups 二次发追赶包）
+                                if room.pendingCatchup != nil {
+                                        delete(room.pendingCatchup, rc.user.ID)
+                                }
+                                h.mu.Unlock()
+                                log.Printf("[追赶] 房间 %s（桌 %d）：%s 拉档超时（房主无响应），降级缓存档追赶（档帧 %d → 追平帧 %d，重放 %d 帧）",
+                                                room.ID, room.TableNo, rc.user.Username, st.Frame, st.HistEnd, st.HistEnd-st.Frame)
+                                _ = rc.send(*st)
+                                h.startCatchupWatchdog(rc) // 新一轮窗口覆盖实际追赶
+                                return
+                        }
+                        h.mu.Unlock()
+                        log.Printf("[追赶] 接入者 %s 追赶超时（%s，拉档无响应且无可用档），劝退（房间其他成员不受影响）",
+                                rc.user.Username, h.catchupWatchdogDuration())
+                        _ = rc.send(relayMsg{Type: "error", Msg: "同步画面超时（追赶未完成），请稍后再试"})
+                        h.drop(rc)
+                        return
+                }
+                // 2) 已发追赶包仍在追赶：续期（最多 catchupMaxExtends 轮）
+                rc.catchupExtends++
+                if rc.catchupExtends <= catchupMaxExtends && room.Status == roomPlaying {
+                        h.mu.Unlock()
+                        log.Printf("[追赶] 房间 %s（桌 %d）：%s 仍在追赶中，看门狗续期（第 %d/%d 轮）",
+                                        room.ID, room.TableNo, rc.user.Username, rc.catchupExtends, catchupMaxExtends)
+                        h.startCatchupWatchdog(rc)
+                        return
+                }
                 h.mu.Unlock()
-                log.Printf("[追赶] 接入者 %s 追赶超时（%s），劝退（房间其他成员不受影响）",
-                        rc.user.Username, catchupWatchdog)
+                log.Printf("[追赶] 接入者 %s 追赶超时（%s × %d 轮），劝退（房间其他成员不受影响）",
+                        rc.user.Username, h.catchupWatchdogDuration(), rc.catchupExtends)
                 _ = rc.send(relayMsg{Type: "error", Msg: "同步画面超时（追赶未完成），请稍后再试"})
                 h.drop(rc)
         })

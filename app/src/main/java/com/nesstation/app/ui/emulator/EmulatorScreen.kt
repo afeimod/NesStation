@@ -1608,6 +1608,103 @@ private fun copySafFolderRecursive(
 // ---------------------------------------------------------------------------
 // Main Emulator Screen
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// ★★ v54 三国战记3 HD（PGM3 / IGS M027）路由强化与 ROM 布局归一化
+//
+// v52 交付的 PGM3 专用核心（libpgm3.so + pgm3_runtime）本身可用，但路由判定
+// Pgm3Engine.isPgm3Rom 只认严格布局（kov3hd.zip + 同目录 kov3hd/kov3hd_m105.chd）。
+// 用户实测 ROM 布局不匹配（中文名 zip / CHD 压在 zip 里 / CHD 散落旁边 / 子目录
+// 名不同）→ 判定 false → 落到 FBNeo 核心 → FBNeo 没有 PGM3 驱动 →
+// "Romset is unknown"（用户截图）。
+// v54 双保险：
+//   1. looksLikePgm3Rom 多重启发式（文件名 kov3hd/m105、中文名"三国战记3+HD"、
+//      zip 内含 CHD）补上路由；
+//   2. normalizePgm3RomLayout 装档前把任意布局归一化成 PGM3 核心能吃的
+//      CHD 直启路径（从 zip 抽 CHD / 找散落 CHD / 任意子目录找 CHD）。
+// ---------------------------------------------------------------------------
+
+/** looksLikePgm3Rom 结果缓存（路径 → 判定；组合期可重复调用，避免重复开 zip）。 */
+private val pgm3RomCheckCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+/** ★★ v54 PGM3 启发式判定（与 isPgm3Rom 并联，任一命中即路由 PGM3 核心）。 */
+private fun looksLikePgm3Rom(romPath: String?): Boolean {
+    if (romPath.isNullOrBlank()) return false
+    pgm3RomCheckCache[romPath]?.let { return it }
+    val result = run {
+        val p = romPath.lowercase()
+        // 1) 常见发布名：kov3hd.zip / kov3hd_m105.chd（含 m105 板号）
+        if (p.contains("kov3hd") || p.contains("m105")) return@run true
+        // 2) 中文发布名：三国战记3HD / 三國戰紀3 HD（任意 HD 后缀）
+        if ((romPath.contains("三国战记3") || romPath.contains("三國戰紀3")) &&
+            p.contains("hd")) return@run true
+        // 3) zip 内含 CHD：FBNeo 街机 zip 从不含 CHD（PGM3 的 m105 镜像就是 CHD）
+        if (p.endsWith(".zip")) {
+            return@run try {
+                java.util.zip.ZipFile(romPath).use { zf ->
+                    zf.entries().asSequence().any {
+                        val n = it.name.lowercase()
+                        n.endsWith(".chd") || n.contains("m105") || n.contains("kov3hd")
+                    }
+                }
+            } catch (_: Throwable) { false }
+        }
+        false
+    }
+    pgm3RomCheckCache[romPath] = result
+    return result
+}
+
+/**
+ * ★★ v54 PGM3 ROM 布局归一化：找到或抽出 CHD，返回可直接交给 Pgm3Engine.loadRom
+ * 的文件（核心支持 CHD 直启）。找不到任何 CHD 时原样返回（核心会给出明确报错）。
+ * 优先级：
+ *   1) .chd 文件本身 → 直接返回；
+ *   2) zip 同名子目录里的 CHD（v52 标准布局 kov3hd/kov3hd_m105.chd）；
+ *   3) zip 旁边 / 同级一层子目录里散落的 CHD（任意名字）；
+ *   4) CHD 压在 zip 里 → 抽到应用私有目录（外部 ROM 目录可能只读/权限受限）。
+ */
+private fun normalizePgm3RomLayout(romFile: java.io.File, privateDir: java.io.File): java.io.File {
+    val name = romFile.name.lowercase()
+    if (name.endsWith(".chd")) return romFile   // CHD 直启（原支持）
+    if (!name.endsWith(".zip")) return romFile
+    val parent = romFile.parentFile
+    if (parent != null && parent.isDirectory) {
+        // 2) 同名子目录（v52 标准布局）
+        val sub = java.io.File(parent, romFile.nameWithoutExtension)
+        if (sub.isDirectory) {
+            sub.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
+                ?.firstOrNull()?.let { return it }
+        }
+        // 3a) zip 旁边散落的 CHD
+        parent.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
+            ?.firstOrNull()?.let { return it }
+        // 3b) 同级一层子目录里的 CHD（任意子目录名）
+        val dirs = parent.listFiles { f -> f.isDirectory } ?: emptyArray()
+        for (d in dirs) {
+            d.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
+                ?.firstOrNull()?.let { return it }
+        }
+    }
+    // 4) CHD 在 zip 里面：抽到私有目录
+    return try {
+        java.util.zip.ZipFile(romFile).use { zf ->
+            val entry = zf.entries().asSequence()
+                .firstOrNull { it.name.lowercase().endsWith(".chd") } ?: return romFile
+            val outDir = java.io.File(privateDir, "pgm3").apply { mkdirs() }
+            val outFile = java.io.File(outDir, java.io.File(entry.name).name)
+            if (!outFile.isFile || outFile.length() != entry.size) {
+                zf.getInputStream(entry).use { input ->
+                    java.io.FileOutputStream(outFile).use { output -> input.copyTo(output) }
+                }
+            }
+            android.util.Log.i("EmulatorScreen",
+                "PGM3 布局归一化：已从 zip 抽出 CHD → ${outFile.absolutePath}")
+            outFile
+        }
+    } catch (_: Throwable) { romFile }
+}
+
 @Composable
 fun EmulatorScreen(
     game: GameEntry,
@@ -1674,12 +1771,22 @@ fun EmulatorScreen(
             com.nesstation.app.core.engine.DraSticEngine.get()
         } else if (platform == GamePlatform.N3DS && n3dsCoreChoice == "citra_mmj") {
             com.nesstation.app.core.engine.CitraMmjEngine.get()
-        } else if (platform == GamePlatform.ARCADE &&
-            com.nesstation.app.core.engine.Pgm3Engine.isPgm3Rom(game.romPath)) {
+        } else if ((platform == GamePlatform.ARCADE || platform == GamePlatform.DC) &&
+            (com.nesstation.app.core.engine.Pgm3Engine.isPgm3Rom(game.romPath) ||
+             looksLikePgm3Rom(game.romPath))) {
             // ★★ v52 三国战记3 HD（IGS M027 / PGM2 世代）：FBNeo 拉模型核心
             //   跑不了它 —— 路由到专用 libpgm3 推模型核心（GL 直绘 + 自持
             //   OpenSLES 音频；仅 arm64）。ROM 布局：kov3hd.zip 与
             //   kov3hd/kov3hd_m105.chd 同目录；直接选 CHD 启动亦可。
+            // ★★ v54 路由强化（用户实测“三国战记3HD依旧不能玩，截图还是
+            //   Romset is unknown”的根因）：isPgm3Rom 只认严格布局
+            //   （kov3hd.zip + kov3hd/kov3hd_m105.chd）—— 中文名 zip /
+            //   CHD 在 zip 里 / CHD 散落旁边时判定 false → 落到 FBNeo
+            //   → “Romset is unknown”。v54 增加 looksLikePgm3Rom 多重
+            //   启发式（kov3hd/m105 文件名、中文名“三国战记3+HD”、zip 内
+            //   含 CHD）+ 装档前 normalizePgm3RomLayout 布局归一化，
+            //   确保 PGM3 核心拿到它能吃的布局（详见两个函数）。DC 平台
+            //   也纳入（.chd 被扫成 DC 游戏的 kov3hd 同样路由到 PGM3）。
             com.nesstation.app.core.engine.Pgm3Engine.get().apply {
                 attach(context.applicationContext)
             }
@@ -3223,6 +3330,17 @@ fun EmulatorScreen(
                     } catch (_: Throwable) {}
                 }
             }
+            // ★★ v54 PGM3 布局归一化：CHD 在 zip 内 / 散落旁边 / 子目录名不匹配时，
+            //   找到或抽出 CHD 直接启动（Pgm3Engine 支持 CHD 直启）—— 修复
+            //   "三国战记3HD 依旧 Romset is unknown"（此前落到 FBNeo 核心报错）。
+            if (engine is com.nesstation.app.core.engine.Pgm3Engine) {
+                val normalized = withContext(Dispatchers.IO) {
+                    normalizePgm3RomLayout(effectiveRom, context.filesDir)
+                }
+                if (normalized != effectiveRom && normalized.isFile) {
+                    effectiveRom = normalized
+                }
+            }
             val ok = withContext(Dispatchers.IO) {
                 engine.loadRom(effectiveRom, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
             }
@@ -4627,6 +4745,17 @@ fun EmulatorScreen(
                     }
                 }
             )
+        }
+
+        // ★★ v54 黑屏极速追赶浮层（用户实测反馈："加入对战的一人或者多人应该
+        //   黑屏快速直接追赶而不是启动游戏慢慢追赶，追赶成功再同步画面"）：
+        //   追赶期间引擎线程紧循环离屏快放（不渲染不出声），全屏黑底 + 进度；
+        //   追平后浮层消失、锁步画面以同步状态直接出现。放在聊天浮层之下，
+        //   聊天按钮/气泡仍在黑屏上可见可操作。
+        if (netplayController != null && netplayController.isCatchingUp &&
+            !showMenu && !showLayoutEditor && !showSettings &&
+            !showCustomLayoutEditor && !showNdsCustomLayoutEditor) {
+            NetplayCatchupOverlay(netplayController)
         }
 
         // ★★ v51 联机对战游戏内聊天：右上角悬浮按钮 + 聊天面板 + 新消息气泡。
@@ -8431,10 +8560,60 @@ private fun BoxScope.PlayerSwitchButton(
 }
 
 // ---------------------------------------------------------------------------
+// ★★ v54 黑屏极速追赶浮层（用户实测反馈："加入对战的一人或者多人应该黑屏快速
+//     直接追赶而不是启动游戏慢慢追赶，追赶成功再同步画面"）。
+//     追赶期间引擎线程紧循环离屏快放（runFrameDirect 不渲染不出声），
+//     屏幕保持黑屏；追平后浮层消失、画面以同步状态直接出现 ——
+//     观感"黑屏片刻即同步"。
+// ---------------------------------------------------------------------------
+@Composable
+private fun BoxScope.NetplayCatchupOverlay(
+    controller: com.nesstation.app.battle.NetplayController
+) {
+    var progress by remember { mutableStateOf("") }
+    LaunchedEffect(controller) {
+        while (true) {
+            progress = controller.catchupProgressText
+            kotlinx.coroutines.delay(200)
+        }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                "正在同步对战画面",
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (progress.isBlank()) "黑屏快速追赶中…" else "黑屏快速追赶中… $progress 帧",
+                color = Color(0xFF80D8FF),
+                fontSize = 13.sp
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "追平后自动进入对战（无需操作）",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ★★ v51 联机对战游戏内聊天（参考联机模拟器通用设计：悬浮按钮 + 消息面板 +
 //     快捷短语 + 新消息气泡 —— 街机团战不用退出游戏/切后台即可沟通）。
 //     传输走既有 TCP 中继（新消息 type=chat，服务器盖戳 from/slot/spec 转发
 //     给房间其他成员，玩家和观战者都能发）。
+//     ★★ v54：老服务器（<v51 无 chat 中继）时发送端自动改走输入通道兑底
+//     编码（NetplayController.sendChatFallback，负帧号 input 分片），
+//     任何服务器版本都能送达；发送后立即弹窗显示（用户实测反馈）。
 // ---------------------------------------------------------------------------
 
 /** 聊天消息条目（mine = 本端自己发的 —— 服务器不回显给自己，本地补录展示）。 */
@@ -8496,16 +8675,24 @@ private fun BoxScope.NetplayChatOverlay(
     fun doSend(raw: String) {
         val t = raw.trim()
         if (t.isEmpty()) return
-        // 历史保留 50 条，输入框清空；发送失败静默（服务器断连时丢消息即可）
+        // 历史保留 50 条，输入框清空；发送失败静默（服务器断连时丢消息即可）。
+        // ★★ v54 老服务器兑底：服务器 <v51（无 chat 中继）时控制器自动改走
+        //   输入通道编码发送（任何服务器版本都能送达，详见 sendChatFallback）。
         controller.sendChat(t)
-        messages = (messages + NetplayChatMsg(
+        val m = NetplayChatMsg(
             from = "我", text = t,
             slot = controller.slot, spec = controller.isSpectator, mine = true
-        )).takeLast(50)
+        )
+        messages = (messages + m).takeLast(50)
+        // ★★ v54 发送弹窗（用户实测反馈："发送信息后应该弹窗显示"）：
+        //   发送后立即以顶部气泡弹出，无论聊天面板开合。
+        bubble = (bubble + m).takeLast(3)
         inputText = ""
     }
 
     // 新消息气泡：5 秒无新消息自动消失（有新消息重新计时）
+    // ★★ v54：面板开着也显示（发送后弹窗显示的直观反馈；接收气泡同样
+    //   不再被面板开关抑制 —— 顶部居中位置与右侧面板互不遮挡）
     LaunchedEffect(bubble) {
         if (bubble.isNotEmpty()) {
             kotlinx.coroutines.delay(5000)
@@ -8513,8 +8700,8 @@ private fun BoxScope.NetplayChatOverlay(
         }
     }
 
-    // 面板关闭时：顶部消息气泡（半透明底，不打断游戏）
-    if (!panelOpen && bubble.isNotEmpty()) {
+    // 消息气泡（顶部居中；★ v54 面板开合均显示，半透明底不打断游戏）
+    if (bubble.isNotEmpty()) {
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)

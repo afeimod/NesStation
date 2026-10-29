@@ -285,8 +285,13 @@ func TestV53MixedV52NoPull(t *testing.T) {
         host.expectNone("no state_pull to v52 room", func(m relayMsg) bool { return m.Type == "state_pull" })
 }
 
-// TestV53StaleCacheStillCatches 旧档（超新鲜窗口 30s）+ 历史完整 → v53 直接
-// 用旧档追赶（快放会追回，多旧都能用）；v52 会因"不新鲜"降级暂停同步。
+// TestV53StaleCacheStillCatches 旧档 + 历史完整 + 全员 v53：
+// ★★ v54 语义更新（黑屏极速追赶配套）：缓存档距现在 > catchupStalePull(4s)
+// 且房主能响应拉档 → 优先静默拉【新】档（state_pull → 房主 state_upload →
+// 新档追赶包），追赶距离从"档龄×60 帧"缩到 ≈90 帧 —— 用户实测
+// "启动游戏慢慢追赶"（v53 直接用几十秒前的旧档追赶）的根治。
+// （v53 行为：直接用旧档追赶。"拉档失败仍能用旧档追赶"的保证由
+// TestV54WatchdogFallsBackToStaleCache 锁定 —— 看门狗降级链。）
 func TestV53StaleCacheStillCatches(t *testing.T) {
         env := newEnv(t, 0)
         tokH, _ := env.register(t, "host")
@@ -317,13 +322,16 @@ func TestV53StaleCacheStillCatches(t *testing.T) {
         p2.wait("hello", func(m relayMsg) bool { return m.Type == "hello" })
         p2.send(map[string]any{"type": "ready", "pad": 2, "stateCap": 1, "catchup": true})
 
-        // 直接收追赶包（旧档照用，不 pause 不拉档不降级）
-        st := p2.wait("catchup state", func(m relayMsg) bool { return m.Type == "state" })
-        if !st.Catchup || st.Frame != 20 {
-                t.Fatalf("state = %+v, want catchup=1 frame=20（旧档直接追赶）", st)
-        }
+        // ★ v54：旧档 → 优先拉新档（不直接发旧档追赶包，不 pause）
+        host.wait("state_pull", func(m relayMsg) bool { return m.Type == "state_pull" })
         host.expectNone("no pause", func(m relayMsg) bool { return m.Type == "pause" })
-        host.expectNone("no state_pull", func(m relayMsg) bool { return m.Type == "state_pull" })
+
+        // 房主响应拉档：上传最新档（帧 31 = 最新帧 + 1）
+        host.send(map[string]any{"type": "state_upload", "frame": 31, "data": "QUJD", "histEnd": 31})
+        st := p2.wait("catchup state", func(m relayMsg) bool { return m.Type == "state" })
+        if !st.Catchup || st.Frame != 31 {
+                t.Fatalf("state = %+v, want catchup=1 frame=31（拉新档后追赶距离 ≈ 90 帧）", st)
+        }
 }
 
 // TestV53HelloSrvField hello 回执必须带 srv=53（客户端能力协商依据 ——
