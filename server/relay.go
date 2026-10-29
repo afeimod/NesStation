@@ -40,16 +40,38 @@ const clientProtoRestart = 47
 //   房间自动退回 v4.5 暂停同步（老流程完整保留，互不干扰）。
 const clientProtoCatchup = 52
 
+// ★★ v53 拉档追赶（追赶机制完善）：客户端协议版本。
+//   53 = 理解 state_pull（服务器静默拉档：不广播 pause，房主引擎线程
+//   在下一帧边界直接出快照上传）+ hello 回执 srv 字段（服务器协议
+//   版本，客户端据此显示聊天/追赶能力提示）。
+//   v53 与 v52 行为差异（老客户端无感知）：
+//     · 服务器无缓存档/历史缺口时不再降级暂停同步 —— 向房主拉档后
+//       重试追赶（老客户端 v52 收到 state_pull 会忽略 → 看门狗劝退
+//       接入者，与 v52 行为一致，安全降级）；
+//     · 历史缓冲加倍（7200 帧 = 2 分钟），大档间隔 15s + 网络抖动下
+//       追赶重放历史依然完整。
+const clientProtoPull = 53
+
+// serverProto 本服务器协议版本（hello 回执 srv 字段）：
+//   51+ = chat 聊天中继；52+ = catchup 不暂停追赶；53 = state_pull 静默拉档。
+//   客户端据此显示能力提示（老服务器 + 新客户端：聊天面板提示
+//   "服务器版本较旧"，避免用户误以为是 bug —— v52 实测反馈
+//   "聊天对方收不到"的典型根因就是服务器二进制未同步更新）。
+const serverProto = clientProtoPull
+
 // ★★ v52 追赶座位激活裕量（帧）：接入者追平后，其座位从「服务器观察到的
 //   最新输入帧 + 该裕量」之后开始被全员等待 —— 保证 slot_active 广播到达
 //   各端时（中继拓扑下几十至几百毫秒），大家都还没跑到激活帧，杜绝
 //   "有人已执行过激活帧却没等新座位输入"的单端发散窗口。
 const catchupActivateMargin = 45
 
-// ★★ v52 输入历史环形缓冲容量（帧）：60fps × 60s = 3600。房主快照上传
-//   间隔最大 15s（大档），缓冲远大于快照间隔 → 追赶重放历史永远完整。
-//   内存占用 ≈ 3600 帧 × 5 槽 int ≈ 150KB/房间，可忽略。
-const catchupHistFrames = 3600
+// ★★ v52 输入历史环形缓冲容量（帧）。★★ v53：3600 → 7200（2 分钟）——
+//   v52 实测翻车场景：PGM 等大档上传间隔 15s，叠加出档线程繁忙/
+//   网络抖动，缓存档距最新帧可达 60s+；3600 帧历史覆盖不到档帧
+//   → 追赶判定失败降级暂停同步（用户看到"追赶后没同步"）。
+//   7200 帧 = 120s 覆盖 + 拉档兑底（见 state_pull）双保险。
+//   内存占用 ≈ 7200 帧 × 5 槽 int ≈ 300KB/房间，可忽略。
+const catchupHistFrames = 7200
 
 // ★★ v52 追赶看门狗：装档 + 离屏快放应在数十秒内完成（手机解码大档 +
 //   快放几百帧）。超时只劝退接入者 —— 原玩家全程未暂停、完全不受影响
@@ -121,6 +143,12 @@ type Room struct {
         inpHistStart int64
         // 服务器观察到的最新输入帧号（追赶激活帧/历史组装的基准；restart 清零）。
         maxFrame int64
+        // ★★ v53 静默拉档：等待房主新快照的追赶接入者（userId → 连接）。
+        //   beginSync 发现无缓存档/历史缺口时不降级 —— 发 state_pull 给房主
+        //   （不广播 pause！），房主引擎线程下一帧边界直接出快照上传；
+        //   state_upload 处理时逐个检查历史覆盖并组装追赶包。看门狗兑底：
+        //   房主不响应（老客户端/出档失败）→ 45s 后只劝退接入者，原玩家无感。
+        pendingCatchup map[string]*relayConn
 }
 
 func (r *Room) playerCount() int { return len(r.conns) }
@@ -263,6 +291,10 @@ type relayMsg struct {
         // ★★ v4.7：hello 客户端协议版本（47 = 新一代 restart 全员重开 +
         //   非街机核心 stateCap=-1 快照同步降级；旧版本重开帧号语义不兼容）
         V int `json:"v,omitempty"`
+        // ★★ v53：hello 回执附带 —— 服务器协议版本（53 = 支持 state_pull
+        //   静默拉档 + chat 转发 + catchup 追赶）。客户端据此显示能力提示
+        //   （聊天面板"服务器版本较旧"提醒等）。老服务器（<53）不回此字段。
+        Srv int `json:"srv,omitempty"`
         // ★★ v4.5.1：ready 附带 —— 该端能否出存档快照（1 能 / -1 不能 / 0 未知=旧客户端）。
         //   部分核心/驱动不支持快照（FBNeo 的 PGM/改版等，且 JNI 永远返回 true，
         //   客户端只能靠“存档文件非空”探测）—— 服务器据此决定：快照同步 or 全员重开。
@@ -623,6 +655,7 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
                         Slot:    0,
                         Players: players,
                         Playing: playing,
+                        Srv:     serverProto, // ★★ v53：服务器协议版本（客户端能力提示）
                 })
 
                 // 通知其他成员：有观战者加入（spec=true，不占槽位）
@@ -732,6 +765,7 @@ func (h *relayHub) handleConnInner(conn net.Conn) {
                 Slot:    rc.slot,
                 Players: players,
                 Playing: playing,
+                Srv:     serverProto, // ★★ v53：服务器协议版本（客户端能力提示）
         })
 
         // 通知其他成员：有新玩家加入（带槽位）—— 1P 端据此显示"2P/3P/4P 正在接入"
@@ -990,6 +1024,10 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         room.cacheState(&st)
                         log.Printf("[存档] 房间 %s：房主快照已缓存（帧 %d，约 %dKB）",
                                 room.ID, st.Frame, len(st.Data)*3/4/1024)
+                        // ★★ v53 静默拉档收尾：拉档期间的追赶接入者在等这份快照 ——
+                        //   组装追赶包发送（不暂停；若期间已转入暂停同步/重开，
+                        //   servePendingCatchups 内部名单校验会丢弃作废名单）。
+                        h.servePendingCatchups(room)
 
                 case "state_fail":
                         // ★★ v4.5 房主出档失败（客户端主动上报）→ 服务器立即收尾，不等看门狗。
@@ -1155,24 +1193,36 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
                 return
         }
         owner := ownerConn(room)
-        cached := room.freshCachedState() // hub.mu → lastStateMu 锁序 ✓
+        // ★★ v53：追赶模式用"最新档"（不管新鲜度 —— 离屏快放会追回，
+        //   多旧都能用）；暂停同步仍用新鲜档（回退过多体验差）。
+        cachedAny := room.cachedState()
+        cachedFresh := room.freshCachedState() // hub.mu → lastStateMu 锁序 ✓
         // ★★ v4.5.1 接入方式决策（存档同步在服务器 —— 能拿档绝不重开）：
         //   1. 服务器有新鲜缓存档（房主周期上传）→ 缓存档接入（首选，稳定）；
         //   2. 房主在且能出档（或旧客户端能力未知）→ state_req 新鲜档（零回退）；
         //   3. 都不行（核心不支持快照 / 房主不在）→ 全员重开（v≥45 房间）；
         //   4. 混合旧客户端房间 → 维持旧收尾（接入者劝退，绝不卡死）。
         // ★★ v52 追赶接入优先（小马模拟器式“中途加入不暂停”）：
-        //   全员 v≥52 且接入者引擎能离屏快放（ready.catchup）且服务器有
-        //   新鲜缓存档且输入历史缓冲完整覆盖 → 不暂停追赶；任一条件不满足
-        //   自动退回 v4.5 暂停同步（老流程完整保留，混合版本房间互不干扰）。
-        histFrom := cachedFrame16(cached)
-        catchupOk := h.roomSupportsCatchup(room) && rc.catchCap && cached != nil &&
-                room.inpHist != nil && room.inpHistStart <= histFrom
+        //   全员 v≥52 且接入者引擎能离屏快放（ready.catchup）→ 不暂停追赶。
+        // ★★ v53 决策重构（v52 实测翻车修复）：
+        //   a) 档不再要求“新鲜” —— 追赶模式下旧档照样能用（快放追回）；
+        //   b) 无档 / 历史缺口 → 不降级！全员 v≥53 时静默拉档（state_pull
+        //      只发房主，不广播 pause），房主引擎线程下一帧边界出快照上传，
+        //      服务器重试组装追赶包（小马同款“零感知拉档”）；
+        //   c) 有 v52 客户端的混合房间（不认识 state_pull）→ 维持 v52 降级链。
+        histFromAny := cachedFrame16(cachedAny)
+        catchupCapable := h.roomSupportsCatchup(room) && rc.catchCap && room.inpHist != nil
+        histReady := cachedAny != nil && room.inpHistStart <= histFromAny
+        catchupOk := catchupCapable && histReady
+        pullOk := catchupCapable && !histReady && owner != nil &&
+                h.roomSupportsPull(room) && owner.stateCap != -1
         mode := ""
         switch {
         case catchupOk:
                 mode = "catchup"
-        case cached != nil:
+        case pullOk:
+                mode = "pull"
+        case cachedFresh != nil:
                 mode = "cache"
         case owner != nil && owner.stateCap >= 0:
                 mode = "fresh"
@@ -1193,6 +1243,32 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
                 h.restartSync(room, rc, "无可用同步画面")
                 return
         }
+        if mode == "pull" {
+                // ★★ v53 静默拉档（零感知拉档）：服务器没有能用的档
+                //   （无缓存档 / 历史覆盖不到档帧）—— 不降级不暂停：
+                //   1) 接入者挂入 pendingCatchup（catchingUp=true：输入忽略、
+                //      看门狗兑底）；
+                //   2) state_pull 只发房主 —— 房主引擎线程在下一帧边界直接
+                //      出快照上传（uploadSnapshot 本就在引擎线程 afterFrame
+                //      调用，出档与跑帧同线程天然安全，无需挂门）；
+                //   3) state_upload 到达 → servePendingCatchups 组装追赶包。
+                //   期间原玩家全程无感（不广播 pause，游戏继续跑）。
+                rc.catchingUp = true
+                if room.pendingCatchup == nil {
+                        room.pendingCatchup = map[string]*relayConn{}
+                }
+                room.pendingCatchup[rc.user.ID] = rc
+                gap := "无缓存档"
+                if cachedAny != nil {
+                        gap = "历史缺口"
+                }
+                h.mu.Unlock()
+                log.Printf("[拉档] 房间 %s（桌 %d）：%s 追赶接入（%s：档帧 %d / 历史起点 %d）→ 静默向房主拉档",
+                        room.ID, room.TableNo, rc.user.Username, gap, cachedAnyFrame(cachedAny), room.inpHistStart)
+                _ = owner.send(relayMsg{Type: "state_pull"})
+                h.startCatchupWatchdog(rc)
+                return
+        }
         if mode == "catchup" {
                 // ★★ v52 不暂停追赶：不广播 pause（原玩家/观战者继续对战），
                 //   不发 state_req —— 仅接入者收到存档 + 完整输入历史
@@ -1200,18 +1276,18 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
                 //   → 追平 state_ok → 座位激活。原玩家的体验 = 完全无感知。
                 rc.catchingUp = true
                 histEnd := room.maxFrame + 1
-                if histEnd < cached.Frame {
-                        histEnd = cached.Frame
+                if histEnd < cachedAny.Frame {
+                        histEnd = cachedAny.Frame
                 }
-                hist := room.composeCatchupHist(histFrom, histEnd)
-                st := *cached
+                hist := room.composeCatchupHist(histFromAny, histEnd)
+                st := *cachedAny
                 st.Type = "state"
                 st.Catchup = true
                 st.Hist = hist
                 st.HistEnd = histEnd
                 h.mu.Unlock()
                 log.Printf("[追赶] 房间 %s（桌 %d）：%s 追赶接入（不暂停：档帧 %d → 追平帧 %d，重放 %d 帧）",
-                        room.ID, room.TableNo, rc.user.Username, cached.Frame, histEnd, histEnd-cached.Frame)
+                        room.ID, room.TableNo, rc.user.Username, cachedAny.Frame, histEnd, histEnd-cachedAny.Frame)
                 _ = rc.send(st)
                 h.startCatchupWatchdog(rc)
                 return
@@ -1225,6 +1301,9 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
         for _, c := range room.specs {
                 c.catchingUp = false
         }
+        // ★★ v53：静默拉档名单一并作废（追赶者转入暂停同步流程，
+        //   不再等房主拉档 —— 防止 stray 追赶包与新时间线错位）。
+        room.pendingCatchup = nil
         room.Status = roomSyncing
         room.syncGen++
         if room.syncJoiners == nil {
@@ -1244,7 +1323,7 @@ func (h *relayHub) beginSync(room *Room, rc *relayConn) {
                 _ = owner.send(relayMsg{Type: "state_req"})
         } else {
                 // 2) 服务器缓存档直接接入：全员同一份档、同帧恢复
-                h.broadcastState(room, nil, cached)
+                h.broadcastState(room, nil, cachedFresh)
         }
         h.startSyncWatchdog(room, gen)
 }
@@ -1431,6 +1510,14 @@ func cachedFrame16(st *relayMsg) int64 {
         return f
 }
 
+// cachedAnyFrame 档帧号（无档 = 0，仅日志用）。
+func cachedAnyFrame(st *relayMsg) int64 {
+        if st == nil {
+                return 0
+        }
+        return st.Frame
+}
+
 // composeCatchupHist 组装 [from, to) 每槽位的 pad 序列（缺帧补 0 —— 与各端
 // “离队/未激活槽位确定性 0”的语义一致，全员重放结果严格相同）。
 // ★ 已持 hub.mu 时调用。
@@ -1470,6 +1557,89 @@ func (h *relayHub) roomSupportsCatchup(room *Room) bool {
                 }
         }
         return true
+}
+
+// roomSupportsPull 全员（玩家+观战者）都理解 v53 state_pull（静默拉档）？
+// v52 客户端收到 state_pull 会忽略（不响应拉档）→ 看门狗劝退接入者
+// —— 行为与 v52 一致（安全降级），但不值得为此多等 45s：全员 ≥53
+// 才走拉档路径，否则直接降级（fresh/restart）。
+// ★ 持 hub.mu 时调用。
+func (h *relayHub) roomSupportsPull(room *Room) bool {
+        for _, c := range room.conns {
+                if c.v < clientProtoPull {
+                        return false
+                }
+        }
+        for _, c := range room.specs {
+                if c.v < clientProtoPull {
+                        return false
+                }
+        }
+        return true
+}
+
+// servePendingCatchups 静默拉档收尾（★ 未持锁时调用）：房主新快照到达 →
+// 逐个检查 pendingCatchup 里的接入者：历史若已能覆盖（新档帧距最新帧
+// ≤ 历史缓冲），组装追赶包发送（不暂停）；仍覆盖不到的留在名单里
+// 等下一份快照（看门狗兑底）。只发拉档期间新到的这份 —— 不是拉档
+// 场景（pendingCatchup 空）则零开销直接返回。
+func (h *relayHub) servePendingCatchups(room *Room) {
+        h.mu.Lock()
+        if len(room.pendingCatchup) == 0 || room.Status != roomPlaying {
+                // 竞态护栏：期间若已进入暂停同步/重开流程（catchingUp 已被
+                // 那边接管清位），名单作废 —— 绝不双发追赶包。
+                clear := room.pendingCatchup
+                room.pendingCatchup = nil
+                h.mu.Unlock()
+                if len(clear) > 0 {
+                        log.Printf("[拉档] 房间 %s：状态已变化，丢弃拉档名单（%d 人）", room.ID, len(clear))
+                }
+                return
+        }
+        cached := room.cachedState() // hub.mu → lastStateMu 锁序 ✓
+        if cached == nil {
+                h.mu.Unlock()
+                return
+        }
+        histFrom := cachedFrame16(cached)
+        if room.inpHistStart > histFrom {
+                // 这份快照仍然太旧（房主上传的档帧落后于历史起点 ——
+                // 拉档后房主只出了"当前帧"的档，正常不会发生；若发生
+                // （如超大档上传耗时），等下一份周期快照重试）。
+                h.mu.Unlock()
+                log.Printf("[拉档] 房间 %s：新快照仍无法覆盖历史（档帧 %d / 历史起点 %d），等下一份",
+                        room.ID, cached.Frame, room.inpHistStart)
+                return
+        }
+        histEnd := room.maxFrame + 1
+        if histEnd < cached.Frame {
+                histEnd = cached.Frame
+        }
+        hist := room.composeCatchupHist(histFrom, histEnd)
+        st := *cached
+        st.Type = "state"
+        st.Catchup = true
+        st.Hist = hist
+        st.HistEnd = histEnd
+        targets := make([]*relayConn, 0, len(room.pendingCatchup))
+        for _, c := range room.pendingCatchup {
+                if c.catchingUp && c.room == room {
+                        targets = append(targets, c)
+                }
+        }
+        room.pendingCatchup = nil
+        h.mu.Unlock()
+        for _, c := range targets {
+                uname := ""
+                if c.user != nil {
+                        uname = c.user.Username
+                }
+                log.Printf("[拉档] 房间 %s（桌 %d）：%s 追赶包已组装（档帧 %d → 追平帧 %d，重放 %d 帧）",
+                        room.ID, room.TableNo, uname, cached.Frame, histEnd, histEnd-cached.Frame)
+                _ = c.send(st)
+                // 看门狗已在 beginSync 拉档时启动，这里不重复（同一个 45s 窗口
+                // 覆盖拉档 + 装档 + 快放全程）。
+        }
 }
 
 // finishCatchup 追赶完成（★ 未持锁时调用）：接入者已追平实时画面。
@@ -1550,6 +1720,9 @@ func (h *relayHub) restartSync(room *Room, trigger any, reason string) {
         room.Status = roomWaiting // 重新走“全员 ready → start”开局流程
         h.stopSyncTimerLocked(room)
         room.syncJoiners = map[string]*relayConn{}
+        // ★★ v53：重开作废静默拉档名单（新时间线 —— 名单里的接入者
+        //   已随全员一起重开，不再需要追赶包）。
+        room.pendingCatchup = nil
         // ★★ v52：重开 = 新时间线 —— 输入历史缓冲与缓存档全部作废
         //   （旧帧号属于上一条时间线，误用会让追赶者重放出完全错位的画面）。
         room.inpHist = nil
@@ -1603,6 +1776,11 @@ func (h *relayHub) drop(rc *relayConn) {
         if rc.catchTimer != nil {
                 rc.catchTimer.Stop()
                 rc.catchTimer = nil
+        }
+        // ★★ v53：从静默拉档名单移除（拉档等待中掉线 —— 绝不给已断线的
+        //   连接发追赶包；名单空了则整表作废）。
+        if room := rc.room; room != nil && room.pendingCatchup != nil {
+                delete(room.pendingCatchup, rc.user.ID)
         }
         room := rc.room
         var abortAfterDrop bool  // 同步中房主掉线 → abortSync 收尾

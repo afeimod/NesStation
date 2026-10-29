@@ -317,13 +317,34 @@ class NetplayController(
     // === ★★ v52 追赶接入（小马模拟器式“中途加入不暂停”）状态 ===
     /** 追赶模式：装档完成、引擎开始离屏快放（每个可见帧重放一小段历史帧，屏幕表现为快进追赶）。 */
     @Volatile private var catchupMode = false
-    /** 追赶目标帧（服务器组装的输入历史终点 = 追平即转正常锁步）。 */
+    /** 追赶目标帧下限（服务器组装的输入历史终点 —— v53 起只是【下限】：
+     *  追赶期间服务器照常广播 input，onRemoteInput 持续更新 catchupLatestSeen，
+     *  实际追平目标 = max(catchupHistEnd, catchupLatestSeen - CATCHUP_TAIL)。 */
     @Volatile private var catchupHistEnd = 0L
     /** 追赶起点（存档帧 —— 进度展示用）。 */
     @Volatile private var catchupFromFrame = 0L
     /** 每个可见帧离屏快放的帧数（小段推进 —— 屏幕上是可见的快进效果，
-     *  追赶净速度 = CHUNK × 60fps，远大于对局 60fps 推进 → 必能追上）。 */
-    private val CATCHUP_CHUNK = 8
+     *  追赶净速度 = CHUNK × 60fps，远大于对局 60fps 推进 → 必能追上）。
+     *  ★★ v53：8 → 16 —— v52 实测追赶耗时过长（64 秒差距 × 8 倍速 = 8 秒+，
+     *  期间原玩家又跑 480+ 帧 → 追平后帧号错开 8 秒（用户看到“追赶后
+     *  没同步”）。16 倍速 + 动态目标双管齐下：追平时刻与原玩家仅差
+     *  CATCHUP_TAIL（1.5 秒），观感同步。快放帧不渲染不出声，
+     *  UI 帧率不受影响（每可见帧仍 60fps 渲染）。 */
+    private val CATCHUP_CHUNK = 16
+    /** ★★ v53 追赶动态目标：追平判定不追到 histEnd 就停（那是装档时刻的
+     *  冻结值），而是追到【最新已见远端输入帧 - 该尾距】—— 追赶期间
+     *  onRemoteInput 持续刷新 catchupLatestSeen，目标随实时帧滚动前移，
+     *  追平时与原玩家仅差 1.5 秒（锁步无缝并入，观感同步）。90 帧 = 60fps × 1.5s。 */
+    @Volatile private var catchupLatestSeen = 0L
+    private val CATCHUP_TAIL = 90L
+    /** ★★ v53 静默拉档：服务器 state_pull 请求（无缓存档/历史缺口时）——
+     *  置标志，引擎线程 afterFrame 下一帧立即 uploadSnapshot（出档与跑帧
+     *  同线程天然安全，无需挂门 —— 小马同款“零感知拉档”）。 */
+    @Volatile private var pullSnapshotRequested = false
+    /** ★★ v53 服务器协议版本（hello 回执 srv 字段；0 = 老服务器 <53）。
+     *  UI 据此提示聊天/追赶能力（老服务器无 chat 中继 → 聊天面板提示）。 */
+    @Volatile var serverProtoVersion = 0
+        private set
 
     /** v52 座位延迟激活：槽位 → 激活帧（该帧及之前其输入不被等待 —— 追赶/转座接入的无缝对接保证）。 */
     private val slotActiveFrom = java.util.concurrent.ConcurrentHashMap<Int, Long>()
@@ -334,6 +355,13 @@ class NetplayController(
         override fun onRemoteInput(frame: Long, pad: Int, slot: Int) {
             if (slot in 1..4) {
                 padsHistory[slot][frame] = pad
+                // ★★ v53 追赶动态目标：追赶期间持续记录最新已见远端输入帧 ——
+                //   追平目标随实时帧滚动前移（max(服务器 histEnd, 最新已见帧-90)），
+                //   追平时与原玩家仅差 1.5 秒（v52 冻结 histEnd → 追平后错开
+                //   “追赶耗时×60 帧”永久不同步的根治）。
+                if (catchupMode && frame > catchupLatestSeen) {
+                    catchupLatestSeen = frame
+                }
                 // ★★ v4.4 回滚：记录最新已知输入/帧号；已执行帧与预测不一致 → 标记待回滚
                 if (rollbackMode) {
                     rbLastKnownPad.set(slot, pad)
@@ -378,6 +406,10 @@ class NetplayController(
             parkedLocalFrame = -1
             // ★★ v52：全新开局 —— 追赶/座位激活簿记一并清零
             catchupMode = false
+            // ★★ v53：追赶动态目标/拉档簿记一并清零（新时间线从帧 0 起）
+            catchupLatestSeen = 0L
+            catchupHistEnd = 0L
+            pullSnapshotRequested = false
             slotActiveFrom.clear()
             android.util.Log.i("NetplayController", "onStart: delay=$inputDelay players=$players")
             synchronized(startGate) { started = true; startGate.notifyAll() }
@@ -471,6 +503,10 @@ class NetplayController(
             android.util.Log.i("NetplayController", "restart: 全员重开（players=$players delay=$inputDelay）")
             // ★★ v52：重开 = 全新时间线 —— 追赶/座位激活簿记清零
             catchupMode = false
+            // ★★ v53：追赶动态目标/拉档簿记一并清零
+            catchupLatestSeen = 0L
+            catchupHistEnd = 0L
+            pullSnapshotRequested = false
             slotActiveFrom.clear()
             restartPending = true
             restartFailed = false   // ★★ v4.6 每轮重开重置失败标记（上一轮失败不影响本轮）
@@ -571,6 +607,22 @@ class NetplayController(
         // ★★ v51 游戏内聊天：服务器盖戳的 from/slot/spec 直接透传给 UI（EmulatorScreen）
         override fun onChat(from: String, text: String, slot: Int, spec: Boolean) {
             dispatch { it.onChat(from, text, slot, spec) }
+        }
+
+        // ★★ v53 静默拉档：服务器无缓存档/历史缺口时请求房主立即出一份快照。
+        //   不暂停不挂门 —— 只置标志，引擎线程 afterFrame 下一帧边界直接
+        //   uploadSnapshot（出档与跑帧同线程，天然安全；小马同款"零感知拉档"）。
+        override fun onStatePull() {
+            pullSnapshotRequested = true
+        }
+
+        // ★★ v53 服务器协议版本记录（hello 回执 srv 字段；0 = 老服务器 <53）：
+        //   UI 据此提示聊天/追赶能力（老服务器无 chat 中继 → 聊天面板显示
+        //   "服务器版本较旧"提示 —— 用户实测"聊天对方收不到"的典型根因是
+        //   线上服务器二进制未随客户端同步更新，此提示让问题可自诊断）。
+        override fun onServerVersion(srv: Int) {
+            serverProtoVersion = srv
+            android.util.Log.i("NetplayController", "server proto version: $srv")
         }
 
         override fun onError(message: String) {
@@ -830,12 +882,25 @@ class NetplayController(
         rbRequestReset(-1L)
         catchupFromFrame = frame
         catchupHistEnd = histEnd
+        // ★★ v53 动态目标初始化：装档时刻把“最新已见帧”设为 histEnd（服务器
+        //   组装时的最新帧）—— 追赶期间 onRemoteInput 持续刷新，追平目标
+        //   随实时帧滚动前移（绝不在冻结的 histEnd 提前收兵）。
+        catchupLatestSeen = histEnd
         catchupMode = true
         dispatch { it.onSyncStatus("快进追赶画面中…") }
         // 开门（只开启动门 —— 同步门若因竞态已暂停则保持暂停，交给暂停流程收尾）
         synchronized(startGate) { started = true; startGate.notifyAll() }
         parkedLocalFrame = -1
     }
+
+    /**
+     * ★★ v53 追赶动态目标：max(服务器 histEnd 下限, 最新已见远端输入帧 - 90)。
+     * 追赶期间服务器照常广播 input（onRemoteInput 持续刷新 catchupLatestSeen）
+     * —— 目标随实时帧滚动前移，追平时与原玩家仅差 1.5 秒；纯 histEnd 模式
+     * （追平目标 < histEnd，如装档时快放已超过实时）则追到 histEnd 保底。
+     */
+    private fun catchupTarget(): Long =
+        maxOf(catchupHistEnd, catchupLatestSeen - CATCHUP_TAIL)
 
     /**
      * 追赶重放帧 [f] 的 4 手柄输入。
@@ -1161,7 +1226,13 @@ class NetplayController(
 
             // ★★ v52 追赶快放（小马式中途加入不暂停）：引擎每渲染一帧，
             //   离屏重放一小段历史帧（runFrameDirect 不渲染不出声），屏幕表现
-            //   为快进追赶；追平服务器给的 histEnd 后无缝落入下方正常锁步。
+            //   为快进追赶；追平后无缝落入下方正常锁步。
+            // ★★ v53 动态目标：追平目标不再是装档时刻冻结的 histEnd，而是
+            //   catchupTarget() = max(histEnd, 最新已见远端输入帧-90) ——
+            //   追赶期间服务器照常广播 input、onRemoteInput 持续刷新
+            //   catchupLatestSeen，目标随实时帧滚动前移：追平时与原玩家仅差
+            //   1.5 秒，锁步无缝并入（v52 冻结目标追平后永久错开“追赶耗时×60
+            //   帧”——用户实测“追赶后没同步”的根治）。
             if (catchupMode) {
                 val n0 = net
                 val io = stateIo
@@ -1176,7 +1247,7 @@ class NetplayController(
                 }
                 var replayed = 0
                 // 1）离屏快放本段（不含最后要渲染的一帧）
-                while (netFrameCounter < catchupHistEnd && replayed < CATCHUP_CHUNK - 1) {
+                while (netFrameCounter < catchupTarget() && replayed < CATCHUP_CHUNK - 1) {
                     val f = netFrameCounter
                     val pads = catchupPadsFor(f) ?: run {
                         zeroPadFrame = true; return IntArray(4) // 门事件/断连：下一迭代过门
@@ -1191,13 +1262,13 @@ class NetplayController(
                     }
                     netFrameCounter++
                     replayed++
-                    if (replayed % 30 == 0) {
+                    if (replayed % 60 == 0) {
                         val done = netFrameCounter - catchupFromFrame
-                        val total = (catchupHistEnd - catchupFromFrame).coerceAtLeast(1)
+                        val total = (catchupTarget() - catchupFromFrame).coerceAtLeast(1)
                         dispatch { it.onSyncStatus("快进追赶画面中… $done/$total 帧") }
                     }
                 }
-                if (netFrameCounter < catchupHistEnd) {
+                if (netFrameCounter < catchupTarget()) {
                     // 2）本段最后一帧交给引擎渲染（快进的可见画面）
                     val f = netFrameCounter
                     val pads = catchupPadsFor(f) ?: run {
@@ -1430,9 +1501,14 @@ class NetplayController(
         // ★★ v4.5 服务器侧存档：房主周期上传快照 → 服务器缓存（供 2P/3P/4P/观战
         //   加入时同步 —— “存档同步在服务器”）。引擎线程里出档、后台线程编码发送；
         //   暂停/同步期间引擎不跑帧，自然不会上传。间隔按档大小自适应。
+        // ★★ v53 静默拉档：服务器 state_pull 请求（无缓存档/历史缺口时有新接入者）
+        //   → 立即出档上传（跳过间隔检查 —— 追赶接入者在等这份档，越快越好；
+        //   出档与跑帧同线程天然安全，不打断任何人的对局）。
         if (started && !isSpectator && role == "host" && netFrame >= 0 && stateCap > 0) {
-            val due = if (lastUploadFrame < 0L) netFrame >= UPLOAD_FIRST_FRAME
-                      else netFrame - lastUploadFrame >= uploadGapFrames
+            val pullDue = pullSnapshotRequested
+            if (pullDue) pullSnapshotRequested = false
+            val due = pullDue || (if (lastUploadFrame < 0L) netFrame >= UPLOAD_FIRST_FRAME
+                      else netFrame - lastUploadFrame >= uploadGapFrames)
             if (due) {
                 lastUploadFrame = netFrame
                 uploadSnapshot(netFrame)

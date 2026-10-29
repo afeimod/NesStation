@@ -154,6 +154,13 @@ class BattleNetplay(
         /** ★★ v51 游戏内聊天收到（from = 发送者名字（服务器盖戳）；slot = 其座位；
          *  spec = 观战者）。*/
         fun onChat(from: String, text: String, slot: Int, spec: Boolean = false) {}
+        /** ★★ v53 静默拉档：仅房主收到 —— 服务器无缓存档/历史缺口，请立即
+         *  出一份快照上传（不暂停、不挂门：引擎线程 afterFrame 下一帧边界
+         *  直接 uploadSnapshot；有新接入者在等这份档）。 */
+        fun onStatePull() {}
+        /** ★★ v53 服务器协议版本（hello 回执 srv 字段；0 = 老服务器 <53）。
+         *  51+ = chat 中继；52+ = catchup 追赶；53 = state_pull 拉档。 */
+        fun onServerVersion(srv: Int) {}
         /** 连接被拒绝 / 协议错误 */
         fun onError(message: String)
         /** 连接关闭（非主动） */
@@ -176,7 +183,12 @@ class BattleNetplay(
         //   离屏快放追赶，追平 state_ok 后座位激活 —— 原玩家全程不暂停）；
         //   slot_active 座位延迟激活；seat_granted/take_seat 观战者热转座。
         //   服务器对房间内全员 v≥52 才启用追赶；混合旧客户端自动退回 v4.5 暂停同步。
-        const val PROTO_VERSION = 52
+        // ★★ v53 追赶机制完善（静默拉档 + 动态追平目标）：
+        //   state_pull 服务器静默拉档（无缓存档/历史缺口时不降级 —— 房主
+        //   下一帧边界直接出快照，全员零暂停）；hello 回执带 srv 字段
+        //   （服务器协议版本，客户端据此显示聊天/追赶能力提示 —— 老服务器
+        //   + 新客户端的“聊天收不到”能自诊断而非误报 bug）。
+        const val PROTO_VERSION = 53
     }
 
     @Volatile private var socket: Socket? = null
@@ -301,6 +313,8 @@ class BattleNetplay(
                 inputDelay = msg.optInt("pad", 4).coerceIn(0, 16)
                 mySlot = msg.optInt("slot", 1).coerceIn(1, 4)
                 roomPlaying = msg.optBoolean("playing", false)
+                // ★★ v53 服务器协议版本（老服务器 <53 不回此字段 = 0）。
+                listener.onServerVersion(msg.optInt("srv", 0))
                 listener.onReady(role, inputDelay, mySlot, parsePlayers(msg), roomPlaying)
             }
             "start" -> {
@@ -311,6 +325,9 @@ class BattleNetplay(
             }
             "pause" -> listener.onPause()
             "state_req" -> listener.onStateRequest()
+            // ★★ v53 静默拉档：服务器无缓存档/历史缺口 → 请立即出快照上传
+            //   （不暂停不挂门 —— 引擎线程 afterFrame 下一帧边界直接 uploadSnapshot）。
+            "state_pull" -> listener.onStatePull()
             "state" -> {
                 listener.onStateData(
                     msg.optLong("frame", 0),

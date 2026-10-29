@@ -8467,6 +8467,17 @@ private fun BoxScope.NetplayChatOverlay(
     var panelOpen by remember(controller) { mutableStateOf(false) }
     var bubble by remember(controller) { mutableStateOf<List<NetplayChatMsg>>(emptyList()) }
     var inputText by remember(controller) { mutableStateOf("") }
+    // ★★ v53 服务器能力提示：hello 回执 srv 字段（-1 = 还没收到 hello；
+    //   0 = 老服务器 <53 不回报 → 聊天/追赶可能不可用）。1 秒轮询零开销 ——
+    //   面板打开时能即时看到。用户实测"聊天对方收不到"的典型根因是
+    //   线上服务器二进制未随客户端同步更新，此提示让问题可自诊断。
+    var srvVersion by remember(controller) { mutableStateOf(-1) }
+    LaunchedEffect(controller) {
+        while (true) {
+            srvVersion = controller.serverProtoVersion
+            kotlinx.coroutines.delay(1000)
+        }
+    }
 
     // 接收房间聊天（NetplayController.dispatch 保证主线程回调，可直接改状态）
     DisposableEffect(controller) {
@@ -8567,6 +8578,17 @@ private fun BoxScope.NetplayChatOverlay(
                         .clip(androidx.compose.foundation.shape.CircleShape)
                         .clickable { panelOpen = false }
                         .padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
+            // ★★ v53 老服务器提示：服务器 <53（不回报版本）→ 聊天可能无法送达
+            //   （老服务器无 chat 中继）—— 显示一行小字让用户自诊断，不再误报 bug。
+            if (srvVersion == 0) {
+                Text(
+                    "服务器版本较旧：若消息无法送达，请将服务器更新到最新版",
+                    color = Color(0xFFFFD54F),
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    modifier = Modifier.padding(vertical = 2.dp)
                 )
             }
             Spacer(Modifier.height(8.dp))
