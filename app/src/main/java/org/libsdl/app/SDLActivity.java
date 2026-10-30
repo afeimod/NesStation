@@ -2163,88 +2163,6 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         }
         return result;
     }
-}
-
-/**
-    Simple runnable to start the SDL application
-*/
-class SDLMain implements Runnable {
-    @Override
-    public void run() {
-        // Runs SDLActivity.main()
-
-        try {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);
-        } catch (Exception e) {
-            Log.v("SDL", "modify thread properties failed " + e.toString());
-        }
-
-        SDLActivity.nativeInitMainThread();
-        SDLActivity.mSingleton.main();
-        SDLActivity.nativeCleanupMainThread();
-
-        if (SDLActivity.mSingleton != null && !SDLActivity.mSingleton.isFinishing()) {
-            // Let's finish the Activity
-            SDLActivity.mSDLThread = null;
-            SDLActivity.mSDLMainFinished = true;
-            SDLActivity.mSingleton.finish();
-        }  // else: Activity is already being destroyed
-
-    }
-}
-
-class SDLClipboardHandler implements
-    ClipboardManager.OnPrimaryClipChangedListener {
-
-    protected ClipboardManager mClipMgr;
-
-    SDLClipboardHandler() {
-       mClipMgr = (ClipboardManager) SDL.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-       mClipMgr.addPrimaryClipChangedListener(this);
-    }
-
-    public boolean clipboardHasText() {
-        if (Build.VERSION.SDK_INT >= 28 /* Android 9 (P) */) {
-            return mClipMgr.hasPrimaryClip();
-        } else {
-            return mClipMgr.hasText();
-        }
-    }
-
-    public String clipboardGetText() {
-        ClipData clip = mClipMgr.getPrimaryClip();
-        if (clip != null) {
-            ClipData.Item item = clip.getItemAt(0);
-            if (item != null) {
-                CharSequence text = item.getText();
-                if (text != null) {
-                    return text.toString();
-                }
-            }
-        }
-        return null;
-    }
-
-    public void clipboardSetText(String string) {
-        mClipMgr.removePrimaryClipChangedListener(this);
-        if (string.isEmpty()) {
-            if (Build.VERSION.SDK_INT >= 28 /* Android 9 (P) */) {
-                mClipMgr.clearPrimaryClip();
-            } else {
-                ClipData clip = ClipData.newPlainText(null, "");
-                mClipMgr.setPrimaryClip(clip);
-            }
-        } else {
-            ClipData clip = ClipData.newPlainText(null, string);
-            mClipMgr.setPrimaryClip(clip);
-        }
-        mClipMgr.addPrimaryClipChangedListener(this);
-    }
-
-    @Override
-    public void onPrimaryClipChanged() {
-        SDLActivity.onNativeClipboardChanged();
-    }
 
     // ======================================================================
     // ★★★ v57 afbn 桥区段（自 SDLActivity.kt 1:1 合并 —— 修复 kapt
@@ -2468,6 +2386,88 @@ class SDLClipboardHandler implements
         } catch (Throwable t) {
             Log.w("SDLActivity", "afbn nativePause(boolean): " + t.getMessage());
         }
+    }
+}
+
+/**
+    Simple runnable to start the SDL application
+*/
+class SDLMain implements Runnable {
+    @Override
+    public void run() {
+        // Runs SDLActivity.main()
+
+        try {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);
+        } catch (Exception e) {
+            Log.v("SDL", "modify thread properties failed " + e.toString());
+        }
+
+        SDLActivity.nativeInitMainThread();
+        SDLActivity.mSingleton.main();
+        SDLActivity.nativeCleanupMainThread();
+
+        if (SDLActivity.mSingleton != null && !SDLActivity.mSingleton.isFinishing()) {
+            // Let's finish the Activity
+            SDLActivity.mSDLThread = null;
+            SDLActivity.mSDLMainFinished = true;
+            SDLActivity.mSingleton.finish();
+        }  // else: Activity is already being destroyed
+
+    }
+}
+
+class SDLClipboardHandler implements
+    ClipboardManager.OnPrimaryClipChangedListener {
+
+    protected ClipboardManager mClipMgr;
+
+    SDLClipboardHandler() {
+       mClipMgr = (ClipboardManager) SDL.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+       mClipMgr.addPrimaryClipChangedListener(this);
+    }
+
+    public boolean clipboardHasText() {
+        if (Build.VERSION.SDK_INT >= 28 /* Android 9 (P) */) {
+            return mClipMgr.hasPrimaryClip();
+        } else {
+            return mClipMgr.hasText();
+        }
+    }
+
+    public String clipboardGetText() {
+        ClipData clip = mClipMgr.getPrimaryClip();
+        if (clip != null) {
+            ClipData.Item item = clip.getItemAt(0);
+            if (item != null) {
+                CharSequence text = item.getText();
+                if (text != null) {
+                    return text.toString();
+                }
+            }
+        }
+        return null;
+    }
+
+    public void clipboardSetText(String string) {
+        mClipMgr.removePrimaryClipChangedListener(this);
+        if (string.isEmpty()) {
+            if (Build.VERSION.SDK_INT >= 28 /* Android 9 (P) */) {
+                mClipMgr.clearPrimaryClip();
+            } else {
+                ClipData clip = ClipData.newPlainText(null, "");
+                mClipMgr.setPrimaryClip(clip);
+            }
+        } else {
+            ClipData clip = ClipData.newPlainText(null, string);
+            mClipMgr.setPrimaryClip(clip);
+        }
+        mClipMgr.addPrimaryClipChangedListener(this);
+    }
+
+    @Override
+    public void onPrimaryClipChanged() {
+        SDLActivity.onNativeClipboardChanged();
     }
 }
 
