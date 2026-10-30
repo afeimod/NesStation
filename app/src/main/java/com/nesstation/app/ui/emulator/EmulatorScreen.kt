@@ -1705,6 +1705,97 @@ private fun normalizePgm3RomLayout(romFile: java.io.File, privateDir: java.io.Fi
     } catch (_: Throwable) { romFile }
 }
 
+// ---------------------------------------------------------------------------
+// ★★ v57 街机改版 ROM 别名映射（MAME 命名 → FBNeo 驱动名）
+// ---------------------------------------------------------------------------
+// 背景：中文改版 ROM 包（三国志/西游记系列 hack）流传的 zip 名是 MAME 命名
+//（wof3sj / wof3sja / wof3js / wof3jsa / wof3jsb = 三圣剑/三剑圣各版本），
+// 与 FBNeo 驱动名（wofssj / wofssja / wofsjs / wofsjsa / wofsjsb）不一致 ——
+// FBNeo 按 zip 基名找驱动 → "Romset is unknown"。
+// ROM 内容逐文件 CRC 核对（FBNeo master d_cps1.cpp Wofssj/Wofssja/Wofsjs/
+// Wofsjsa/Wofsjsb RomDesc 与 MAME 发布包存档完全一致），改名即玩。
+// 表只收【内容已核实逐 CRC 一致】的映射；其余改版走 afbn 核心兜底路径。
+private object ArcadeRomAlias {
+    private val MAP = mapOf(
+        "wof3sj" to "wofssj",     // 三国志II 三圣剑 (bootleg set 1)
+        "wof3sja" to "wofssja",   // 三国志II 三圣剑 (bootleg set 2)
+        "wof3js" to "wofsjs",     // 三剑圣 (bootleg set 1)
+        "wof3jsa" to "wofsjsa",   // 三剑圣 (bootleg set 2)
+        "wof3jsb" to "wofsjsb"    // 三剑圣 (bootleg set 3)
+    )
+
+    /** 别名目标驱动的父集（FBNeo locate_archive 在 rom 目录/system fbneo 目录找父 zip）。 */
+    private val PARENTS = mapOf(
+        "wofssj" to "wof", "wofssja" to "wof",
+        "wofsjs" to "wof", "wofsjsa" to "wof", "wofsjsb" to "wof"
+    )
+
+    /** zip 文件名（带或不带扩展名均可）→ FBNeo 驱动名；无映射返回 null。 */
+    fun resolve(romFileName: String): String? {
+        val base = java.io.File(romFileName).nameWithoutExtension.lowercase()
+        return MAP[base]
+    }
+
+    fun parentOf(driver: String): String? = PARENTS[driver]
+}
+
+/**
+ * ★★ v57 构造别名副本：把改版 zip 复制为 <filesDir>/fbneo/<驱动名>.zip
+ *（FBNeo 的 system/fbneo 搜索位置），并尽力把父集（如 wof.zip）一并复制
+ * 到同目录（父集查找位置 = 加载 zip 所在目录 / system fbneo 目录）。
+ * 原目录只读（SAF/共享存储）也能工作 —— 副本全部落在应用私有目录。
+ * 返回别名 zip 文件；失败返回 null。
+ */
+private fun buildArcadeAliasCopy(
+    context: android.content.Context,
+    originalRom: java.io.File,
+    aliasDriver: String
+): java.io.File? {
+    return try {
+        val fbneoDir = java.io.File(context.filesDir, "fbneo").apply { mkdirs() }
+        val aliasZip = java.io.File(fbneoDir, "$aliasDriver.zip")
+        if (!aliasZip.isFile || aliasZip.length() != originalRom.length()) {
+            val pending = java.io.File(fbneoDir, "$aliasDriver.zip.pending")
+            originalRom.inputStream().use { input ->
+                pending.outputStream().use { input.copyTo(it) }
+            }
+            if (aliasZip.isFile) aliasZip.delete()
+            if (!pending.renameTo(aliasZip)) {
+                pending.copyTo(aliasZip, overwrite = true)
+                pending.delete()
+            }
+        }
+        val parent = ArcadeRomAlias.parentOf(aliasDriver) ?: return aliasZip
+        val parentZip = java.io.File(fbneoDir, "$parent.zip")
+        if (!parentZip.isFile || parentZip.length() == 0L) {
+            // 父集来源：原 ROM 同目录（直接路径）→ cacheDir（SAF 临时副本目录，
+            // 历史启动的父集副本仍在）→ 已在 fbneo 目录（跳过）。
+            val src = sequenceOf(
+                originalRom.parentFile,
+                context.cacheDir
+            ).mapNotNull { d -> d?.let { java.io.File(it, "$parent.zip") } }
+                .firstOrNull { it.isFile && it.length() > 0 }
+            if (src != null && src.absolutePath != parentZip.absolutePath) {
+                val pending = java.io.File(fbneoDir, "$parent.zip.pending")
+                src.inputStream().use { input ->
+                    pending.outputStream().use { input.copyTo(it) }
+                }
+                if (parentZip.isFile) parentZip.delete()
+                if (!pending.renameTo(parentZip)) {
+                    pending.copyTo(parentZip, overwrite = true)
+                    pending.delete()
+                }
+                android.util.Log.i("EmulatorScreen",
+                    "街机别名：已复制父集 ${src.name} → ${parentZip.absolutePath}")
+            }
+        }
+        aliasZip
+    } catch (t: Throwable) {
+        android.util.Log.w("EmulatorScreen", "buildArcadeAliasCopy: ${t.message}")
+        null
+    }
+}
+
 @Composable
 fun EmulatorScreen(
     game: GameEntry,
@@ -1772,6 +1863,14 @@ fun EmulatorScreen(
     //   （v58：原声明位于下方 edenBootRetry 之后、晚于本处使用点 —— Kotlin 局部
     //   变量前向引用报 Unresolved reference: afbnFallback，已上移至此。）
     var afbnFallback by remember { mutableStateOf(0) }
+
+    // ★★ v57 街机 MAME 名别名重试：wof3sja.zip（三剑圣，MAME 命名）在 FBNeo
+    //   驱动表里叫 wofssja —— 加载失败后把 zip 复制到 <filesDir>/fbneo/<驱动名>.zip
+    //   （含父集）重试一次（引擎仍是 FBNeo）。非 null = 当前正在用别名副本加载。
+    //   （同时作为加载 effect 的 key —— 与 afbnFallback 同一重试模式；
+    //   v55 版的 afbnFallback 从未加进 effect key，兜底切引擎后 loadRom
+    //   根本不会被重新调用，本次一并修复。）
+    var arcadeAliasFile by remember(game.id) { mutableStateOf<java.io.File?>(null) }
 
     val engine = remember(ndsCoreChoice, n3dsCoreChoice, game.id, afbnFallback) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
@@ -2919,7 +3018,11 @@ fun EmulatorScreen(
     // Load ROM
     // ★ 加载 effect 的 key 含 edenBootRetry：Switch 缺密钥引导安装成功后
     //   （见 edenKeyPickLauncher）自动重试启动 —— 其它平台恒为 0，行为不变。
-    LaunchedEffect(game, edenBootRetry) {
+    // ★★ v57：key 补上 afbnFallback 与 arcadeAliasFile —— v55 版的 afbn 兜底
+    //   只重算了引擎 remember，加载 effect 从未重跑（afbnFallback++ 后直接
+    //   return@LaunchedEffect，协程结束，AfbnEngine 的 loadRom 根本没被调用
+    //   —— 兜底从未生效，这是“改版游戏依旧打不开”的另一半根因）。
+    LaunchedEffect(game, edenBootRetry, afbnFallback, arcadeAliasFile) {
         // Ensure previous game is fully cleaned up before loading a new one.
         // loadRom() internally calls cleanup(), but an explicit unload() here
         // guarantees the audio thread, emulation thread, and native core are
@@ -3308,6 +3411,18 @@ fun EmulatorScreen(
             // 不可直接读时尝试经系统媒体库（MediaStore）救援拷贝到应用私有
             // 目录再加载；救援也失败则给出明确可操作的错误提示，绝不再黑屏。
             var effectiveRom = romFile
+            // ★★ v57 街机别名副本路由：MAME 命名改版 ROM（wof3sja → wofssja）
+            //   别名重试 / afbn 兜底重试时，改加载 <filesDir>/fbneo/<驱动名>.zip
+            //   （父集已一并复制过去）。引擎选择不受影响（FBNeo 与 afbn 驱动同名）。
+            if (platform == GamePlatform.ARCADE) {
+                arcadeAliasFile?.let { alias ->
+                    if (alias.isFile && alias.length() > 0) {
+                        android.util.Log.i("EmulatorScreen",
+                            "街机别名副本加载：${alias.name}（原 ${romFile.name}）")
+                        effectiveRom = alias
+                    }
+                }
+            }
             if (platform == GamePlatform.N3DS || platform == GamePlatform.NGCWII ||
                 platform == GamePlatform.WIIU || platform == GamePlatform.NSWITCH) {
                 val directlyReadable = withContext(Dispatchers.IO) { probeDirectlyReadable(romFile) }
@@ -3372,26 +3487,55 @@ fun EmulatorScreen(
                 engine.loadRom(effectiveRom, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
             }
             if (!ok) {
-                // ★★ v55 afbn 引擎兜底（三剑圣等 666 个 FBNeo 没有的改版）：
-                //   FBNeo 核心不认识该 romset（"Romset is unknown"）而 afbn 核心
-                //   （参考 APK libarcade.so，8378 驱动）有同名驱动 → 切换引擎
-                //   重试一次（afbnFallback 计入引擎 remember 与本 effect 的 key）。
-                //   hasDriver 首次调用会加载 afbn 核心 .so 家族并解析驱动表
-                //   （一次性，之后进程内缓存）；FBNeo 正常加载的游戏永远到不了这。
-                if (platform == GamePlatform.ARCADE && afbnFallback == 0 &&
-                    engine !is com.nesstation.app.core.engine.AfbnEngine) {
-                    val afbnHasIt = withContext(Dispatchers.IO) {
-                        try {
-                            com.nesstation.app.core.engine.AfbnEngine.get()
-                                .attach(context.applicationContext)
-                            com.nesstation.app.core.engine.AfbnEngine.hasDriver(effectiveRom.name)
-                        } catch (_: Throwable) { false }
+                val fbneoErr = engine.lastError()
+                // ★★ v57 街机改版三级重试（直接文件路径分支）：
+                //   ① MAME 名别名（wof3sja → wofssja）：复制改名副本（含父集）
+                //      到 <filesDir>/fbneo/ 重试 FBNeo（引擎不变）——仅当
+                //      FBNeo 报 romset 未知（ROMSET_UNKNOWN 标记，见
+                //      fbneo_loader.cpp v57）且尚未用过别名；
+                //   ② afbn 引擎兜底（kov2pshpd/kovshzlzy/orlegend 系列等 666 个
+                //      FBNeo 没有的改版驱动）：仅当 romset 未知且 afbn
+                //      驱动表命中（原名或别名名）→ afbnFallback++ 切引擎重试；
+                //   ③ 都不行 → 错误面板（BIOS 缺失/父集缺失等已知 romset 的
+                //      错误不受影响，仍直接显示 FBNeo 详细报错）。
+                //   （v55 版的 afbnFallback 从未加入加载 effect 的 key，切引擎后
+                //   loadRom 不会被重调 —— 本版已修复，见 effect 声明处注释。）
+                if (platform == GamePlatform.ARCADE &&
+                    engine !is com.nesstation.app.core.engine.AfbnEngine &&
+                    fbneoErr.contains("ROMSET_UNKNOWN")) {
+                    // ① 别名重试（还未用过别名副本）
+                    if (arcadeAliasFile == null) {
+                        val aliasDriver = ArcadeRomAlias.resolve(effectiveRom.name)
+                        if (aliasDriver != null) {
+                            val aliasCopy = withContext(Dispatchers.IO) {
+                                buildArcadeAliasCopy(context, effectiveRom, aliasDriver)
+                            }
+                            if (aliasCopy != null) {
+                                android.util.Log.i("EmulatorScreen",
+                                    "FBNeo 不认识 ${effectiveRom.name}，改用别名 $aliasDriver 重试" +
+                                    "（MAME 命名改版，副本 ${aliasCopy.absolutePath}）")
+                                arcadeAliasFile = aliasCopy
+                                return@LaunchedEffect
+                            }
+                        }
                     }
-                    if (afbnHasIt) {
-                        android.util.Log.i("EmulatorScreen",
-                            "FBNeo 不支持 ${effectiveRom.name}，切换 afbn 核心重试（改版驱动兜底）")
-                        afbnFallback++
-                        return@LaunchedEffect
+                    // ② afbn 引擎兜底
+                    if (afbnFallback == 0) {
+                        val afbnHasIt = withContext(Dispatchers.IO) {
+                            try {
+                                com.nesstation.app.core.engine.AfbnEngine.get()
+                                    .attach(context.applicationContext)
+                                com.nesstation.app.core.engine.AfbnEngine.hasDriver(effectiveRom.name) ||
+                                    (arcadeAliasFile != null &&
+                                     com.nesstation.app.core.engine.AfbnEngine.hasDriver(arcadeAliasFile!!.name))
+                            } catch (_: Throwable) { false }
+                        }
+                        if (afbnHasIt) {
+                            android.util.Log.i("EmulatorScreen",
+                                "FBNeo 不支持 ${effectiveRom.name}，切换 afbn 核心重试（改版驱动兜底）")
+                            afbnFallback++
+                            return@LaunchedEffect
+                        }
                     }
                 }
                 val err = engine.lastError()
@@ -3786,6 +3930,18 @@ fun EmulatorScreen(
                         tempFile.outputStream().use { out -> input.copyTo(out) }
                     }
                     input.close()
+                    // ★★ v57 街机别名副本路由（SAF 分支）：别名重试 / afbn 兜底
+                    //   重试时不再重新复制 SAF 文件，直接加载已建好的别名副本。
+                    var loadFile = tempFile
+                    if (platform == GamePlatform.ARCADE) {
+                        arcadeAliasFile?.let { alias ->
+                            if (alias.isFile && alias.length() > 0) {
+                                android.util.Log.i("EmulatorScreen",
+                                    "街机别名副本加载（SAF）：${alias.name}（原 ${tempFile.name}）")
+                                loadFile = alias
+                            }
+                        }
+                    }
                     // === iNES Header Patching for pirate multicarts (500-in-1) ===
                     // Patch the temp file's iNES header so FCEUmm loads the
                     // full PRG ROM (the header often claims 1MB but the file
@@ -3804,27 +3960,49 @@ fun EmulatorScreen(
                     // ★ 全核心统一在 IO 线程加载：DraStic loadRom 内部要等
                     // 首帧（最长 20 秒轮询），主线程执行会冻结 UI/引发 ANR。
                     val ok = withContext(Dispatchers.IO) {
-                        engine.loadRom(tempFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
+                        engine.loadRom(loadFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
                     }
                     if (!ok) {
-                        // ★★ v55 afbn 引擎兜底（SAF content:// 街机分支 —— 与直读
-                        //   分支同一逻辑：FBNeo 不认识 romset 而 afbn 有驱动 →
-                        //   切引擎重试一次；tempFile 已按原始 zip 名复制，驱动名
-                        //   可从文件名解析）
-                        if (platform == GamePlatform.ARCADE && afbnFallback == 0 &&
-                            engine !is com.nesstation.app.core.engine.AfbnEngine) {
-                            val afbnHasIt = withContext(Dispatchers.IO) {
-                                try {
-                                    com.nesstation.app.core.engine.AfbnEngine.get()
-                                        .attach(context.applicationContext)
-                                    com.nesstation.app.core.engine.AfbnEngine.hasDriver(tempFile.name)
-                                } catch (_: Throwable) { false }
+                        val fbneoErr = engine.lastError()
+                        // ★★ v57 街机改版三级重试（SAF content:// 分支 —— 与
+                        //   直读分支同一逻辑，详见那边的完整注释）：
+                        //   ① MAME 名别名（wof3sja → wofssja）重试 FBNeo；
+                        //   ② romset 未知且 afbn 有驱动（原名或别名名）→ 切
+                        //      afbn 引擎重试；
+                        //   ③ 都不行 → 错误面板。
+                        if (platform == GamePlatform.ARCADE &&
+                            engine !is com.nesstation.app.core.engine.AfbnEngine &&
+                            fbneoErr.contains("ROMSET_UNKNOWN")) {
+                            if (arcadeAliasFile == null) {
+                                val aliasDriver = ArcadeRomAlias.resolve(loadFile.name)
+                                if (aliasDriver != null) {
+                                    val aliasCopy = withContext(Dispatchers.IO) {
+                                        buildArcadeAliasCopy(context, loadFile, aliasDriver)
+                                    }
+                                    if (aliasCopy != null) {
+                                        android.util.Log.i("EmulatorScreen",
+                                            "FBNeo 不认识 ${loadFile.name}（SAF），改用别名 $aliasDriver 重试")
+                                        arcadeAliasFile = aliasCopy
+                                        return@LaunchedEffect
+                                    }
+                                }
                             }
-                            if (afbnHasIt) {
-                                android.util.Log.i("EmulatorScreen",
-                                    "FBNeo 不支持 ${tempFile.name}（SAF），切换 afbn 核心重试")
-                                afbnFallback++
-                                return@LaunchedEffect
+                            if (afbnFallback == 0) {
+                                val afbnHasIt = withContext(Dispatchers.IO) {
+                                    try {
+                                        com.nesstation.app.core.engine.AfbnEngine.get()
+                                            .attach(context.applicationContext)
+                                        com.nesstation.app.core.engine.AfbnEngine.hasDriver(loadFile.name) ||
+                                            (arcadeAliasFile != null &&
+                                             com.nesstation.app.core.engine.AfbnEngine.hasDriver(arcadeAliasFile!!.name))
+                                    } catch (_: Throwable) { false }
+                                }
+                                if (afbnHasIt) {
+                                    android.util.Log.i("EmulatorScreen",
+                                        "FBNeo 不支持 ${loadFile.name}（SAF），切换 afbn 核心重试")
+                                    afbnFallback++
+                                    return@LaunchedEffect
+                                }
                             }
                         }
                         val err = engine.lastError()

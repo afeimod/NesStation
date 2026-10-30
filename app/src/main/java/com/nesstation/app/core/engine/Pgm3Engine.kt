@@ -189,6 +189,26 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             root.mkdirs()
             File(root, "fram-save").apply { if (!isDirectory) mkdirs() }
             File(root, "memcard/kov3hd").apply { if (!isDirectory) mkdirs() }
+
+            // ★★ v57 Surface 先行等待（用户实测“黑屏 0 帧”的第一根因）：
+            //    参考实现是 Activity 流程 —— 先 surfaceCreated（窗口就绪）
+            //    再 nativeRun；本项目 Compose 加载 effect（IO 线程）与
+            //    SurfaceView 组合并发，nativeRun 可能先于 surfaceCreated 执行，
+            //    核心启动时 EGL 窗口目标缺失（libpgm3 二进制串
+            //    "original EGL window mode target is missing" /
+            //    "GPU presenter surface size mismatch" 即此路径）。
+            //    在 nativeRun 前有界等待 Surface 就绪（loadRom 已在 IO 线程，
+            //    阻塞安全；setSurface 已无锁化，不会被 lifecycleLock 阻塞）。
+            //    6s 仍无 Surface：继续启动（不阻断 —— 由下方帧看门狗给出
+            //    真实报错，绝不无解释黑屏）。
+            val waitStart = System.currentTimeMillis()
+            while (!surfaceReady && System.currentTimeMillis() - waitStart < 6_000) {
+                try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+            }
+            if (!surfaceReady) {
+                android.util.Log.w(TAG, "loadRom: Surface 6s 未就绪（继续启动，帧看门狗兜底）")
+            }
+
             val rc = try {
                 Pgm3Activity.nativeRun(root.absolutePath, romZip.absolutePath, romChd.absolutePath, "")
             } catch (t: Throwable) {
@@ -201,6 +221,36 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 android.util.Log.e(TAG, "nativeRun rc=$rc: $lastErr")
                 return false
             }
+
+            // ★★ v57 帧看门狗（用户实测“黑屏 0 帧”的第二根因）：nativeRun
+            //    返回 0 ≠ 渲染已起跑 —— 核心内部线程仍可能失败（CHD 版本校验
+            //    "Unsupported CHD: original kov3hd_m105 required"、EGL 窗口缺失
+            //    等），失败详情只写 <root>/interactive.log，rc 仍为 0 → 应用以为
+            //    成功 → 黑屏 0 帧且无任何提示。看门狗轮询 nativeFrameCount：
+            //    12s 内帧号始终为 0 → 按“启动失败”处理，读 interactive.log +
+            //    nativeStatus 给出真实原因（不再黑屏哑失败）。
+            val wdStart = System.currentTimeMillis()
+            var framesSeen = false
+            while (System.currentTimeMillis() - wdStart < 12_000) {
+                val f = try { Pgm3Activity.nativeFrameCount() } catch (_: Throwable) { 0 }
+                if (f > 0) { framesSeen = true; break }
+                try { Thread.sleep(150) } catch (_: InterruptedException) { break }
+            }
+            if (!framesSeen) {
+                val detail = readFailureDetail(root)   // interactive.log / nativeStatus 详情
+                // 停掉已启动的核心（0 帧状态机没有继续运行的意义）
+                try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
+                try { Pgm3Activity.nativeSurface(null) } catch (_: Throwable) {}
+                started = false
+                lastErr = "三国战记3HD 核心已启动但未产生任何画面（黑屏 0 帧）" +
+                    (if (detail.isNotBlank()) "：$detail" else "（interactive.log 无记录）") +
+                    "\n常见原因：CHD 版本不匹配（需要 original kov3hd_m105 光盘镜像）、" +
+                    "ROM 包不完整或设备 GL 不兼容。"
+                android.util.Log.e(TAG, "frame watchdog: $lastErr")
+                logInteractiveLog(root)
+                return false
+            }
+            logInteractiveLog(root)
 
             started = true
             isLoaded = true
@@ -266,31 +316,57 @@ class Pgm3Engine private constructor() : EmulatorEngine {
 
     /** 启动失败详情：<root>/interactive.log（核心落盘的失败原因）。 */
     private fun readFailure(root: File, rc: Int): String {
+        val detail = readFailureDetail(root)
+        return buildString {
+            append("三国战记3HD 启动失败（code $rc）")
+            if (detail.isNotBlank()) append("：").append(detail.trim())
+        }
+    }
+
+    /** 仅失败详情（interactive.log 首个非空行，缺则 nativeStatus；均空返回 ""）。 */
+    private fun readFailureDetail(root: File): String {
         val log = File(root, "interactive.log")
         val detail = try {
             log.takeIf { it.isFile }?.readLines()?.firstOrNull { it.isNotBlank() }
         } catch (_: Throwable) { null }
+        if (detail != null) return detail
         val status = try { Pgm3Activity.nativeStatus() } catch (_: Throwable) { null }
-        return buildString {
-            append("三国战记3HD 启动失败（code $rc）")
-            detail?.let { append("：").append(it.trim()) }
-            if (detail == null) status?.takeIf { it.isNotBlank() }?.let { append("：").append(it) }
-        }
+        return status?.takeIf { it.isNotBlank() } ?: ""
+    }
+
+    /** interactive.log 全文回显到 logcat（诊断 —— 线上问题只需 adb logcat）。 */
+    private fun logInteractiveLog(root: File) {
+        try {
+            val log = File(root, "interactive.log")
+            if (log.isFile) {
+                val text = log.readText().trim()
+                if (text.isNotEmpty()) {
+                    android.util.Log.i(TAG, "interactive.log:\n$text")
+                }
+            }
+        } catch (_: Throwable) {}
     }
 
     // === 渲染 ===
 
     override fun setSurface(surface: Surface?) {
-        synchronized(lifecycleLock) {
-            surfaceReady = surface != null
-            try {
-                Pgm3Activity.nativeSurface(surface)
-            } catch (t: Throwable) {
-                // 核心未启动前个别设备可能拒绑 —— 记录但不视为致命
-                android.util.Log.w(TAG, "nativeSurface: ${t.message}")
-            }
-            // Surface 就绪状态驱动暂停（参考实现：无 Surface = 暂停）
-            if (started) Pgm3Activity.nativePause(pausedExt || !surfaceReady)
+        // ★★ v57 无锁化（黑屏 0 帧修复的必要条件）：loadRom 全程持有
+        //   lifecycleLock（Surface 等待 + 帧看门狗最长 ~18s）。若本方法也
+        //   抢同一把锁，SurfaceView 的 surfaceCreated 会被阻塞到 loadRom
+        //   结束 —— “启动前等 Surface”永远等不到，恶性循环。
+        //   nativeSurface 二进制核实为并发安全（原子窗口存储 + 版本计数器，
+        //   渲染线程按版本重取）；参考实现也是 UI 线程直接调用（核心运行中
+        //   随时可换窗）。nativePause 为原子标志写。started 为 @Volatile。
+        try {
+            Pgm3Activity.nativeSurface(surface)
+        } catch (t: Throwable) {
+            // 核心未启动前个别设备可能拒绑 —— 记录但不视为致命
+            android.util.Log.w(TAG, "nativeSurface: ${t.message}")
+        }
+        surfaceReady = surface != null
+        // Surface 就绪状态驱动暂停（参考实现：无 Surface = 暂停）
+        if (started) {
+            try { Pgm3Activity.nativePause(pausedExt || !surfaceReady) } catch (_: Throwable) {}
         }
     }
 

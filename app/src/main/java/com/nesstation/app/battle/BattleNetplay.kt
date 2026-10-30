@@ -526,18 +526,25 @@ class BattleNetplay(
         sendLine(JSONObject().put("type", "bye").toString())
     }
 
-    @Synchronized
+    // ★★ v57 发送互斥锁：sendLine 的调用方横跨两个线程 —— 引擎线程每帧
+    //   sendInput（60Hz），UI 线程 sendChat/sendPing。原 @Synchronized 锁在
+    //   BattleNetplay 实例上（会把 ping 测量等不相关路径也串到同一把锁），
+    //   改为专用窄锁 —— 语义不变（行原子性），锁竞争面更小。
+    private val sendLock = Any()
+
     private fun sendLine(line: String) {
         val w = writer ?: run {
             android.util.Log.w("BattleNetplay", "sendLine: writer is null, line dropped: $line")
             return
         }
-        try {
-            w.write(line)
-            w.write("\n")
-            w.flush()
-        } catch (e: Exception) {
-            android.util.Log.w("BattleNetplay", "sendLine failed: ${e.message}")
+        synchronized(sendLock) {
+            try {
+                w.write(line)
+                w.write("\n")
+                w.flush()
+            } catch (e: Exception) {
+                android.util.Log.w("BattleNetplay", "sendLine failed: ${e.message}")
+            }
         }
     }
 

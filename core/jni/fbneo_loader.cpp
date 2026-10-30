@@ -145,6 +145,19 @@ static std::string s_coreMessage;
 static std::string s_coreError;
 static std::string s_coreLibPath;
 
+// ★★ v57 romset 未知检测：FBNeo libretro 核心（libretro.cpp 的
+// retro_load_game_common）在 romset 未知 / BIOS / not-working / 缺文件等
+// 错误路径下仍【return true】—— 它用内置 ugui 把错误画到视频帧上
+// （"FBNeo Error / Romset is unknown"，画面仍以 60fps 跑）。前端只能
+// 看到加载成功 → 兜底切引擎的逻辑永远不触发（用户实测“三剑圣等
+// 改版依旧 Romset is unknown”的根因）。
+// 区分手段：SetControllerInfo() 只在 romset 命中驱动表后才会被调用
+// （retro_load_game_common 成功分支 → InputInit → SetControllerInfo →
+// RETRO_ENVIRONMENT_SET_CONTROLLER_INFO；未知 romset 分支直接
+// SetUguiError → goto end，从未设置）。加载前清零，加载后仍为 false
+// 且 retro_load_game 返回 true → romset 未知 → 按加载失败处理。
+static std::atomic<bool> s_sawControllerInfo{false};
+
 // Dynamic frame buffer (ARGB, 0xAARRGGBB).
 static std::mutex s_frameMtx;
 static std::vector<uint32_t> s_frame;
@@ -370,6 +383,10 @@ static bool cb_environment(unsigned cmd, void* data) {
 
         case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS:
         case RETRO_ENVIRONMENT_SET_CONTROLLER_INFO:
+            // ★★ v57 romset 未知检测：见 s_sawControllerInfo 声明处注释。
+            s_sawControllerInfo.store(true, std::memory_order_release);
+            return true;
+
 #ifdef RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE
         case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
 #endif
@@ -688,6 +705,9 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
     gameInfo.size = 0;
     gameInfo.meta = nullptr;
 
+    // ★★ v57 romset 未知检测：加载前清零（见 s_sawControllerInfo 注释）。
+    s_sawControllerInfo.store(false, std::memory_order_release);
+
     bool ok = s_retro_load_game(&gameInfo);
     if (!ok) {
         // Fallback: read the file into memory and pass data + size.
@@ -738,6 +758,28 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
         s_coreError += "  4. ROM 版本不匹配: ROM 集版本与本 FBNeo 核心不兼容.\n";
         s_coreError += "\n详细帮助请查看: Settings → 街机 → ROM 兼容性帮助";
         LOGE("%s", s_coreError.c_str());
+        return s_coreError;
+    }
+
+    // ★★ v57 romset 未知检测：retro_load_game 返回 true 但核心从未
+    //   SET_CONTROLLER_INFO —— romset 没命中驱动表，核心此刻在内置 ugui
+    //   错误屏上跑（"FBNeo Error: Romset is unknown."，60fps 的假成功）。
+    //   按加载失败处理，让上层（EmulatorScreen 的 MAME 名别名重试 /
+    //   afbn 改版核心兜底）有机会接管。错误文本带 ROMSET_UNKNOWN 标记，
+    //   上层据此只对"未知 romset"启用改版兜底（BIOS 缺失/父集缺失等
+    //   已知 romset 的错误仍走原错误面板，不被兜底抢走）。
+    if (!s_sawControllerInfo.load(std::memory_order_acquire)) {
+        s_coreError = "ROMSET_UNKNOWN: FBNeo 核心不认识该 ROM 集（Romset is unknown）: " + path;
+        s_coreError += "\n\n文件名（去扩展名）就是 romset 名，FBNeo 驱动表里没有它。\n";
+        s_coreError += "  · 中文改版 ROM 常用 MAME 命名（如 wof3sja.zip = 三剑圣/三圣剑），\n";
+        s_coreError += "    与 FBNeo 的驱动名（wofssja 等）不一致 —— 应用会自动改名重试。\n";
+        s_coreError += "  · 若自动重试失败，请核对 ROM 文件名拼写，或换用 FBNeo 版 ROM 集。";
+        LOGE("%s", s_coreError.c_str());
+        // 卸载核心内已建立的 ugui 错误状态（否则下一局残留旧画面）。
+        if (s_gameLoaded) {
+            s_retro_unload_game();
+            s_gameLoaded = false;
+        }
         return s_coreError;
     }
 
