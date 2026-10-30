@@ -57,7 +57,10 @@ const clientProtoPull = 53
 //   客户端据此显示能力提示（老服务器 + 新客户端：聊天面板提示
 //   "服务器版本较旧"，避免用户误以为是 bug —— v52 实测反馈
 //   "聊天对方收不到"的典型根因就是服务器二进制未同步更新）。
-const serverProto = clientProtoPull
+//   ★★ v58：chat 可诊断性增强 —— 未加入房间的连接发 chat 不再静默丢弃，
+//   而是回一条 error 提示（发送端聊天面板能看到"尚未加入房间"而非石沉大海）。
+//   协议字节格式不变（老客户端完全兼容）；版本号独立于客户端协议号。
+const serverProto = 58
 
 // ★★ v52 追赶座位激活裕量（帧）：接入者追平后，其座位从「服务器观察到的
 //   最新输入帧 + 该裕量」之后开始被全员等待 —— 保证 slot_active 广播到达
@@ -951,6 +954,10 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         // ★★ v51 游戏内聊天：转发给房间内其他成员（玩家+观战者都能聊）。
                         //   From/Slot/Spec 由服务器按连接盖戳（不可伪造身份/座位）；
                         //   文本限长 200 字符（防刷屏/超大包），空白消息丢弃。
+                        //   ★★ v58 可诊断性：未加入房间的连接发 chat，旧版静默
+                        //   丢弃（发送端以为发出去了，实际上石沉大海 —— 双向
+                        //   "看不到对方消息"的排查黑洞）。现在回一条 error，
+                        //   发送端立刻知道自己还没进房间。
                         text := []rune(strings.TrimSpace(msg.Msg))
                         if len(text) == 0 {
                                 continue
@@ -962,6 +969,15 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                         room := rc.room
                         h.mu.Unlock()
                         if room == nil {
+                                _ = rc.send(relayMsg{
+                                        Type: "error",
+                                        Msg:  "聊天发送失败：当前连接尚未加入房间（请先进入对战房间再聊天）",
+                                })
+                                name := "unknown"
+                                if rc.user != nil {
+                                        name = rc.user.Username
+                                }
+                                log.Printf("[聊天] %s 未加入房间却发聊天（已回执提示）", name)
                                 continue
                         }
                         from := ""

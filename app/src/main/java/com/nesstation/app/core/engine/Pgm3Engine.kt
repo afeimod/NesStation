@@ -58,6 +58,10 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     @Volatile private var surfaceReady = false
     @Volatile private var pausedExt = false
 
+    /** ★★ v58 启动进度（等待首帧期间由 watchdog 更新，前端轮询显示；null = 无启动进行中）。 */
+    @Volatile var bootProgress: String? = null
+        private set
+
     /** 上一次各玩家 pad（Select 投币按下沿检测）。 */
     private val lastPad = IntArray(2)
 
@@ -84,6 +88,25 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         private val RUNTIME_ASSETS = listOf(
             "startup-oracle.bin", "division-oracle.bin", "mcu-startup-oracle.bin",
             "float-oracle-dcmplt.bin", "matrix-oracle.bin"
+        )
+
+        // ★★ v58 启动监护超时矩阵（毫秒）
+        /** 首帧等待上限：完全无活动信号时最多等这么久。 */
+        internal const val FIRST_FRAME_TIMEOUT_MS = 90_000L
+        /** 总上限：只要核心有活动（状态/日志在变）最多等这么久。 */
+        internal const val TOTAL_TIMEOUT_MS = 180_000L
+        /** 静默判死：自最近一次活动起三信号全无变化这么久 → 核心已死。 */
+        internal const val SILENCE_TIMEOUT_MS = 30_000L
+
+        /** 启动期明确失败语义（nativeStatus 文本 / interactive.log 内容命中即报错；
+         *  全部来自 libpgm3 二进制里实际存在的失败字符串，避免误伤正常加载日志）。 */
+        internal val STARTUP_ERROR_KEYWORDS = listOf(
+            "Unsupported CHD", "unsupported chd",
+            "EGL window mode target is missing", "GPU presenter surface size mismatch",
+            "无法打开", "无法创建", "无法读取", "不存在", "不完整", "校验失败",
+            "读取失败", "写入失败", "加载失败", "初始化失败",
+            "游戏会话已结束", "cannot open", "No such file or directory",
+            "FAIL FRAM", "FAIL:"
         )
 
         @Volatile private var instance: Pgm3Engine? = null
@@ -222,44 +245,186 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 return false
             }
 
-            // ★★ v57 帧看门狗（用户实测“黑屏 0 帧”的第二根因）：nativeRun
-            //    返回 0 ≠ 渲染已起跑 —— 核心内部线程仍可能失败（CHD 版本校验
-            //    "Unsupported CHD: original kov3hd_m105 required"、EGL 窗口缺失
-            //    等），失败详情只写 <root>/interactive.log，rc 仍为 0 → 应用以为
-            //    成功 → 黑屏 0 帧且无任何提示。看门狗轮询 nativeFrameCount：
-            //    12s 内帧号始终为 0 → 按“启动失败”处理，读 interactive.log +
-            //    nativeStatus 给出真实原因（不再黑屏哑失败）。
-            val wdStart = System.currentTimeMillis()
-            var framesSeen = false
-            while (System.currentTimeMillis() - wdStart < 12_000) {
-                val f = try { Pgm3Activity.nativeFrameCount() } catch (_: Throwable) { 0 }
-                if (f > 0) { framesSeen = true; break }
-                try { Thread.sleep(150) } catch (_: InterruptedException) { break }
-            }
-            if (!framesSeen) {
-                val detail = readFailureDetail(root)   // interactive.log / nativeStatus 详情
-                // 停掉已启动的核心（0 帧状态机没有继续运行的意义）
-                try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
-                try { Pgm3Activity.nativeSurface(null) } catch (_: Throwable) {}
-                started = false
-                lastErr = "三国战记3HD 核心已启动但未产生任何画面（黑屏 0 帧）" +
-                    (if (detail.isNotBlank()) "：$detail" else "（interactive.log 无记录）") +
-                    "\n常见原因：CHD 版本不匹配（需要 original kov3hd_m105 光盘镜像）、" +
-                    "ROM 包不完整或设备 GL 不兼容。"
-                android.util.Log.e(TAG, "frame watchdog: $lastErr")
-                logInteractiveLog(root)
-                return false
-            }
+            // ★★ v58 智能启动监护（用户实测反馈：“三国战记3HD 要加载一定时间，
+            //    12 秒就报错肯定不行，而且要保证核心真的在运行它” —— v57 的
+            //    12s 硬切会误杀还在加载的核心）。libpgm3 二进制核实：
+            //    kov3hd 启动有 staged startup movie（分段开机影片），且 CHD
+            //    为 LZMA 压缩（CHDR_LzmaDec*），首次解压+预缓存在大镜像上
+            //    就是需要时间。监护改为「多信号活动检测 + 分级超时」：
+            //
+            //    活动信号（任一变化 = 核心活着）：
+            //      A. nativeFrameCount() > 0  —— 渲染已起跑（最终成功条件）
+            //      B. nativeStatus() 文本变化 —— 核心状态机在推进（“等待启动”
+            //         →“游戏尚未启动”→…→“游戏运行中”，二进制里的全局状态串）
+            //      C. interactive.log 大小增长 —— 核心在写日志
+            //
+            //    超时矩阵：
+            //      · 首帧等待上限 90s（正常加载路径，覆盖大 CHD + 慢存储）
+            //      · 总上限 180s（只要有 B/C 活动就继续等，绝不提前杀）
+            //      · 静默判死 30s（自最近一次活动起，三信号全无变化 —— 这是
+            //        “核心真死了”与“核心在加载”的区分线；30s 静默的核心即使
+            //        再等也不可能自己活过来）
+            //
+            //    失败详情 = 最后状态文本 + interactive.log 尾部（真死也给原因）；
+            //    等待期间 bootProgress 持续更新（前端显示“核心状态 + 已等待
+            //    秒数”），logcat 每 2s 一条进度 —— 用户不再面对无解释黑屏。
+            watchdog(root)
+            if (!started) return false
             logInteractiveLog(root)
 
-            started = true
             isLoaded = true
             lastPad[0] = 0; lastPad[1] = 0
             android.util.Log.i(TAG, "kov3hd started: zip=${romZip.name} chd=${romChd.name}")
             // Surface 若已就绪则按外部暂停状态恢复
-            if (started) Pgm3Activity.nativePause(pausedExt || !surfaceReady)
+            Pgm3Activity.nativePause(pausedExt || !surfaceReady)
             return true
         }
+
+    /**
+     * ★★ v58 启动监护主循环（loadRom 内调用，已在 IO 线程 + lifecycleLock 内）。
+     * 成功置 started=true；失败置 lastErr + 停核置 started=false。
+     */
+    private fun watchdog(root: File) {
+        bootProgress = "正在启动三国战记3HD…"
+        val t0 = System.currentTimeMillis()
+        var lastActivity = t0               // 最近一次 B/C 信号变化
+        var lastStatus: String? = null      // nativeStatus 快照
+        var lastLogSize = -1L               // interactive.log 大小快照
+        var lastProgressLog = 0L            // 上次 logcat 进度输出
+        var pendingError: String? = null    // 命中的错误关键词（延迟确认）
+        var pendingErrorAt = 0L
+        var sawAnyActivity = false
+
+        while (true) {
+            val now = System.currentTimeMillis()
+            val waited = now - t0
+
+            // A. 首帧出现 —— 渲染起跑，立即成功
+            val frame = try { Pgm3Activity.nativeFrameCount() } catch (_: Throwable) { 0 }
+            if (frame > 0) {
+                bootProgress = null
+                started = true
+                android.util.Log.i(TAG, "watchdog: 首帧 #${frame}（等待 ${waited / 1000}s）")
+                return
+            }
+
+            // B. 核心状态文本变化 = 状态机在推进
+            val status = try { Pgm3Activity.nativeStatus() } catch (_: Throwable) { null }
+            if (status != lastStatus) {
+                if (lastStatus != null) {
+                    sawAnyActivity = true
+                    android.util.Log.i(TAG, "watchdog: 核心状态 → “${status ?: "（空）"}”（+${waited / 1000}s）")
+                }
+                lastStatus = status
+                lastActivity = now   // 状态出现/变化都刷新活动时钟（首个状态 = 基线）
+            }
+
+            // C. interactive.log 增长 = 核心在写日志
+            val logSize = try {
+                File(root, "interactive.log").takeIf { it.isFile }?.length() ?: 0L
+            } catch (_: Throwable) { 0L }
+            if (logSize != lastLogSize) {
+                if (lastLogSize >= 0) sawAnyActivity = true
+                lastLogSize = logSize
+                lastActivity = now
+            }
+
+            // 进度上报（前端轮询 bootProgress 显示；logcat 每 2s 一条）
+            if (now - lastProgressLog >= 2_000) {
+                lastProgressLog = now
+                val phase = status?.takeIf { it.isNotBlank() } ?: "（无状态）"
+                bootProgress = "正在启动三国战记3HD：核心状态「$phase」" +
+                    "，已等待 ${waited / 1000}s${if (logSize > 0) "，日志 ${logSize / 1024}KB" else ""}" +
+                    if (sawAnyActivity) "" else "（加载中，请耐心等待）"
+                android.util.Log.i(TAG, "watchdog: ${bootProgress}")
+            }
+
+            // D. 明确错误信号 —— 状态文本/日志出现失败语义 → 3s 后复查仍无
+            //    新活动即快速失败（不等满 90s；核心报了错不可能自己恢复）
+            val errHit = findStartupError(status, root)
+            if (errHit != null) {
+                if (pendingError == errHit) {
+                    if (now - pendingErrorAt >= 3_000 && now - lastActivity >= 3_000) {
+                        failWatchdog(root, errHit)
+                        return
+                    }
+                } else {
+                    pendingError = errHit
+                    pendingErrorAt = now
+                }
+            } else if (pendingError != null) {
+                pendingError = null   // 错误消失（状态又推进了）→ 撤销快速失败
+            }
+
+            // E. 静默判死：自最近活动起 30s 三信号全无变化
+            if (now - lastActivity >= SILENCE_TIMEOUT_MS) {
+                failWatchdog(root, "核心连续 ${SILENCE_TIMEOUT_MS / 1000}s 无任何活动" +
+                    "（状态「${status ?: "无"}」未变、日志无增长、帧号为 0）")
+                return
+            }
+
+            // F. 总限：有活动最多等 180s；完全无活动最多等 90s（首帧上限）
+            val limit = if (sawAnyActivity) TOTAL_TIMEOUT_MS else FIRST_FRAME_TIMEOUT_MS
+            if (waited >= limit) {
+                failWatchdog(root, "等待 ${limit / 1000}s 仍未出现画面" +
+                    "（${if (sawAnyActivity) "核心持续有活动" else "核心始终无活动"}" +
+                    "，状态「${status ?: "无"}」）")
+                return
+            }
+
+            try { Thread.sleep(250) } catch (_: InterruptedException) { return }
+        }
+    }
+
+    /** 启动失败收尾：停核 + 组装真实原因（最后状态 + interactive.log 尾部）。 */
+    private fun failWatchdog(root: File, reason: String) {
+        bootProgress = null
+        val status = try { Pgm3Activity.nativeStatus() } catch (_: Throwable) { null }
+        val logTail = readLogTail(root, 6)
+        // 停掉已启动的核心（失败状态机没有继续运行的意义）
+        try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
+        try { Pgm3Activity.nativeSurface(null) } catch (_: Throwable) {}
+        started = false
+        lastErr = buildString {
+            append("三国战记3HD 启动失败：")
+            append(reason)
+            status?.takeIf { it.isNotBlank() }?.let { append("；最后核心状态「").append(it).append("」") }
+            if (logTail.isNotBlank()) append("\n核心日志：\n").append(logTail)
+            append("\n请检查：CHD 是否为 original kov3hd_m105 版本、ROM 包是否完整、")
+            append("kov3hd.zip 与 kov3hd 文件夹是否同目录。")
+        }
+        android.util.Log.e(TAG, "watchdog fail: $lastErr")
+        logInteractiveLog(root)
+    }
+
+    /**
+     * 启动期错误关键词探测（nativeStatus 文本 + interactive.log 新增内容）。
+     * 仅盯二进制/日志里实际出现的明确失败语义，避免把正常加载日志误判为错。
+     */
+    private fun findStartupError(status: String?, root: File): String? {
+        val text = buildString {
+            append(status ?: "")
+            val logSize = try {
+                File(root, "interactive.log").takeIf { it.isFile }?.length() ?: 0L
+            } catch (_: Throwable) { 0L }
+            if (logSize > 0 && logSize <= 64 * 1024) {
+                try { append('\n').append(File(root, "interactive.log").readText()) } catch (_: Throwable) {}
+            }
+        }
+        if (text.isBlank()) return null
+        for (kw in STARTUP_ERROR_KEYWORDS) {
+            if (text.contains(kw)) return kw
+        }
+        return null
+    }
+
+    /** interactive.log 尾部 n 行（失败详情；无日志返回 ""）。 */
+    private fun readLogTail(root: File, lines: Int): String {
+        return try {
+            val log = File(root, "interactive.log")
+            if (!log.isFile) "" else log.readLines().takeLast(lines).joinToString("\n").trim()
+        } catch (_: Throwable) { "" }
+    }
 
     /** <romZip 同目录>/kov3hd/kov3hd_m105.chd（对齐参考实现），缺则试同目录平铺。 */
     private fun resolveChdBeside(romZip: File): File {
@@ -416,6 +581,7 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     private fun cleanup() {
         started = false
         isLoaded = false
+        bootProgress = null
         try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
         try { Pgm3Activity.nativeSurface(null) } catch (_: Throwable) {}
         surfaceReady = false

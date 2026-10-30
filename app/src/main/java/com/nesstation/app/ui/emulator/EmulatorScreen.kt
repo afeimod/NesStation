@@ -1931,6 +1931,19 @@ fun EmulatorScreen(
     var loaded by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
 
+    // ★★ v58 PGM3 启动进度（三国战记3HD 大 CHD 首次解压 + 分段开机影片需要
+    //   一段时间）：轮询 Pgm3Engine.bootProgress，把「核心状态 + 已等待秒数」
+    //   显示在启动屏上 —— 用户不再面对一句干巴巴的“正在加载…”。
+    var pgm3BootText by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(engine) {
+        val pgm3 = engine as? com.nesstation.app.core.engine.Pgm3Engine
+            ?: return@LaunchedEffect
+        while (true) {
+            pgm3BootText = pgm3.bootProgress
+            kotlinx.coroutines.delay(400)
+        }
+    }
+
     // ★ Switch（Eden）缺密钥引导（“没有密钥要提示加载密钥”）★★
     //   loadRom 因缺 prod.keys 失败时：错误面板附「加载密钥」按钮（SAF
     //   选 .keys → installKeysFromUri 即时生效）；安装成功后自动重试
@@ -4443,10 +4456,23 @@ fun EmulatorScreen(
                         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = errorMsg ?: "正在加载…",
+                            text = errorMsg ?: pgm3BootText ?: "正在加载…",
                             color = Color.White,
-                            fontSize = 16.sp
+                            fontSize = 16.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
+                        // ★★ v58 PGM3 长加载提示：核心有活动（在解压/引导）时告知
+                        //   用户这是正常过程，避免长时间等待被误认为卡死而退出。
+                        if (pgm3BootText != null) {
+                            Spacer(Modifier.size(8.dp))
+                            Text(
+                                text = "三国战记3HD 首次启动需解压光盘镜像，可能要 1~2 分钟，请耐心等待",
+                                color = Color(0xFFFFD66B),
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
                         // ★ Switch（Eden）缺密钥引导（短错误文案分支）
                         if (platform == GamePlatform.NSWITCH &&
                             errorMsg.orEmpty().contains("密钥")) {

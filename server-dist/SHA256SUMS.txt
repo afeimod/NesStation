@@ -1,0 +1,2 @@
+dfd046ac8dbbb80785f7ea7ba9ac3fbca5675ba98b4cbdee70f17fdee6846dd4  gamebox-server-linux-amd64
+6ad80dcfa734ff93db8774e771f3b7f87ee00cf5cfa2a3c7447216458d77228c  gamebox-server-linux-arm64
