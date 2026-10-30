@@ -1766,6 +1766,13 @@ fun EmulatorScreen(
     // 历史注：此前的 Flycast 独立核心在此处提前 return 到
     // FlycastLauncherScreen + NativeGLActivity；现改为统一引擎路径。
 
+    // ★★ v55 afbn 引擎兜底重试：FBNeo 报 Romset unknown 且 afbn 有驱动 →
+    //   切引擎重进加载 effect（与 edenBootRetry 同一模式）；>0 时引擎
+    //   remember 选择 AfbnEngine。只重试一次（AFBN 引擎内已二次报错则不再循环）。
+    //   （v58：原声明位于下方 edenBootRetry 之后、晚于本处使用点 —— Kotlin 局部
+    //   变量前向引用报 Unresolved reference: afbnFallback，已上移至此。）
+    var afbnFallback by remember { mutableStateOf(0) }
+
     val engine = remember(ndsCoreChoice, n3dsCoreChoice, game.id, afbnFallback) {
         if (platform == GamePlatform.NDS && ndsCoreChoice == "drastic") {
             com.nesstation.app.core.engine.DraSticEngine.get()
@@ -1830,10 +1837,6 @@ fun EmulatorScreen(
     //   选 .keys → installKeysFromUri 即时生效）；安装成功后自动重试
     //   启动（edenBootRetry 加入加载 effect 的 key，无需玩家退出重进）。
     var edenBootRetry by remember { mutableStateOf(0) }
-    // ★★ v55 afbn 引擎兜底重试：FBNeo 报 Romset unknown 且 afbn 有驱动 →
-    //   切引擎重进加载 effect（与 edenBootRetry 同一模式）；>0 时引擎
-    //   remember 选择 AfbnEngine。只重试一次（AFBN 引擎内已二次报错则不再循环）。
-    var afbnFallback by remember { mutableStateOf(0) }
     val edenKeyPickLauncher = rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
