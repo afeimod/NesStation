@@ -230,9 +230,10 @@ private val PCE_ACTIONS = listOf(
 )
 
 // PS2 (PCEE2 — PCSX2 core) — full DualShock 2: 16 buttons incl. L2/R2/L3/R3.
-// ★★ v60 摇杆方向：左/右摇杆上下左右八向（默认无键 —— 点击右侧按键框
-//   绑定任意物理键；DOWN/UP 经 GameSurfaceView.handleKeyStickEvent 合成
-//   模拟轴推给核心 —— 只有十字键的手柄/键盘也能驱动摇杆）。
+// ★★ v60/v61 摇杆方向：左/右摇杆上下左右八向。v61 起左摇杆四向默认绑
+//   手柄十字键（与其它行一致显示"方向上/下/左/右"，运行时十字键同时
+//   驱动数字方向与模拟轴）；右摇杆默认无键（物理右摇杆轴直连，
+//   行内显示"手柄右摇杆轴"），点击右侧按键框仍可自定义绑定。
 // Ids match EmulatorScreen's PS2 table.
 private val PS2_ACTIONS = listOf(
     KeyAction("ps2_up",     "上",     Color(0xFF3498DB), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
@@ -252,15 +253,15 @@ private val PS2_ACTIONS = listOf(
     KeyAction("ps2_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select"),
     KeyAction("ps2_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start"),
     // ★★ v60 左摇杆四向
-    KeyAction("ps2_ls_up",    "左摇杆·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("ps2_ls_down",  "左摇杆·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("ps2_ls_left",  "左摇杆·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("ps2_ls_right", "左摇杆·右", Color(0xFF9B59B6), 0, "未设置"),
+    KeyAction("ps2_ls_up",    "左摇杆·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("ps2_ls_down",  "左摇杆·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("ps2_ls_left",  "左摇杆·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("ps2_ls_right", "左摇杆·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
     // ★★ v60 右摇杆四向
-    KeyAction("ps2_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("ps2_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("ps2_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("ps2_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "未设置")
+    KeyAction("ps2_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("ps2_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("ps2_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("ps2_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "手柄右摇杆轴")
 )
 
 // PSP (PPSSPP) — PPSSPP 默认 Android 手柄映射（defaultPadMapAndroid）。
@@ -284,10 +285,10 @@ private val PSP_ACTIONS = listOf(
     KeyAction("psp_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select"),
     KeyAction("psp_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start"),
     // ★★ v60 PSP 单摇杆四向（PSP 只有左摇杆）
-    KeyAction("psp_ls_up",    "摇杆·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("psp_ls_down",  "摇杆·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("psp_ls_left",  "摇杆·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("psp_ls_right", "摇杆·右", Color(0xFF9B59B6), 0, "未设置")
+    KeyAction("psp_ls_up",    "摇杆·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("psp_ls_down",  "摇杆·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("psp_ls_left",  "摇杆·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("psp_ls_right", "摇杆·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右")
 )
 
 // DC (Dreamcast) — standard 12-button pad. Ids match EmulatorScreen's DC
@@ -308,10 +309,10 @@ private val DC_ACTIONS = listOf(
     KeyAction("dc_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select (\"D\")"),
     KeyAction("dc_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start"),
     // ★★ v60 DC 摇杆四向（Dreamcast 手柄单摇杆）
-    KeyAction("dc_ls_up",    "摇杆·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("dc_ls_down",  "摇杆·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("dc_ls_left",  "摇杆·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("dc_ls_right", "摇杆·右", Color(0xFF9B59B6), 0, "未设置")
+    KeyAction("dc_ls_up",    "摇杆·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("dc_ls_down",  "摇杆·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("dc_ls_left",  "摇杆·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("dc_ls_right", "摇杆·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右")
 )
 
 private val N3DS_ACTIONS = listOf(
@@ -330,14 +331,14 @@ private val N3DS_ACTIONS = listOf(
     KeyAction("n3ds_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select"),
     KeyAction("n3ds_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start"),
     // ★★ v60 3DS CirclePad / C-Stick（New3DS）四向
-    KeyAction("n3ds_ls_up",    "圆盘垫·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("n3ds_ls_down",  "圆盘垫·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("n3ds_ls_left",  "圆盘垫·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("n3ds_ls_right", "圆盘垫·右", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("n3ds_rs_up",    "C摇杆·上", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("n3ds_rs_down",  "C摇杆·下", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("n3ds_rs_left",  "C摇杆·左", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("n3ds_rs_right", "C摇杆·右", Color(0xFF8E44AD), 0, "未设置")
+    KeyAction("n3ds_ls_up",    "圆盘垫·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("n3ds_ls_down",  "圆盘垫·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("n3ds_ls_left",  "圆盘垫·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("n3ds_ls_right", "圆盘垫·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("n3ds_rs_up",    "C摇杆·上", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("n3ds_rs_down",  "C摇杆·下", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("n3ds_rs_left",  "C摇杆·左", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("n3ds_rs_right", "C摇杆·右", Color(0xFF8E44AD), 0, "手柄右摇杆轴")
 )
 
 private val NGCWII_ACTIONS = listOf(
@@ -367,14 +368,14 @@ private val NGCWII_ACTIONS = listOf(
     KeyAction("ngc_wii_tilt_f", "倾斜·前",  Color(0xFF7F8C8D), KeyEvent.KEYCODE_BUTTON_THUMBL, "Wii 向前倾斜"),
     KeyAction("ngc_wii_tilt_b", "倾斜·后",  Color(0xFF7F8C8D), KeyEvent.KEYCODE_BUTTON_THUMBR, "Wii 向后倾斜"),
     // ★★ v60 NGC 主摇杆 / C 摇杆（Wii 双节棍摇杆同主摇杆轴）四向
-    KeyAction("ngc_ls_up",    "主摇杆·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("ngc_ls_down",  "主摇杆·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("ngc_ls_left",  "主摇杆·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("ngc_ls_right", "主摇杆·右", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("ngc_rs_up",    "C摇杆·上", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("ngc_rs_down",  "C摇杆·下", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("ngc_rs_left",  "C摇杆·左", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("ngc_rs_right", "C摇杆·右", Color(0xFF8E44AD), 0, "未设置")
+    KeyAction("ngc_ls_up",    "主摇杆·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("ngc_ls_down",  "主摇杆·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("ngc_ls_left",  "主摇杆·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("ngc_ls_right", "主摇杆·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("ngc_rs_up",    "C摇杆·上", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("ngc_rs_down",  "C摇杆·下", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("ngc_rs_left",  "C摇杆·左", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("ngc_rs_right", "C摇杆·右", Color(0xFF8E44AD), 0, "手柄右摇杆轴")
 )
 
 // ★★ Wii U（Cemu-AZ 源码核心）GamePad 按键动作表：id 与 EmulatorScreen 的
@@ -400,14 +401,14 @@ private val WIIU_ACTIONS = listOf(
     KeyAction("wiiu_plus",   "+",     Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "GamePad +"),
     KeyAction("wiiu_home",   "HOME",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_MODE,   "GamePad HOME"),
     // ★★ v60 Wii U GamePad 左/右摇杆四向
-    KeyAction("wiiu_ls_up",    "左摇杆·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("wiiu_ls_down",  "左摇杆·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("wiiu_ls_left",  "左摇杆·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("wiiu_ls_right", "左摇杆·右", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("wiiu_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("wiiu_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("wiiu_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("wiiu_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "未设置")
+    KeyAction("wiiu_ls_up",    "左摇杆·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("wiiu_ls_down",  "左摇杆·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("wiiu_ls_left",  "左摇杆·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("wiiu_ls_right", "左摇杆·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("wiiu_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("wiiu_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("wiiu_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("wiiu_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "手柄右摇杆轴")
 )
 
 // ★★ v60 PSX（PCSX-ReARMed）专属表：此前 PSX 复用 SNES_ACTIONS（snes_* id）——
@@ -428,14 +429,14 @@ private val PSX_ACTIONS = listOf(
     KeyAction("psx_select", "Select", Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_SELECT, "Select"),
     KeyAction("psx_start",  "Start",  Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "Start"),
     // ★★ v60 DualShock 双摇杆八向
-    KeyAction("psx_ls_up",    "左摇杆·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("psx_ls_down",  "左摇杆·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("psx_ls_left",  "左摇杆·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("psx_ls_right", "左摇杆·右", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("psx_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("psx_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("psx_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("psx_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "未设置")
+    KeyAction("psx_ls_up",    "左摇杆·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("psx_ls_down",  "左摇杆·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("psx_ls_left",  "左摇杆·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("psx_ls_right", "左摇杆·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("psx_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("psx_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("psx_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("psx_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "手柄右摇杆轴")
 )
 
 // ★★ v60 NDS 专属表：同因 id 不对齐（旧用 snes_*，引擎解析 nds_*）而全静默失效。
@@ -475,14 +476,14 @@ private val SWITCH_ACTIONS = listOf(
     KeyAction("switch_plus",   "+",      Color(0xFF1E2A3A), KeyEvent.KEYCODE_BUTTON_START,  "+"),
     KeyAction("switch_home",   "HOME",   Color(0xFF607D8B), KeyEvent.KEYCODE_BUTTON_MODE,   "HOME"),
     // ★★ v60 Switch 左/右摇杆八向
-    KeyAction("switch_ls_up",    "左摇杆·上", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("switch_ls_down",  "左摇杆·下", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("switch_ls_left",  "左摇杆·左", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("switch_ls_right", "左摇杆·右", Color(0xFF9B59B6), 0, "未设置"),
-    KeyAction("switch_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("switch_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("switch_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "未设置"),
-    KeyAction("switch_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "未设置")
+    KeyAction("switch_ls_up",    "左摇杆·上", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_UP,    "方向上"),
+    KeyAction("switch_ls_down",  "左摇杆·下", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_DOWN,  "方向下"),
+    KeyAction("switch_ls_left",  "左摇杆·左", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_LEFT,  "方向左"),
+    KeyAction("switch_ls_right", "左摇杆·右", Color(0xFF9B59B6), KeyEvent.KEYCODE_DPAD_RIGHT, "方向右"),
+    KeyAction("switch_rs_up",    "右摇杆·上", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("switch_rs_down",  "右摇杆·下", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("switch_rs_left",  "右摇杆·左", Color(0xFF8E44AD), 0, "手柄右摇杆轴"),
+    KeyAction("switch_rs_right", "右摇杆·右", Color(0xFF8E44AD), 0, "手柄右摇杆轴")
 )
 
 private fun actionsFor(platform: GamePlatform, player: Int = 0): List<KeyAction> {

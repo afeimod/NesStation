@@ -251,9 +251,18 @@ private fun isStickDirectionActionId(id: String): Boolean =
     id.endsWith("_rs_left") || id.endsWith("_rs_right")
 
 /**
- * 摇杆方向动作解析：[keyCode] 被自定义绑定到某摇杆方向动作时返回
+ * 摇杆方向动作解析：[keyCode] 被绑定到某摇杆方向动作时返回
  * 【带玩家后缀的完整 id】（如 "ps2_ls_up_p1"），否则 null。
  * 仅匹配摇杆方向动作 —— 普通按键动作由 [resolveKeyBits] 处理（位掩码）。
+ *
+ * ★★ v61 默认绑定（用户反馈"摇杆的方向默认映射未设置把我看蒙了，和其他
+ * 按键映射一样默认手柄的"）：此前只有【自定义绑定】能驱动模拟轴 —— 无
+ * 自定义时摇杆方向动作完全惰性（显示"未设置"）。现分两级解析：
+ *   1) 自定义绑定优先（用户重映射过的动作只认自定义键）；
+ *   2) 无自定义的动作回退到表内默认键（左摇杆四向 = 十字键方向键，
+ *      与 KeyMapScreen 的 defaultKeyCode 一致）—— 十字键手柄/键盘
+ *      开箱即用左摇杆；右摇杆默认无键（物理右摇杆轴直连，
+ *      也可在按键映射页自定义绑定数字键）。
  */
 private fun resolveKeyStickActionId(
     keyCode: Int,
@@ -263,12 +272,22 @@ private fun resolveKeyStickActionId(
 ): String? {
     val suffix = "_p${player + 1}"
     val actions = buildKeyActions(platform)
+    var defaultHit: String? = null
     for (action in actions) {
         if (!isStickDirectionActionId(action.id)) continue
-        val customKeyCode = KeyMapStore.get(context, action.id + suffix)
-        if (customKeyCode == keyCode) return action.id + suffix
+        val fullId = action.id + suffix
+        val custom = KeyMapStore.get(context, fullId)
+        if (custom != null) {
+            // 自定义绑定：只认自定义键，且屏蔽该动作的默认键
+            if (custom == keyCode) return fullId
+            continue
+        }
+        // 无自定义：记录默认键命中（仍继续扫 —— 后面的动作可能有自定义绑定）
+        if (defaultHit == null && action.defaultKeyCode != 0 && action.defaultKeyCode == keyCode) {
+            defaultHit = fullId
+        }
     }
-    return null
+    return defaultHit
 }
 
 // Internal action model used by resolveKeyBits — mirrors KeyAction but
@@ -422,10 +441,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             // ★★ v60 摇杆方向（PSX 专属；NDS 无摇杆不增）：默认无键（0）——
             //   用户在按键映射页自行绑定；DOWN/UP 经 GameSurfaceView 的
             //   handleKeyStickEvent 合成模拟轴。
-            KeyActionInternal("psx_ls_up", 0),
-            KeyActionInternal("psx_ls_down", 0),
-            KeyActionInternal("psx_ls_left", 0),
-            KeyActionInternal("psx_ls_right", 0),
+            KeyActionInternal("psx_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("psx_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("psx_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("psx_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT),
             KeyActionInternal("psx_rs_up", 0),
             KeyActionInternal("psx_rs_down", 0),
             KeyActionInternal("psx_rs_left", 0),
@@ -450,10 +469,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("dc_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("dc_start", KeyEvent.KEYCODE_BUTTON_START),
             // ★★ v60 DC 摇杆四向（Flycast 单摇杆 —— 可绑定物理键）
-            KeyActionInternal("dc_ls_up", 0),
-            KeyActionInternal("dc_ls_down", 0),
-            KeyActionInternal("dc_ls_left", 0),
-            KeyActionInternal("dc_ls_right", 0)
+            KeyActionInternal("dc_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("dc_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("dc_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("dc_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT)
         )
         // PS2 (PCEE2 — PCSX2 core) — full DualShock 2: 16 buttons, incl. L2/R2/L3/R3.
         // ★★ v60 摇杆方向动作：*_ls_*/_rs_* 默认无键（0）—— 用户可在按键
@@ -476,10 +495,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ps2_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START),
             // ★★ v60 左/右摇杆四向（可绑定物理键；2P 走 setAnalogAxesP2）
-            KeyActionInternal("ps2_ls_up", 0),
-            KeyActionInternal("ps2_ls_down", 0),
-            KeyActionInternal("ps2_ls_left", 0),
-            KeyActionInternal("ps2_ls_right", 0),
+            KeyActionInternal("ps2_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("ps2_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("ps2_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("ps2_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT),
             KeyActionInternal("ps2_rs_up", 0),
             KeyActionInternal("ps2_rs_down", 0),
             KeyActionInternal("ps2_rs_left", 0),
@@ -502,10 +521,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("n3ds_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("n3ds_start", KeyEvent.KEYCODE_BUTTON_START),
             // ★★ v60 3DS CirclePad / C-Stick（New3DS）四向 —— 可绑定物理键
-            KeyActionInternal("n3ds_ls_up", 0),
-            KeyActionInternal("n3ds_ls_down", 0),
-            KeyActionInternal("n3ds_ls_left", 0),
-            KeyActionInternal("n3ds_ls_right", 0),
+            KeyActionInternal("n3ds_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("n3ds_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("n3ds_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("n3ds_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT),
             KeyActionInternal("n3ds_rs_up", 0),
             KeyActionInternal("n3ds_rs_down", 0),
             KeyActionInternal("n3ds_rs_left", 0),
@@ -543,10 +562,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ngc_wii_tilt_f", KeyEvent.KEYCODE_BUTTON_THUMBL),
             KeyActionInternal("ngc_wii_tilt_b", KeyEvent.KEYCODE_BUTTON_THUMBR),
             // ★★ v60 NGC 主摇杆 / C 摇杆（Wii 双节棍摇杆同主摇杆轴）四向
-            KeyActionInternal("ngc_ls_up", 0),
-            KeyActionInternal("ngc_ls_down", 0),
-            KeyActionInternal("ngc_ls_left", 0),
-            KeyActionInternal("ngc_ls_right", 0),
+            KeyActionInternal("ngc_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("ngc_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("ngc_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("ngc_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT),
             KeyActionInternal("ngc_rs_up", 0),
             KeyActionInternal("ngc_rs_down", 0),
             KeyActionInternal("ngc_rs_left", 0),
@@ -575,10 +594,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("wiiu_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("wiiu_home", KeyEvent.KEYCODE_BUTTON_MODE),
             // ★★ v60 Wii U GamePad 左/右摇杆四向 —— 可绑定物理键
-            KeyActionInternal("wiiu_ls_up", 0),
-            KeyActionInternal("wiiu_ls_down", 0),
-            KeyActionInternal("wiiu_ls_left", 0),
-            KeyActionInternal("wiiu_ls_right", 0),
+            KeyActionInternal("wiiu_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("wiiu_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("wiiu_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("wiiu_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT),
             KeyActionInternal("wiiu_rs_up", 0),
             KeyActionInternal("wiiu_rs_down", 0),
             KeyActionInternal("wiiu_rs_left", 0),
@@ -606,10 +625,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("switch_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("switch_home", KeyEvent.KEYCODE_BUTTON_MODE),
             // ★★ v60 Switch 左/右摇杆四向 —— 可绑定物理键
-            KeyActionInternal("switch_ls_up", 0),
-            KeyActionInternal("switch_ls_down", 0),
-            KeyActionInternal("switch_ls_left", 0),
-            KeyActionInternal("switch_ls_right", 0),
+            KeyActionInternal("switch_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("switch_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("switch_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("switch_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT),
             KeyActionInternal("switch_rs_up", 0),
             KeyActionInternal("switch_rs_down", 0),
             KeyActionInternal("switch_rs_left", 0),
@@ -638,10 +657,10 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("psp_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("psp_start", KeyEvent.KEYCODE_BUTTON_START),
             // ★★ v60 PSP 单摇杆四向 —— 可绑定物理键（PspCoreEngine.setAnalogAxes）
-            KeyActionInternal("psp_ls_up", 0),
-            KeyActionInternal("psp_ls_down", 0),
-            KeyActionInternal("psp_ls_left", 0),
-            KeyActionInternal("psp_ls_right", 0)
+            KeyActionInternal("psp_ls_up", KeyEvent.KEYCODE_DPAD_UP),
+            KeyActionInternal("psp_ls_down", KeyEvent.KEYCODE_DPAD_DOWN),
+            KeyActionInternal("psp_ls_left", KeyEvent.KEYCODE_DPAD_LEFT),
+            KeyActionInternal("psp_ls_right", KeyEvent.KEYCODE_DPAD_RIGHT)
         )
     }
     return base
@@ -2036,10 +2055,14 @@ fun EmulatorScreen(
     // (not Compose state) so key presses don't trigger recomposition — the
     // bits are pushed directly to the engine via setPad1().
     val gamepadBitsHolder = remember { intArrayOf(0) }
-    // ★★ v59 实体手柄摇杆轴死区滞回状态（hardwareAnalogListener 用；
-    //   remember 持有 —— 组合重组不会重置滞回状态）
-    val hwAxisMagHolder = remember { floatArrayOf(0f) }
+    // ★★ v59/v61 实体手柄摇杆轴死区滞回状态（hardwareAnalogListener 用；
+    //   remember 持有 —— 组合重组不会重置滞回状态；v61 扩为双槽：
+    //   [0]=左杆幅值 [1]=右杆幅值，左右杆独立滞回）
+    val hwAxisMagHolder = remember { floatArrayOf(0f, 0f) }
     val hwHatHolder = remember { intArrayOf(0, 0) }   // [0]=上次帽轴位 [1]=曾输出非零(0/1)
+    // ★★ v61 街机数字摇杆状态（hardwareAnalogListener 用；参考 afbn 的
+    //   HardwareInput.getAxisMatch 逻辑：模拟轴按阈值转数字方向 + 边沿去重）
+    val hwStickDirHolder = remember { intArrayOf(0, 0) }  // [0]=上次数字方向位 [1]=曾输出非零(0/1)
     var running by remember { mutableStateOf(true) }
     var fastForwardSpeed by remember { mutableStateOf(0) } // 0=off, 6=default
     // Remembers the last non-zero FF speed so the toolbar toggle re-engages
@@ -4397,6 +4420,7 @@ fun EmulatorScreen(
                     // ★★ v59 实体手柄摇杆轴状态与共享轴路由（滞回死区 + 平台轴链路）
                     hwAxisMagHolder = hwAxisMagHolder,
                     hwHatHolder = hwHatHolder,
+                    hwStickDirHolder = hwStickDirHolder,
                     analogAxesRouter = analogAxesRouter,
                     uiBlocked = showMenu || showLayoutEditor || showSettings || showCustomLayoutEditor ||
                                 showNdsCustomLayoutEditor || showSlotPicker != null || showFFSpeedPicker ||
@@ -7442,9 +7466,11 @@ private fun GameSurfaceView(
     gamepadBitsHolder: IntArray = intArrayOf(0),
     // ★★ v59 实体手柄摇杆轴死区滞回状态（hardwareAnalogListener 用；
     //   与外层 EmulatorScreen 共享同一数组实例 —— 滞回状态跨重组持续）。
-    hwAxisMagHolder: FloatArray = floatArrayOf(0f),
+    hwAxisMagHolder: FloatArray = floatArrayOf(0f, 0f),   // [0]=左杆 [1]=右杆幅值（v61 双槽）
     // [0]=上次帽轴方向位 [1]=曾输出非零方向(0/1)
     hwHatHolder: IntArray = intArrayOf(0, 0),
+    // ★ v61 街机数字摇杆方向状态（参考 afbn ±0.32 阈值逻辑）
+    hwStickDirHolder: IntArray = intArrayOf(0, 0),
     // ★★ v59 共享模拟轴路由：实体手柄摇杆（AXIS_X/Y/Z/RZ）与虚拟摇杆
     //   走同一条平台轴路由链路（null = 该平台无模拟轴，如 NES/MD）。
     analogAxesRouter: ((Float, Float, Float, Float) -> Unit)? = null,
@@ -7632,30 +7658,36 @@ private fun GameSurfaceView(
                     false
                 } else {
                     val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
+                    // ★★ v61 摇杆方向与普通按键【并行】解析：十字键默认同时
+                    //    驱动数字方向位与左摇杆模拟轴（默认绑定）；此前
+                    //    else-if 链使默认绑定的摇杆方向永远轮不到 —— 十字键
+                    //    手柄开箱不能驱动摇杆（默认映射形同虚设）。
+                    val stickHandled = handleKeyStickEvent(keyCode, event)
+                    var padHandled = false
                     if (bits != 0) {
                         when (event.action) {
                             KeyEvent.ACTION_DOWN -> {
                                 gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
                                 routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                true
+                                padHandled = true
                             }
                             KeyEvent.ACTION_UP -> {
                                 gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
                                 routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                true
+                                padHandled = true
                             }
-                            else -> false
+                            else -> {}
                         }
-                    } else if (handleKeyStickEvent(keyCode, event)) {
-                        // ★ v60 摇杆方向按键（自定义绑定）—— 已在内部推模拟轴
-                        true
-                    } else if (event.action == KeyEvent.ACTION_DOWN &&
-                               (keyCode == KeyEvent.KEYCODE_MENU ||
-                                keyCode == KeyEvent.KEYCODE_BACK)) {
-                        onMenuToggle()
-                        true
-                    } else {
-                        false
+                    }
+                    when {
+                        padHandled || stickHandled -> true
+                        event.action == KeyEvent.ACTION_DOWN &&
+                                   (keyCode == KeyEvent.KEYCODE_MENU ||
+                                    keyCode == KeyEvent.KEYCODE_BACK) -> {
+                            onMenuToggle()
+                            true
+                        }
+                        else -> false
                     }
                 }
             }
@@ -7683,36 +7715,56 @@ private fun GameSurfaceView(
                     // Also ensure any stale button bits are cleared on
                     // KEYUP even if they weren't tracked as DOWN (e.g.
                     // menu just closed while button was held).
+                    // ★★ v61 摇杆方向与普通按键并行解析（同上）：十字键
+                    //    默认同时驱动方向位与左摇杆模拟轴。
+                    val stickHandled = handleKeyStickEvent(keyCode, event)
+                    var padHandled = false
                     if (bits != 0 && event.action == KeyEvent.ACTION_UP) {
                         gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
                         routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                        true
+                        padHandled = true
                     } else if (bits != 0 && event.action == KeyEvent.ACTION_DOWN) {
                         gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
                         routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                        true
-                    } else if (handleKeyStickEvent(keyCode, event)) {
-                        // ★ v60 摇杆方向按键（自定义绑定）
-                        true
-                    } else if (event.action == KeyEvent.ACTION_DOWN &&
-                               (keyCode == KeyEvent.KEYCODE_MENU ||
-                                keyCode == KeyEvent.KEYCODE_BACK)) {
-                        onMenuToggle()
-                        true
-                    } else {
-                        false
+                        padHandled = true
+                    }
+                    when {
+                        padHandled || stickHandled -> true
+                        event.action == KeyEvent.ACTION_DOWN &&
+                                   (keyCode == KeyEvent.KEYCODE_MENU ||
+                                    keyCode == KeyEvent.KEYCODE_BACK) -> {
+                            onMenuToggle()
+                            true
+                        }
+                        else -> false
                     }
                 }
             }
-        // ★★ v59 实体手柄模拟摇杆轴监听（GenericMotionEvent）：
+        // ★★ v59/v61 实体手柄模拟摇杆轴监听（GenericMotionEvent）：
         //   物理手柄的摇杆轴（AXIS_X/Y = 左杆、AXIS_Z/RZ = 右杆）此前无任何
         //   监听 —— 只有按键数字位（setOnKeyListener）。蓝牙/USB 手柄在
         //   PS2/3DS/NGC-Wii/WiiU/DC/PSP/Switch 上摇杆完全不动（用户反馈
         //   "ps2 手柄映射缺少很多"的根因）。现与虚拟摇杆共用 analogAxesRouter：
-        //   - AXIS_X/Y/Z/RZ → 死区（0.12 触发 / 0.06 释放滞回）→ 平台轴路由；
+        //   - AXIS_X/Y/Z/RZ → 死区滞回 → 平台轴路由；
         //   - AXIS_HAT_X/Y（部分手柄十字键以帽轴上报）→ 数字方向位
         //     （与按键路由同一条 routePadBits 链路，联机同样走 netplay 转换）。
         //   uiBlocked（菜单/对话框打开）时不消费 —— 交给 Compose 导航。
+        //
+        //   ★★ v61 摇杆手感优化（参考 afbn 参考 APK 的摇杆逻辑）：
+        //     参考实现 HardwareInput.getAxisMatch / setAxisPressedState：
+        //     模拟轴以固定阈值（±0.32）判向 + 【状态变化去重】（方向位不变
+        //     不重复派发）。本项目多平台需要【连续模拟轴】，保留滞回死区
+        //     思想并升级三点：
+        //     1. 径向死区（√(x²+y²) 判定，替代旧版逐轴方形死区）—— 斜向
+        //        轻推不再因单轴越界产生"突跳"；
+        //     2. 越界后线性重缩放 (mag-dz)/(1-dz) —— 轻推即有渐进输出，
+        //        满推仍归一化到 1.0（旧版越界后原样输出，轻推段全部丢失）；
+        //     3. 左右杆独立滞回状态（旧版共享一个幅值，一杆在动会抬高另
+        //        一杆的释放阈值 —— 松开右杆时左杆还拉着就永远松不干净）。
+        //     4. 无模拟轴的平台（街机 FBNeo/afbn/PGM3）：按参考实现同款
+        //        ±0.32 阈值把左摇杆转成【数字方向位】并入按键链路 ——
+        //        街机摇杆本质是 8 向数字输入，阈值判向比连续轴更准
+        //        （0.32 触发 / 0.24 释放滞回，防临界抖动）。
         val hardwareAnalogListener: (android.view.View, android.view.MotionEvent) -> Boolean =
             { _, ev ->
                 if (uiBlocked) {
@@ -7724,21 +7776,49 @@ private fun GameSurfaceView(
                     if (src == 0 || ev.actionMasked != android.view.MotionEvent.ACTION_MOVE) {
                         false
                     } else {
-                        // ── 摇杆轴（带滞回死区）──
+                        // ── 摇杆轴 ──
                         val lx = ev.getAxisValue(android.view.MotionEvent.AXIS_X)
                         val ly = ev.getAxisValue(android.view.MotionEvent.AXIS_Y)
                         val rx = ev.getAxisValue(android.view.MotionEvent.AXIS_Z)
                         val ry = ev.getAxisValue(android.view.MotionEvent.AXIS_RZ)
                         // 滞回死区：上一事件幅值已越界 → 用更低的释放阈值
                         // （0.12 触发 / 0.06 释放 —— 与虚拟摇杆同一策略）
-                        val engagedPrev = hwAxisMagHolder[0] > 0.05f
-                        fun dz(v: Float): Float {
-                            val a = kotlin.math.abs(v)
-                            val limit = if (engagedPrev) 0.06f else 0.12f
-                            return if (a < limit) 0f else v
+                        val leftEngaged = hwAxisMagHolder[0] > 0.05f
+                        val rightEngaged = hwAxisMagHolder[1] > 0.05f
+                        fun radial(vx: Float, vy: Float, engaged: Boolean): Pair<Float, Float> {
+                            val mag = kotlin.math.sqrt(vx * vx + vy * vy)
+                            val lim = if (engaged) 0.06f else 0.12f
+                            if (mag <= lim) return 0f to 0f
+                            // 线性重缩放：死区外沿从 0 起步，满行程到 1.0
+                            val k = ((mag - lim) / (1f - lim)).coerceAtMost(1f) / mag
+                            return vx * k to vy * k
                         }
-                        hwAxisMagHolder[0] = maxOf(kotlin.math.abs(lx), kotlin.math.abs(ly))
-                        analogAxesRouter?.invoke(dz(lx), dz(ly), dz(rx), dz(ry))
+                        val (lsx, lsy) = radial(lx, ly, leftEngaged)
+                        val (rsx, rsy) = radial(rx, ry, rightEngaged)
+                        hwAxisMagHolder[0] = kotlin.math.sqrt(lx * lx + ly * ly)
+                        hwAxisMagHolder[1] = kotlin.math.sqrt(rx * rx + ry * ry)
+                        if (analogAxesRouter != null) {
+                            analogAxesRouter.invoke(lsx, lsy, rsx, rsy)
+                        } else {
+                            // ── ★ v61 无模拟轴平台：参考实现同款数字摇杆 ──
+                            //   ±0.32 触发 / 0.24 释放（滞回），方向位并入
+                            //   0xF0 nibble（与帽轴/十字键同一条链路）。
+                            val dzIn = if (hwStickDirHolder[1] == 1) 0.24f else 0.32f
+                            val magL = kotlin.math.sqrt(lx * lx + ly * ly)
+                            var dir = 0
+                            if (magL >= dzIn) {
+                                if (ly <= -0.32f) dir = dir or BTN_UP
+                                if (ly >= 0.32f) dir = dir or BTN_DOWN
+                                if (lx <= -0.32f) dir = dir or BTN_LEFT
+                                if (lx >= 0.32f) dir = dir or BTN_RIGHT
+                            }
+                            if (dir != hwStickDirHolder[0]) {
+                                hwStickDirHolder[0] = dir
+                                hwStickDirHolder[1] = if (dir != 0) 1 else 0
+                                gamepadBitsHolder[0] = (gamepadBitsHolder[0] and 0xF0.inv()) or dir
+                                routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                            }
+                        }
                         // ── 帽轴十字键 → 数字方向位 ──
                         val hx = ev.getAxisValue(android.view.MotionEvent.AXIS_HAT_X)
                         val hy = ev.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y)
@@ -7819,30 +7899,33 @@ private fun GameSurfaceView(
                                 false
                             } else {
                                 val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
+                                // ★ v61 摇杆方向与普通按键并行解析（默认绑定生效）
+                                val stickHandled = handleKeyStickEvent(keyCode, event)
+                                var padHandled = false
                                 if (bits != 0) {
                                     when (event.action) {
                                         KeyEvent.ACTION_DOWN -> {
                                             gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
                                             routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                            true
+                                            padHandled = true
                                         }
                                         KeyEvent.ACTION_UP -> {
                                             gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
                                             routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                            true
+                                            padHandled = true
                                         }
-                                        else -> false
+                                        else -> {}
                                     }
-                                } else if (handleKeyStickEvent(keyCode, event)) {
-                                    // ★ v60 摇杆方向按键（自定义绑定）
-                                    true
-                                } else if (event.action == KeyEvent.ACTION_DOWN &&
-                                           (keyCode == KeyEvent.KEYCODE_MENU ||
-                                            keyCode == KeyEvent.KEYCODE_BACK)) {
-                                    onMenuToggle()
-                                    true
-                                } else {
-                                    false
+                                }
+                                when {
+                                    padHandled || stickHandled -> true
+                                    event.action == KeyEvent.ACTION_DOWN &&
+                                               (keyCode == KeyEvent.KEYCODE_MENU ||
+                                                keyCode == KeyEvent.KEYCODE_BACK) -> {
+                                        onMenuToggle()
+                                        true
+                                    }
+                                    else -> false
                                 }
                             }
                         }
@@ -7924,30 +8007,33 @@ private fun GameSurfaceView(
                                 false
                             } else {
                                 val bits = resolveKeyBits(keyCode, platform, currentPlayer, ctx)
+                                // ★ v61 摇杆方向与普通按键并行解析（默认绑定生效）
+                                val stickHandled = handleKeyStickEvent(keyCode, event)
+                                var padHandled = false
                                 if (bits != 0) {
                                     when (event.action) {
                                         KeyEvent.ACTION_DOWN -> {
                                             gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
                                             routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                            true
+                                            padHandled = true
                                         }
                                         KeyEvent.ACTION_UP -> {
                                             gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
                                             routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
-                                            true
+                                            padHandled = true
                                         }
-                                        else -> false
+                                        else -> {}
                                     }
-                                } else if (handleKeyStickEvent(keyCode, event)) {
-                                    // ★ v60 摇杆方向按键（自定义绑定）
-                                    true
-                                } else if (event.action == KeyEvent.ACTION_DOWN &&
-                                           (keyCode == KeyEvent.KEYCODE_MENU ||
-                                            keyCode == KeyEvent.KEYCODE_BACK)) {
-                                    onMenuToggle()
-                                    true
-                                } else {
-                                    false
+                                }
+                                when {
+                                    padHandled || stickHandled -> true
+                                    event.action == KeyEvent.ACTION_DOWN &&
+                                               (keyCode == KeyEvent.KEYCODE_MENU ||
+                                                keyCode == KeyEvent.KEYCODE_BACK) -> {
+                                        onMenuToggle()
+                                        true
+                                    }
+                                    else -> false
                                 }
                             }
                         }

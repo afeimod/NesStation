@@ -26,7 +26,12 @@ class Pgm3Activity private constructor() {
 
     companion object {
         /** 启动模拟（root = 运行根目录：内含 runtime/ 数学协处理器固件）。
-         *  返回 0 = 成功；非 0 = 失败（详情见 <root>/interactive.log）。 */
+         *  ★★ v61 语义核实（libpgm3 二进制反汇编）：nativeRun 是【同步阻塞】
+         *  调用 —— 在调用线程内跑完整场模拟，直到会话结束（游戏退出/
+         *  nativeStop）才返回：0 = 会话正常结束；-1 = 初始化失败（详情见
+         *  <root>/interactive.log）；-2 = 已有会话在运行（核心互斥标志）。
+         *  必须放在独立工作线程调用（参考实现 Thread("KOV3HD") 同语义）。
+         *  nativeStatus 亦可在运行中查询。 */
         @JvmStatic external fun nativeRun(root: String, romZip: String, romChd: String, perfLog: String): Int
 
         /** 推送玩家输入（player 0/1；mcuPad = MCU 位格式，见类注释）。 */
