@@ -4109,6 +4109,76 @@ fun EmulatorScreen(
         overlayTheme.bgImageUri?.let { FsdImaging.decodeUri(context, it, 1280, 800) }
     }
 
+    // ★★ v59 共享模拟轴路由：虚拟摇杆（OnScreenController.onAnalogAxes）
+    //   与实体手柄摇杆（GameSurfaceView 内 hardwareAnalogListener →
+    //   SurfaceView setOnGenericMotionListener）走同一条链路。此前实体
+    //   手柄只有按键数字位（setOnKeyListener KeyEvent），模拟摇杆轴
+    //   （AXIS_X/Y 左杆、AXIS_Z/RZ 右杆）没有任何监听 —— 蓝牙/USB
+    //   手柄在 PS2/3DS/NGC-Wii/WiiU/DC/PSP/Switch 上摇杆完全不动
+    //   （用户反馈"ps2 手柄映射缺少很多"的根因）。各平台分支与原
+    //   onAnalogAxes 完全一致（逐字节迁移，无行为变化）。
+    //   ※ 定义在此处（主 Box 之前）而非 OnScreenController 分支内：
+    //   GameSurfaceView（4173 调用点）与虚拟手柄覆盖层都要引用它，
+    //   Kotlin 局部变量要求先声明后使用。
+    val analogAxesRouter: ((Float, Float, Float, Float) -> Unit)? = when {
+        platform == GamePlatform.PS2 -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxes(
+                    (lx * 32767).toInt(),
+                    (ly * 32767).toInt(),
+                    (rx * 32767).toInt(),
+                    (ry * 32767).toInt()
+                )
+            }
+        }
+        // 3DS（Azahar）：CirclePad → (lx, ly)，C-Stick → (rx, ry)
+        platform == GamePlatform.N3DS -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? com.nesstation.app.core.engine.AzaharCoreEngine)
+                    ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+        }
+        // NGC/WII（Ishiiruka）：NGC 主摇杆/C 摇杆 或 Wii 双节棍摇杆
+        platform == GamePlatform.NGCWII -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+                    ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+        }
+        // ★★ Wii U（Cemu）：GamePad 左/右摇杆（引擎换算为 VPAD
+        //   四向模拟轴 STICKL/R_UP/DOWN/LEFT/RIGHT）。
+        platform == GamePlatform.WIIU -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? com.nesstation.app.core.engine.CemuCoreEngine)
+                    ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+        }
+        // ★★ Switch（Eden）：左/右摇杆（VirtualGamepad 模拟轴，
+        //   归一化 -1..1，屏幕坐标约定上=负，与上游同口径）。
+        platform == GamePlatform.NSWITCH -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? com.nesstation.app.core.engine.EdenCoreEngine)
+                    ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+        }
+        // DC（Flycast）：DC 手柄摇杆（归一化 -1..1，引擎内转
+        // libretro int16；DC 无右摇杆，(rx, ry) 预留透传）
+        platform == GamePlatform.DC -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? com.nesstation.app.core.engine.DcCoreEngine)
+                    ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+        }
+        // PSP（PPSSPP）：左摇杆 → AXIS_X/Y（PPSSPP 默认映射
+        // 绑定 VIRTKEY_AXIS_X/Y → PSP 模拟摇杆）；PSP 无右摇杆
+        platform == GamePlatform.PSP -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? PspCoreEngine)?.setAnalogAxes(lx, ly, rx, ry)
+            }
+        }
+        else -> null
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(overlayTheme.bgColor?.let { Color(it) } ?: Color.Black)) {
         if (themeBgImage != null) {
             Image(
@@ -4207,6 +4277,10 @@ fun EmulatorScreen(
                     platform = platform,
                     currentPlayer = currentPlayer,
                     gamepadBitsHolder = gamepadBitsHolder,
+                    // ★★ v59 实体手柄摇杆轴状态与共享轴路由（滞回死区 + 平台轴链路）
+                    hwAxisMagHolder = hwAxisMagHolder,
+                    hwHatHolder = hwHatHolder,
+                    analogAxesRouter = analogAxesRouter,
                     uiBlocked = showMenu || showLayoutEditor || showSettings || showCustomLayoutEditor ||
                                 showNdsCustomLayoutEditor || showSlotPicker != null || showFFSpeedPicker ||
                                 netplayChatPanelOpen,
@@ -4589,73 +4663,9 @@ fun EmulatorScreen(
                     }
                 )
             } else {
-        // ★★ v59 共享模拟轴路由：虚拟摇杆（OnScreenController.onAnalogAxes）
-        //   与实体手柄摇杆（hardwareAnalogListener → SurfaceView
-        //   setOnGenericMotionListener）走同一条链路。此前实体手柄只有
-        //   按键数字位（setOnKeyListener KeyEvent），模拟摇杆轴
-        //   （AXIS_X/Y 左杆、AXIS_Z/RZ 右杆）没有任何监听 —— 蓝牙/USB
-        //   手柄在 PS2/3DS/NGC-Wii/WiiU/DC/PSP/Switch 上摇杆完全不动
-        //   （用户反馈"ps2 手柄映射缺少很多"的根因）。各平台分支与原
-        //   onAnalogAxes 完全一致（逐字节迁移，无行为变化）。
-        val analogAxesRouter: ((Float, Float, Float, Float) -> Unit)? = when {
-            platform == GamePlatform.PS2 -> {
-            { lx: Float, ly: Float, rx: Float, ry: Float ->
-            (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxes(
-            (lx * 32767).toInt(),
-            (ly * 32767).toInt(),
-            (rx * 32767).toInt(),
-            (ry * 32767).toInt()
-            )
-            }
-            }
-            // 3DS（Azahar）：CirclePad → (lx, ly)，C-Stick → (rx, ry)
-            platform == GamePlatform.N3DS -> {
-            { lx: Float, ly: Float, rx: Float, ry: Float ->
-            (engine as? com.nesstation.app.core.engine.AzaharCoreEngine)
-            ?.setAnalogAxes(lx, ly, rx, ry)
-            }
-            }
-            // NGC/WII（Ishiiruka）：NGC 主摇杆/C 摇杆 或 Wii 双节棍摇杆
-            platform == GamePlatform.NGCWII -> {
-            { lx: Float, ly: Float, rx: Float, ry: Float ->
-            (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
-            ?.setAnalogAxes(lx, ly, rx, ry)
-            }
-            }
-            // ★★ Wii U（Cemu）：GamePad 左/右摇杆（引擎换算为 VPAD
-            //   四向模拟轴 STICKL/R_UP/DOWN/LEFT/RIGHT）。
-            platform == GamePlatform.WIIU -> {
-            { lx: Float, ly: Float, rx: Float, ry: Float ->
-            (engine as? com.nesstation.app.core.engine.CemuCoreEngine)
-            ?.setAnalogAxes(lx, ly, rx, ry)
-            }
-            }
-            // ★★ Switch（Eden）：左/右摇杆（VirtualGamepad 模拟轴，
-            //   归一化 -1..1，屏幕坐标约定上=负，与上游同口径）。
-            platform == GamePlatform.NSWITCH -> {
-            { lx: Float, ly: Float, rx: Float, ry: Float ->
-            (engine as? com.nesstation.app.core.engine.EdenCoreEngine)
-            ?.setAnalogAxes(lx, ly, rx, ry)
-            }
-            }
-            // DC（Flycast）：DC 手柄摇杆（归一化 -1..1，引擎内转
-            // libretro int16；DC 无右摇杆，(rx, ry) 预留透传）
-            platform == GamePlatform.DC -> {
-            { lx: Float, ly: Float, rx: Float, ry: Float ->
-            (engine as? com.nesstation.app.core.engine.DcCoreEngine)
-            ?.setAnalogAxes(lx, ly, rx, ry)
-            }
-            }
-            // PSP（PPSSPP）：左摇杆 → AXIS_X/Y（PPSSPP 默认映射
-            // 绑定 VIRTKEY_AXIS_X/Y → PSP 模拟摇杆）；PSP 无右摇杆
-            platform == GamePlatform.PSP -> {
-            { lx: Float, ly: Float, rx: Float, ry: Float ->
-            (engine as? PspCoreEngine)?.setAnalogAxes(lx, ly, rx, ry)
-            }
-            }
-            else -> null
-        }
-
+        // ★★ v59 共享模拟轴路由 analogAxesRouter 已上移到主 Box 之前定义
+        //   （GameSurfaceView 的实体手柄摇杆监听与下方 OnScreenController 的
+        //   虚拟摇杆 onAnalogAxes 共用同一条链路）。
                 OnScreenController(
                     padLayout = padLayout,
                     surfaceSize = surfaceSize,
@@ -7313,6 +7323,14 @@ private fun GameSurfaceView(
     platform: GamePlatform = GamePlatform.NES,
     currentPlayer: Int = 0,
     gamepadBitsHolder: IntArray = intArrayOf(0),
+    // ★★ v59 实体手柄摇杆轴死区滞回状态（hardwareAnalogListener 用；
+    //   与外层 EmulatorScreen 共享同一数组实例 —— 滞回状态跨重组持续）。
+    hwAxisMagHolder: FloatArray = floatArrayOf(0f),
+    // [0]=上次帽轴方向位 [1]=曾输出非零方向(0/1)
+    hwHatHolder: IntArray = intArrayOf(0, 0),
+    // ★★ v59 共享模拟轴路由：实体手柄摇杆（AXIS_X/Y/Z/RZ）与虚拟摇杆
+    //   走同一条平台轴路由链路（null = 该平台无模拟轴，如 NES/MD）。
+    analogAxesRouter: ((Float, Float, Float, Float) -> Unit)? = null,
     uiBlocked: Boolean = false,
     onMenuToggle: () -> Unit = {},
     modifier: Modifier = Modifier,
