@@ -180,6 +180,13 @@ static std::atomic<uint16_t> s_pad1{0};
 static std::atomic<uint16_t> s_pad2{0};
 static std::atomic<uint16_t> s_pad3{0};
 static std::atomic<uint16_t> s_pad4{0};
+// ★★ v60 DualShock 模拟轴（port 0：LX/LY/RX/RY，int16）—— 虚拟摇杆 /
+//   实体手柄轴 / 按键映射的摇杆方向三路输入都汇到这里，cb_input_state
+//   的 RETRO_DEVICE_ANALOG 分支按需读取（旧版恒报 0 = 摇杆从未生效）。
+static std::atomic<int16_t> s_ana1x{0};
+static std::atomic<int16_t> s_ana1y{0};
+static std::atomic<int16_t> s_ana1rx{0};
+static std::atomic<int16_t> s_ana1ry{0};
 
 static std::atomic<int>  s_videoFilter{0};
 static std::atomic<bool> s_highQualityScaling{false};
@@ -737,12 +744,23 @@ static void cb_input_poll() { /* state is read on demand */ }
 
 static int16_t cb_input_state(unsigned port, unsigned device,
                               unsigned index, unsigned id) {
-    // RETRO_DEVICE_ANALOG (DualShock): report stick axes. The on-screen UI
-    // feeds digital pad bits only, so both sticks rest at center (0).
-    // Games probe the DualShock via this device type — reporting neutral
-    // axes is enough for them to enable analog-only features.
+    // RETRO_DEVICE_ANALOG (DualShock): report stick axes from the v60 analog
+    // holders (fed by virtual stick / hardware axes / key-mapped directions).
+    // Games probe the DualShock via this device type — real axis values now
+    // enable analog-only features AND actual analog control.
     if (device == RETRO_DEVICE_ANALOG) {
-        if (id <= 3) return 0;          // LX / LY / RX / RY neutral
+        if (id <= 3 && port == 0) {
+            // id: 0=LX 1=LY 2=RX 3=RY（index 0 = 左杆，1 = 右杆 —— 两者都读
+            // 同一组 holder：PCSX-ReARMed 的 DualShock 驱动两种问法都出现）
+            switch (id) {
+                case 0: return s_ana1x.load(std::memory_order_relaxed);
+                case 1: return s_ana1y.load(std::memory_order_relaxed);
+                case 2: return s_ana1rx.load(std::memory_order_relaxed);
+                case 3: return s_ana1ry.load(std::memory_order_relaxed);
+            }
+            return 0;
+        }
+        if (id <= 3) return 0;          // 其余端口无轴（保持中性）
         // Fall through for joypad-style ids (start/select/etc.) so Start+Select
         // analog-mode combos still work.
         device = RETRO_DEVICE_JOYPAD;
@@ -1091,6 +1109,15 @@ void setControllerInput(int port, uint16_t bits) {
     else if (port == 1) s_pad2.store(bits, std::memory_order_relaxed);
     else if (port == 2) s_pad3.store(bits, std::memory_order_relaxed);
     else if (port == 3) s_pad4.store(bits, std::memory_order_relaxed);
+}
+
+// ★★ v60 DualShock 模拟轴写入（port 0；其它端口忽略 —— 本地 1P）
+void setControllerAnalog(int port, int lx, int ly, int rx, int ry) {
+    if (port != 0) return;
+    s_ana1x.store((int16_t)lx,  std::memory_order_relaxed);
+    s_ana1y.store((int16_t)ly,  std::memory_order_relaxed);
+    s_ana1rx.store((int16_t)rx, std::memory_order_relaxed);
+    s_ana1ry.store((int16_t)ry, std::memory_order_relaxed);
 }
 
 void setPaths(const std::string& systemDir, const std::string& saveDir) {

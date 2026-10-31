@@ -80,6 +80,14 @@ int audioTargetSampleRate();
 // Supports up to 4 controllers via the standard 4 ports.
 void setControllerInput(int port, uint16_t bits);
 
+// ★★ v60 Push DualShock analog stick axes (int16 per axis, -32768..32767).
+//   cb_input_state reports these for RETRO_DEVICE_ANALOG queries id 0..3
+//   (LX/LY/RX/RY) — combined with setPortDevice(port, RETRO_DEVICE_ANALOG)
+//   this makes PS1 DualShock analog sticks fully drivable from Java
+//   (virtual stick / hardware axes / key-mapped stick directions).
+//   Port 0 only (local 1P); neutral = all zeros.
+void setControllerAnalog(int port, int lx, int ly, int rx, int ry);
+
 // Set system (BIOS files) and save (memory card .srm) directories.
 void setPaths(const std::string& systemDir, const std::string& saveDir);
 

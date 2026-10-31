@@ -234,6 +234,43 @@ private fun resolveKeyBits(
     return gamepadKeyToBits(keyCode, platform)
 }
 
+// ----------------------------------------------------------------------------
+// ★★ v60 摇杆方向动作（可绑定物理键的模拟轴输入）
+// ----------------------------------------------------------------------------
+// 背景：此前按键映射表里【所有核心都没有摇杆方向】（左/右摇杆上下左右）——
+//   只有 L3/R3（摇杆按下）。实体手柄的摇杆轴自 v59 走 GenericMotionEvent，
+//   但无摇杆/想用十字键/键盘方向键驱动摇杆的场景（游戏手柄只有数字十字键）
+//   无从映射。v60 为每个有摇杆的核心补齐 *_ls_up/down/left/right 与
+//   *_rs_up/down/left/right（PSP/DC 单摇杆只有 _ls_*），经模拟轴路由生效。
+
+/** 动作 id 是否为摇杆方向动作（以 _ls_/_rs_ + 方向结尾）。 */
+private fun isStickDirectionActionId(id: String): Boolean =
+    id.endsWith("_ls_up") || id.endsWith("_ls_down") ||
+    id.endsWith("_ls_left") || id.endsWith("_ls_right") ||
+    id.endsWith("_rs_up") || id.endsWith("_rs_down") ||
+    id.endsWith("_rs_left") || id.endsWith("_rs_right")
+
+/**
+ * 摇杆方向动作解析：[keyCode] 被自定义绑定到某摇杆方向动作时返回
+ * 【带玩家后缀的完整 id】（如 "ps2_ls_up_p1"），否则 null。
+ * 仅匹配摇杆方向动作 —— 普通按键动作由 [resolveKeyBits] 处理（位掩码）。
+ */
+private fun resolveKeyStickActionId(
+    keyCode: Int,
+    platform: GamePlatform,
+    player: Int,
+    context: android.content.Context
+): String? {
+    val suffix = "_p${player + 1}"
+    val actions = buildKeyActions(platform)
+    for (action in actions) {
+        if (!isStickDirectionActionId(action.id)) continue
+        val customKeyCode = KeyMapStore.get(context, action.id + suffix)
+        if (customKeyCode == keyCode) return action.id + suffix
+    }
+    return null
+}
+
 // Internal action model used by resolveKeyBits — mirrors KeyAction but
 // without the Compose dependencies (Color, defaultKeyLabel).
 private data class KeyActionInternal(
@@ -304,6 +341,9 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("dos_r", KeyEvent.KEYCODE_BUTTON_R1),
             KeyActionInternal("dos_l2", KeyEvent.KEYCODE_BUTTON_L2),
             KeyActionInternal("dos_r2", KeyEvent.KEYCODE_BUTTON_R2),
+            KeyActionInternal("dos_l3", KeyEvent.KEYCODE_BUTTON_THUMBL),
+            KeyActionInternal("dos_r3", KeyEvent.KEYCODE_BUTTON_THUMBR),
+            KeyActionInternal("dos_mode", KeyEvent.KEYCODE_BUTTON_MODE),
             KeyActionInternal("dos_select", KeyEvent.KEYCODE_BUTTON_SELECT),
             KeyActionInternal("dos_start", KeyEvent.KEYCODE_BUTTON_START)
         )
@@ -364,6 +404,8 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("java_start", KeyEvent.KEYCODE_BUTTON_START)
         )
         // NDS / PSX use the same 12-button SNES layout
+        // ★★ v60 PSX 补 DualShock 摇杆方向（可绑定任意物理键，经模拟轴路由
+        //   推给 PsxEngine.setAnalogAxes —— 配合「手柄类型=DualShock 模拟」生效）
         GamePlatform.NDS, GamePlatform.PSX -> listOf(
             KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_up", KeyEvent.KEYCODE_DPAD_UP),
             KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_down", KeyEvent.KEYCODE_DPAD_DOWN),
@@ -376,7 +418,18 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_l", KeyEvent.KEYCODE_BUTTON_L1),
             KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_r", KeyEvent.KEYCODE_BUTTON_R1),
             KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_select", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_start", KeyEvent.KEYCODE_BUTTON_START)
+            KeyActionInternal("${if (platform == GamePlatform.NDS) "nds" else "psx"}_start", KeyEvent.KEYCODE_BUTTON_START),
+            // ★★ v60 摇杆方向（PSX 专属；NDS 无摇杆不增）：默认无键（0）——
+            //   用户在按键映射页自行绑定；DOWN/UP 经 GameSurfaceView 的
+            //   handleKeyStickEvent 合成模拟轴。
+            KeyActionInternal("psx_ls_up", 0),
+            KeyActionInternal("psx_ls_down", 0),
+            KeyActionInternal("psx_ls_left", 0),
+            KeyActionInternal("psx_ls_right", 0),
+            KeyActionInternal("psx_rs_up", 0),
+            KeyActionInternal("psx_rs_down", 0),
+            KeyActionInternal("psx_rs_left", 0),
+            KeyActionInternal("psx_rs_right", 0)
         )
         // DC (Dreamcast) — same 12-button layout. libretro flycast maps
         // JOYPAD_B→DC A / JOYPAD_A→DC B / JOYPAD_Y→DC X / JOYPAD_X→DC Y,
@@ -395,11 +448,16 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("dc_l", KeyEvent.KEYCODE_BUTTON_L1),
             KeyActionInternal("dc_r", KeyEvent.KEYCODE_BUTTON_R1),
             KeyActionInternal("dc_select", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("dc_start", KeyEvent.KEYCODE_BUTTON_START)
+            KeyActionInternal("dc_start", KeyEvent.KEYCODE_BUTTON_START),
+            // ★★ v60 DC 摇杆四向（Flycast 单摇杆 —— 可绑定物理键）
+            KeyActionInternal("dc_ls_up", 0),
+            KeyActionInternal("dc_ls_down", 0),
+            KeyActionInternal("dc_ls_left", 0),
+            KeyActionInternal("dc_ls_right", 0)
         )
         // PS2 (PCEE2 — PCSX2 core) — full DualShock 2: 16 buttons, incl. L2/R2/L3/R3.
-        // Analog sticks come from physical gamepads via the OS — only button
-        // events reach this key-action table.
+        // ★★ v60 摇杆方向动作：*_ls_*/_rs_* 默认无键（0）—— 用户可在按键
+        //   映射页把任意物理键绑到摇杆方向（“ps2 映射缺很多”的补全）。
         GamePlatform.PS2 -> listOf(
             KeyActionInternal("ps2_up", KeyEvent.KEYCODE_DPAD_UP),
             KeyActionInternal("ps2_down", KeyEvent.KEYCODE_DPAD_DOWN),
@@ -416,7 +474,16 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ps2_l3", KeyEvent.KEYCODE_BUTTON_THUMBL),
             KeyActionInternal("ps2_r3", KeyEvent.KEYCODE_BUTTON_THUMBR),
             KeyActionInternal("ps2_select", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START)
+            KeyActionInternal("ps2_start", KeyEvent.KEYCODE_BUTTON_START),
+            // ★★ v60 左/右摇杆四向（可绑定物理键；2P 走 setAnalogAxesP2）
+            KeyActionInternal("ps2_ls_up", 0),
+            KeyActionInternal("ps2_ls_down", 0),
+            KeyActionInternal("ps2_ls_left", 0),
+            KeyActionInternal("ps2_ls_right", 0),
+            KeyActionInternal("ps2_rs_up", 0),
+            KeyActionInternal("ps2_rs_down", 0),
+            KeyActionInternal("ps2_rs_left", 0),
+            KeyActionInternal("ps2_rs_right", 0)
         )
         // 3DS（Azahar）— New3DS 手柄：十字键 + ABXY + L/R + ZL/ZR + Start/Select
         GamePlatform.N3DS -> listOf(
@@ -433,7 +500,16 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("n3ds_zl", KeyEvent.KEYCODE_BUTTON_L2),
             KeyActionInternal("n3ds_zr", KeyEvent.KEYCODE_BUTTON_R2),
             KeyActionInternal("n3ds_select", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("n3ds_start", KeyEvent.KEYCODE_BUTTON_START)
+            KeyActionInternal("n3ds_start", KeyEvent.KEYCODE_BUTTON_START),
+            // ★★ v60 3DS CirclePad / C-Stick（New3DS）四向 —— 可绑定物理键
+            KeyActionInternal("n3ds_ls_up", 0),
+            KeyActionInternal("n3ds_ls_down", 0),
+            KeyActionInternal("n3ds_ls_left", 0),
+            KeyActionInternal("n3ds_ls_right", 0),
+            KeyActionInternal("n3ds_rs_up", 0),
+            KeyActionInternal("n3ds_rs_down", 0),
+            KeyActionInternal("n3ds_rs_left", 0),
+            KeyActionInternal("n3ds_rs_right", 0)
         )
         // NGC/WII（Ishiiruka）— GC 手柄 + Wii Remote 双布局（实体手柄按键双份映射：
         // NGC 模式下 BUTTON_A→GC A；Wii 模式下同一物理键→Wii A，引擎按模式路由）
@@ -465,7 +541,16 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("ngc_wii_tilt_l", KeyEvent.KEYCODE_BUTTON_L2),
             KeyActionInternal("ngc_wii_tilt_r", KeyEvent.KEYCODE_BUTTON_R2),
             KeyActionInternal("ngc_wii_tilt_f", KeyEvent.KEYCODE_BUTTON_THUMBL),
-            KeyActionInternal("ngc_wii_tilt_b", KeyEvent.KEYCODE_BUTTON_THUMBR)
+            KeyActionInternal("ngc_wii_tilt_b", KeyEvent.KEYCODE_BUTTON_THUMBR),
+            // ★★ v60 NGC 主摇杆 / C 摇杆（Wii 双节棍摇杆同主摇杆轴）四向
+            KeyActionInternal("ngc_ls_up", 0),
+            KeyActionInternal("ngc_ls_down", 0),
+            KeyActionInternal("ngc_ls_left", 0),
+            KeyActionInternal("ngc_ls_right", 0),
+            KeyActionInternal("ngc_rs_up", 0),
+            KeyActionInternal("ngc_rs_down", 0),
+            KeyActionInternal("ngc_rs_left", 0),
+            KeyActionInternal("ngc_rs_right", 0)
         )
         // Wii U（Cemu-AZ）— GamePad 布局（实体手柄按键映射：L1/R1→L/R，
         // L2/R2→ZL/ZR（与 3DS 同模式），L3/R3=摇杆按下，START=+，SELECT=−，
@@ -488,7 +573,16 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("wiiu_stickr", KeyEvent.KEYCODE_BUTTON_THUMBR),
             KeyActionInternal("wiiu_plus", KeyEvent.KEYCODE_BUTTON_START),
             KeyActionInternal("wiiu_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("wiiu_home", KeyEvent.KEYCODE_BUTTON_MODE)
+            KeyActionInternal("wiiu_home", KeyEvent.KEYCODE_BUTTON_MODE),
+            // ★★ v60 Wii U GamePad 左/右摇杆四向 —— 可绑定物理键
+            KeyActionInternal("wiiu_ls_up", 0),
+            KeyActionInternal("wiiu_ls_down", 0),
+            KeyActionInternal("wiiu_ls_left", 0),
+            KeyActionInternal("wiiu_ls_right", 0),
+            KeyActionInternal("wiiu_rs_up", 0),
+            KeyActionInternal("wiiu_rs_down", 0),
+            KeyActionInternal("wiiu_rs_left", 0),
+            KeyActionInternal("wiiu_rs_right", 0)
         )
         // Switch（Eden）—— Pro 手柄语义：L1/R1→L/R，L2/R2→ZL/ZR，
         // L3/R3=摇杆按下，START=+，SELECT=−，MODE=HOME；截屏/采集为虚拟键
@@ -510,7 +604,16 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("switch_stickr", KeyEvent.KEYCODE_BUTTON_THUMBR),
             KeyActionInternal("switch_plus", KeyEvent.KEYCODE_BUTTON_START),
             KeyActionInternal("switch_minus", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("switch_home", KeyEvent.KEYCODE_BUTTON_MODE)
+            KeyActionInternal("switch_home", KeyEvent.KEYCODE_BUTTON_MODE),
+            // ★★ v60 Switch 左/右摇杆四向 —— 可绑定物理键
+            KeyActionInternal("switch_ls_up", 0),
+            KeyActionInternal("switch_ls_down", 0),
+            KeyActionInternal("switch_ls_left", 0),
+            KeyActionInternal("switch_ls_right", 0),
+            KeyActionInternal("switch_rs_up", 0),
+            KeyActionInternal("switch_rs_down", 0),
+            KeyActionInternal("switch_rs_left", 0),
+            KeyActionInternal("switch_rs_right", 0)
         )
         // DC (Dreamcast/NAOMI) —— libretro Flycast 核心走标准进程内引擎，
         // 按键表见上方 GamePlatform.DC 分支（与 NDS/PSX 同一 12 键布局）。
@@ -533,7 +636,12 @@ private fun buildKeyActions(platform: GamePlatform): List<KeyActionInternal> {
             KeyActionInternal("psp_menu", KeyEvent.KEYCODE_BUTTON_L2),  // PPSSPP 菜单
             KeyActionInternal("psp_ff", KeyEvent.KEYCODE_BUTTON_R2),    // PPSSPP 快进
             KeyActionInternal("psp_select", KeyEvent.KEYCODE_BUTTON_SELECT),
-            KeyActionInternal("psp_start", KeyEvent.KEYCODE_BUTTON_START)
+            KeyActionInternal("psp_start", KeyEvent.KEYCODE_BUTTON_START),
+            // ★★ v60 PSP 单摇杆四向 —— 可绑定物理键（PspCoreEngine.setAnalogAxes）
+            KeyActionInternal("psp_ls_up", 0),
+            KeyActionInternal("psp_ls_down", 0),
+            KeyActionInternal("psp_ls_left", 0),
+            KeyActionInternal("psp_ls_right", 0)
         )
     }
     return base
@@ -4131,6 +4239,15 @@ fun EmulatorScreen(
                 )
             }
         }
+        // ★★ v60 PSX（PCSX-ReARMed）DualShock 模拟轴：此前 PSX 无任何模拟轴
+        //   路由（cb_input_state 恒报 0）—— 摇杆从未生效。现原生层新增
+        //   setAnalog1（三路输入共用：虚拟摇杆/实体手柄轴/按键映射方向），
+        //   配合「设置 → PSX → 手柄类型 = DualShock 模拟」生效。
+        platform == GamePlatform.PSX -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+                (engine as? com.nesstation.app.core.engine.PsxEngine)?.setAnalogAxes(lx, ly, rx, ry)
+            }
+        }
         // 3DS（Azahar）：CirclePad → (lx, ly)，C-Stick → (rx, ry)
         platform == GamePlatform.N3DS -> {
             { lx: Float, ly: Float, rx: Float, ry: Float ->
@@ -4549,7 +4666,7 @@ fun EmulatorScreen(
                         if (pgm3BootText != null) {
                             Spacer(Modifier.size(8.dp))
                             Text(
-                                text = "三国战记3HD 首次启动需解压光盘镜像，可能要 1~2 分钟，请耐心等待",
+                                text = "三国战记3HD 首次启动需解压光盘镜像（约 1~3 分钟），\n期间可能长时间无画面属正常现象，请耐心等待，勿退出",
                                 color = Color(0xFFFFD66B),
                                 fontSize = 11.sp,
                                 lineHeight = 15.sp,
@@ -7456,6 +7573,53 @@ private fun GameSurfaceView(
         videoScale
     }
     BoxWithConstraints(modifier = modifier, contentAlignment = contentAlignment) {
+        // ★★ v60 摇杆方向按键状态机（按键映射页把物理键绑到 *_ls_*/_rs_* 动作）：
+        //   DOWN 记入 held 集合 → 合成 (lx,ly,rx,ry) 推给模拟轴路由；UP 移出重推。
+        //   与实体手柄摇杆轴（hardwareAnalogListener）/虚拟摇杆同一条路由
+        //   （last-writer-wins —— 三个输入源通常不同时用，互不干扰）。
+        //   remember 持有：重组不丢；视图离开组合（退出游戏）随会话销毁。
+        val stickHeldKeys = remember {
+            java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        }
+        fun pushKeyStickAxes() {
+            var lx = 0f; var ly = 0f; var rx = 0f; var ry = 0f
+            val suffix = "_p${currentPlayer + 1}"
+            for (id in stickHeldKeys) {
+                val base = id.removeSuffix(suffix)
+                when {
+                    base.endsWith("_ls_left")  -> lx -= 1f
+                    base.endsWith("_ls_right") -> lx += 1f
+                    base.endsWith("_ls_up")    -> ly -= 1f
+                    base.endsWith("_ls_down")  -> ly += 1f
+                    base.endsWith("_rs_left")  -> rx -= 1f
+                    base.endsWith("_rs_right") -> rx += 1f
+                    base.endsWith("_rs_up")    -> ry -= 1f
+                    base.endsWith("_rs_down")  -> ry += 1f
+                }
+            }
+            // 屏幕坐标约定：上 = 负（与虚拟摇杆/实体轴同口径）
+            if (currentPlayer == 0) {
+                analogAxesRouter?.invoke(lx.coerceIn(-1f, 1f), ly.coerceIn(-1f, 1f),
+                    rx.coerceIn(-1f, 1f), ry.coerceIn(-1f, 1f))
+            } else if (platform == GamePlatform.PS2 && currentPlayer == 1) {
+                // PS2 本地双人：2P 摇杆走引擎专属 P2 模拟轴
+                (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxesP2(
+                    (lx.coerceIn(-1f, 1f) * 32767).toInt(),
+                    (ly.coerceIn(-1f, 1f) * 32767).toInt(),
+                    (rx.coerceIn(-1f, 1f) * 32767).toInt(),
+                    (ry.coerceIn(-1f, 1f) * 32767).toInt())
+            }
+        }
+        fun handleKeyStickEvent(keyCode: Int, event: KeyEvent): Boolean {
+            val stickId = resolveKeyStickActionId(keyCode, platform, currentPlayer, ctx)
+                ?: return false
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> { if (stickHeldKeys.add(stickId)) pushKeyStickAxes() }
+                KeyEvent.ACTION_UP -> { if (stickHeldKeys.remove(stickId)) pushKeyStickAxes() }
+                else -> return false
+            }
+            return true
+        }
         // 物理手柄 / D-pad 按键路由 —— SurfaceView 直绘与仿电视弧面两条显示
         // 路径共用（键序与原 SurfaceView 分支的 factory/update 两段实现
         // 完全一致：factory 初绑 + uiBlocked 变化后 update 重绑定）。本地
@@ -7482,6 +7646,9 @@ private fun GameSurfaceView(
                             }
                             else -> false
                         }
+                    } else if (handleKeyStickEvent(keyCode, event)) {
+                        // ★ v60 摇杆方向按键（自定义绑定）—— 已在内部推模拟轴
+                        true
                     } else if (event.action == KeyEvent.ACTION_DOWN &&
                                (keyCode == KeyEvent.KEYCODE_MENU ||
                                 keyCode == KeyEvent.KEYCODE_BACK)) {
@@ -7504,6 +7671,12 @@ private fun GameSurfaceView(
                         gamepadBitsHolder[0] = gamepadBitsHolder[0] and bits.inv()
                         routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
                     }
+                    // ★ v60 摇杆方向键同理：菜单打开期间抬键也要释放方向（防卡方向）
+                    if (event.action == KeyEvent.ACTION_UP) {
+                        resolveKeyStickActionId(keyCode, platform, currentPlayer, ctx)?.let { id ->
+                            if (stickHeldKeys.remove(id)) pushKeyStickAxes()
+                        }
+                    }
                     // Don't consume — let Compose UI navigate
                     false
                 } else {
@@ -7517,6 +7690,9 @@ private fun GameSurfaceView(
                     } else if (bits != 0 && event.action == KeyEvent.ACTION_DOWN) {
                         gamepadBitsHolder[0] = gamepadBitsHolder[0] or bits
                         routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                        true
+                    } else if (handleKeyStickEvent(keyCode, event)) {
+                        // ★ v60 摇杆方向按键（自定义绑定）
                         true
                     } else if (event.action == KeyEvent.ACTION_DOWN &&
                                (keyCode == KeyEvent.KEYCODE_MENU ||
@@ -7657,6 +7833,9 @@ private fun GameSurfaceView(
                                         }
                                         else -> false
                                     }
+                                } else if (handleKeyStickEvent(keyCode, event)) {
+                                    // ★ v60 摇杆方向按键（自定义绑定）
+                                    true
                                 } else if (event.action == KeyEvent.ACTION_DOWN &&
                                            (keyCode == KeyEvent.KEYCODE_MENU ||
                                             keyCode == KeyEvent.KEYCODE_BACK)) {
@@ -7759,6 +7938,9 @@ private fun GameSurfaceView(
                                         }
                                         else -> false
                                     }
+                                } else if (handleKeyStickEvent(keyCode, event)) {
+                                    // ★ v60 摇杆方向按键（自定义绑定）
+                                    true
                                 } else if (event.action == KeyEvent.ACTION_DOWN &&
                                            (keyCode == KeyEvent.KEYCODE_MENU ||
                                             keyCode == KeyEvent.KEYCODE_BACK)) {
@@ -9172,9 +9354,19 @@ private fun BoxScope.NetplayChatOverlay(
             }
             // ★★ v53 老服务器提示：服务器 <53（不回报版本）→ 聊天可能无法送达
             //   （老服务器无 chat 中继）—— 显示一行小字让用户自诊断，不再误报 bug。
-            if (srvVersion == 0) {
+            //   ★★ v60 正向显示：v60 客户端聊天是双通道保险（原生+输入通道兜底，
+            //   任意服务器版本都能送达），这行只作服务器新旧的可视化自检。
+            if (srvVersion > 0) {
                 Text(
-                    "服务器版本较旧：若消息无法送达，请将服务器更新到最新版",
+                    "服务器协议版本 v$srvVersion · 双通道聊天已启用",
+                    color = Color(0xFF9CD6A8),
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                )
+            } else if (srvVersion == 0) {
+                Text(
+                    "服务器版本较旧（<v53）：v60 客户端已自动走兜底通道，聊天仍可送达",
                     color = Color(0xFFFFD54F),
                     fontSize = 10.sp,
                     maxLines = 1,

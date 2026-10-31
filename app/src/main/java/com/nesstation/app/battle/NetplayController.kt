@@ -658,9 +658,12 @@ class NetplayController(
 
         // ★★ v51 游戏内聊天：服务器盖戳的 from/slot/spec 直接透传给 UI（EmulatorScreen）
         //   ★★ v59：同时入控制器留痕（UI 重组/菜单开关后历史不丢）。
+        //   ★★ v60 channel=0：原生 chat 中继通道（与兜底通道去重配合 ——
+        //   发送端双通道保险下同一条消息会到两次，这里只保留第一次）。
         override fun onChat(from: String, text: String, slot: Int, spec: Boolean) {
-            recordIncomingChat(from, text, slot, spec)
-            dispatch { it.onChat(from, text, slot, spec) }
+            if (recordIncomingChat(from, text, slot, spec, channel = 0)) {
+                dispatch { it.onChat(from, text, slot, spec) }
+            }
         }
 
         // ★★ v53 静默拉档：服务器无缓存档/历史缺口时请求房主立即出一份快照。
@@ -1224,18 +1227,22 @@ class NetplayController(
 
     /** ★★ v51 游戏内聊天：发送文本给房间全员（玩家+观战者；服务器盖戳转发）。
      *  空白丢弃、限长 200 字符（与服务器规则一致）。观战者同样可发。
-     *  ★★ v54 老服务器兜底：服务器 <v51（srv 字段缺失/更小 = 无 chat 中继）时
-     *  自动改走输入通道编码（详见 [sendChatFallback]）—— 任何服务器版本都能送达。
+     *  ★★ v60 双通道保险（用户多轮实测"依旧看不到对方消息"的终结手段）：
+     *  原生 chat 与输入通道兜底【同时发送】—— 无论服务器版本如何
+     *  （<v51 无 chat 中继 → 兜底送达；v51+ → 原生送达；两条都到 → 接收端
+     *  按通道去重只显示一条）。服务器版本探测（srv 字段）不再作为发送依据
+     *  —— 探测失败/字段缺失/hello 竞态都不再影响送达。
      *  ★★ v59 本地留痕：发送即入 [chatLog]（UI 重组/开关菜单后历史不丢）。 */
     fun sendChat(text: String) {
         val n = net ?: return
         val t = text.trim()
         if (t.isEmpty()) return
         appendChatLog("${mySlot}P", t, mySlot, spectatorMode, mine = true)
-        if (sendChatFallback(t)) return
+        // ★ v60：两条通道都发，接收端去重（见 recordIncomingChat）。
         try {
             n.sendChat(t)
         } catch (_: Throwable) { /* 断连时丢消息即可，不影响对战 */ }
+        sendChatFallback(t)
     }
 
     // =========================================================================
@@ -1261,9 +1268,33 @@ class NetplayController(
     /** 当前聊天留痕快照（UI 进入组合时恢复历史用）。 */
     fun chatLogSnapshot(): List<ChatEntry> = ArrayList(chatLog)
 
-    /** 接收侧聊天入留痕（netListener.onChat 调用）。 */
-    private fun recordIncomingChat(from: String, text: String, slot: Int, spec: Boolean) {
+    /** 接收侧聊天入留痕（netListener.onChat / handleChatFragment 两处调用）。
+     *  ★★ v60 跨通道去重：发送端双通道保险（原生 chat + 负帧号 input 兜底）
+     *  会把同一条消息送达两次 —— 这里按 (slot, 文本) 键跟踪最近一条的
+     *  【通道 + 时间】：2 秒内同键不同通道到达 = 双发回声 → 丢弃（返回
+     *  false）；同通道连续到达（用户真的连发两句相同话）不受影响照常保留。
+     *  去重表不随丢弃更新（保留首见通道/时间，保证后续真正的同通道重复
+     *  仍能正确判定）。
+     *  @param channel 0 = 原生 chat 中继；1 = 输入通道兜底 */
+    private val chatDedup = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, Long>>()
+
+    private fun recordIncomingChat(
+        from: String, text: String, slot: Int, spec: Boolean, channel: Int
+    ): Boolean {
+        val now = System.currentTimeMillis()
+        val key = "$slot|$text"
+        val prev = chatDedup[key]
+        if (prev != null && prev.first != channel && now - prev.second < 2_000) {
+            return false   // 双通道双发回声：丢弃
+        }
+        chatDedup[key] = channel to now
+        // 防膨胀：超 128 条按时间清最老（正常聊天远达不到）
+        if (chatDedup.size > 128) {
+            chatDedup.entries.sortedBy { it.value.second }.take(chatDedup.size - 96)
+                .forEach { chatDedup.remove(it.key) }
+        }
         appendChatLog(from, text, slot, spec, mine = false)
+        return true
     }
 
     // =========================================================================
@@ -1291,14 +1322,16 @@ class NetplayController(
     /** 各槽位在途聊天分片（slot → index → 3 字节数据；仅网络线程访问）。 */
     private val chatFragments = HashMap<Int, java.util.TreeMap<Int, Int>>()
 
-    /** 老服务器聊天兜底发送：返回 true = 已走兜底通道（false = 服务器支持原生 chat）。 */
-    private fun sendChatFallback(text: String): Boolean {
-        val n = net ?: return true   // 无连接：吞掉（与 sendChat 断连语义一致）
-        if (serverProtoVersion >= 51) return false   // v51+ 服务器：原生 chat 中继
-        val bytes = try { text.toByteArray(Charsets.UTF_8) } catch (_: Throwable) { return true }
-        if (bytes.isEmpty()) return true
+    /** ★★ v60 聊天兜底发送（无条件双发保险的一部分）：把文本编码成负帧号
+     *  input 发送 —— input 中继是 v1 起所有服务器版本都转发的通道。
+     *  v60 起不再看 serverProtoVersion（不再“二选一”）—— sendChat 总是
+     *  原生 + 兜底双发，接收端按通道去重。 */
+    private fun sendChatFallback(text: String) {
+        val n = net ?: return   // 无连接：吞掉（与 sendChat 断连语义一致）
+        val bytes = try { text.toByteArray(Charsets.UTF_8) } catch (_: Throwable) { return }
+        if (bytes.isEmpty()) return
         val chunks = (bytes.size + 2) / 3
-        if (chunks > CHAT_FALLBACK_MAX_CHUNKS) return true   // 超限（sendChat 已截 200 字）
+        if (chunks > CHAT_FALLBACK_MAX_CHUNKS) return   // 超限（UI 已截 200 字）
         try {
             for (i in 0 until chunks) {
                 val b0 = bytes[i * 3].toInt() and 0xFF
@@ -1308,7 +1341,6 @@ class NetplayController(
             }
             n.sendInput(CHAT_FALLBACK_END_FRAME, chunks, mySlot)
         } catch (_: Throwable) { /* 断连丢消息即可 */ }
-        return true
     }
 
     /** 收到负帧号 input → 聊天分片解码（仅网络线程调用）。
@@ -1338,8 +1370,10 @@ class NetplayController(
             } catch (_: Throwable) { return }
             if (text.isNotBlank()) {
                 android.util.Log.i("NetplayController", "chat(fallback) from ${slot}P: $text")
-                recordIncomingChat("${slot}P", text, slot, false)
-                dispatch { it.onChat("${slot}P", text, slot, false) }
+                // ★ v60 channel=1：输入通道兜底（与原生 chat 通道去重配合）
+                if (recordIncomingChat("${slot}P", text, slot, false, channel = 1)) {
+                    dispatch { it.onChat("${slot}P", text, slot, false) }
+                }
             }
             return
         }

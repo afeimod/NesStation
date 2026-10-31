@@ -54,6 +54,12 @@ public:
     // exposed here (covers the vast majority of multiplayer titles).
     void setPad4(int bits);
 
+    // ★★ v60 DualShock analog stick axes for player 1 (int16 per axis).
+    //   Feeds cb_input_state's RETRO_DEVICE_ANALOG queries — the missing
+    //   piece that made PS1 analog sticks never move. Pair with
+    //   setPortDevice(0, RETRO_DEVICE_ANALOG) ("analog" input device setting).
+    void setAnalog1(int lx, int ly, int rx, int ry);
+
     void setRegion(int region);
     void setSampleRate(int hz);
     void setFastForward(int speed);

@@ -90,13 +90,19 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             "float-oracle-dcmplt.bin", "matrix-oracle.bin"
         )
 
-        // ★★ v58 启动监护超时矩阵（毫秒）
+        // ★★ v59 启动监护超时矩阵（毫秒）—— ★ v60 再放宽：
+        //    用户实测大 CHD「读取/解压需要 1~2 分钟」，期间核心可能完全静默
+        //    （不写日志、状态不变、无帧 —— LZMA 解压是纯 CPU 工作，无任何
+        //    外部可见信号）。旧值静默 30s / 首帧 90s 会把正在解压的核心
+        //    误判为死亡强制失败。新矩阵：静默 150s（≥ 解压时长上限）、
+        //    首帧 300s、总限 480s —— 宁可多等，绝不误杀加载中的核心。
         /** 首帧等待上限：完全无活动信号时最多等这么久。 */
-        internal const val FIRST_FRAME_TIMEOUT_MS = 90_000L
+        internal const val FIRST_FRAME_TIMEOUT_MS = 300_000L
         /** 总上限：只要核心有活动（状态/日志在变）最多等这么久。 */
-        internal const val TOTAL_TIMEOUT_MS = 180_000L
-        /** 静默判死：自最近一次活动起三信号全无变化这么久 → 核心已死。 */
-        internal const val SILENCE_TIMEOUT_MS = 30_000L
+        internal const val TOTAL_TIMEOUT_MS = 480_000L
+        /** 静默判死：自最近一次活动起三信号全无变化这么久 → 核心已死。
+         *  ★ v60：30s → 150s —— 大 CHD 解压期间核心静默 1~2 分钟是正常现象。 */
+        internal const val SILENCE_TIMEOUT_MS = 150_000L
 
         /** 启动期明确失败语义（nativeStatus 文本 / interactive.log 内容命中即报错；
          *  全部来自 libpgm3 二进制里实际存在的失败字符串，避免误伤正常加载日志）。
@@ -308,11 +314,11 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             //      C. interactive.log 大小增长 —— 核心在写日志
             //
             //    超时矩阵：
-            //      · 首帧等待上限 90s（正常加载路径，覆盖大 CHD + 慢存储）
-            //      · 总上限 180s（只要有 B/C 活动就继续等，绝不提前杀）
-            //      · 静默判死 30s（自最近一次活动起，三信号全无变化 —— 这是
-            //        “核心真死了”与“核心在加载”的区分线；30s 静默的核心即使
-            //        再等也不可能自己活过来）
+            //      · 首帧等待上限 300s（正常加载路径，覆盖大 CHD + 慢存储）
+            //      · 总上限 480s（只要有 B/C 活动就继续等，绝不提前杀）
+            //      · 静默判死 150s（自最近一次活动起，三信号全无变化 ——
+            //        ★ v60：大 CHD LZMA 解压期间核心可静默 1~2 分钟（纯 CPU
+            //        解压无外部信号），30s 判死会误杀正在解压的核心）
             //
             //    失败详情 = 最后状态文本 + interactive.log 尾部（真死也给原因）；
             //    等待期间 bootProgress 持续更新（前端显示“核心状态 + 已等待
@@ -405,7 +411,8 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 pendingError = null   // 错误消失（状态又推进了）→ 撤销快速失败
             }
 
-            // E. 静默判死：自最近活动起 30s 三信号全无变化
+            // E. 静默判死：自最近活动起 150s 三信号全无变化（大 CHD 解压期
+            //    可静默 1~2 分钟 —— 30s 会误杀，见常量处注释）
             if (now - lastActivity >= SILENCE_TIMEOUT_MS) {
                 failWatchdog(root, "核心连续 ${SILENCE_TIMEOUT_MS / 1000}s 无任何活动" +
                     "（状态「${status ?: "无"}」未变、日志无增长、帧号为 0）")

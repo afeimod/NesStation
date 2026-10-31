@@ -95,6 +95,14 @@ object PsxNative {
     /** Fourth controller (port 3). Same bit layout as setPad1. */
     @JvmStatic external fun setPad4(bits: Int)
 
+    /**
+     * ★★ v60 DualShock 模拟摇杆轴（1P / port 0）。int16 每轴（-32768..32767）。
+     * cb_input_state 的 RETRO_DEVICE_ANALOG 查询读取 —— 虚拟摇杆 / 实体手柄轴 /
+     * 按键映射的摇杆方向三路输入都汇到这。配合 setControllerDevice(0, 5)
+     * （「手柄类型 = DualShock 模拟」）使用。中性位 = 全 0。
+     */
+    @JvmStatic external fun setAnalog1(lx: Int, ly: Int, rx: Int, ry: Int)
+
     @JvmStatic external fun setRegion(region: Int)
     @JvmStatic external fun setSampleRate(rate: Int)
     @JvmStatic external fun setFastForward(speed: Int)

@@ -1,2 +1,2 @@
-9858a293adc1b7ba495d6adea6e24fbde5690e17fc578945039f5905db800584  gamebox-server-linux-amd64
-9fe16fce378eb0e72d51d888ce860ed91a3848d73d196f814c39fa15eb328bf3  gamebox-server-linux-arm64
+9858a293adc1b7ba495d6adea6e24fbde5690e17fc578945039f5905db800584  server-dist/gamebox-server-linux-amd64
+9fe16fce378eb0e72d51d888ce860ed91a3848d73d196f814c39fa15eb328bf3  server-dist/gamebox-server-linux-arm64

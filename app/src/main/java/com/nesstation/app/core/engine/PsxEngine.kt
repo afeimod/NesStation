@@ -336,6 +336,20 @@ class PsxEngine private constructor() : EmulatorEngine {
     fun setPad4(bits: Int) = PsxNative.setPad4(bits)
 
     /**
+     * ★★ v60 DualShock 模拟摇杆轴（1P）：lx/ly = 左杆，rx/ry = 右杆。
+     * 归一化 -1..1（屏幕坐标约定上=负，与虚拟摇杆同口径）→ int16 推给核心。
+     * 与 [setPadTypes] 的 DualShock 模式（RETRO_DEVICE_ANALOG）配合生效 ——
+     * 虚拟摇杆 / 实体手柄轴 / 按键映射的摇杆方向三路输入共用本入口。
+     */
+    fun setAnalogAxes(lx: Float, ly: Float, rx: Float, ry: Float) {
+        if (!isLoaded) return
+        PsxNative.setAnalog1(
+            (lx * 32767f).toInt(), (ly * 32767f).toInt(),
+            (rx * 32767f).toInt(), (ry * 32767f).toInt()
+        )
+    }
+
+    /**
      * Switch controller ports between the standard digital pad and the
      * DualShock (analog). Values map to libretro device ids:
      *   RETRO_DEVICE_NONE = 0, RETRO_DEVICE_JOYPAD = 1, RETRO_DEVICE_ANALOG = 5.

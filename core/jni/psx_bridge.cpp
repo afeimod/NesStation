@@ -49,6 +49,10 @@ void Engine::setPad1(int bits)        { rom::setControllerInput(0, (uint16_t)bit
 void Engine::setPad2(int bits)        { rom::setControllerInput(1, (uint16_t)bits); }
 void Engine::setPad3(int bits)        { rom::setControllerInput(2, (uint16_t)bits); }
 void Engine::setPad4(int bits)        { rom::setControllerInput(3, (uint16_t)bits); }
+// ★★ v60 DualShock 模拟轴（port 0 / 1P）
+void Engine::setAnalog1(int lx, int ly, int rx, int ry) {
+    rom::setControllerAnalog(0, lx, ly, rx, ry);
+}
 void Engine::setRegion(int region)    { rom::applyRegion(region); }
 void Engine::setSampleRate(int hz)    { rom::applySampleRate(hz); }
 void Engine::setFastForward(int speed)  { rom::applySpeed(speed > 0 ? (float)speed : 1.0f); }
@@ -161,6 +165,14 @@ Java_com_nesstation_app_core_jni_PsxNative_setPad3(JNIEnv*, jclass, jint bits) {
 JNIEXPORT void JNICALL
 Java_com_nesstation_app_core_jni_PsxNative_setPad4(JNIEnv*, jclass, jint bits) {
     psxcore::Engine::instance().setPad4(bits);
+}
+
+// ★★ v60 DualShock 模拟轴（1P：lx/ly = 左杆，rx/ry = 右杆，int16）
+JNIEXPORT void JNICALL
+Java_com_nesstation_app_core_jni_PsxNative_setAnalog1(JNIEnv*, jclass,
+                                                     jint lx, jint ly,
+                                                     jint rx, jint ry) {
+    psxcore::Engine::instance().setAnalog1(lx, ly, rx, ry);
 }
 
 JNIEXPORT void JNICALL
