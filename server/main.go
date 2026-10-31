@@ -116,7 +116,7 @@ func runServer(configPath string) bool {
                 // ★★ v58 启动横幅带协议版本号（= hello 回执 srv 字段）：
                 //   客户端聊天面板顶部的"服务器版本"应与此一致 —— 不一致
                 //   就是旧进程没换掉。排障第一入口（log/server.log）。
-                log.Printf("NesStation 对战服务器 v58（srv=%d：聊天中继/不暂停追赶/静默拉档/聊天可诊断回执）",
+                log.Printf("NesStation 对战服务器 v59（srv=%d：聊天中继/不暂停追赶/静默拉档/聊天可诊断回执）",
                         serverProto)
                 log.Printf("帧同步中继监听: tcp://%s", cfg.AddressTCP())
                 for {

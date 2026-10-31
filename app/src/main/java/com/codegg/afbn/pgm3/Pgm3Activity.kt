@@ -61,5 +61,17 @@ class Pgm3Activity private constructor() {
 
         /** 快进是否就绪（ROM 内部引导完成后才允许快进）。 */
         @JvmStatic external fun nativeFastForwardReady(): Boolean
+
+        /** ★★ v59 记忆卡子系统配置（必须在 nativeRun 之前调用 —— 对齐参考实现
+         *  Pgm3CardDialog.configure：dir = 记忆卡目录（如 <root>/memcard/kov3hd），
+         *  返回 false = 初始化失败，参考实现直接中止启动）。 */
+        @JvmStatic external fun nativeCardConfigure(dir: String): Boolean
+
+        /** 记忆卡子系统最近一次错误描述（nativeCardConfigure 失败时给出原因）。 */
+        @JvmStatic external fun nativeCardError(): String?
+
+        /** ★★ v59 金手指配置（nativeRun 前调用 —— 对齐参考实现 Pgm3CheatDialog
+         *  .configure：configPath = 金手指 ini 路径，文件不存在是合法状态）。 */
+        @JvmStatic external fun nativeCheatConfigure(configPath: String): Boolean
     }
 }

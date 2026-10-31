@@ -99,9 +99,15 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         internal const val SILENCE_TIMEOUT_MS = 30_000L
 
         /** 启动期明确失败语义（nativeStatus 文本 / interactive.log 内容命中即报错；
-         *  全部来自 libpgm3 二进制里实际存在的失败字符串，避免误伤正常加载日志）。 */
+         *  全部来自 libpgm3 二进制里实际存在的失败字符串，避免误伤正常加载日志）。
+         *  ★★ v59 补 CHD 打开失败的二进制真实串（"Cannot open original m105 CHD: "
+         *  / "Cannot open original kov3hd.zip" / "CHD hunk decompression failed"
+         *  等 —— 大写开头，旧表里的 "cannot open" 小写匹配不上）。 */
         internal val STARTUP_ERROR_KEYWORDS = listOf(
             "Unsupported CHD", "unsupported chd",
+            "Cannot open original m105 CHD", "Cannot open original kov3hd.zip",
+            "CHD hunk decompression failed", "CHD read requires a regular file",
+            "CHD mapped read out of range", "Invalid CHD path",
             "EGL window mode target is missing", "GPU presenter surface size mismatch",
             "无法打开", "无法创建", "无法读取", "不存在", "不完整", "校验失败",
             "读取失败", "写入失败", "加载失败", "初始化失败",
@@ -171,26 +177,39 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 return false
             }
 
-            // 3. 解析 romset + CHD（对齐参考实现 Pgm3Support.romZip/romChd）
+            // 3. 解析 romset + CHD（对齐参考实现 Pgm3Support.romZip/romChd；
+            //    ★★ v59 查找范围扩展：参考实现只查 zip 同目录的 kov3hd/ 子目录，
+            //    用户实际文件布局五花八门（CHD 平铺、CHD 在 app 的 ROM 目录、
+            //    zip 在子目录而 CHD 在上层…）—— "无法读取chd"的大多数报错都是
+            //    路径没找到。现按优先级多位置查找（含 fbneo system 目录与
+            //    以选中文件为根的两层子目录扫描）。
             val romZip: File
             val romChd: File
             val lower = rom.name.lowercase()
             if (lower.endsWith(".chd") ||
                 rom.nameWithoutExtension.equals(PGM3_CHD_NAME.removeSuffix(".chd"), true)
             ) {
-                // 直接选了 CHD 启动：CHD = 选中文件，zip 找同目录（及上溯一层）
+                // 直接选了 CHD 启动：CHD = 选中文件，zip 多位置查找
                 romChd = rom
-                romZip = resolveZipBeside(rom)
+                romZip = resolveZipBeside(rom, systemDir)
             } else {
                 romZip = rom
-                romChd = resolveChdBeside(rom)
+                romChd = resolveChdBeside(rom, systemDir)
             }
             if (!romZip.isFile) {
-                lastErr = "缺少 romset：${romZip.name}（应与 ${rom.name} 放同一目录）"
+                lastErr = "缺少 romset：kov3hd.zip（应与 ${rom.name} 放同一目录，" +
+                    "或放在 ${File(systemDir).absolutePath} 目录里）"
                 return false
             }
             if (!romChd.isFile) {
-                lastErr = "缺少光盘镜像：kov3hd/${PGM3_CHD_NAME}（放在 ${romZip.parent} 下的 kov3hd 文件夹里）"
+                lastErr = "缺少光盘镜像：${PGM3_CHD_NAME}\n" +
+                    "已查找：\n" +
+                    "  1. ${File(romZip.parentFile, "kov3hd").absolutePath}\n" +
+                    "  2. ${romZip.parent}\n" +
+                    "  3. ${romZip.parentFile?.parentFile}\n" +
+                    "  4. ${File(systemDir, "kov3hd").absolutePath} 与 ${File(systemDir).absolutePath}\n" +
+                    "请把 kov3hd 文件夹（内含 ${PGM3_CHD_NAME}）放到 kov3hd.zip 同一目录，" +
+                    "或把 ${PGM3_CHD_NAME} 直接平铺在同级目录。"
                 return false
             }
             if (romChd.length() < 124) {
@@ -212,6 +231,36 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             root.mkdirs()
             File(root, "fram-save").apply { if (!isDirectory) mkdirs() }
             File(root, "memcard/kov3hd").apply { if (!isDirectory) mkdirs() }
+
+            // ★★ v59 记忆卡/金手指子系统配置（用户实测"无法正常启动"的根因）：
+            //    反编译参考实现（afbn-release-64.apk，其 kov3hd 实测可运行）
+            //    的启动序列：surfaceCreated → nativeSurface(surface) →
+            //    fram-save 目录 → Pgm3CardDialog.configure（= nativeCardConfigure，
+            //    失败即中止启动："记忆卡初始化失败"）→ Pgm3CheatDialog.configure
+            //    （= nativeCheatConfigure，失败仅提示不中止）→ 工作线程 nativeRun。
+            //    此前本项目从未调用 nativeCardConfigure —— 核心的记忆卡子系统
+            //    未初始化即启动，参考实现里这是必经步骤。现对齐补齐。
+            val memcardDir = File(root, "memcard/kov3hd")
+            val cardOk = try {
+                Pgm3Activity.nativeCardConfigure(memcardDir.absolutePath)
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "nativeCardConfigure: ${t.message}")
+                false
+            }
+            if (!cardOk) {
+                lastErr = "记忆卡初始化失败：" + (try {
+                    Pgm3Activity.nativeCardError()
+                } catch (_: Throwable) { null }?.takeIf { it.isNotBlank() } ?: "未知错误")
+                android.util.Log.e(TAG, "nativeCardConfigure failed: $lastErr")
+                return false
+            }
+            // 金手指配置：目录 + ini 路径（文件不存在是合法状态 —— 核心按需读取）
+            val cheatsDir = File(root, "cheats").apply { if (!isDirectory) mkdirs() }
+            try {
+                Pgm3Activity.nativeCheatConfigure(File(cheatsDir, "kov3hd.ini").absolutePath)
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "nativeCheatConfigure: ${t.message}（不影响启动）")
+            }
 
             // ★★ v57 Surface 先行等待（用户实测“黑屏 0 帧”的第一根因）：
             //    参考实现是 Activity 流程 —— 先 surfaceCreated（窗口就绪）
@@ -426,26 +475,62 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         } catch (_: Throwable) { "" }
     }
 
-    /** <romZip 同目录>/kov3hd/kov3hd_m105.chd（对齐参考实现），缺则试同目录平铺。 */
-    private fun resolveChdBeside(romZip: File): File {
+    /** <romZip 同目录>/kov3hd/kov3hd_m105.chd（对齐参考实现）；
+     *  ★★ v59 多位置查找（用户布局各异 —— 平铺/上溯/app ROM 目录/两层子目录扫描）。 */
+    private fun resolveChdBeside(romZip: File, systemDir: String): File {
         val dir = romZip.parentFile
+        // 1. 参考实现标准布局：<dir>/kov3hd/kov3hd_m105.chd
         val primary = File(File(dir, PGM3_ROMSET), PGM3_CHD_NAME)
         if (primary.isFile) return primary
+        // 2. 平铺：<dir>/kov3hd_m105.chd
         val flat = File(dir, PGM3_CHD_NAME)
         if (flat.isFile) return flat
-        // 上溯一层（ROM 在 kov3hd/ 子目录、chd 在其旁的布局）
+        // 3. 上溯一层（ROM 在 kov3hd/ 子目录、chd 在其旁的布局）
         val up = File(dir?.parentFile, PGM3_CHD_NAME)
-        return if (up.isFile) up else primary
+        if (up.isFile) return up
+        // 4. app 街机 ROM 目录（fbneo system 目录 —— 本应用街机 ROM 的家）
+        val sysKov = File(File(systemDir, PGM3_ROMSET), PGM3_CHD_NAME)
+        if (sysKov.isFile) return sysKov
+        val sysFlat = File(systemDir, PGM3_CHD_NAME)
+        if (sysFlat.isFile) return sysFlat
+        // 5. 以 ROM 所在目录为根的两层子目录扫描（kov3hd.zip 在某个子目录、
+        //    CHD 在另一个子目录的整理习惯）
+        scanFor(dir, PGM3_CHD_NAME, 2)?.let { return it }
+        return primary
     }
 
-    /** 选 CHD 启动时反向找 romset：同目录 → 上层目录。 */
-    private fun resolveZipBeside(chd: File): File {
+    /** 选 CHD 启动时反向找 romset：同目录 → 上层 → system 目录 → 两层子目录扫描。 */
+    private fun resolveZipBeside(chd: File, systemDir: String): File {
         val dir = chd.parentFile
         val same = File(dir, "$PGM3_ROMSET.zip")
         if (same.isFile) return same
+        // CHD 在 kov3hd/ 子目录里 → zip 在其上一级
+        if (dir != null && PGM3_ROMSET.equals(dir.name, ignoreCase = true)) {
+            val beside = File(dir.parentFile, "$PGM3_ROMSET.zip")
+            if (beside.isFile) return beside
+        }
         val up = File(dir?.parentFile, "$PGM3_ROMSET.zip")
         if (up.isFile) return up
+        val sys = File(systemDir, "$PGM3_ROMSET.zip")
+        if (sys.isFile) return sys
+        scanFor(dir, "$PGM3_ROMSET.zip", 2)?.let { return it }
         return same
+    }
+
+    /** 在 base 下按名字找文件（深度限制 depth 层；找到即返回，找不到返回 null）。 */
+    private fun scanFor(base: File?, name: String, depth: Int): File? {
+        if (base == null || depth < 0) return null
+        val list = try { base.listFiles() ?: return null } catch (_: Throwable) { return null }
+        for (f in list) {
+            if (f.isFile && f.name.equals(name, ignoreCase = true)) return f
+        }
+        if (depth == 0) return null
+        for (f in list) {
+            if (f.isDirectory) {
+                scanFor(f, name, depth - 1)?.let { return it }
+            }
+        }
+        return null
     }
 
     /** assets/pgm3_runtime → <root>/runtime（参考实现同一原子写法）。 */

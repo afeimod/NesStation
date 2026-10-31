@@ -104,6 +104,11 @@ import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+// ★★ v59 多点触控鲁棒化：down/up 判定忽略消费位（扩展函数必须导入才能用），
+//   移动检测用忽略消费版本（positionChanged 在被上层手势消费后恒 false）
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.positionChangedIgnoreConsumed
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -1923,6 +1928,10 @@ fun EmulatorScreen(
     // (not Compose state) so key presses don't trigger recomposition — the
     // bits are pushed directly to the engine via setPad1().
     val gamepadBitsHolder = remember { intArrayOf(0) }
+    // ★★ v59 实体手柄摇杆轴死区滞回状态（hardwareAnalogListener 用；
+    //   remember 持有 —— 组合重组不会重置滞回状态）
+    val hwAxisMagHolder = remember { floatArrayOf(0f) }
+    val hwHatHolder = remember { intArrayOf(0, 0) }   // [0]=上次帽轴位 [1]=曾输出非零(0/1)
     var running by remember { mutableStateOf(true) }
     var fastForwardSpeed by remember { mutableStateOf(0) } // 0=off, 6=default
     // Remembers the last non-zero FF speed so the toolbar toggle re-engages
@@ -4580,6 +4589,73 @@ fun EmulatorScreen(
                     }
                 )
             } else {
+        // ★★ v59 共享模拟轴路由：虚拟摇杆（OnScreenController.onAnalogAxes）
+        //   与实体手柄摇杆（hardwareAnalogListener → SurfaceView
+        //   setOnGenericMotionListener）走同一条链路。此前实体手柄只有
+        //   按键数字位（setOnKeyListener KeyEvent），模拟摇杆轴
+        //   （AXIS_X/Y 左杆、AXIS_Z/RZ 右杆）没有任何监听 —— 蓝牙/USB
+        //   手柄在 PS2/3DS/NGC-Wii/WiiU/DC/PSP/Switch 上摇杆完全不动
+        //   （用户反馈"ps2 手柄映射缺少很多"的根因）。各平台分支与原
+        //   onAnalogAxes 完全一致（逐字节迁移，无行为变化）。
+        val analogAxesRouter: ((Float, Float, Float, Float) -> Unit)? = when {
+            platform == GamePlatform.PS2 -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+            (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxes(
+            (lx * 32767).toInt(),
+            (ly * 32767).toInt(),
+            (rx * 32767).toInt(),
+            (ry * 32767).toInt()
+            )
+            }
+            }
+            // 3DS（Azahar）：CirclePad → (lx, ly)，C-Stick → (rx, ry)
+            platform == GamePlatform.N3DS -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+            (engine as? com.nesstation.app.core.engine.AzaharCoreEngine)
+            ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+            }
+            // NGC/WII（Ishiiruka）：NGC 主摇杆/C 摇杆 或 Wii 双节棍摇杆
+            platform == GamePlatform.NGCWII -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+            (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
+            ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+            }
+            // ★★ Wii U（Cemu）：GamePad 左/右摇杆（引擎换算为 VPAD
+            //   四向模拟轴 STICKL/R_UP/DOWN/LEFT/RIGHT）。
+            platform == GamePlatform.WIIU -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+            (engine as? com.nesstation.app.core.engine.CemuCoreEngine)
+            ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+            }
+            // ★★ Switch（Eden）：左/右摇杆（VirtualGamepad 模拟轴，
+            //   归一化 -1..1，屏幕坐标约定上=负，与上游同口径）。
+            platform == GamePlatform.NSWITCH -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+            (engine as? com.nesstation.app.core.engine.EdenCoreEngine)
+            ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+            }
+            // DC（Flycast）：DC 手柄摇杆（归一化 -1..1，引擎内转
+            // libretro int16；DC 无右摇杆，(rx, ry) 预留透传）
+            platform == GamePlatform.DC -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+            (engine as? com.nesstation.app.core.engine.DcCoreEngine)
+            ?.setAnalogAxes(lx, ly, rx, ry)
+            }
+            }
+            // PSP（PPSSPP）：左摇杆 → AXIS_X/Y（PPSSPP 默认映射
+            // 绑定 VIRTKEY_AXIS_X/Y → PSP 模拟摇杆）；PSP 无右摇杆
+            platform == GamePlatform.PSP -> {
+            { lx: Float, ly: Float, rx: Float, ry: Float ->
+            (engine as? PspCoreEngine)?.setAnalogAxes(lx, ly, rx, ry)
+            }
+            }
+            else -> null
+        }
+
                 OnScreenController(
                     padLayout = padLayout,
                     surfaceSize = surfaceSize,
@@ -4835,64 +4911,9 @@ fun EmulatorScreen(
                     },
                     // PS2 双摇杆：把归一化拇指位置转成 int16 libretro 轴值
                     // 直接推给 PCEE2 核心（数字位走上面的 onPadBits 链路）
-                    onAnalogAxes = when {
-                        platform == GamePlatform.PS2 -> {
-                            { lx: Float, ly: Float, rx: Float, ry: Float ->
-                                (engine as? com.nesstation.app.core.engine.Psx2Engine)?.setAnalogAxes(
-                                    (lx * 32767).toInt(),
-                                    (ly * 32767).toInt(),
-                                    (rx * 32767).toInt(),
-                                    (ry * 32767).toInt()
-                                )
-                            }
-                        }
-                        // 3DS（Azahar）：CirclePad → (lx, ly)，C-Stick → (rx, ry)
-                        platform == GamePlatform.N3DS -> {
-                            { lx: Float, ly: Float, rx: Float, ry: Float ->
-                                (engine as? com.nesstation.app.core.engine.AzaharCoreEngine)
-                                    ?.setAnalogAxes(lx, ly, rx, ry)
-                            }
-                        }
-                        // NGC/WII（Ishiiruka）：NGC 主摇杆/C 摇杆 或 Wii 双节棍摇杆
-                        platform == GamePlatform.NGCWII -> {
-                            { lx: Float, ly: Float, rx: Float, ry: Float ->
-                                (engine as? com.nesstation.app.core.engine.NgcWiiCoreEngine)
-                                    ?.setAnalogAxes(lx, ly, rx, ry)
-                            }
-                        }
-                        // ★★ Wii U（Cemu）：GamePad 左/右摇杆（引擎换算为 VPAD
-                        //   四向模拟轴 STICKL/R_UP/DOWN/LEFT/RIGHT）。
-                        platform == GamePlatform.WIIU -> {
-                            { lx: Float, ly: Float, rx: Float, ry: Float ->
-                                (engine as? com.nesstation.app.core.engine.CemuCoreEngine)
-                                    ?.setAnalogAxes(lx, ly, rx, ry)
-                            }
-                        }
-                        // ★★ Switch（Eden）：左/右摇杆（VirtualGamepad 模拟轴，
-                        //   归一化 -1..1，屏幕坐标约定上=负，与上游同口径）。
-                        platform == GamePlatform.NSWITCH -> {
-                            { lx: Float, ly: Float, rx: Float, ry: Float ->
-                                (engine as? com.nesstation.app.core.engine.EdenCoreEngine)
-                                    ?.setAnalogAxes(lx, ly, rx, ry)
-                            }
-                        }
-                        // DC（Flycast）：DC 手柄摇杆（归一化 -1..1，引擎内转
-                        // libretro int16；DC 无右摇杆，(rx, ry) 预留透传）
-                        platform == GamePlatform.DC -> {
-                            { lx: Float, ly: Float, rx: Float, ry: Float ->
-                                (engine as? com.nesstation.app.core.engine.DcCoreEngine)
-                                    ?.setAnalogAxes(lx, ly, rx, ry)
-                            }
-                        }
-                        // PSP（PPSSPP）：左摇杆 → AXIS_X/Y（PPSSPP 默认映射
-                        // 绑定 VIRTKEY_AXIS_X/Y → PSP 模拟摇杆）；PSP 无右摇杆
-                        platform == GamePlatform.PSP -> {
-                            { lx: Float, ly: Float, rx: Float, ry: Float ->
-                                (engine as? PspCoreEngine)?.setAnalogAxes(lx, ly, rx, ry)
-                            }
-                        }
-                        else -> null
-                    },
+                    // ★★ v59 路由提为共享 val analogAxesRouter：虚拟摇杆与
+                    //   实体手柄摇杆（hardwareAnalogListener）走同一条链路。
+                    onAnalogAxes = analogAxesRouter,
                     // 即时存档 / 即时读档：直接操作当前槽位 saveLoadSlot，
                     // 复用与 SlotPickerDialog 相同的引擎链路与 Toast 反馈。
                     // ★ Wii U（Cemu）：完全对齐上游 Cemu-AZ 语义 ——
@@ -7489,6 +7510,63 @@ private fun GameSurfaceView(
                     }
                 }
             }
+        // ★★ v59 实体手柄模拟摇杆轴监听（GenericMotionEvent）：
+        //   物理手柄的摇杆轴（AXIS_X/Y = 左杆、AXIS_Z/RZ = 右杆）此前无任何
+        //   监听 —— 只有按键数字位（setOnKeyListener）。蓝牙/USB 手柄在
+        //   PS2/3DS/NGC-Wii/WiiU/DC/PSP/Switch 上摇杆完全不动（用户反馈
+        //   "ps2 手柄映射缺少很多"的根因）。现与虚拟摇杆共用 analogAxesRouter：
+        //   - AXIS_X/Y/Z/RZ → 死区（0.12 触发 / 0.06 释放滞回）→ 平台轴路由；
+        //   - AXIS_HAT_X/Y（部分手柄十字键以帽轴上报）→ 数字方向位
+        //     （与按键路由同一条 routePadBits 链路，联机同样走 netplay 转换）。
+        //   uiBlocked（菜单/对话框打开）时不消费 —— 交给 Compose 导航。
+        val hardwareAnalogListener: (android.view.View, android.view.MotionEvent) -> Boolean =
+            { _, ev ->
+                if (uiBlocked) {
+                    false
+                } else {
+                    val src = ev.source and
+                        (android.view.InputDevice.SOURCE_CLASS_JOYSTICK or
+                         android.view.InputDevice.SOURCE_CLASS_BUTTON)
+                    if (src == 0 || ev.actionMasked != android.view.MotionEvent.ACTION_MOVE) {
+                        false
+                    } else {
+                        // ── 摇杆轴（带滞回死区）──
+                        val lx = ev.getAxisValue(android.view.MotionEvent.AXIS_X)
+                        val ly = ev.getAxisValue(android.view.MotionEvent.AXIS_Y)
+                        val rx = ev.getAxisValue(android.view.MotionEvent.AXIS_Z)
+                        val ry = ev.getAxisValue(android.view.MotionEvent.AXIS_RZ)
+                        // 滞回死区：上一事件幅值已越界 → 用更低的释放阈值
+                        // （0.12 触发 / 0.06 释放 —— 与虚拟摇杆同一策略）
+                        val engagedPrev = hwAxisMagHolder[0] > 0.05f
+                        fun dz(v: Float): Float {
+                            val a = kotlin.math.abs(v)
+                            val limit = if (engagedPrev) 0.06f else 0.12f
+                            return if (a < limit) 0f else v
+                        }
+                        hwAxisMagHolder[0] = maxOf(kotlin.math.abs(lx), kotlin.math.abs(ly))
+                        analogAxesRouter?.invoke(dz(lx), dz(ly), dz(rx), dz(ry))
+                        // ── 帽轴十字键 → 数字方向位 ──
+                        val hx = ev.getAxisValue(android.view.MotionEvent.AXIS_HAT_X)
+                        val hy = ev.getAxisValue(android.view.MotionEvent.AXIS_HAT_Y)
+                        var hatBits = 0
+                        if (hx <= -0.5f) hatBits = hatBits or BTN_LEFT
+                        if (hx >= 0.5f) hatBits = hatBits or BTN_RIGHT
+                        if (hy <= -0.5f) hatBits = hatBits or BTN_UP
+                        if (hy >= 0.5f) hatBits = hatBits or BTN_DOWN
+                        if (hatBits != hwHatHolder[0]) {
+                            hwHatHolder[0] = hatBits
+                            // 帽轴贡献按位并入/退出（与按键 Holder 位级 OR，
+                            // 不覆盖其它按键位）
+                            if (hatBits != 0 || hwHatHolder[1] == 1) {
+                                gamepadBitsHolder[0] = (gamepadBitsHolder[0] and 0xF0.inv()) or hatBits
+                                hwHatHolder[1] = if (hatBits != 0) 1 else 0
+                                routePadBits(engine, currentPlayer, gamepadBitsHolder[0], netplayController, platform)
+                            }
+                        }
+                        true
+                    }
+                }
+            }
         // NDS 画布渲染（两种情形都改投 NdsDualScreenView，从 engine.frameBuffer
         // 按布局切出上/下屏绘制到两个独立矩形；不做 native surface blit）：
         //   1. videoScale == "custom"（melonDS / DraStic 通用）：自由布局编辑器
@@ -7780,6 +7858,7 @@ private fun GameSurfaceView(
                         isFocusableInTouchMode = true
                         requestFocus()
                         setOnKeyListener(gamepadKeyListener)
+                        setOnGenericMotionListener(hardwareAnalogListener)
                         // EGL 失败回退普通 SurfaceView + 平面叠加
                         onGlFailed = { ps2GlFailed.value = true }
                     }
@@ -7788,6 +7867,7 @@ private fun GameSurfaceView(
                     v.engine = engine
                     v.uiBlocked = uiBlocked
                     v.setOnKeyListener(gamepadKeyListenerRebind)
+                    v.setOnGenericMotionListener(hardwareAnalogListener)
                     if (uiBlocked && gamepadBitsHolder[0] != 0) {
                         gamepadBitsHolder[0] = 0
                         routePadBits(engine, currentPlayer, 0, netplayController, platform)
@@ -7847,6 +7927,7 @@ private fun GameSurfaceView(
                         isFocusableInTouchMode = true
                         requestFocus()
                         setOnKeyListener(gamepadKeyListener)
+                        setOnGenericMotionListener(hardwareAnalogListener)
                         // EGL 失败回退普通 SurfaceView + 平面叠加
                         onGlFailed = { relayGlFailed.value = true }
                     }
@@ -7855,6 +7936,7 @@ private fun GameSurfaceView(
                     v.engine = engine
                     v.uiBlocked = uiBlocked
                     v.setOnKeyListener(gamepadKeyListenerRebind)
+                    v.setOnGenericMotionListener(hardwareAnalogListener)
                     if (uiBlocked && gamepadBitsHolder[0] != 0) {
                         gamepadBitsHolder[0] = 0
                         routePadBits(engine, currentPlayer, 0, netplayController, platform)
@@ -7927,6 +8009,7 @@ private fun GameSurfaceView(
                         isFocusableInTouchMode = true
                         requestFocus()
                         setOnKeyListener(gamepadKeyListener)
+                        setOnGenericMotionListener(hardwareAnalogListener)
                         // xbr/hqx + tv 组合：画布路径无 Surface，核心内部
                         // 放大不生效 —— 由视图拉帧后做前端放大（修复
                         // 「组合滤镜没有 xbr/hqx 效果」）
@@ -7940,6 +8023,7 @@ private fun GameSurfaceView(
                     // Re-bind the key listener whenever uiBlocked changes so
                     // the closure captures the latest value.
                     v.setOnKeyListener(gamepadKeyListenerRebind)
+                    v.setOnGenericMotionListener(hardwareAnalogListener)
                     // When UI becomes blocked, release ALL held gamepad buttons
                     // so the game doesn't think buttons are stuck down.
                     if (uiBlocked && gamepadBitsHolder[0] != 0) {
@@ -8165,6 +8249,7 @@ private fun GameSurfaceView(
                     // （实现提取为 gamepadKeyListener，与仿电视弧面路径共用，
                     // 行为与原内联实现完全一致。）
                     setOnKeyListener(gamepadKeyListener)
+                    setOnGenericMotionListener(hardwareAnalogListener)
                 }
             },
             update = { sv ->
@@ -8172,6 +8257,7 @@ private fun GameSurfaceView(
                 // closure captures the latest value.
                 // （实现提取为 gamepadKeyListenerRebind，与仿电视弧面路径共用。）
                 sv.setOnKeyListener(gamepadKeyListenerRebind)
+                sv.setOnGenericMotionListener(hardwareAnalogListener)
                 // When UI becomes blocked, release ALL held gamepad buttons
                 // so the game doesn't think buttons are stuck down.
                 if (uiBlocked && gamepadBitsHolder[0] != 0) {
@@ -8905,6 +8991,15 @@ private data class NetplayChatMsg(
     val mine: Boolean
 )
 
+/** ★★ v59 控制器留痕条目 → UI 消息（mine 条目显示名统一为"我"）。 */
+private fun com.nesstation.app.battle.NetplayController.ChatEntry.toUiMsg() = NetplayChatMsg(
+    from = if (mine) "我" else from,
+    text = text,
+    slot = slot,
+    spec = spec,
+    mine = mine
+)
+
 /** 快捷短语（点一下即发送 —— 对战里来不及打字）。 */
 private val NETPLAY_CHAT_QUICK_PHRASES = listOf(
     "准备好了", "等我一下", "开始吧", "打得好！", "小心背后", "集合打BOSS", "再来一局", "GG"
@@ -8926,7 +9021,12 @@ private fun BoxScope.NetplayChatOverlay(
     panelOpen: Boolean,
     onPanelOpenChange: (Boolean) -> Unit
 ) {
-    var messages by remember(controller) { mutableStateOf<List<NetplayChatMsg>>(emptyList()) }
+    // ★★ v59 消息历史移入控制器留痕（chatLog）：浮层离开组合（用户打开
+    //   游戏菜单/设置/编辑器）再回来时，历史不再清零 —— 此前 remember
+    //   状态随组合销毁，菜单一开一关聊天记录全没，用户感知"消息丢了"。
+    var messages by remember(controller) {
+        mutableStateOf(controller.chatLogSnapshot().map { it.toUiMsg() })
+    }
     var bubble by remember(controller) { mutableStateOf<List<NetplayChatMsg>>(emptyList()) }
     var inputText by remember(controller) { mutableStateOf("") }
     // ★★ v53 服务器能力提示：hello 回执 srv 字段（-1 = 还没收到 hello；
@@ -8945,8 +9045,9 @@ private fun BoxScope.NetplayChatOverlay(
     DisposableEffect(controller) {
         val listener = object : com.nesstation.app.battle.NetplayController.UiListener {
             override fun onChat(from: String, text: String, slot: Int, spec: Boolean) {
+                // ★★ v59 从控制器留痕刷新（单一事实源；本地/远端都入 chatLog）
+                messages = controller.chatLogSnapshot().map { it.toUiMsg() }
                 val m = NetplayChatMsg(from, text, slot, spec, mine = false)
-                messages = (messages + m).takeLast(50)
                 // 面板没开时在顶部弹气泡（最多 3 条），开了面板直接进列表
                 if (!panelOpen) bubble = (bubble + m).takeLast(3)
             }
@@ -8961,12 +9062,13 @@ private fun BoxScope.NetplayChatOverlay(
         // 历史保留 50 条，输入框清空；发送失败静默（服务器断连时丢消息即可）。
         // ★★ v54 老服务器兑底：服务器 <v51（无 chat 中继）时控制器自动改走
         //   输入通道编码发送（任何服务器版本都能送达，详见 sendChatFallback）。
+        //   ★★ v59：本地回显统一走控制器留痕（发送即入 chatLog）。
         controller.sendChat(t)
+        messages = controller.chatLogSnapshot().map { it.toUiMsg() }
         val m = NetplayChatMsg(
             from = "我", text = t,
             slot = controller.slot, spec = controller.isSpectator, mine = true
         )
-        messages = (messages + m).takeLast(50)
         // ★★ v54 发送弹窗（用户实测反馈："发送信息后应该弹窗显示"）：
         //   发送后立即以顶部气泡弹出，无论聊天面板开合。
         bubble = (bubble + m).takeLast(3)
@@ -10013,17 +10115,37 @@ fun OnScreenController(
                 }
 
                 // Main gesture loop:
-                // awaitFirstDown() and awaitPointerEvent() are members of
-                // AwaitPointerEventScope, so we wrap everything in
-                // awaitPointerEventScope { }. This captures the first finger
-                // DOWN immediately (single-touch works) and then processes all
-                // subsequent events (multi-touch, moves, ups) in the inner loop.
+                // ★★ v59 多点触控鲁棒化（用户实测 Android 17 上虚拟按键无法
+                //   多点触控）—— 三处加固：
+                //   a) 弃用 awaitFirstDown：它只返回一个 down 变更，同一事件里
+                //      其余手指的 down 会被整包吞掉（双指极快同落时第二指的
+                //      按下永久丢失 → 指针计数漂移）。改为自管事件循环：逐
+                //      事件逐变更处理，一个都不吞。
+                //   b) 弃用 pressedCount 整数计数，改为按下指针 id 集合：任何
+                //      重复 down / 未知 up 都不会漂移计数。计数一旦提前归零，
+                //      内层循环提前退出，已按住手指的全部事件被无视 —— 用户
+                //      看到的正是"多点触控失灵，必须全部松手才恢复"。
+                //   c) down/up/移动判定全部忽略消费位（changedToDown(true) /
+                //      changedToUp(true) / positionChangeIgnoreConsumed()）：
+                //      默认版在变更被任何上层手势（Android 17 系统手势合流、
+                //      新版事件派发）消费后恒 false —— 按下被吞 = 该指多触
+                //      失效；移动被吞 = 搓招方向永久卡死。本覆盖层是游戏输入
+                //      的终点处理器，读原始事件是正确语义。
                 awaitPointerEventScope {
                     while (true) {
-                        val firstDown = awaitFirstDown(requireUnconsumed = false)
-                        processDown(firstDown.id.value, firstDown.position)
-
-                        var pressedCount = 1 // firstDown gave us one pressed finger
+                        val pressedIds = HashSet<Long>()
+                        // 等待首个含 down 的事件（不吞事件 —— 处理其中全部 down）
+                        while (pressedIds.isEmpty()) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            for (change in event.changes) {
+                                if (change.changedToDownIgnoreConsumed()) {
+                                    val pid = change.id.value
+                                    if (pressedIds.add(pid)) {
+                                        processDown(pid, change.position)
+                                    }
+                                }
+                            }
+                        }
 
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Main)
@@ -10031,11 +10153,12 @@ fun OnScreenController(
                             for (change in event.changes) {
                                 val pid = change.id.value
 
-                                if (change.changedToDown()) {
-                                    pressedCount++
-                                    processDown(pid, change.position)
-                                } else if (change.changedToUp()) {
-                                    pressedCount--
+                                if (change.changedToDownIgnoreConsumed()) {
+                                    if (pressedIds.add(pid)) {
+                                        processDown(pid, change.position)
+                                    }
+                                } else if (change.changedToUpIgnoreConsumed()) {
+                                    pressedIds.remove(pid)
                                     val entry = activePointers.remove(pid)
                                     if (entry != null) {
                                         val (bt, heldBits) = entry
@@ -10109,7 +10232,7 @@ fun OnScreenController(
                                             }
                                         }
                                     }
-                                } else if (change.positionChanged()) {
+                                } else if (change.positionChangedIgnoreConsumed()) {
                                     val entry = activePointers[pid]
                                     if (entry != null && entry.first == BtnType.DPAD) {
                                         // ★ 三指连键修复：DPAD 拖动时也用重算（不清 oldBits），
@@ -10157,7 +10280,7 @@ fun OnScreenController(
                                 }
                             }
 
-                            if (pressedCount <= 0) break
+                            if (pressedIds.isEmpty()) break
                         }
                     }
                 }

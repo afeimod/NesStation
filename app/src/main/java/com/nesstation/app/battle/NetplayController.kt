@@ -162,9 +162,13 @@ class NetplayController(
         private const val RTT_TIMEOUT_MS = 800L
         /** ★★ v4.5 服务器侧存档：房主快照上传节奏 —— 按档大小分级（小档传得勤，
          *  回退窗口短；大档适当拉长间隔省流量）。首份在探测时（引擎就绪）就传。 */
-        private const val UPLOAD_GAP_SMALL = 360L   // ≤128KB → 每 6s（帧）
-        private const val UPLOAD_GAP_MEDIUM = 600L  // ≤512KB → 每 10s
-        private const val UPLOAD_GAP_LARGE = 900L   // 更大 → 每 15s
+        // ★★ v59 追赶提速（用户实测“追赶太慢”）：快照上传间隔整体收紧 ——
+        //   接入者重放距离 = 最新帧 - 缓存快照帧，快照越新鲜重放越短。
+        //   6/10/15s → 3/5/8s（小档 100KB 级，带宽代价司承受；v53+ 服务器
+        //   还有 state_pull 静默拉档兑底，不依赖周期上传的时效）。
+        private const val UPLOAD_GAP_SMALL = 180L   // ≤128KB → 每 3s（帧）
+        private const val UPLOAD_GAP_MEDIUM = 300L  // ≤512KB → 每 5s
+        private const val UPLOAD_GAP_LARGE = 480L   // 更大 → 每 8s
         private const val UPLOAD_SIZE_SMALL = 128 * 1024
         private const val UPLOAD_SIZE_MEDIUM = 512 * 1024
         private const val UPLOAD_FIRST_FRAME = 60L
@@ -336,7 +340,10 @@ class NetplayController(
      *  onRemoteInput 持续刷新 catchupLatestSeen，目标随实时帧滚动前移，
      *  追平时与原玩家仅差 1.5 秒（锁步无缝并入，观感同步）。90 帧 = 60fps × 1.5s。 */
     @Volatile private var catchupLatestSeen = 0L
-    private val CATCHUP_TAIL = 90L
+    /** ★★ v59 追赶尾距 90 → 60 帧（1.5s → 1.0s）：尾段重放受实时输入 60Hz
+     *  到达率限制无法加速（输入还不存在），是追赶耗时的硬下限 —— 收紧
+     *  尾距直接减 0.5s；锁步无缝并入的余量仍定裕（60 帧 + inputDelay 窗口）。 */
+    private val CATCHUP_TAIL = 60L
     /** ★★ v54 黑屏极速追赶进度（"1234/5678"，UI 轮询显示；引擎线程写）。 */
     @Volatile var catchupProgressText: String = ""
         private set
@@ -650,7 +657,9 @@ class NetplayController(
         }
 
         // ★★ v51 游戏内聊天：服务器盖戳的 from/slot/spec 直接透传给 UI（EmulatorScreen）
+        //   ★★ v59：同时入控制器留痕（UI 重组/菜单开关后历史不丢）。
         override fun onChat(from: String, text: String, slot: Int, spec: Boolean) {
+            recordIncomingChat(from, text, slot, spec)
             dispatch { it.onChat(from, text, slot, spec) }
         }
 
@@ -1216,15 +1225,45 @@ class NetplayController(
     /** ★★ v51 游戏内聊天：发送文本给房间全员（玩家+观战者；服务器盖戳转发）。
      *  空白丢弃、限长 200 字符（与服务器规则一致）。观战者同样可发。
      *  ★★ v54 老服务器兜底：服务器 <v51（srv 字段缺失/更小 = 无 chat 中继）时
-     *  自动改走输入通道编码（详见 [sendChatFallback]）—— 任何服务器版本都能送达。 */
+     *  自动改走输入通道编码（详见 [sendChatFallback]）—— 任何服务器版本都能送达。
+     *  ★★ v59 本地留痕：发送即入 [chatLog]（UI 重组/开关菜单后历史不丢）。 */
     fun sendChat(text: String) {
         val n = net ?: return
         val t = text.trim()
         if (t.isEmpty()) return
+        appendChatLog("${mySlot}P", t, mySlot, spectatorMode, mine = true)
         if (sendChatFallback(t)) return
         try {
             n.sendChat(t)
         } catch (_: Throwable) { /* 断连时丢消息即可，不影响对战 */ }
+    }
+
+    // =========================================================================
+    // ★★ v59 聊天记录留痕（UI 生命周期无关）
+    // =========================================================================
+    // 背景：聊天消息此前只存在 Composable 的 remember 状态里 —— 用户打开游戏
+    //   菜单（showMenu/设置/编辑器等）时聊天浮层离开组合，remember 状态清零；
+    //   回到游戏后聊天面板【历史全没】+ 气泡只显示 5 秒 —— 用户感知就是
+    //   "消息没显示/丢了"。留痕移入控制器（与 UI 同生命周期无关），
+    //   浮层每次进入组合从快照恢复，历史跨菜单开关/面板开关不丢。
+    /** 聊天留痕条目（from/slot/spec + mine=本端发出）。 */
+    class ChatEntry(val from: String, val text: String, val slot: Int, val spec: Boolean, val mine: Boolean)
+
+    /** 最近聊天留痕（上限 50 条，超出丢最老）。 */
+    private val chatLog = java.util.concurrent.CopyOnWriteArrayList<ChatEntry>()
+
+    /** 追加一条聊天留痕（发送本地回显 / 接收远端消息两处调用）。 */
+    private fun appendChatLog(from: String, text: String, slot: Int, spec: Boolean, mine: Boolean) {
+        chatLog.add(ChatEntry(from, text, slot, spec, mine))
+        while (chatLog.size > 50) chatLog.removeAt(0)
+    }
+
+    /** 当前聊天留痕快照（UI 进入组合时恢复历史用）。 */
+    fun chatLogSnapshot(): List<ChatEntry> = ArrayList(chatLog)
+
+    /** 接收侧聊天入留痕（netListener.onChat 调用）。 */
+    private fun recordIncomingChat(from: String, text: String, slot: Int, spec: Boolean) {
+        appendChatLog(from, text, slot, spec, mine = false)
     }
 
     // =========================================================================
@@ -1272,7 +1311,13 @@ class NetplayController(
         return true
     }
 
-    /** 收到负帧号 input → 聊天分片解码（仅网络线程调用）。 */
+    /** 收到负帧号 input → 聊天分片解码（仅网络线程调用）。
+     *  ★★ v59 修复（用户实测"发几十条一条都看不到"的根因）：
+     *  编码端数据条 i（0..n-1）的帧号 = -(i+1) → 解码侧 TreeMap 键是
+     *  【1..n】（1-based）。旧代码组装时用 `buf[i]`（i 从 0 起，0-based）
+     *  取片 —— buf[0] 永不存在 → "缺片丢弃" → 兜底通道上【每一条】
+     *  消息都在组装时被静默丢掉（老服务器 <v51 无原生 chat 中继时聊天
+     *  全灭）。改为 buf[i + 1] 按 1-based 键取片。 */
     private fun handleChatFragment(frame: Long, pad: Int, slot: Int) {
         if (slot !in 1..4) return
         if (frame == CHAT_FALLBACK_END_FRAME) {
@@ -1281,8 +1326,8 @@ class NetplayController(
             if (count <= 0 || count > CHAT_FALLBACK_MAX_CHUNKS || buf.size != count) return
             val bytes = ByteArray(count * 3)
             for (i in 0 until count) {
-                val v = buf[i] ?: return   // 缺片：丢弃（不作半截消息）
-                bytes[i * 3] = (v shr 16).toByte()
+                val v = buf[i + 1] ?: return   // ★★ v59：键为 1..count（idx=-frame），
+                bytes[i * 3] = (v shr 16).toByte()     // 0-based 取片永远缺第一片
                 bytes[i * 3 + 1] = (v shr 8).toByte()
                 bytes[i * 3 + 2] = v.toByte()
             }
@@ -1293,6 +1338,7 @@ class NetplayController(
             } catch (_: Throwable) { return }
             if (text.isNotBlank()) {
                 android.util.Log.i("NetplayController", "chat(fallback) from ${slot}P: $text")
+                recordIncomingChat("${slot}P", text, slot, false)
                 dispatch { it.onChat("${slot}P", text, slot, false) }
             }
             return
@@ -1401,6 +1447,7 @@ class NetplayController(
                     return IntArray(4)
                 }
                 var lastReport = 0L
+                var lastReportDone = 0L
                 while (netFrameCounter < catchupTarget()) {
                     // 门事件（暂停/重开接管追赶）：作废本轮追赶，回外层环过门重新
                     // 对齐（时间线将被存档装载/复位替换，已快放的帧自然作废）
@@ -1454,11 +1501,20 @@ class NetplayController(
                     netFrameCounter++
                     val now = System.currentTimeMillis()
                     if (now - lastReport >= 200) {
-                        lastReport = now
                         val done = netFrameCounter - catchupFromFrame
                         val total = (catchupTarget() - catchupFromFrame).coerceAtLeast(1)
-                        catchupProgressText = "$done/$total"
-                        dispatch { it.onSyncStatus("黑屏快速追赶中… $done/$total 帧") }
+                        // ★★ v59 追赶提速可视化：显示重放速率（帧/秒）+ 预计剩余 ——
+                        //   重放速率远超 60fps 就是快进状态在满速推进；用户能看到
+                        //   追赶在动，不再感知为"卡住/太慢"。
+                        val rate = if (lastReport > 0 && done > lastReportDone)
+                            ((done - lastReportDone) * 1000L / (now - lastReport)).coerceAtLeast(1L)
+                        else 0L
+                        lastReport = now
+                        lastReportDone = done
+                        val remain = (total - done).coerceAtLeast(0L)
+                        val eta = if (rate > 0) "${remain / rate}s" else "…"
+                        catchupProgressText = "$done/$total · ${rate}f/s · 剩$eta"
+                        dispatch { it.onSyncStatus("极速追赶中… $done/$total 帧（${rate} 帧/秒，剩 $eta）") }
                     }
                 }
                 // 追平：自己槽位 inputDelay 预热窗归零（追赶期间
