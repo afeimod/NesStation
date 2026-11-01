@@ -1802,20 +1802,47 @@ private fun normalizePgm3RomLayout(romFile: java.io.File, privateDir: java.io.Fi
     if (!name.endsWith(".zip")) return romFile
     val parent = romFile.parentFile
     if (parent != null && parent.isDirectory) {
+        // ★★ v62 CHD 名字过滤（修复误拾）：本函数早先的 3a/3b 会把 ROM 目录
+        //   里【任意】.chd 当伴生镜像 —— ROM 目录里往往还有别的 CHD 游戏
+        //   （CPS3/DC/MD 等），误拾后 PGM3 核心在 CHD 里找不到
+        //   chd:/game/sa3hd_a38/gdk/bin/sa3hd → 会话静默结束。现按参考
+        //   实现 Pgm3Support 的语义优先选 kov3hd/m105 名字的 CHD；任意
+        //   名字的 CHD 只作最后兜底（并打日志）。
+        val chdNameHint: (String) -> Boolean = { n ->
+            val lower = n.lowercase()
+            lower.contains("kov3hd") || lower.contains("m105")
+        }
         // 2) 同名子目录（v52 标准布局）
         val sub = java.io.File(parent, romFile.nameWithoutExtension)
         if (sub.isDirectory) {
             sub.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
                 ?.firstOrNull()?.let { return it }
         }
-        // 3a) zip 旁边散落的 CHD
+        // 3a) zip 旁边散落的 CHD（优先 kov3hd/m105 名字）
         parent.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
-            ?.firstOrNull()?.let { return it }
-        // 3b) 同级一层子目录里的 CHD（任意子目录名）
+            ?.firstOrNull { chdNameHint(it.name) }?.let { return it }
+        // 3b) 同级一层子目录里的 CHD（优先 kov3hd/m105 名字）
         val dirs = parent.listFiles { f -> f.isDirectory } ?: emptyArray()
         for (d in dirs) {
             d.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
-                ?.firstOrNull()?.let { return it }
+                ?.firstOrNull { chdNameHint(it.name) }?.let { return it }
+        }
+        // 3c) ★ v62 兜底：目录里只有别的名字的 CHD（例如用户重命名的镜像）
+        //   才采用，且必须带日志 —— 正常发布名永远走上面的精确匹配。
+        parent.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
+            ?.firstOrNull()?.let {
+                android.util.Log.w("EmulatorScreen",
+                    "PGM3 布局归一化：未找到 kov3hd/m105 名字的 CHD，兜底采用 ${it.name} " +
+                        "（若游戏启动失败，请把镜像命名为 kov3hd_m105.chd）")
+                return it
+            }
+        for (d in dirs) {
+            d.listFiles { f -> f.isFile && f.name.lowercase().endsWith(".chd") }
+                ?.firstOrNull()?.let {
+                    android.util.Log.w("EmulatorScreen",
+                        "PGM3 布局归一化：子目录兜底采用 ${d.name}/${it.name}")
+                    return it
+                }
         }
     }
     // 4) CHD 在 zip 里面：抽到私有目录
@@ -2074,12 +2101,21 @@ fun EmulatorScreen(
     // ★★ v58 PGM3 启动进度（三国战记3HD 大 CHD 首次解压 + 分段开机影片需要
     //   一段时间）：轮询 Pgm3Engine.bootProgress，把「核心状态 + 已等待秒数」
     //   显示在启动屏上 —— 用户不再面对一句干巴巴的“正在加载…”。
+    // ★★ v62 起启动失败不再阻塞 loadRom（worker 拉起即返回 true）—— 后续
+    //   异步失败经 Pgm3Engine.lateFailure 轮询发现，转为错误面板展示。
     var pgm3BootText by remember { mutableStateOf<String?>(null) }
+    var pgm3LateError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(engine) {
         val pgm3 = engine as? com.nesstation.app.core.engine.Pgm3Engine
             ?: return@LaunchedEffect
         while (true) {
             pgm3BootText = pgm3.bootProgress
+            pgm3.lateFailure?.takeIf { it != pgm3LateError }?.let {
+                pgm3LateError = it
+                errorMsg = it
+                running = false
+                android.util.Log.e("EmulatorScreen", "PGM3 异步失败: $it")
+            }
             kotlinx.coroutines.delay(400)
         }
     }
@@ -4328,7 +4364,9 @@ fun EmulatorScreen(
                 modifier = Modifier.fillMaxSize()
             )
         }
-        if (loaded) {
+        // ★★ v62 PGM3 异步启动失败后隐藏游戏视图（worker 拉起即 loaded=true，
+        //   游戏视图必须已组合供 Surface 绑定；guard/worker 报告失败后切错误面板）
+        if (loaded && pgm3LateError == null) {
             if (platform == GamePlatform.JAVA && engine is J2meEngine) {
                 // === J2ME 游戏窗口同样接收全局「画面缩放」(videoScale) ===
                 // 与 GameSurfaceView 一致的形状约束：stretch=铺满（旧行为）、
@@ -4720,6 +4758,36 @@ fun EmulatorScreen(
             }
         }
 
+        // ★★ v62 PGM3 启动进度浮层（盖在游戏视图之上 —— loadRom 现在在
+        //   worker 拉起后立即返回，loaded=true 时机早于首帧；参考实现
+        //   Pgm3Activity 的 status TextView 同位置同语义）：启动中显示核心
+        //   状态与已等待秒数，首帧出现即由引擎置空 bootProgress 撤层。
+        if (loaded && pgm3BootText != null && pgm3LateError == null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.82f)),
+                contentAlignment = androidx.compose.ui.Alignment.Center
+            ) {
+                Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+                    Text(
+                        text = pgm3BootText!!,
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        text = "三国战记3HD 首次启动需解压光盘镜像（约 1~3 分钟），\n期间可能长时间无画面属正常现象，请耐心等待，勿退出",
+                        color = Color(0xFFFFD66B),
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+        }
+
         // ★★ R5: Wii U 悬浮 GamePad 小窗矩形（宿主 Box 坐标，px）—— 渲染
         //   定位与触摸转发共用同一几何来源（cemuPadOverlayRectPx），
         //   "窗口画在哪里"与"触摸路由到哪"天然一致（R3 失败根因即
@@ -4750,7 +4818,8 @@ fun EmulatorScreen(
         }
 
         // On-screen controller with multi-touch — hidden on TV (no touchscreen)
-        if (loaded && effectiveShowPad && !showMenu && !showLayoutEditor && !showSettings && !showCustomLayoutEditor && surfaceSize != IntSize.Zero) {
+        // ★ v62 PGM3 异步失败后同样隐藏（错误面板不再被手柄遮挡）
+        if (loaded && pgm3LateError == null && effectiveShowPad && !showMenu && !showLayoutEditor && !showSettings && !showCustomLayoutEditor && surfaceSize != IntSize.Zero) {
             if (platform == GamePlatform.DOS && engine is com.nesstation.app.core.engine.DosEngine) {
                 // DOS uses a dedicated overlay with two modes (gamepad / keyboard)
                 // and full keyboard + mouse support. The mode toggle is handled

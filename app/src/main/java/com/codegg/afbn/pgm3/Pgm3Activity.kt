@@ -78,5 +78,12 @@ class Pgm3Activity private constructor() {
         /** ★★ v59 金手指配置（nativeRun 前调用 —— 对齐参考实现 Pgm3CheatDialog
          *  .configure：configPath = 金手指 ini 路径，文件不存在是合法状态）。 */
         @JvmStatic external fun nativeCheatConfigure(configPath: String): Boolean
+
+        /** ★★ v62 应用完整性初始化（对齐参考实现 afbn Pgm3Activity.onCreate：
+         *  loadLibrary 成功后立即 nativeLuaConfigure(AppIntegrity.getSigningDigest(this),
+         *  packageName) —— 32 字节签名摘要 + 包名；核心据此开启受保护 Lua 脚本
+         *  功能。签名不匹配时核心仅关闭受保护脚本，不影响游戏本体运行；
+         *  本应用与 afbn 签名不同属预期，调用失败静默忽略）。 */
+        @JvmStatic external fun nativeLuaConfigure(digest: ByteArray?, packageName: String?)
     }
 }

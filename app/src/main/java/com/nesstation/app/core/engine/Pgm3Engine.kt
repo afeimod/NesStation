@@ -40,6 +40,34 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 联机对战：本核心为推模型（模拟循环在原生线程内），无法接入 frameHook
  * 锁步 —— kov3hd 暂不支持联机（对战平台 PGM1 街机不受影响）。即时存档
  * 同理不可用（PGM3 进度 = 记忆卡语义，走核心内部卡槽）。
+ *
+ * ★★ v62 启动模型重构（对齐参考实现 afbn Pgm3Activity 的完整时序 ——
+ * 修复 v52~v61 从未解决过的「会话在出现画面之前就结束」）：
+ *
+ *  参考实现（反编译 afbn-release-64.apk 实测可玩的时序）：
+ *    surfaceCreated → nativeSurface(surface)【窗口先于会话！】→
+ *    card/cheat configure → started=true → Thread("KOV3HD").start() →
+ *    worker: prepareRuntime → nativeRun(root, zip, chd, perfLog)
+ *  （nativeRun 返回 rc≠0 → readRuntimeFailure → UI 显示；rc=0 = 正常退出）
+ *
+ *  v61 及之前的问题：GameSurfaceView 只在 loadRom 成功后才组合，而
+ *  loadRom 又在等首帧 —— 首帧又必须要窗口 → 死锁。核心在【无 EGL 窗口】
+ *  状态下被拉起，nativeRun 内部的 EGL 初始化拿不到 window target
+ *  （二进制串 "original EGL window mode target is missing" 即此路径），
+ *  会话在写任何 interactive.log 之前就干净地退出：rc=0、零帧、空日志、
+ *  状态「游戏已停止」——正是用户截图看到的报错。
+ *
+ *  v62 修复：
+ *    1. loadRom 在 worker 拉起后立即返回 true（参考实现同语义）→
+ *       GameSurfaceView 立即组合 → Surface 毫秒级到达 → setSurface
+ *       → nativeSurface + 解除暂停（与参考 surfaceCreated 同序）；
+ *    2. worker 线程在调 nativeRun 前等 Surface 就绪（有界 20s，响应取消）
+ *       —— 保证核心启动时窗口已存在，对齐参考的强顺序；
+ *    3. 首帧等待/超时监护移到独立 guard 守护线程（loadRom 不再阻塞等首帧）；
+ *       启动后异步失败经 lateFailure 交给前端轮询展示（参考 worker 返回后
+ *       runOnUiThread(d(failure, rc)) 同语义）；
+ *    4. 补参考实现 onCreate 里的 nativeLuaConfigure(签名摘要, 包名) 调用
+ *       （完整对齐 afbn 的核心初始化序列）。
  */
 class Pgm3Engine private constructor() : EmulatorEngine {
 
@@ -67,9 +95,25 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     @Volatile private var surfaceReady = false
     @Volatile private var pausedExt = false
 
-    /** ★★ v58 启动进度（等待首帧期间由 watchdog 更新，前端轮询显示；null = 无启动进行中）。 */
+    /** ★★ v58 启动进度（等待首帧期间由 guard 更新，前端轮询显示；null = 无启动进行中）。 */
     @Volatile var bootProgress: String? = null
         private set
+
+    /** ★★ v62 启动后异步失败（guard/worker 线程产出，前端轮询展示；
+     *  null = 无失败。参考实现 worker 返回后 runOnUiThread(d(failure, rc)) 同语义）。 */
+    @Volatile var lateFailure: String? = null
+        private set
+
+    /** ★★ v62 首帧是否已出现（guard 置位；worker 结束时区分"正常退出"与
+     *  "会话在首帧前就结束"）。 */
+    @Volatile private var firstFrameSeen = false
+
+    /** ★★ v62 会话取消请求（cleanup/loadRom 重入时置位；worker 的 Surface
+     *  等待期间检查，防止 cleanup 后 worker 继续拉起僵尸会话）。 */
+    private val cancelRequested = AtomicBoolean(false)
+
+    /** ★★ v62 启动监护守护线程（替代 v61 的 loadRom 内联 watchdog）。 */
+    @Volatile private var guardThread: Thread? = null
 
     /** 上一次各玩家 pad（Select 投币按下沿检测）。 */
     private val lastPad = IntArray(2)
@@ -160,11 +204,44 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         return try {
             System.loadLibrary("pgm3")
             loaded.set(true)
+            // ★★ v62 对齐参考实现 onCreate：loadLibrary 成功后立即
+            //    nativeLuaConfigure(签名摘要, 包名)（afbn Pgm3Activity.onCreate
+            //    L23d 逐句核实 —— 核心的完整初始化序列包含本调用；签名不匹配时
+            //    核心仅关闭受保护 Lua 脚本功能，不影响游戏本体运行）。本应用
+            //    签名与 afbn 不同属预期行为，调用失败静默忽略。
+            try {
+                appContext?.let { ctx ->
+                    Pgm3Activity.nativeLuaConfigure(appSigningDigest(ctx), ctx.packageName)
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "nativeLuaConfigure: ${t.message}（不影响游戏运行）")
+            }
             true
         } catch (t: Throwable) {
             lastErr = "加载 PGM3 核心失败：${t.message}"
             android.util.Log.e(TAG, "ensureLoaded", t)
             false
+        }
+    }
+
+    /** 当前应用签名证书的 SHA-256 摘要（参考实现 AppIntegrity.getSigningDigest
+     *  同语义： PackageManager 签名 → SHA-256，32 字节；取不到返回 null）。 */
+    private fun appSigningDigest(ctx: Context): ByteArray? {
+        return try {
+            val pm = ctx.packageManager
+            val signatures = if (Build.VERSION.SDK_INT >= 28) {
+                pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                    .signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(ctx.packageName, android.content.pm.PackageManager.GET_SIGNATURES).signatures
+            }
+            signatures?.firstOrNull()?.toByteArray()?.let { bytes ->
+                java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "appSigningDigest: ${t.message}")
+            null
         }
     }
 
@@ -277,63 +354,75 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 android.util.Log.w(TAG, "nativeCheatConfigure: ${t.message}（不影响启动）")
             }
 
-            // ★★ v57 Surface 先行等待（用户实测“黑屏 0 帧”的第一根因）：
-            //    参考实现是 Activity 流程 —— 先 surfaceCreated（窗口就绪）
-            //    再 nativeRun；本项目 Compose 加载 effect（IO 线程）与
-            //    SurfaceView 组合并发，nativeRun 可能先于 surfaceCreated 执行，
-            //    核心启动时 EGL 窗口目标缺失（libpgm3 二进制串
-            //    "original EGL window mode target is missing" /
-            //    "GPU presenter surface size mismatch" 即此路径）。
-            //    在 nativeRun 前有界等待 Surface 就绪（loadRom 已在 IO 线程，
-            //    阻塞安全；setSurface 已无锁化，不会被 lifecycleLock 阻塞）。
-            //    6s 仍无 Surface：继续启动（不阻断 —— 由下方帧看门狗给出
-            //    真实报错，绝不无解释黑屏）。
-            val waitStart = System.currentTimeMillis()
-            while (!surfaceReady && System.currentTimeMillis() - waitStart < 6_000) {
-                try { Thread.sleep(100) } catch (_: InterruptedException) { break }
-            }
-            if (!surfaceReady) {
-                android.util.Log.w(TAG, "loadRom: Surface 6s 未就绪（继续启动，帧看门狗兜底）")
-            }
-
-            // ★★ v61 启动模型修复（对齐参考实现 —— 用户实测"一直显示解压
-            //    chd 150 秒没反应，核心好像没启动"的根因）：libpgm3 的
-            //    nativeRun 是【同步阻塞】调用 —— 从 JNI 侧核实：函数内部
-            //    freopen 重定向 stdout/stderr → setenv(PGM3_ROM_ZIP/
-            //    PGM3_ROM_CHD/PGM3_MCU_PEER/PGM3_FRAM_SAVE) → 原子运行标志
-            //    置位 → 在【调用线程内跑完整场模拟】直到会话结束才返回 0
-            //    （-2 = 已有会话在跑，-1 = 初始化失败）。参考实现 afbn 的
-            //    Pgm3Activity 正因如此把它放进独立线程：surfaceCreated →
-            //    nativeSurface → card/cheat configure → started=true →
-            //    new Thread(…,"KOV3HD").start()（反汇编 Pgm3Activity.b(I)V
-            //    逐条核实）。旧版把 nativeRun 直接放在 loadRom（IO 协程）
-            //    里同步调用 —— 整场游戏期间 loadRom 不返回、isLoaded 恒
-            //    false、看门狗根本没机会运行（它在 nativeRun 之后才启动，
-            //    此时会话早已结束）；用户全程只看到加载提示，还要吃
-            //    "150s 无活动"的误判（会话静默结束时帧号=0）。现按参考
-            //    实现改为工作线程模型：
+            // ★★ v62 启动模型（对齐参考实现 afbn 的强顺序 —— v52~v61
+            //    「会话在出现画面之前就结束」的根治）：
             //
-            //      Thread("KOV3HD") { runRc = nativeRun(root, zip, chd, "") }
-            //        → started = true（线程 start 前置位，同参考实现）
-            //        → nativePause(pausedExt || !surfaceReady)（同 updatePause）
-            //        → watchdog(root) 在【会话运行中】监视首帧/活动/超时
-            //        → 首帧出现即返回 true（画面已起来，前端撤加载层）；
-            //          工作线程继续跑模拟直到用户退出（nativeStop→rc=0）。
+            //    参考实现实测可玩的时序（反编译 afbn Pgm3Activity）：
+            //      surfaceCreated → nativeSurface(surface)【窗口先于会话！】
+            //        → card/cheat configure → started=true
+            //        → Thread("KOV3HD"){ nativeRun(...) }.start()
             //
-            //    失败路径：工作线程提前退出（rc≠0 / 异常）→ 立即用
-            //    interactive.log 给出真实原因；静默超时矩阵与 v60 一致
-            //    （首帧 300s / 总限 480s / 静默判死 150s）。
+            //    v61 及之前的问题：GameSurfaceView 只在 loadRom 成功后才组合，
+            //    而 loadRom 又在等首帧 —— 首帧必须要窗口 → 死循环。核心在
+            //    【无 EGL 窗口】下被拉起，nativeRun 的 EGL 初始化拿不到
+            //    window target，会话在写任何 interactive.log 之前就干净退出：
+            //    rc=0、零帧、空日志、状态「游戏已停止」（用户截图）。
+            //
+            //    v62：loadRom 在 worker 拉起后【立即返回 true】（参考同语义）
+            //    → 前端立即组合 GameSurfaceView → Surface 毫秒级到达 →
+            //    setSurface → nativeSurface + 解除暂停；worker 在调 nativeRun
+            //    前等 Surface 就绪（有界 20s，响应取消）；首帧/超时监护交给
+            //    独立 guard 守护线程（startGuard），异步失败经 lateFailure
+            //    由前端轮询展示。
+            cancelRequested.set(false)
+            lateFailure = null
+            firstFrameSeen = false
+            bootProgress = "正在启动三国战记3HD…"
             runRc = Int.MIN_VALUE
             val workerRoot = root
             val workerZip = romZip.absolutePath
             val workerChd = romChd.absolutePath
             val t = Thread({
                 try {
+                    // ★ v62.2 Surface 就绪等待（参考实现 surfaceCreated →
+                    //    nativeSurface → nativeRun 的强顺序）：核心启动时 EGL
+                    //    必须已拿到 window target。loadRom 已提前返回 →
+                    //    GameSurfaceView 已组合 → Surface 毫秒级到达；这里
+                    //    最多等 20s 兜底（期间响应 cleanup 的取消请求）。
+                    val waitStart = System.currentTimeMillis()
+                    while (!surfaceReady && !cancelRequested.get() &&
+                        System.currentTimeMillis() - waitStart < 20_000) {
+                        try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+                    }
+                    if (cancelRequested.get()) return@Thread
+                    if (!surfaceReady) {
+                        android.util.Log.w(TAG, "worker: Surface 20s 未就绪（仍尝试启动，guard 会给出真实报错）")
+                    }
                     runRc = Pgm3Activity.nativeRun(workerRoot.absolutePath, workerZip, workerChd, "")
+                    // ★ v62.3 worker 结束 = nativeRun 返回（参考实现 worker 同点）：
+                    //    rc≠0 → interactive.log 真实原因；rc==0 且首帧从未出现 →
+                    //    会话在渲染前静默结束（如实上报，不再吞成"成功"）。
+                    if (!cancelRequested.get()) {
+                        when {
+                            runRc != 0 -> lateFailure = buildFailureDetail(
+                                workerRoot, "核心初始化失败（code $runRc）")
+                            !firstFrameSeen -> lateFailure = buildFailureDetail(
+                                workerRoot, "核心会话在出现画面之前就结束了（ROM/CHD 镜像可能不完整）")
+                        }
+                    }
                 } catch (t: Throwable) {
                     android.util.Log.e(TAG, "nativeRun worker", t)
                     runRc = -1
-                    lastErr = "PGM3 核心启动异常：${t.message}"
+                    if (!cancelRequested.get()) {
+                        lateFailure = "PGM3 核心启动异常：${t.message}"
+                    }
+                } finally {
+                    if (!firstFrameSeen) bootProgress = null
+                    if (firstFrameSeen) {
+                        android.util.Log.i(TAG, "kov3hd session ended: rc=$runRc")
+                    } else if (runRc == 0 && !cancelRequested.get()) {
+                        android.util.Log.e(TAG, "kov3hd session ended before first frame (rc=0)")
+                    }
                 }
             }, "KOV3HD").apply { isDaemon = false }
             runThread = t
@@ -343,36 +432,36 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             // Surface 已就绪则按外部暂停状态恢复（参考实现 updatePause 时机）
             try { Pgm3Activity.nativePause(pausedExt || !surfaceReady) } catch (_: Throwable) {}
 
-            // ★ v61 会话运行中监护：首帧出现 = 成功；线程死亡 = 真实失败。
-            watchdog(root, t)
+            // ★ v62.3 启动监护守护线程（loadRom 不再阻塞等首帧）
+            startGuard(root, t)
 
-            if (!started) {
-                // watchdog 判死（超时/线程退出）—— lastErr 已就绪
-                logInteractiveLog(root)
-                return false
-            }
             logInteractiveLog(root)
 
             isLoaded = true
             lastPad[0] = 0; lastPad[1] = 0
-            android.util.Log.i(TAG, "kov3hd running: zip=${romZip.name} chd=${romChd.name}")
+            android.util.Log.i(TAG, "kov3hd worker started: zip=${romZip.name} chd=${romChd.name}")
             return true
         }
 
     /**
-     * ★★ v61 会话运行中监护（loadRom 内调用，IO 线程 + lifecycleLock 内）。
-     * 成功（首帧出现）：直接返回，worker 线程继续跑模拟。
-     * 失败：置 lastErr + 停核（nativeStop → worker 的 nativeRun 返回）。
-     *
-     * 与 v58 版的差异：v61 之前本函数在 nativeRun 返回后才开始跑（此时
-     * 会话早已结束，监测到的必然是“死核”—— 150s 静默误报的直接来源）；
-     * 现在监视的是【正在跑会话】的工作线程：线程死亡 = 确定性失败，
-     * 立即用 rc + interactive.log 报真错。
+     * ★★ v62 启动监护守护线程（daemon —— 替代 v61 的 loadRom 内联 watchdog）。
+     * v61 的 watchdog 在 loadRom 内阻塞等首帧（IO 线程 + lifecycleLock），
+     * v62 loadRom 立即返回后由本守护线程承担同一职责：
+     *   A. 首帧出现 → bootProgress=null（前端撤启动层），继续监视会话；
+     *   B. worker 死亡 → 收尾（lateFailure 由 worker 自身按 rc 语义填写）；
+     *   C. 明确错误关键词 → 3s 确认 → nativeStop + lateFailure；
+     *   D. 静默/总限超时 → nativeStop + lateFailure。
+     * 超时矩阵与 v60 一致（静默 150s / 首帧 300s / 总限 480s）。
      */
-    private fun watchdog(root: File, worker: Thread) {
-        bootProgress = "正在启动三国战记3HD…"
+    private fun startGuard(root: File, worker: Thread) {
+        val g = Thread({ guardLoop(root, worker) }, "KOV3HD-guard").apply { isDaemon = true }
+        guardThread = g
+        g.start()
+    }
+
+    private fun guardLoop(root: File, worker: Thread) {
         val t0 = System.currentTimeMillis()
-        var lastActivity = t0               // 最近一次 B/C 信号变化
+        var lastActivity = t0               // 最近一次 A/B/C 信号变化
         var lastStatus: String? = null      // nativeStatus 快照
         var lastLogSize = -1L               // interactive.log 大小快照
         var lastProgressLog = 0L            // 上次 logcat 进度输出
@@ -384,44 +473,42 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             val now = System.currentTimeMillis()
             val waited = now - t0
 
-            // ★ v61 D. 工作线程死亡 = 确定性失败（nativeRun 已返回）——
-            //    先于一切超时：rc≠0/异常给出真实原因，rc==0 说明会话在
-            //    首帧前就静默结束（镜像损坏等），同样报错。
+            // B. worker 死亡：lateFailure 由 worker 自身按 rc 语义填写 ——
+            //    这里只同步 lastErr 与收尾日志。
             if (!worker.isAlive) {
-                val rc = runRc
-                failWatchdog(
-                    root,
-                    when {
-                        rc == 0 -> "核心会话在出现画面之前就结束了（ROM/CHD 镜像可能不完整）"
-                        rc == -2 -> "核心已有会话在运行（请完全退出游戏后重试）"
-                        rc == Int.MIN_VALUE -> "核心会话异常终止（无返回码）"
-                        else -> "核心初始化失败（code $rc，详见核心日志）"
-                    }
-                )
+                if (!firstFrameSeen) {
+                    lastErr = lateFailure ?: lastErr
+                    bootProgress = null
+                }
                 return
             }
 
-            // A. 首帧出现 —— 渲染起跑，立即成功
+            // A. 首帧出现 —— 渲染起跑：撤启动层，之后只监视会话存活
+            //    （首帧后的错误走 UI 退出路径，不再由启动监护误判）
             val frame = try { Pgm3Activity.nativeFrameCount() } catch (_: Throwable) { 0 }
             if (frame > 0) {
-                bootProgress = null
-                started = true
-                android.util.Log.i(TAG, "watchdog: 首帧 #${frame}（等待 ${waited / 1000}s）")
-                return
+                if (!firstFrameSeen) {
+                    firstFrameSeen = true
+                    bootProgress = null
+                    android.util.Log.i(TAG, "guard: 首帧 #$frame（等待 ${waited / 1000}s）")
+                }
+                lastActivity = now
+                try { Thread.sleep(250) } catch (_: InterruptedException) { return }
+                continue
             }
 
-            // B. 核心状态文本变化 = 状态机在推进
+            // 核心状态文本变化 = 状态机在推进
             val status = try { Pgm3Activity.nativeStatus() } catch (_: Throwable) { null }
             if (status != lastStatus) {
                 if (lastStatus != null) {
                     sawAnyActivity = true
-                    android.util.Log.i(TAG, "watchdog: 核心状态 → “${status ?: "（空）"}”（+${waited / 1000}s）")
+                    android.util.Log.i(TAG, "guard: 核心状态 → “${status ?: "（空）"}”（+${waited / 1000}s）")
                 }
                 lastStatus = status
                 lastActivity = now   // 状态出现/变化都刷新活动时钟（首个状态 = 基线）
             }
 
-            // C. interactive.log 增长 = 核心在写日志
+            // interactive.log 增长 = 核心在写日志
             val logSize = try {
                 File(root, "interactive.log").takeIf { it.isFile }?.length() ?: 0L
             } catch (_: Throwable) { 0L }
@@ -438,16 +525,16 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 bootProgress = "正在启动三国战记3HD：核心状态「$phase」" +
                     "，已等待 ${waited / 1000}s${if (logSize > 0) "，日志 ${logSize / 1024}KB" else ""}" +
                     if (sawAnyActivity) "" else "（加载中，请耐心等待）"
-                android.util.Log.i(TAG, "watchdog: ${bootProgress}")
+                android.util.Log.i(TAG, "guard: ${bootProgress}")
             }
 
-            // E. 明确错误信号 —— 状态文本/日志出现失败语义 → 3s 后复查仍无
+            // 明确错误信号 —— 状态文本/日志出现失败语义 → 3s 后复查仍无
             //    新活动即快速失败（核心报了错不可能自己恢复）
             val errHit = findStartupError(status, root)
             if (errHit != null) {
                 if (pendingError == errHit) {
                     if (now - pendingErrorAt >= 3_000 && now - lastActivity >= 3_000) {
-                        failWatchdog(root, errHit)
+                        guardFail(root, errHit)
                         return
                     }
                 } else {
@@ -458,18 +545,18 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 pendingError = null   // 错误消失（状态又推进了）→ 撤销快速失败
             }
 
-            // F. 静默判死：自最近活动起 150s 三信号全无变化（大 CHD 解压期
+            // 静默判死：自最近活动起 150s 三信号全无变化（大 CHD 解压期
             //    可静默 1~2 分钟 —— 30s 会误杀，见常量处注释）
             if (now - lastActivity >= SILENCE_TIMEOUT_MS) {
-                failWatchdog(root, "核心连续 ${SILENCE_TIMEOUT_MS / 1000}s 无任何活动" +
+                guardFail(root, "核心连续 ${SILENCE_TIMEOUT_MS / 1000}s 无任何活动" +
                     "（状态「${status ?: "无"}」未变、日志无增长、帧号为 0）")
                 return
             }
 
-            // G. 总限：有活动最多等 480s；完全无活动最多等 300s（首帧上限）
+            // 总限：有活动最多等 480s；完全无活动最多等 300s（首帧上限）
             val limit = if (sawAnyActivity) TOTAL_TIMEOUT_MS else FIRST_FRAME_TIMEOUT_MS
             if (waited >= limit) {
-                failWatchdog(root, "等待 ${limit / 1000}s 仍未出现画面" +
+                guardFail(root, "等待 ${limit / 1000}s 仍未出现画面" +
                     "（${if (sawAnyActivity) "核心持续有活动" else "核心始终无活动"}" +
                     "，状态「${status ?: "无"}」）")
                 return
@@ -479,16 +566,25 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         }
     }
 
-    /** 启动失败收尾：停核 + 组装真实原因（最后状态 + interactive.log 尾部）。 */
-    private fun failWatchdog(root: File, reason: String) {
+    /** 启动失败收尾（guard 线程）：停核 + lateFailure 交给前端轮询展示。 */
+    private fun guardFail(root: File, reason: String) {
         bootProgress = null
+        cancelRequested.set(true)   // worker 的 rc==0 收尾不再重复报错
+        try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
+        started = false
+        lastErr = buildFailureDetail(root, reason)
+        lateFailure = lastErr
+        android.util.Log.e(TAG, "guard fail: $lastErr")
+        logInteractiveLog(root)
+    }
+
+    /**
+     * ★ v62 组装启动失败详情（真实原因 + 最后状态 + interactive.log 尾部）。
+     * 供 guardFail 与 worker 结束路径共用（参考实现 readRuntimeFailure 同点）。 */
+    private fun buildFailureDetail(root: File, reason: String): String {
         val status = try { Pgm3Activity.nativeStatus() } catch (_: Throwable) { null }
         val logTail = readLogTail(root, 6)
-        // 停掉已启动的核心（失败状态机没有继续运行的意义）
-        try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
-        try { Pgm3Activity.nativeSurface(null) } catch (_: Throwable) {}
-        started = false
-        lastErr = buildString {
+        return buildString {
             append("三国战记3HD 启动失败：")
             append(reason)
             status?.takeIf { it.isNotBlank() }?.let { append("；最后核心状态「").append(it).append("」") }
@@ -496,8 +592,6 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             append("\n请检查：CHD 是否为 original kov3hd_m105 版本、ROM 包是否完整、")
             append("kov3hd.zip 与 kov3hd 文件夹是否同目录。")
         }
-        android.util.Log.e(TAG, "watchdog fail: $lastErr")
-        logInteractiveLog(root)
     }
 
     /**
@@ -721,17 +815,23 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         started = false
         isLoaded = false
         bootProgress = null
+        // ★ v62 取消请求：worker 还在 Surface 等待期（尚未进 nativeRun）时
+        //   直接放弃启动，防止 cleanup 后拉起僵尸会话。
+        cancelRequested.set(true)
+        lateFailure = null
         try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
         try { Pgm3Activity.nativeSurface(null) } catch (_: Throwable) {}
         // ★ v61 等 nativeRun 工作线程退出（nativeStop 令其返回），避免下一局
         //   撞上核心的"已有会话在运行"互斥标志（nativeRun 返回 -2）。
         //   有界等待：正常应在毫秒级返回；卡死也不无限阻塞（超时后线程
         //   自行结束 —— native 层标志在会话退出时总会复位）。
+        //   ★ v62 worker 若还在等 Surface（最长 20s），取消请求会令其退出。
         val w = runThread
         if (w != null && w !== Thread.currentThread() && w.isAlive) {
             try { w.join(3_000) } catch (_: InterruptedException) {}
         }
         runThread = null
+        guardThread = null
         surfaceReady = false
         pausedExt = false
         lastPad[0] = 0; lastPad[1] = 0
