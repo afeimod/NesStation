@@ -2,6 +2,7 @@ package com.nesstation.app.core.engine
 
 import android.content.Context
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.view.Surface
 import com.codegg.afbn.pgm3.Pgm3Activity
 import java.io.File
@@ -40,6 +41,34 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 联机对战：本核心为推模型（模拟循环在原生线程内），无法接入 frameHook
  * 锁步 —— kov3hd 暂不支持联机（对战平台 PGM1 街机不受影响）。即时存档
  * 同理不可用（PGM3 进度 = 记忆卡语义，走核心内部卡槽）。
+ *
+ * ★★ v63 根治「报错让看 interactive.log，日志文件却根本不存在」（用户实测：
+ * v62 仍复现 —— worker 拉起 1.8s 后 rc=0、零帧、无日志）。libpgm3.so 二进制
+ * 逐点核实的三个事实 + 对应修复：
+ *   1. interactive.log 只在 nativeRun 第 4 参 perfLog【非空】时才被 fopen
+ *      （0x7fe1ac 分支：非空 → fopen(<root>/interactive.log)；空 →
+ *      fopen("/dev/null")）—— v52~v62 一直传 ""，核心全部启动日志
+ *      （AFBN_CHD_SOURCE / CHD_PROGRAM / FAIL 行 / AFBN_SESSION_ERROR /
+ *      "游戏已停止，返回码 0；详情见 interactive.log" 的详情）被静默丢弃，
+ *      guard 的日志监控与失败详情全部失明。参考实现 afbn 的
+ *      readRuntimeFailure 依赖该日志 —— 其 perfLog 必然非空。
+ *      → 现传 <root>/perf.log（核心同时落 perf.log/.detailed/.maps，
+ *      interactive.log 正常写，每次启动前清旧文件）。
+ *   2. 核心的 stdout/stderr 诊断（AFBN_CHD_SOURCE / CHD_PROGRAM / "FAIL %s" /
+ *      GPU presenter 系列错误 / AOT 自检输出）在 Android 上直进 /dev/null ——
+ *      会话即使报错也无人看得见。worker 启动 nativeRun 前把 fd1+fd2 dup2 到
+ *      <root>/core.log，核心控制台诊断首次可读（guard 监视其增长作为活动
+ *      信号，关键词扫描与失败详情均纳入；每次启动前清旧文件）。
+ *   3. 启动前不发 nativePause(true)（参考时序 surfaceCreated →
+ *      nativeSurface → configure → worker → nativeRun 全程无启动前暂停；
+ *      旧代码 worker 拉起后立即 pause(true)，核心整个加载期带暂停标志）。
+ *   4. 失败语义全量补齐：STARTUP_ERROR_KEYWORDS 加入二进制里核实过的全部
+ *      失败串（"FAIL " 通用失败行 / oracle / CHD_OPEN_ERROR /
+ *      AFBN_SESSION_ERROR / GPU presenter / "startup import count" 等）；
+ *      guard 见到「游戏已停止/返回码」状态且零帧时立即收尾上报（带日志
+ *      尾部；须先观察到本局"准备玩命加载"再判死 —— 状态串会残留上一局，
+ *      直接比对会让重试秒误判），不再干等 150s～300s 超时；worker 失败时
+ *      把 interactive.log / core.log 全文回显 logcat。
  *
  * ★★ v62 启动模型重构（对齐参考实现 afbn Pgm3Activity 的完整时序 ——
  * 修复 v52~v61 从未解决过的「会话在出现画面之前就结束」）：
@@ -118,6 +147,9 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     /** 上一次各玩家 pad（Select 投币按下沿检测）。 */
     private val lastPad = IntArray(2)
 
+    /** ★ v63 核心控制台捕获句柄（fd1+fd2 → core.log；worker 持有防 GC 提前关 fd）。 */
+    @Volatile private var stderrPfd: ParcelFileDescriptor? = null
+
     /** libretro JOYPAD Select 位（投币）。 */
     private val LIBRETRO_SELECT = 0x04
 
@@ -171,7 +203,22 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             "无法打开", "无法创建", "无法读取", "不存在", "不完整", "校验失败",
             "读取失败", "写入失败", "加载失败", "初始化失败",
             "游戏会话已结束", "cannot open", "No such file or directory",
-            "FAIL FRAM", "FAIL:"
+            "FAIL FRAM", "FAIL:",
+            // ★★ v63 补齐（libpgm3.so 二进制逐串核实的其余失败语义）：
+            //    "FAIL %s\n" 是核心通用失败行格式 —— 单独的 "FAIL " 前缀
+            //    覆盖全部 FAIL 分支（含 FAIL FRAM/FAIL: 已含项，不冲突）；
+            //    oracle/CHD/会话/GPU 初始化失败串全部纳入。若命中，guard 3s
+            //    确认后立即给出带日志尾部的真实报错（不再等到静默超时）。
+            "FAIL ",
+            "truncated oracle", "oracle header",
+            "CHD_OPEN_ERROR", "AFBN_SESSION_ERROR",
+            "startup import count",
+            "GPU presenter", "GPU game presentation", "GPU present",
+            "guest CHD cwd is not a directory",
+            "original ZIP/CHD inputs missing",
+            "module overlaps reserved guest memory",
+            "cannot open private game log", "PERF_LOG_UNAVAILABLE",
+            "import exit executes only the original BX LR"
         )
 
         @Volatile private var instance: Pgm3Engine? = null
@@ -382,6 +429,16 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             val workerRoot = root
             val workerZip = romZip.absolutePath
             val workerChd = romChd.absolutePath
+            // ★ v63 核心日志开关（见 worker 内注释 —— 必须非空才有 interactive.log）
+            val workerPerfLog = File(root, "perf.log").absolutePath
+            // 上一局遗留的 perf 三件套清掉（核心 "w"/"a" 打开，避免跨局混淆）
+            try {
+                File(root, "perf.log").delete()
+                File(root, "perf.log.detailed").delete()
+                File(root, "perf.log.maps").delete()
+                File(root, "interactive.log").delete()
+                File(root, "core.log").delete()
+            } catch (_: Throwable) {}
             val t = Thread({
                 try {
                     // ★ v62.2 Surface 就绪等待（参考实现 surfaceCreated →
@@ -398,7 +455,44 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                     if (!surfaceReady) {
                         android.util.Log.w(TAG, "worker: Surface 20s 未就绪（仍尝试启动，guard 会给出真实报错）")
                     }
-                    runRc = Pgm3Activity.nativeRun(workerRoot.absolutePath, workerZip, workerChd, "")
+                    // ★★ v63 根治「报错说详情见 interactive.log，但日志文件根本不存在」：
+                    //    libpgm3 二进制核实（0x7fe1ac 分支）：interactive.log 只在
+                    //    perfLog 参数【非空】时才被 fopen —— 传 "" 时核心
+                    //    fopen("/dev/null")，全部启动日志（含 AFBN_CHD_SOURCE /
+                    //    CHD_PROGRAM / FAIL 行 / AFBN_SESSION_ERROR）静默丢弃，
+                    //    guard 的日志监控与失败详情全部失明。参考实现 afbn 的
+                    //    readRuntimeFailure 依赖 interactive.log —— 其 perfLog
+                    //    必然非空。现对齐传 <root>/perf.log（核心同时落
+                    //    perf.log/.detailed/.maps 三件套，interactive.log 正常写）。
+                    // ★★ v63 控制台捕获：libpgm3 的 GPU/EGL/会话错误
+                    //    （"GPU presenter window swap failed" /
+                    //    "GPU presenter could not restore guest EGL state" /
+                    //    "FAIL %s" / AOT 自检失败串）走 stderr，而
+                    //    AFBN_CHD_SOURCE / CHD_PROGRAM / PASS 行走 stdout
+                    //    （二进制核实：0x249ea50=printf、0x249ed10=fprintf、
+                    //    0x2497b20=std::cerr）。Android 应用进程的 stdout/stderr
+                    //    默认直进 /dev/null —— 这就是 rc=0 静默退出时无任何
+                    //    可见原因的元凶。现把 fd1+fd2 一起重定向到
+                    //    <root>/core.log，核心启动期的完整控制台诊断首次可读。
+                    //    （dup2 进程级：会话期间落盘，无副作用；
+                    //   ParcelFileDescriptor 保存在字段里防 GC 提前关 fd。）
+                    try {
+                        val errLog = File(workerRoot, "core.log")
+                        stderrPfd?.close()
+                        stderrPfd = ParcelFileDescriptor.open(
+                            errLog,
+                            ParcelFileDescriptor.MODE_WRITE_ONLY or
+                                ParcelFileDescriptor.MODE_CREATE or
+                                ParcelFileDescriptor.MODE_TRUNCATE
+                        )
+                        val cfd = stderrPfd!!.fileDescriptor
+                        android.system.Os.dup2(cfd, 1)
+                        android.system.Os.dup2(cfd, 2)
+                    } catch (t: Throwable) {
+                        android.util.Log.w(TAG, "stdout/stderr redirect: ${t.message}")
+                    }
+                    runRc = Pgm3Activity.nativeRun(
+                        workerRoot.absolutePath, workerZip, workerChd, workerPerfLog)
                     // ★ v62.3 worker 结束 = nativeRun 返回（参考实现 worker 同点）：
                     //    rc≠0 → interactive.log 真实原因；rc==0 且首帧从未出现 →
                     //    会话在渲染前静默结束（如实上报，不再吞成"成功"）。
@@ -407,8 +501,11 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                             runRc != 0 -> lateFailure = buildFailureDetail(
                                 workerRoot, "核心初始化失败（code $runRc）")
                             !firstFrameSeen -> lateFailure = buildFailureDetail(
-                                workerRoot, "核心会话在出现画面之前就结束了（ROM/CHD 镜像可能不完整）")
+                                workerRoot, "核心会话在出现画面之前就自己结束了（rc=0，非前端停止）")
                         }
+                        // ★ v63 失败时把核心日志全文回显到 logcat（上一版只在
+                        //   loadRom 末尾回显一次 —— 那时会话尚未产生日志）
+                        logInteractiveLog(workerRoot)
                     }
                 } catch (t: Throwable) {
                     android.util.Log.e(TAG, "nativeRun worker", t)
@@ -429,8 +526,13 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             started = true                      // 参考实现：worker start 前置位
             t.start()
 
-            // Surface 已就绪则按外部暂停状态恢复（参考实现 updatePause 时机）
-            try { Pgm3Activity.nativePause(pausedExt || !surfaceReady) } catch (_: Throwable) {}
+            // ★★ v63 对齐参考实现：不再在 worker 拉起后立即 nativePause(true)。
+            //    参考时序是 surfaceCreated → nativeSurface → configure →
+            //    Thread(KOV3HD).start() → nativeRun —— 从头到尾【没有】启动前
+            //    暂停；旧代码在这里发 nativePause(!surfaceReady)=true，核心整个
+            //    加载期都带着暂停标志跑（恢复要等 setSurface 的第二次调用），
+            //    与参考强顺序相悰。暂停状态改由 setSurface 内统一驱动
+            //    （started=true 后 nativePause(pausedExt || !surfaceReady)）。
 
             // ★ v62.3 启动监护守护线程（loadRom 不再阻塞等首帧）
             startGuard(root, t)
@@ -463,6 +565,7 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         val t0 = System.currentTimeMillis()
         var lastActivity = t0               // 最近一次 A/B/C 信号变化
         var lastStatus: String? = null      // nativeStatus 快照
+        var sawRunStatus = false            // ★ v63：本局状态机已推进过（准备玩命加载/游戏运行中）
         var lastLogSize = -1L               // interactive.log 大小快照
         var lastProgressLog = 0L            // 上次 logcat 进度输出
         var pendingError: String? = null    // 命中的错误关键词（延迟确认）
@@ -508,10 +611,35 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 lastActivity = now   // 状态出现/变化都刷新活动时钟（首个状态 = 基线）
             }
 
-            // interactive.log 增长 = 核心在写日志
-            val logSize = try {
+            // ★★ v63 核心自己报告会话已结束（"游戏已停止"/"返回码"）且首帧
+            //    从未出现 → 立即收尾上报（带日志尾部），不再等静默/总限超时。
+            //    上一版此时只能干等 150s～300s 才报错；且核心 rc=0 路径的状态
+            //    文本尾部就是"详情见 interactive.log"——现在 guard 会把日志
+            //    尾部一并放进失败详情，用户第一次能看到核心的真实报错。
+            //    ★ 只在【本局状态机已推进过】（见过 准备玩命加载/游戏运行中）
+            //    之后才判死 —— nativeStatus 的字符串会残留上一局的
+            //    "游戏已停止，返回码 0"（nativeRun 开头才重置为
+            //    "准备玩命加载 ..."），直接比对会让重试秒误判。
+            if (!firstFrameSeen) {
+                val st = status ?: ""
+                if (!sawRunStatus &&
+                    (st.contains("准备玩命加载") || st.contains("游戏运行中"))) {
+                    sawRunStatus = true
+                }
+                if (sawRunStatus &&
+                    (st.contains("游戏已停止") || st.contains("返回码"))) {
+                    guardFail(root, "核心会话提前结束（状态「$st」）")
+                    return
+                }
+            }
+
+            // interactive.log / core.log 增长 = 核心在写日志
+            var logSize = try {
                 File(root, "interactive.log").takeIf { it.isFile }?.length() ?: 0L
             } catch (_: Throwable) { 0L }
+            try {
+                logSize += File(root, "core.log").takeIf { it.isFile }?.length() ?: 0L
+            } catch (_: Throwable) {}
             if (logSize != lastLogSize) {
                 if (lastLogSize >= 0) sawAnyActivity = true
                 lastLogSize = logSize
@@ -579,33 +707,35 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     }
 
     /**
-     * ★ v62 组装启动失败详情（真实原因 + 最后状态 + interactive.log 尾部）。
+     * ★ v62 组装启动失败详情（真实原因 + 最后状态 + interactive.log / core.log 尾部）。
      * 供 guardFail 与 worker 结束路径共用（参考实现 readRuntimeFailure 同点）。 */
     private fun buildFailureDetail(root: File, reason: String): String {
         val status = try { Pgm3Activity.nativeStatus() } catch (_: Throwable) { null }
-        val logTail = readLogTail(root, 6)
+        val logTail = readLogTail(root, 14)
         return buildString {
             append("三国战记3HD 启动失败：")
             append(reason)
             status?.takeIf { it.isNotBlank() }?.let { append("；最后核心状态「").append(it).append("」") }
             if (logTail.isNotBlank()) append("\n核心日志：\n").append(logTail)
+            else append("\n（核心未写出任何诊断日志 —— 请把 logcat 中 Pgm3Engine 全部日志发给我们）")
             append("\n请检查：CHD 是否为 original kov3hd_m105 版本、ROM 包是否完整、")
             append("kov3hd.zip 与 kov3hd 文件夹是否同目录。")
         }
     }
 
     /**
-     * 启动期错误关键词探测（nativeStatus 文本 + interactive.log 新增内容）。
+     * 启动期错误关键词探测（nativeStatus 文本 + interactive.log / core.log 新增内容）。
      * 仅盯二进制/日志里实际出现的明确失败语义，避免把正常加载日志误判为错。
      */
     private fun findStartupError(status: String?, root: File): String? {
         val text = buildString {
             append(status ?: "")
-            val logSize = try {
-                File(root, "interactive.log").takeIf { it.isFile }?.length() ?: 0L
-            } catch (_: Throwable) { 0L }
-            if (logSize > 0 && logSize <= 64 * 1024) {
-                try { append('\n').append(File(root, "interactive.log").readText()) } catch (_: Throwable) {}
+            for (name in listOf("interactive.log", "core.log")) {
+                val f = File(root, name)
+                val size = try { f.takeIf { it.isFile }?.length() ?: 0L } catch (_: Throwable) { 0L }
+                if (size > 0 && size <= 64 * 1024) {
+                    try { append('\n').append(f.readText()) } catch (_: Throwable) {}
+                }
             }
         }
         if (text.isBlank()) return null
@@ -615,14 +745,23 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         return null
     }
 
-    /** interactive.log 尾部 n 行（失败详情；无日志返回 ""）。 */
+    /** interactive.log + core.log 尾部（失败详情；两个文件最多各 lines 行）。 */
     private fun readLogTail(root: File, lines: Int): String {
-        return try {
-            val log = File(root, "interactive.log")
-            if (!log.isFile) "" else log.readLines().takeLast(lines).joinToString("\n").trim()
-        } catch (_: Throwable) { "" }
+        val out = mutableListOf<String>()
+        for (name in listOf("interactive.log", "core.log")) {
+            try {
+                val log = File(root, name)
+                if (log.isFile) {
+                    val tail = log.readLines().filter { it.isNotBlank() }.takeLast(lines)
+                    if (tail.isNotEmpty()) {
+                        out += "[$name]"
+                        out += tail
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+        return out.joinToString("\n").trim()
     }
-
     /** <romZip 同目录>/kov3hd/kov3hd_m105.chd（对齐参考实现）；
      *  ★★ v59 多位置查找（用户布局各异 —— 平铺/上溯/app ROM 目录/两层子目录扫描）。 */
     private fun resolveChdBeside(romZip: File, systemDir: String): File {
@@ -734,15 +873,17 @@ class Pgm3Engine private constructor() : EmulatorEngine {
 
     /** interactive.log 全文回显到 logcat（诊断 —— 线上问题只需 adb logcat）。 */
     private fun logInteractiveLog(root: File) {
-        try {
-            val log = File(root, "interactive.log")
-            if (log.isFile) {
-                val text = log.readText().trim()
-                if (text.isNotEmpty()) {
-                    android.util.Log.i(TAG, "interactive.log:\n$text")
+        for (name in listOf("interactive.log", "core.log")) {
+            try {
+                val log = File(root, name)
+                if (log.isFile) {
+                    val text = log.readText().trim()
+                    if (text.isNotEmpty()) {
+                        android.util.Log.i(TAG, "$name:\n$text")
+                    }
                 }
-            }
-        } catch (_: Throwable) {}
+            } catch (_: Throwable) {}
+        }
     }
 
     // === 渲染 ===
