@@ -327,6 +327,20 @@ private fun PhoneNavHost(
         nav.navigate(Routes.emulator(game.id))
     }
 
+    // ★★ v64 PGM3 自重启直达：libpgm3 的会话停止标志是进程级一次性（nativeStop
+    //   置 1、无清零入口 —— 参考实现「一次会话一个进程」语义），第二次启动
+    //   kov3hd 前应用会自动携带 nesstation_auto_open_game extra 重启自己；
+    //   这里消费该 extra，导航直达目标游戏并清掉 extra（防重组重复导航）。
+    LaunchedEffect(nav) {
+        val activity = ctx as? android.app.Activity ?: return@LaunchedEffect
+        val autoOpenId = activity.intent?.getStringExtra("nesstation_auto_open_game")
+        if (!autoOpenId.isNullOrBlank()) {
+            android.util.Log.i("NesApp", "PGM3 自重启直达：$autoOpenId")
+            activity.intent.removeExtra("nesstation_auto_open_game")
+            nav.navigate(Routes.emulator(autoOpenId))
+        }
+    }
+
     NavHost(
         navController = nav,
         startDestination = Routes.HOME,
@@ -612,6 +626,17 @@ private fun TvNavHost(
     // All platforms (including J2ME) use the unified EmulatorScreen in TV mode.
     val openGame: (GameEntry) -> Unit = { game ->
         nav.navigate(Routes.emulator(game.id))
+    }
+
+    // ★★ v64 PGM3 自重启直达（TV 版，与 PhoneNavHost 同逻辑）。
+    LaunchedEffect(nav) {
+        val activity = ctx as? android.app.Activity ?: return@LaunchedEffect
+        val autoOpenId = activity.intent?.getStringExtra("nesstation_auto_open_game")
+        if (!autoOpenId.isNullOrBlank()) {
+            android.util.Log.i("NesApp", "PGM3 自重启直达（TV）：$autoOpenId")
+            activity.intent.removeExtra("nesstation_auto_open_game")
+            nav.navigate(Routes.emulator(autoOpenId))
+        }
     }
 
     NavHost(

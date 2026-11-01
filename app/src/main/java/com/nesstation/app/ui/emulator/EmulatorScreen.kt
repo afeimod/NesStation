@@ -1788,6 +1788,37 @@ private fun looksLikePgm3Rom(romPath: String?): Boolean {
 }
 
 /**
+ * ★★ v64 PGM3 会话标志一次性 → 自动重启应用直达指定游戏。
+ *
+ * libpgm3 的停止标志（0x24bb040）只被 nativeStop 置 1、无任何清零入口
+ * （全二进制扫描证实）—— 同一进程内第二次 nativeRun 必被
+ * "frontend_request" 秒退。参考实现 afbn 的语义就是「一次会话一个进程」。
+ * 这里采用 Android 标准的自重启模式：携带目标 gameId 的启动 Intent
+ * （NEW_TASK|CLEAR_TASK）+ 结束当前进程；NesApp 启动时消费
+ * nesstation_auto_open_game extra 直接导航到游戏。
+ */
+private fun restartAppToOpenGame(context: android.content.Context, gameId: String) {
+    try {
+        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        if (intent != null) {
+            intent.addFlags(
+                android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                    android.content.Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            )
+            intent.putExtra("nesstation_auto_open_game", gameId)
+            context.startActivity(intent)
+        } else {
+            android.util.Log.w("EmulatorScreen", "restartAppToOpenGame: 无启动 Intent，退化为普通重启")
+        }
+    } catch (t: Throwable) {
+        android.util.Log.e("EmulatorScreen", "restartAppToOpenGame: ${t.message}")
+    }
+    android.os.Process.killProcess(android.os.Process.myPid())
+    kotlin.system.exitProcess(0)
+}
+
+/**
  * ★★ v54 PGM3 ROM 布局归一化：找到或抽出 CHD，返回可直接交给 Pgm3Engine.loadRom
  * 的文件（核心支持 CHD 直启）。找不到任何 CHD 时原样返回（核心会给出明确报错）。
  * 优先级：
@@ -3665,6 +3696,17 @@ fun EmulatorScreen(
             //   走 afbn 引擎兜底（kov3hd 在 afbn 驱动表内，参考核心自带 PGM3
             //   支持）—— 见下方 loadRom 失败分支的统一兜底逻辑。
             if (engine is com.nesstation.app.core.engine.Pgm3Engine) {
+                // ★★ v64 PGM3 核心会话标志是一次性的（进程级粘滞 —— libpgm3
+                //   二进制无清零入口，参考实现「一次会话一个进程」语义）。
+                //   本进程内已结束过一次 kov3hd 会话时，直接自动重启应用并
+                //   直达本游戏（NesApp 消费 nesstation_auto_open_game extra）：
+                //   玩家体验 = 点游戏 → 应用秒重启 → 正常进游戏。
+                if (engine.needsProcessRestart) {
+                    android.util.Log.i("EmulatorScreen",
+                        "PGM3 会话标志为一次性（本进程已结束过会话）→ 自动重启应用直达 ${game.title}")
+                    restartAppToOpenGame(context, game.id)
+                    return@LaunchedEffect
+                }
                 val normalized = withContext(Dispatchers.IO) {
                     normalizePgm3RomLayout(effectiveRom, context.filesDir)
                 }
@@ -3676,6 +3718,16 @@ fun EmulatorScreen(
                 engine.loadRom(effectiveRom, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
             }
             if (!ok) {
+                // ★★ v64 竞态兜底：loadRom 运行期间会话标志被置位（上一局
+                //   退出/guard 失败收尾恰好落在本次启动窗口内）→ 不展示错误，
+                //   直接走自动重启直达本游戏。
+                if (engine is com.nesstation.app.core.engine.Pgm3Engine &&
+                    engine.needsProcessRestart) {
+                    android.util.Log.i("EmulatorScreen",
+                        "PGM3 loadRom 期间会话标志置位 → 自动重启应用直达 ${game.title}")
+                    restartAppToOpenGame(context, game.id)
+                    return@LaunchedEffect
+                }
                 val fbneoErr = engine.lastError()
                 // ★★ v57 街机改版三级重试（直接文件路径分支）：
                 //   ① MAME 名别名（wof3sja → wofssja）：复制改名副本（含父集）
@@ -4148,10 +4200,24 @@ fun EmulatorScreen(
                     }
                     // ★ 全核心统一在 IO 线程加载：DraStic loadRom 内部要等
                     // 首帧（最长 20 秒轮询），主线程执行会冻结 UI/引发 ANR。
+                    // ★★ v64 PGM3 会话标志一次性守卫（与直读分支同一语义）：
+                    //   本进程已结束过 kov3hd 会话 → 自动重启应用直达本游戏。
+                    if (engine is com.nesstation.app.core.engine.Pgm3Engine &&
+                        engine.needsProcessRestart) {
+                        android.util.Log.i("EmulatorScreen",
+                            "PGM3 会话标志为一次性（SAF 分支）→ 自动重启应用直达 ${game.title}")
+                        restartAppToOpenGame(context, game.id)
+                        return@LaunchedEffect
+                    }
                     val ok = withContext(Dispatchers.IO) {
                         engine.loadRom(loadFile, filesDir, savesDirPath) { fpsFrameCounter.incrementAndGet() }
                     }
                     if (!ok) {
+                        if (engine is com.nesstation.app.core.engine.Pgm3Engine &&
+                            engine.needsProcessRestart) {
+                            restartAppToOpenGame(context, game.id)
+                            return@LaunchedEffect
+                        }
                         val fbneoErr = engine.lastError()
                         // ★★ v57 街机改版三级重试（SAF content:// 分支 —— 与
                         //   直读分支同一逻辑，详见那边的完整注释）：

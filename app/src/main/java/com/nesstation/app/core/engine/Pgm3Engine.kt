@@ -42,6 +42,38 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 锁步 —— kov3hd 暂不支持联机（对战平台 PGM1 街机不受影响）。即时存档
  * 同理不可用（PGM3 进度 = 记忆卡语义，走核心内部卡槽）。
  *
+ * ★★ v64 根治「rc=0 会话秒退（stopped=frontend_request）」—— 本次在
+ * libpgm3.so 二进制里逐指令核实的最终根因：
+ *
+ *   1. nativeStop（0x8001a0）向全局停止标志 0x24bb040 写 1；
+ *   2. 全 30MB 可执行段【只有这一条指令】写 0x24bb040（find_writers.py
+ *      全量扫描证实；.rela.dyn / 字面量池也无该地址）—— 该标志【没有任何
+ *      代码清零】，nativeRun 入口重置了一屋子标志（0x24bb020/28/2c/30/
+ *      48/4c/60、0x24bafe0~f8）却刻意跳过它 —— 「粘滞直到进程死亡」是
+ *      核心的设计（参考实现 afbn 退出游戏 = 结束进程，标志随进程消亡）；
+ *   3. 会话主循环每帧开头读它（0x7fd1c8：置位 → 立即退出循环 →
+ *      nativeRun 以 rc=0 返回，状态写【短版】"游戏已停止"、interactive.log
+ *      落 AFBN_GAME_SESSION stopped=frontend_request）—— 这正是用户
+ *      v62/v63 截图里的全部证据链（CHD_MOUNT hunks=35 正常挂载、
+ *      AOT 全 PASS、surface generation=2 attached=1、MAIN_AOT_PROGRESS
+ *      instructions=98 就停）。
+ *
+ *   而本项目 Pgm3Engine.cleanup() 在【每次 loadRom 开头】都无条件调
+ *   nativeStop() → 第一次启动游戏前标志就已是 1 → 会话必秒退。v52~v63
+ *   全部命中（v61 及以前被「loadRom 等首帧」死锁掩盖成 150s 卡解压）。
+ *
+ *   ★ v64 修复（无法从 Java 清零该标志 —— 二进制无此入口）：
+ *     a. cleanup() 只在【确实启动过会话】（started=true）时才调
+ *        nativeStop() —— 首次启动前不再污染标志，进程内第一局必活；
+ *     b. 一旦调过 nativeStop（用户退出游戏/启动失败收尾），同进程内
+ *        后续 nativeRun 都会被粘滞标志秒杀 —— 置 needsProcessRestart，
+ *        loadRom 直接返回 false，由 EmulatorScreen 自动「重启应用并
+ *        直达该游戏」（NesApp 消费 nesstation_auto_open_game extra），
+ *        玩家体验 = 点游戏 → 应用秒重启 → 游戏正常启动，与参考实现
+ *        「一次会话一个进程」语义完全对齐；
+ *     c. guardFail 的 nativeStop 同样置位 needsProcessRestart（修好
+ *        CHD 后重进会自动重启应用再启动，不再被上一次失败的标志毒杀）。
+ *
  * ★★ v63 根治「报错让看 interactive.log，日志文件却根本不存在」（用户实测：
  * v62 仍复现 —— worker 拉起 1.8s 后 rc=0、零帧、无日志）。libpgm3.so 二进制
  * 逐点核实的三个事实 + 对应修复：
@@ -149,6 +181,13 @@ class Pgm3Engine private constructor() : EmulatorEngine {
 
     /** ★ v63 核心控制台捕获句柄（fd1+fd2 → core.log；worker 持有防 GC 提前关 fd）。 */
     @Volatile private var stderrPfd: ParcelFileDescriptor? = null
+
+    /** ★★ v64 本进程内是否调过 nativeStop（粘滞停止标志 0x24bb040 已被置位
+     *  —— 全二进制无人清零它，同进程内后续 nativeRun 必被秒退）。置位后
+     *  再启动 kov3hd 必须「重启应用直达游戏」（needsProcessRestart，
+     *  EmulatorScreen 消费；随进程死亡自然复位）。 */
+    @Volatile var needsProcessRestart: Boolean = false
+        private set
 
     /** libretro JOYPAD Select 位（投币）。 */
     private val LIBRETRO_SELECT = 0x04
@@ -299,6 +338,18 @@ class Pgm3Engine private constructor() : EmulatorEngine {
 
             val ctx = appContext ?: run {
                 lastErr = "PGM3 引擎未初始化上下文"
+                return false
+            }
+
+            // ★★ v64 粘滞停止标志守卫：本进程一旦调过 nativeStop（上一局
+            //    退出 / guard 失败收尾），0x24bb040 已永久置 1（核心二进制
+            //    无人清零）—— 此时再拉 nativeRun 必被 "frontend_request"
+            //    秒退（rc=0，用户 v62/v63 截图的 exact 症状）。置
+            //    needsProcessRestart 交 EmulatorScreen 自动重启应用直达
+            //    本游戏；新进程标志归零，会话即可正常启动。
+            if (needsProcessRestart) {
+                lastErr = "PGM3 核心需要重启应用后才能再次启动（进程内会话标志为一次性）"
+                android.util.Log.i(TAG, "loadRom: needsProcessRestart → 交由前端重启应用")
                 return false
             }
 
@@ -698,6 +749,10 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     private fun guardFail(root: File, reason: String) {
         bootProgress = null
         cancelRequested.set(true)   // worker 的 rc==0 收尾不再重复报错
+        // ★ v64 guardFail 调 nativeStop 会置位进程级粘滞停止标志
+        //   （0x24bb040 无人清零）—— 标记 needsProcessRestart，让下一次
+        //   启动走「重启应用直达游戏」流程（否则修好文件重进仍秒退）。
+        needsProcessRestart = true
         try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
         started = false
         lastErr = buildFailureDetail(root, reason)
@@ -953,6 +1008,12 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     override fun shutdown() = synchronized(lifecycleLock) { cleanup() }
 
     private fun cleanup() {
+        // ★★ v64 nativeStop 仅在【确实启动过会话】时调用（started=true）。
+        //    nativeStop 会把进程级粘滞停止标志 0x24bb040 置 1（全二进制
+        //    无清零入口）—— 启动前无条件调用会把本次（及此后所有）会话
+        //    毒杀成 "frontend_request" 秒退 rc=0（v52~v63 的最终根因）。
+        //    无会话时的清理（首局启动前 / 失败后重试）绝不能碰它。
+        val wasSessionRunning = started
         started = false
         isLoaded = false
         bootProgress = null
@@ -960,7 +1021,10 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         //   直接放弃启动，防止 cleanup 后拉起僵尸会话。
         cancelRequested.set(true)
         lateFailure = null
-        try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
+        if (wasSessionRunning) {
+            needsProcessRestart = true   // 粘滞标志已置位：下次启动走重启流程
+            try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
+        }
         try { Pgm3Activity.nativeSurface(null) } catch (_: Throwable) {}
         // ★ v61 等 nativeRun 工作线程退出（nativeStop 令其返回），避免下一局
         //   撞上核心的"已有会话在运行"互斥标志（nativeRun 返回 -2）。
