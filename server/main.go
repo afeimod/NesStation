@@ -92,7 +92,10 @@ func runServer(configPath string) bool {
                 startupFatal("初始化用户存储失败: %v", err)
         }
 
-        jwter := newJWT(cfg.JWTSecret, 7*24*time.Hour)
+        // ★ v64 登录凭证（JWT）有效期 7 天 → 30 天：
+        //   旧版 7 天，客户端长期缓存 token，过期后"进游戏才报 token 已过期"，
+        //   用户莫名其妙。延长到 30 天 + 客户端 v64 本地预检/引导重新登录双保险。
+        jwter := newJWT(cfg.JWTSecret, 30*24*time.Hour)
 
         // ★ 热重载核心：所有组件经 configStore 读"当前配置"，
         //   文件变动时整指针原子替换，正在处理的请求不受影响。

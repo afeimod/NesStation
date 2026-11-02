@@ -165,7 +165,12 @@ fun BattleMatchScreen(
                 roleText = if (args.isHost) "房主 · 对手 $username 已加入，等其加载完成…" else "挑战者 · 已与 $username 对战"
             }
             override fun onPeerLeft(username: String) { errorMsg = "对手 $username 已离开，对战结束" }
-            override fun onError(message: String) { errorMsg = message }
+            override fun onError(message: String) {
+                // ★ v64 服务器报 token 无效/过期 → 转成人话并引导重新登录
+                errorMsg = if (message.contains("token", ignoreCase = true)) {
+                    "登录已过期，请返回大厅重新登录"
+                } else message
+            }
             override fun onDisconnected() { if (errorMsg == null) errorMsg = "与对战服务器断开连接" }
             override fun onNetplayWait(reason: String) { roleText = reason }
             override fun onNetplayLost(reason: String) { errorMsg = reason }
@@ -219,6 +224,15 @@ fun BattleMatchScreen(
 
         if (token.isBlank()) {
             errorMsg = "未登录，请先返回大厅登录"
+            return@DisposableEffect onDispose { }
+        }
+
+        // ★ v64 本地预检 token 有效期：已过期就直接提示，不再连服务器
+        //   等一句“token 无效: token 已过期”的天书。过期即清登录态，
+        //   返回大厅后会自动回到登录界面。
+        if (BattleSession.isTokenExpired(context)) {
+            BattleSession.logout(context)
+            errorMsg = "登录已过期，请返回大厅重新登录"
             return@DisposableEffect onDispose { }
         }
 

@@ -84,6 +84,11 @@ class BattleApi(private val ctx: Context) {
         val code = conn.responseCode
         val stream: InputStream = if (code in 200..299) conn.inputStream else conn.errorStream
         val text = stream.bufferedReader().use { it.readText() }
+        if (code == 401) {
+            // ★ v64 登录凭证过期/无效：不再甩服务端原文（"token 已过期"），
+            //   统一转成人话 —— 调用方收到 401 会清登录态并弹登录框。
+            throw ApiException(code, "登录已过期，请重新登录")
+        }
         if (code !in 200..299) {
             val msg = try {
                 JSONObject(text).optString("error")

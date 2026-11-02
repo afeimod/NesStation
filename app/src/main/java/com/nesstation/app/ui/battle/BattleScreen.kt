@@ -128,7 +128,14 @@ fun BattleScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var loggedIn by remember { mutableStateOf(BattleSession.isLoggedIn(context)) }
+    // ★ v64 启动即本地预检 token 有效期：已过期 → 自动清除并回到登录界面。
+    //   （根因：服务端 JWT 有有效期，过去客户端永不检测，过期后“进游戏才报
+    //   token 已过期”用户看不懂。现在打开对战平台就直接引导重新登录。）
+    var loggedIn by remember {
+        mutableStateOf(
+            BattleSession.isLoggedIn(context) && !BattleSession.clearAuthIfExpired(context)
+        )
+    }
     var username by remember { mutableStateOf(BattleSession.getUsername(context) ?: "") }
 
     // 服务器地址编辑
@@ -263,7 +270,17 @@ fun BattleScreen(
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     downloading = null
-                    statusMsg = e.message
+                    if (e is BattleApi.ApiException && e.code == 401) {
+                        // ★ v64 登录凭证已过期：清掉旧登录态、弹回登录框引导重新登录，
+                        //   不再显示服务端原文“token 已过期”
+                        BattleSession.logout(context)
+                        loggedIn = false
+                        username = ""
+                        statusMsg = "登录已过期，请重新登录"
+                        showLoginDialog = true
+                    } else {
+                        statusMsg = e.message
+                    }
                 }
             }
         }

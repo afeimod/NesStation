@@ -77,4 +77,51 @@ object BattleSession {
     fun logout(ctx: Context) {
         prefs(ctx).edit().remove("token").remove("username").apply()
     }
+
+    // --- ★ v64 token 有效期本地预检 ---
+    //
+    // 服务端 JWT 有效期有限（现 30 天），过去客户端把 token 永久存着、
+    // 从不检测过期 —— 过期后"进游戏才报 token 已过期"，用户看不懂。
+    // 现在：启动/进游戏前先本地解码 exp，过期即清登录态并引导重新登录。
+
+    /**
+     * 解析 JWT payload 里的 exp（过期时间，unix 秒 × 1000 = 毫秒）。
+     * 返回 null = 本地没有 token；0 = 格式错/解析失败（服务器也会拒，按过期处理）。
+     */
+    fun tokenExpMs(ctx: Context): Long? {
+        val token = getToken(ctx) ?: return null
+        val parts = token.split(".")
+        if (parts.size != 3) return 0L
+        return try {
+            val payload = String(
+                android.util.Base64.decode(
+                    parts[1],
+                    android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP
+                ),
+                Charsets.UTF_8
+            )
+            org.json.JSONObject(payload).optLong("exp", 0L) * 1000L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    /** token 是否已过期（无 token / 格式错 / exp 已过 → true）。 */
+    fun isTokenExpired(ctx: Context): Boolean {
+        val expMs = tokenExpMs(ctx) ?: return true
+        return expMs <= System.currentTimeMillis()
+    }
+
+    /**
+     * ★ v64 登录态自检：token 存在但已过期 → 清除本地登录态并返回 true
+     * （调用方据此回到登录界面）。未登录或 token 仍有效 → false。
+     */
+    fun clearAuthIfExpired(ctx: Context): Boolean {
+        if (getToken(ctx) == null) return false
+        if (isTokenExpired(ctx)) {
+            logout(ctx)
+            return true
+        }
+        return false
+    }
 }
