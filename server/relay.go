@@ -995,6 +995,45 @@ func (h *relayHub) relayLoop(rc *relayConn, reader *bufio.Reader) {
                                 From:  from,
                         })
 
+                case "voice":
+                        // ★★ v65 对战同步语音：转发给房间内其他成员（玩家+观战者，
+                        //   与 chat 同语义）。服务器【只转发不编解码、不落盘】：
+                        //   Data = base64(PCM16 单声道 16kHz 音频帧)，客户端每帧
+                        //   40ms/1280B → base64 ~1.8KB；限长 96KB（≈1.5s 音频），
+                        //   超限帧直接丢弃（防刷流量）。未加入房间的连接回 error
+                        //   提示（与 chat 同款可诊断性）。语音是可选能力：旧客户端
+                        //   收到 voice 消息会走默认分支静默忽略，无兼容性风险；
+                        //   新客户端连旧服务器时 voice 被服务器丢弃（老 switch 无
+                        //   该 case → 忽略），仅语音不可用，游戏与聊天不受影响。
+                        data := strings.TrimSpace(msg.Data)
+                        if data == "" {
+                                continue
+                        }
+                        if len(data) > 96*1024 {
+                                continue
+                        }
+                        h.mu.Lock()
+                        room := rc.room
+                        h.mu.Unlock()
+                        if room == nil {
+                                _ = rc.send(relayMsg{
+                                        Type: "error",
+                                        Msg:  "语音发送失败：当前连接尚未加入房间（请先进入对战房间再开语音）",
+                                })
+                                continue
+                        }
+                        from := ""
+                        if rc.user != nil {
+                                from = rc.user.Username
+                        }
+                        h.broadcastExcept(room, rc, relayMsg{
+                                Type:  "voice",
+                                Data:  data,
+                                Slot:  rc.slot,
+                                Spec:  rc.spectator,
+                                From:  from,
+                        })
+
                 case "ready":
                         // ★★ v4.3 三种开局（用户需求："1P 进房直接单机开玩；2P/3P/4P
                         //   进入时连接 1P、快速同步画面后接入"）：

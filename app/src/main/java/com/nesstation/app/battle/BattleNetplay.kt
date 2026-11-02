@@ -154,6 +154,9 @@ class BattleNetplay(
         /** ★★ v51 游戏内聊天收到（from = 发送者名字（服务器盖戳）；slot = 其座位；
          *  spec = 观战者）。*/
         fun onChat(from: String, text: String, slot: Int, spec: Boolean = false) {}
+        /** ★★ v65 对战同步语音收到（dataBase64 = PCM16 单声道 16kHz 音频帧的 base64；
+         *  服务器只转发不编解码）。from = 发送者名字，slot = 其座位，spec = 观战者。 */
+        fun onVoice(from: String, dataBase64: String, slot: Int, spec: Boolean = false) {}
         /** ★★ v53 静默拉档：仅房主收到 —— 服务器无缓存档/历史缺口，请立即
          *  出一份快照上传（不暂停、不挂门：引擎线程 afterFrame 下一帧边界
          *  直接 uploadSnapshot；有新接入者在等这份档）。 */
@@ -382,6 +385,10 @@ class BattleNetplay(
             "chat" -> listener.onChat(
                 msg.optString("from", ""), msg.optString("msg", ""),
                 msg.optInt("slot", 0), msg.optBoolean("spec", false))
+            // ★★ v65 对战同步语音：服务器盖戳 from/slot/spec 后转发（只转发不编解码）
+            "voice" -> listener.onVoice(
+                msg.optString("from", ""), msg.optString("data", ""),
+                msg.optInt("slot", 0), msg.optBoolean("spec", false))
             "error" -> listener.onError(msg.optString("msg", "服务器错误"))
             "pong" -> {
                 // RTT 测量回显：交给等待中的测量请求
@@ -515,6 +522,16 @@ class BattleNetplay(
         if (t.isEmpty()) return
         sendLine(JSONObject().put("type", "chat")
             .put("msg", if (t.length > 200) t.take(200) else t)
+            .toString())
+    }
+
+    /** ★★ v65 对战同步语音：发送一帧音频（base64 编码的 PCM16 单声道 16kHz；
+     *  服务器按连接盖戳 from/slot/spec 转发给房间其他成员）。空帧丢弃；
+     *  与服务器同限长（base64 ≤ 96KB，客户端采集帧 ~1.8KB 远低于上限）。 */
+    fun sendVoice(dataBase64: String) {
+        if (dataBase64.isEmpty() || dataBase64.length > 96 * 1024) return
+        sendLine(JSONObject().put("type", "voice")
+            .put("data", dataBase64)
             .toString())
     }
 

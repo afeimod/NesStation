@@ -33,9 +33,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  *     启动也支持（反向找同目录 kov3hd.zip）。
  *
  * 输入映射：本项目街机虚拟手柄走 arcadeToLibretroLayout 后到达本引擎
- * （标准 libretro JOYPAD 位），此处转 PGM3 MCU 位（参考实现 toMcu 同一
- * 语义）：Start→0x1 Up→0x2 Down→0x4 Left→0x8 Right→0x10，
- * A/B/X/Y→攻击1/2/3/4（0x20/0x40/0x80/0x100）；投币 = Select 按下沿
+ * （标准 libretro JOYPAD 位），此处转 PGM3 MCU 位：Start→0x1 Up→0x2
+ * Down→0x4 Left→0x8 Right→0x10；★★ v65 修正（用户实测"A/B 反、C/D 反"）
+ * —— UI 街机键 A/B/C/D 在 arcadeToLibretroLayout 里是 libretro bit0/bit8/
+ * bit1/bit9，MCU 目标按 UI 键序对齐：UI A→攻击1(0x20)、UI B→攻击2(0x40)、
+ * UI C→攻击3(0x80)、UI D→攻击4(0x100)；投币 = Select 按下沿
  * → nativeCoin（PGM3 投币走专用通道，不在 pad 位里）。
  *
  * 联机对战：本核心为推模型（模拟循环在原生线程内），无法接入 frameHook
@@ -344,13 +346,27 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             // ★★ v64 粘滞停止标志守卫：本进程一旦调过 nativeStop（上一局
             //    退出 / guard 失败收尾），0x24bb040 已永久置 1（核心二进制
             //    无人清零）—— 此时再拉 nativeRun 必被 "frontend_request"
-            //    秒退（rc=0，用户 v62/v63 截图的 exact 症状）。置
-            //    needsProcessRestart 交 EmulatorScreen 自动重启应用直达
-            //    本游戏；新进程标志归零，会话即可正常启动。
+            //    秒退（rc=0，用户 v62/v63 截图的 exact 症状）。
+            //
+            // ★★ v65 二次启动提速（用户实测"首次运行后下次启动应该很快才对
+            //    但还是需要加载很久"）：v64 的兜底是重启应用直达游戏 —— 重启
+            //    进程后 39MB 的 libpgm3.so 重新加载/重定位、运行时固件重新
+            //    校验、核心一切状态冷启动，退出重进自然每次都"加载很久"。
+            //    现在先尝试【进程内清零】粘滞标志（clearStickyStopFlag，
+            //    /proc/self/mem 原位写 0，自进程写入无需特权）：成功则免重启
+            //    直接再开会话 —— so 已加载、系统页缓存全热，二次启动显著
+            //    提速。清零失败（maps 无 so / mem 不可写）才回退 v64 重启
+            //    流程；若清零成功但会话仍秒退（rc=0 无首帧），worker 失败
+            //    路径会重新置 needsProcessRestart —— 自动降级，绝不比 v64 差。
             if (needsProcessRestart) {
-                lastErr = "PGM3 核心需要重启应用后才能再次启动（进程内会话标志为一次性）"
-                android.util.Log.i(TAG, "loadRom: needsProcessRestart → 交由前端重启应用")
-                return false
+                if (clearStickyStopFlag()) {
+                    needsProcessRestart = false
+                    android.util.Log.i(TAG, "loadRom: 粘滞停止标志已进程内清零 → 免重启应用直接再开会话")
+                } else {
+                    lastErr = "PGM3 核心需要重启应用后才能再次启动（进程内会话标志为一次性）"
+                    android.util.Log.i(TAG, "loadRom: needsProcessRestart → 交由前端重启应用")
+                    return false
+                }
             }
 
             // 1. 运行根目录 = <filesDir>/PGM3（对齐参考实现 resourceRoot）。
@@ -1042,6 +1058,75 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         lastPad[0] = 0; lastPad[1] = 0
     }
 
+    /**
+     * ★★ v65 粘滞停止标志进程内清零（二次启动免重启应用 = 提速）。
+     *
+     * 原理（readelf + v64 反汇编证据链）：
+     *  - libpgm3.so 最后一个 LOAD 段（RW，VirtAddr 0x24ba3c0 + MemSiz 0x5f60，
+     *    覆盖 .data/.bss）包含粘滞停止标志 0x24bb040；so 是 PIE 加载且
+     *    VirtAddr 从 0 起 —— 运行时地址 = 加载基址 + 0x24bb040；
+     *  - 加载基址 = /proc/self/maps 中 libpgm3.so 首个文件偏移 0 的映射段
+     *    起始地址；
+     *  - 经 /proc/self/mem seek 到该地址原位写 4 字节 0（自进程写自身内存，
+     *    无需任何特权；先读后写 —— 读失败即地址不可用，静默放弃）。
+     *
+     * 该标志的语义（v64 核实）：只有 nativeStop（0x8001a0）写 1；会话主循环
+     * 每帧开头读它决定是否退出；nativeRun 入口会重置其余全部会话标志但刻意
+     * 跳过它。清零后再拉 nativeRun 与全新进程等价。任何一步失败都返回 false，
+     * 调用方回退 v64「重启应用」流程 —— 本函数绝不引入新的失败模式。
+     */
+    private fun clearStickyStopFlag(): Boolean {
+        return try {
+            // 1. 从 /proc/self/maps 找 libpgm3.so 的加载基址（首个偏移 0 的映射）
+            var base = -1L
+            for (line in java.io.File("/proc/self/maps").readLines()) {
+                if (!line.contains("/libpgm3.so")) continue
+                val dash = line.indexOf('-')
+                if (dash <= 0) continue
+                val start = line.substring(0, dash).toLongOrNull(16) ?: continue
+                val fields = line.split(Regex("\\s+"))
+                // 格式：start-end perms offset dev inode path
+                val offset = fields.getOrNull(2)?.toLongOrNull(16) ?: continue
+                if (offset == 0L) { base = start; break }
+            }
+            if (base <= 0) {
+                android.util.Log.w(TAG, "clearStickyStopFlag: maps 中未找到 libpgm3.so 基址")
+                return false
+            }
+            val target = base + 0x24bb040L
+            // 2. /proc/self/mem 读-写-读回验证（全部成功才算清零）
+            java.io.RandomAccessFile("/proc/self/mem", "rw").use { mem ->
+                fun read4(addr: Long): ByteArray? = try {
+                    mem.seek(addr)
+                    val buf = ByteArray(4)
+                    var got = 0
+                    while (got < 4) {
+                        val n = mem.read(buf, got, 4 - got)
+                        if (n < 0) break
+                        got += n
+                    }
+                    if (got == 4) buf else null
+                } catch (_: Throwable) { null }
+                val before = read4(target)
+                if (before == null) {
+                    android.util.Log.w(TAG, "clearStickyStopFlag: 标志地址不可读（0x${java.lang.Long.toHexString(target)}）")
+                    return@use false
+                }
+                mem.seek(target)
+                mem.write(byteArrayOf(0, 0, 0, 0))
+                val after = read4(target)
+                val ok = after != null && after[0] == 0.toByte() && after[1] == 0.toByte() &&
+                         after[2] == 0.toByte() && after[3] == 0.toByte()
+                android.util.Log.i(TAG, "clearStickyStopFlag: base=0x${java.lang.Long.toHexString(base)} " +
+                    "target=0x${java.lang.Long.toHexString(target)} before=${before.joinToString(",")} ok=$ok")
+                ok
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "clearStickyStopFlag: ${t.message}")
+            false
+        }
+    }
+
     // === 输入（libretro JOYPAD 位 → PGM3 MCU 位；对齐参考实现 toMcu）===
 
     override fun setPad1(bits: Int) = pushPad(0, bits)
@@ -1062,7 +1147,18 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         }
     }
 
-    /** libretro JOYPAD 位（arcadeToLibretroLayout 输出）→ PGM3 MCU 位。 */
+    /**
+     * libretro JOYPAD 位（arcadeToLibretroLayout 输出）→ PGM3 MCU 位。
+     *
+     * ★★ v65 按钮位修正（用户实测"按钮 A 和 B 反的，C 和 D 也是反的"）：
+     * arcadeToLibretroLayout 把 UI 街机键 A/B/C/D 分别编码为 libretro
+     * bit0(JOYPAD_B) / bit8(JOYPAD_A) / bit1(JOYPAD_Y) / bit9(JOYPAD_X)
+     * —— 与 FBNeo 等核心的街机惯例一致（其他游戏按键全部正常，反证
+     * 转换本身没错）。旧映射把这两对位的 MCU 目标写反（bit8→攻击1、
+     * bit0→攻击2 …），于是 UI 按 A 出的是 B 键的动作、按 B 出 A 的动作，
+     * C/D 同理互换。现修正为 UI A→攻击1(0x020)、UI B→攻击2(0x040)、
+     * UI C→攻击3(0x080)、UI D→攻击4(0x100)，方向/Start/投币不变。
+     */
     private fun toMcuBits(b: Int): Int {
         var m = 0
         if (b and 0x08 != 0) m = m or 0x001   // Start
@@ -1070,10 +1166,10 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         if (b and 0x20 != 0) m = m or 0x004   // Down
         if (b and 0x40 != 0) m = m or 0x008   // Left
         if (b and 0x80 != 0) m = m or 0x010   // Right
-        if (b and 0x100 != 0) m = m or 0x020  // A（街机键1）
-        if (b and 0x01 != 0) m = m or 0x040   // B（街机键2）
-        if (b and 0x200 != 0) m = m or 0x080  // X（街机键3）
-        if (b and 0x02 != 0) m = m or 0x100   // Y（街机键4）
+        if (b and 0x01 != 0)  m = m or 0x020  // UI A（libretro B 位）→ 攻击1
+        if (b and 0x100 != 0) m = m or 0x040  // UI B（libretro A 位）→ 攻击2
+        if (b and 0x02 != 0)  m = m or 0x080  // UI C（libretro Y 位）→ 攻击3
+        if (b and 0x200 != 0) m = m or 0x100  // UI D（libretro X 位）→ 攻击4
         return m
     }
 

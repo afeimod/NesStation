@@ -126,6 +126,10 @@ class NetplayController(
         /** ★★ v51 游戏内聊天收到（from = 发送者名字；slot = 其座位 1-4；spec = 观战者）。
          *  EmulatorScreen 据此显示消息气泡/更新聊天面板。 */
         fun onChat(from: String, text: String, slot: Int, spec: Boolean) {}
+        /** ★★ v65 对战同步语音收到（dataBase64 = PCM16 单声道 16kHz 音频帧 base64）。
+         *  EmulatorScreen 据此把帧送入 VoiceChatManager 播放（语音开启与否都送，
+         *  由播放器自身开关决定是否出声；服务器已盖戳 from/slot/spec）。 */
+        fun onVoice(from: String, dataBase64: String, slot: Int, spec: Boolean) {}
         /** ★★ v52 本端观战者热转座成功（slot = 新座位；输入采样已解锁，
          *  虚拟手柄立即生效）—— UI 显示提示/更新状态。 */
         fun onSeatChanged(slot: Int) {}
@@ -664,6 +668,13 @@ class NetplayController(
             if (recordIncomingChat(from, text, slot, spec, channel = 0)) {
                 dispatch { it.onChat(from, text, slot, spec) }
             }
+        }
+
+        // ★★ v65 对战同步语音：服务器盖戳的 from/slot/spec 直接透传给 UI
+        //   （EmulatorScreen 送入 VoiceChatManager 播放队列）。服务器只转发
+        //   不编解码，这里同样不做处理 —— 播放/丢弃策略全部在播放器层。
+        override fun onVoice(from: String, dataBase64: String, slot: Int, spec: Boolean) {
+            dispatch { it.onVoice(from, dataBase64, slot, spec) }
         }
 
         // ★★ v53 静默拉档：服务器无缓存档/历史缺口时请求房主立即出一份快照。
@@ -1243,6 +1254,18 @@ class NetplayController(
             n.sendChat(t)
         } catch (_: Throwable) { /* 断连时丢消息即可，不影响对战 */ }
         sendChatFallback(t)
+    }
+
+    /** ★★ v65 对战同步语音：发送一帧音频（VoiceChatManager 采集回调直通）。
+     *  服务器按连接盖戳 from/slot/spec 转发给房间其他成员（玩家+观战者）。
+     *  空帧丢弃；断连时静默丢帧（语音是流式数据，丢一帧无感知，不影响对战）。
+     *  不做本地回显 —— 本端声音由麦克风直接可闻，无需播放。 */
+    fun sendVoice(dataBase64: String) {
+        val n = net ?: return
+        if (dataBase64.isEmpty()) return
+        try {
+            n.sendVoice(dataBase64)
+        } catch (_: Throwable) { /* 断连丢帧即可 */ }
     }
 
     // =========================================================================

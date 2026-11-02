@@ -8225,7 +8225,8 @@ private fun GameSurfaceView(
             }
         } else if ((videoFilter == "tv" || videoFilter.endsWith("_tv")) &&
                    (engine is com.nesstation.app.core.engine.Psx2Engine ||
-                    platform == GamePlatform.PSX) &&
+                    platform == GamePlatform.PSX ||
+                    engine is com.nesstation.app.core.engine.Pgm3Engine) &&
                    !ps2GlFailed.value) {
             // === PS2（ARMSX2）/ PSX（PCSX-ReARMed）仿电视机（CRT 弧面）路径 ===
             // ★ 修复「ps2核心画面没生效电视滤镜凸起」：PS2 引擎是 push 模型，
@@ -8249,6 +8250,19 @@ private fun GameSurfaceView(
             //   统一。分辨率倍数（pscxResScale）在此路径同样生效：放大后
             //   的帧直接成为弧面着色器的纹理源。EGL 失败经 ps2GlFailed
             //   回落到下方画布路径（再回落 SurfaceView，绝不黑屏）。
+            //
+            // ★★ v65 三国战记3HD（PGM3）加入本路径（用户反馈「只有这一个
+            //   游戏不支持仿电视机滤镜」）：PGM3 与 PS2/PSX 同为「直绘
+            //   Surface 的推模型核心」（核心自持 EGL/GL 画到传入 Surface，
+            //   无帧回读）—— 旧实现落进下方 TvCurvedGameView 画布路径拉
+            //   不到帧 → 选 tv 系滤镜无效果/黑屏。libpgm3 的 nativeSurface
+            //   接受任意带正尺寸的真实 ANativeWindow（与 Cemu/Eden 的
+            //   Vulkan 中转同构，WIIU/NSWITCH 已实测该模式），因此走同一
+            //   条 Ps2CurvedView 中转：核心 GL 画进离屏 SurfaceTexture →
+            //   本视图 nsCurve 弧面着色器上屏 + 扫描线/暗角/玻璃高光。
+            //   PGM3 的 setSurface/onSurfaceChanged/nativePause 时序由引擎
+            //   自身保证（v62 起 worker 等 Surface），无需额外接线。EGL
+            //   失败经 ps2GlFailed 回落普通 SurfaceView（无凸起，不黑屏）。
             val ps2CurvedModifier = when (effectiveVideoScale) {
                 "4:3" -> Modifier.aspectRatio(4f / 3f)
                 "2:3" -> Modifier.aspectRatio(2f / 3f)
@@ -9462,6 +9476,74 @@ private fun BoxScope.NetplayChatOverlay(
         }
     }
 
+    // ★★ v65 对战同步语音状态：按钮在聊天按钮旁 —— 未开启灰色、开启亮色。
+    //   开关即 VoiceChatManager.start/stop（采集线程 + 播放线程）；发送帧
+    //   直通 controller.sendVoice；接收帧在下方 UiListener.onVoice 送入播放器。
+    val voiceCtx = androidx.compose.ui.platform.LocalContext.current
+    var voiceOn by remember(controller) {
+        mutableStateOf(com.nesstation.app.battle.VoiceChatManager.isCapturing)
+    }
+    var micGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                voiceCtx, android.Manifest.permission.RECORD_AUDIO
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val micPermLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        micGranted = granted
+        if (granted) {
+            com.nesstation.app.battle.VoiceChatManager.start { b64 -> controller.sendVoice(b64) }
+            voiceOn = com.nesstation.app.battle.VoiceChatManager.isCapturing
+            if (!voiceOn) {
+                android.widget.Toast.makeText(
+                    voiceCtx,
+                    com.nesstation.app.battle.VoiceChatManager.lastError ?: "语音开启失败",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } else {
+                android.widget.Toast.makeText(
+                    voiceCtx, "语音聊天已开启，随时畅聊",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        } else {
+            android.widget.Toast.makeText(
+                voiceCtx, "需要麦克风权限才能使用语音聊天",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    fun toggleVoice() {
+        if (voiceOn) {
+            com.nesstation.app.battle.VoiceChatManager.stop()
+            voiceOn = false
+            android.widget.Toast.makeText(
+                voiceCtx, "语音聊天已关闭", android.widget.Toast.LENGTH_SHORT
+            ).show()
+        } else if (micGranted) {
+            com.nesstation.app.battle.VoiceChatManager.start { b64 -> controller.sendVoice(b64) }
+            voiceOn = com.nesstation.app.battle.VoiceChatManager.isCapturing
+            if (voiceOn) {
+                android.widget.Toast.makeText(
+                    voiceCtx, "语音聊天已开启，随时畅聊",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                android.widget.Toast.makeText(
+                    voiceCtx,
+                    com.nesstation.app.battle.VoiceChatManager.lastError ?: "语音开启失败",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        } else {
+            micPermLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
     // 接收房间聊天（NetplayController.dispatch 保证主线程回调，可直接改状态）
     DisposableEffect(controller) {
         val listener = object : com.nesstation.app.battle.NetplayController.UiListener {
@@ -9472,9 +9554,19 @@ private fun BoxScope.NetplayChatOverlay(
                 // 面板没开时在顶部弹气泡（最多 3 条），开了面板直接进列表
                 if (!panelOpen) bubble = (bubble + m).takeLast(3)
             }
+            // ★★ v65 对战同步语音：对端帧直接送入播放器（语音开着就出声，
+            //   与聊天面板开合无关）。VoiceChatManager 未启动时帧被丢弃
+            //   （submitReceived 内部 playing=false 直接 return）。
+            override fun onVoice(from: String, dataBase64: String, slot: Int, spec: Boolean) {
+                com.nesstation.app.battle.VoiceChatManager.submitReceived(dataBase64)
+            }
         }
         controller.addUiListener(listener)
-        onDispose { controller.removeUiListener(listener) }
+        onDispose {
+            controller.removeUiListener(listener)
+            // 浮层销毁 = 对战结束/退出游戏 —— 语音必须同步停（防僵尸采集）
+            com.nesstation.app.battle.VoiceChatManager.stop()
+        }
     }
 
     fun doSend(raw: String) {
@@ -9540,6 +9632,26 @@ private fun BoxScope.NetplayChatOverlay(
         contentAlignment = Alignment.Center
     ) {
         Text("💬", fontSize = 15.sp)
+    }
+
+    // ★★ v65 对战同步语音按钮（用户需求："按钮放在聊天按钮旁边，未开启是
+    //   灰色开启是亮色"）—— 聊天悬浮按钮正下方；开启 = 亮绿色（含白图标，
+    //   对战房间内实时语音可自由说话），未开启 = 深灰半透明 + 灰白图标。
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(top = 50.dp, end = 8.dp)   // 聊天按钮 8+34+8 = 正下方
+            .size(34.dp)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .background(if (voiceOn) Color(0xFF43A047) else Color(0x66232D3A))
+            .clickable { toggleVoice() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            "🎤",
+            fontSize = 15.sp,
+            color = if (voiceOn) Color.White else Color(0x99FFFFFF)
+        )
     }
 
     // 聊天面板（右侧半透明竖条；游戏继续跑，不打断对战）
