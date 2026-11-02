@@ -158,6 +158,22 @@ class NetplayController(
         private const val RB_MAX_PREDICT = 16
         /** 单次回滚最大重放帧数（性能保护；超过则放弃纠正并提示重进房间） */
         private const val RB_MAX_REPLAY = 96
+
+        // ★★ v66 对局中追帧（小马/RetroArch 同款"落后快进"）：
+        //   本端执行进度落后于远端最新输入超过 CATCHUP_LAG_TRIGGER 帧
+        //   （网络抖动/卡顿后），引擎线程在 afterFrame 末尾用 runFrameDirect
+        //   离屏直跑补帧（每次最多 CATCHUP_LAG_BATCH 帧，可见帧节奏不丢），
+        //   直到落后收敛到 CATCHUP_LAG_MARGIN 帧内 —— 代替旧版"领先者冻结、
+        //   落后者恃 60fps 慢慢爬"的单向收敛：两端帧号差距快速闭合，
+        //   画面（帧号）重新对齐，不再"波动后永远差一截"。
+        private const val CATCHUP_LAG_TRIGGER = 20L
+        private const val CATCHUP_LAG_BATCH = 10
+        private const val CATCHUP_LAG_MARGIN = 6L
+
+        // ★★ v66 等待远端输入硬超时：活跃槽位输入 >8s 未到（对端假死/半开连接）
+        //   —— 旧版无限等待 = 永久黑屏冻结；现在明确报"对手无响应"并停模拟。
+        //   （正常抖动下等待上限 ≈ 预测窗 16 帧 + RTT ≈ 0.3s，8s 已留足裕量）
+        private const val AWAIT_INPUT_TIMEOUT_MS = 8000L
         /** 检查点无效哨兵（tag 可为负 —— warmup 帧也存，作 frame 0 的重放基点） */
         private val RB_INVALID = java.lang.Long.MIN_VALUE
         /** RTT 探测次数/间隔（★★ v4.4 提速：4×1300ms+180ms×3 最坏 ~6s → 3×800ms+60ms×2 最坏 ~2.5s） */
@@ -306,6 +322,11 @@ class NetplayController(
     private val rbLastKnownPad = java.util.concurrent.atomic.AtomicIntegerArray(5)
     /** 各槽位最新已到达帧号（确认帧 = 活跃远端槽位最小值；-1=未收到）。 */
     private val rbSlotLatest = java.util.concurrent.atomic.AtomicLongArray(5)
+
+    // ★★ v66 全模式通用的各槽位最新输入帧号（延迟/回滚模式都记，onRemoteInput
+    //   更新）：对局中追帧的落后度 = max(活跃远端槽位) - 本端发号帧。
+    //   旧版只有回滚模式维护 rbSlotLatest，延迟模式无法感知自身落后。
+    private val slotLatestFrame = java.util.concurrent.atomic.AtomicLongArray(5)
     /** 最早待纠正帧（Long.MAX_VALUE = 无；网络线程 CAS 取 min，引擎线程消费）。 */
     private val rbPendingFrom = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
     /** 最后已执行的网络帧（execFrame = netFrame - inputDelay）。 */
@@ -387,6 +408,9 @@ class NetplayController(
             }
             if (slot in 1..4) {
                 padsHistory[slot][frame] = pad
+                // ★★ v66 追帧簿记：全模式记录各槽位最新输入帧（供落后度计算 ——
+                //   本端发号帧远落后于它 = 本端该追帧了）
+                if (frame > slotLatestFrame.get(slot)) slotLatestFrame.set(slot, frame)
                 // ★★ v53 追赶动态目标：追赶期间持续记录最新已见远端输入帧 ——
                 //   追平目标随实时帧滚动前移（max(服务器 histEnd, 最新已见帧-90)），
                 //   追平时与原玩家仅差 1.5 秒（v52 冻结 histEnd → 追平后错开
@@ -1760,6 +1784,10 @@ class NetplayController(
      */
     private fun awaitSlotInput(slot: Int, targetFrame: Long): Int? {
         var lastNotice = 0L
+        // ★★ v66 硬超时：正常抖动下等待上限 ≈ 预测窗 16 帧 + RTT（< 0.5s）。
+        //   超过 8s 还等不到 = 对端假死/半开连接（TCP 未断但永远不会有输入了）
+        //   —— 旧版无限等 = 永久黑屏冻结；现在明确报“对手无响应”并停模拟。
+        val startMs = System.currentTimeMillis()
         while (true) {
             padsHistory[slot][targetFrame]?.let { return it }
             // ★★ v4.5.1 全员重开请求：立即让路（引擎线程下一迭代应用复位）
@@ -1779,6 +1807,13 @@ class NetplayController(
             val n = net
             val now = System.currentTimeMillis()
             if (n == null || !n.isConnected) return null
+            // ★★ v66 硬超时判定（门事件优先 —— 上面的检查已让路）
+            if (now - startMs > AWAIT_INPUT_TIMEOUT_MS) {
+                android.util.Log.w("NetplayController",
+                    "await input timeout: slot=$slot frame=$targetFrame (${AWAIT_INPUT_TIMEOUT_MS}ms)")
+                dispatch { it.onNetplayLost("对手长时间无响应（超过 8 秒），连接可能已中断") }
+                return null
+            }
             if (lastNotice == 0L) {
                 if (now - lastNotice >= 60) {
                     lastNotice = now
@@ -1883,6 +1918,14 @@ class NetplayController(
                 cleanupHistory(netFrame)
                 val cutoff = netFrame - 512
                 if (cutoff > 0) inputLog.keys.removeAll { it < cutoff }
+            }
+            // ★★ v66 对局中追帧（小马/RetroArch 同款"落后快进"）：本端执行进度
+            //   落后于远端最新输入（网络抖动/卡顿后）→ 离屏直跑补帧，落后侧主动
+            //   快进，两端帧号差快速闭合 —— 旧版只有"领先者冻结、落后者恃 60fps
+            //   慢慢爬"的单向收敛，波动后画面长期错开。
+            val ckIo = io
+            if (ckIo != null && !catchupMode && !syncPaused && !restartPending) {
+                rbCatchupLag(ckIo)
             }
         } else if (netFrame % 256 == 0L) {
             cleanupHistory(netFrame)
@@ -1989,6 +2032,105 @@ class NetplayController(
         return pads
     }
 
+    /** ★★ v66 当前落后度：活跃远端槽位最新输入帧 - 本端下一发号帧。
+     *  > 0 = 本端落后（远端已跑到前面）；≤ 0 = 持平或领先。 */
+    private fun activeLag(): Long {
+        var latest = -1L
+        for (s in activeSlots) {
+            if (s == mySlot) continue
+            val f = slotLatestFrame.get(s)
+            if (f > latest) latest = f
+        }
+        return if (latest < 0) 0L else latest - netFrameCounter
+    }
+
+    /**
+     * ★★ v66 对局中追帧突发（引擎线程，afterFrame 末尾调用 —— 引擎刚执行完
+     * netFrame-inputDelay，核心状态正好接续直跑帧，顺序绝对安全；放在
+     * beforeFrame 开头会把核心状态跑到引擎下一执行帧之前 —— 时间线错乱）。
+     *
+     * 本端因卡顿/网络抖动落后于远端（远端输入已推进到前面）时，旧架构只能
+     * 等 60fps 节拍慢慢爬（领先者冻结、落后者恒速）——帧号差闭合极慢，
+     * 期间两端画面长期错开（用户实测"帧数波动后不同步"）。
+     *
+     * 本方法用 [StateIo.runFrameDirect] 离屏直跑补帧：
+     *  - 每次最多 [CATCHUP_LAG_BATCH] 帧（不长时间霸占引擎线程，可见帧节奏保留
+     *    —— 宏观效果 = 画面短暂快进，与 RetroArch/小马的落后快进一致）；
+     *  - 每个直跑帧走与正常锁步【完全相同】的输入组装（执行帧 = 发号帧 -
+     *    inputDelay、座位激活门控、离队槽位规则），远端输入缺帧立即停（不预测
+     *    —— 追帧只用已确认的真实输入，绝不引入新的分叉）；
+     *  - 直跑帧逐帧写检查点 + inputLog（回滚纠错窗口同步前移，与正常帧一致）；
+     *  - 追到落后 ≤ [CATCHUP_LAG_MARGIN] 帧即停（留缓冲防反超 —— 反超会把
+     *    落后/领先角色互甩，引发对端冻结）。
+     *
+     * 直跑帧不触发 afterFrame（runFrameDirect 契约），簿记在此处同步完成。
+     */
+    private fun rbCatchupLag(io: StateIo) {
+        val n = net ?: return
+        if (!io.supportsRollback()) return
+        if (activeLag() < CATCHUP_LAG_TRIGGER) return
+        inputDelay = n.inputDelay.coerceIn(0, 16)
+        // 音频：追帧帧的输出发生在错误的墙钟时刻，直跑前丢弃积压（与回滚重放一致）
+        try { io.discardPendingAudio() } catch (_: Throwable) {}
+        var done = 0
+        var startLag = 0L
+        while (done < CATCHUP_LAG_BATCH) {
+            // 门事件（暂停/重开）：立即让路 —— 已直跑的帧随时间线替换自然作废
+            if (syncPaused || restartPending || catchupMode) break
+            val lag = activeLag()
+            if (lag < CATCHUP_LAG_MARGIN) break
+            if (done == 0) startLag = lag
+            val burstFrame = netFrameCounter
+            val localPad = currentLocalPad
+            // 采样 + 发送（与正常帧同协议：本端真实输入，其他端据此推进）
+            if (mySlot in 1..4) {
+                padsHistory[mySlot][burstFrame] = localPad
+                try { n.sendInput(burstFrame, localPad, mySlot) } catch (_: Throwable) {}
+            }
+            val execFrame = burstFrame - inputDelay
+            if (execFrame < 0) {
+                // ★★ v66 预热帧也必须实跑全 0 帧（与正常锁步一致）—— 跳帧会让
+                //   核心少跑这几帧，从开局就与对手错开固定帧数
+                if (!io.runFrameDirect(IntArray(4))) break
+                inputLog[execFrame] = IntArray(4)
+                rbLastExecuted = execFrame
+                rbSaveCheckpoint(io, execFrame)
+            } else {
+                val pads = IntArray(4)
+                var missing = false
+                for (slot in 1..4) {
+                    pads[slot - 1] = when {
+                        slot == mySlot -> {
+                            // 座位激活门控（与主路径同一判定）
+                            val actFrom = slotActiveFrom[mySlot]
+                            if (pendingOwnActivation || (actFrom != null && execFrame <= actFrom)) 0
+                            else padsHistory[slot][execFrame] ?: localPad
+                        }
+                        !slotNeedsInput(slot, execFrame) -> 0
+                        else -> {
+                            val p = padsHistory[slot][execFrame]
+                            if (p == null) { missing = true; 0 } else p
+                        }
+                    }
+                }
+                if (missing) break   // 远端输入缺帧：停止追帧，交回正常锁步等待
+                if (!io.runFrameDirect(pads)) break
+                inputLog[execFrame] = pads.copyOf()
+                rbLastExecuted = execFrame
+                rbSaveCheckpoint(io, execFrame)   // 逐帧存档（纠错窗口同步前移）
+            }
+            lastIssuedNetFrame = burstFrame
+            netFrameCounter = burstFrame + 1L
+            done++
+        }
+        if (done > 0) {
+            try { io.discardPendingAudio() } catch (_: Throwable) {}
+            android.util.Log.i("NetplayController",
+                "lag catch-up burst: ${done}f (lag $startLag → ${activeLag()})")
+            dispatch { it.onNetplayWait("正在追帧…（落后 ${activeLag().coerceAtLeast(0)} 帧，快进中）") }
+        }
+    }
+
     /** 回滚模式当前确认帧（全部活跃远端槽位输入都已到达的最大帧；无远端 = MAX）。 */
     private fun rbConfirmedFrame(): Long {
         var min = Long.MAX_VALUE
@@ -2055,12 +2197,15 @@ class NetplayController(
         if (base == RB_INVALID) return false
         val lastExec = rbLastExecuted
         if (lastExec - base > RB_MAX_REPLAY) {
-            // 超深重放：放弃纠正（画面与对手短暂不一致，网络恢复后一致）。
-            // 预测窗口上限 + 按序到达（TCP）使常规不可能到这里（仿真 0 次/30 万帧）。
-            android.util.Log.w("NetplayController", "replay too deep (${lastExec - base}f) — give up")
+            // ★★ v66 放弃纠正 = 时间线与对手永久分叉（旧版只弹提示继续跑，
+            //   用户看到的就是"波动后画面再也不同步"）。能走到这里说明检查点
+            //   系统已连续异常（正常深度 ≈ 预测窗+2 帧），唯一自救 = 请求服务器
+            //   编排全员重开（与追赶失败/装载失败同一自救通道），绝不静默发散。
+            android.util.Log.w("NetplayController", "replay too deep (${lastExec - base}f) — request full resync")
             rbPendingFrom.set(Long.MAX_VALUE)
-            dispatch { it.onNetplayWait("网络深度抖动：已跳过纠正，可能短暂不同步…") }
-            return true // 已处置（不再重试），调用方继续跑帧
+            dispatch { it.onNetplayWait("同步纠正失败（回滚过深），已请求全员重新同步…") }
+            try { net?.sendRestartReq() } catch (_: Throwable) {}
+            return true // 已处置（本帧继续跑，重开请求由门接管）
         }
         // 1) 丢掉预测帧产生的待播音频（防重复音效；重放的新样本随后入环）
         try { io.discardPendingAudio() } catch (_: Throwable) {}
@@ -2155,6 +2300,8 @@ class NetplayController(
         rbPendingFrom.set(Long.MAX_VALUE)
         rbLastExecuted = if (resumeFrame > 0) resumeFrame - 1 else -1L
         rbSaveCounter = 0
+        // ★★ v66 追帧簿记同步重置（旧时间线的槽位最新帧号不再适用于新时间线）
+        for (s in 1..4) slotLatestFrame.set(s, -1L)
     }
 
     private fun cleanupHistory(frame: Long) {
@@ -2202,6 +2349,8 @@ class NetplayController(
         for (s in 1..4) rbSlotLatest.set(s, -1L)
         rbCount = 0
         rbMaxDepth = 0
+        // ★★ v66 追帧簿记清零（全新会话）
+        for (s in 1..4) slotLatestFrame.set(s, -1L)
     }
 
     /** 当前是否已收到同步开始信号。 */
