@@ -36,7 +36,7 @@ import kotlin.concurrent.thread
  * internally. The state is stored in atomics on the native side and
  * read by the core on each frame.
  */
-class NdsEngine private constructor() : EmulatorEngine, NdsCoreEngine {
+class NdsEngine private constructor() : EmulatorEngine, NdsCoreEngine, RamCheatEngine {
 
     /**
      * NDS frame buffer as presented to the dual-screen custom-layout view.
@@ -77,6 +77,11 @@ class NdsEngine private constructor() : EmulatorEngine, NdsCoreEngine {
 
     /** Lock for all lifecycle methods to prevent restart conflicts. */
     private val lifecycleLock = Any()
+
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { NdsNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
 
     override fun ensureLoaded(): Boolean = NdsNative.ensureLoaded()
 

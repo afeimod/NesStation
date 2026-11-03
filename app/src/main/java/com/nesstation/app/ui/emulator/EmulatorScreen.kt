@@ -5475,24 +5475,34 @@ fun EmulatorScreen(
                     onLayoutEditor = { showLayoutEditor = true },
                     onSettings = { showSettings = true },
                     onCoreLog = { showCoreLog = true },
-                    // ★★ v68 金手指/插卡（街机 FBN / 三国战记3HD PGM3 / Wii U Cemu）
-                    onCheats = if (engine is com.nesstation.app.core.engine.FbNeoEngine ||
-                        engine is com.nesstation.app.core.engine.Pgm3Engine ||
-                        engine is com.nesstation.app.core.engine.CemuEngine
-                    ) ({ showCheats = true }) else null,
+                    // ★★ v69 全核心金手指：所有核心都显示入口（RAM 补丁引擎覆盖
+                    //   NES/SFC/GB/GBA/MD/PCE/PSX/DC/NDS；FBN/PGM3/Cemu 走各自
+                    //   原生金手指；其余核心面板内给出指引）。
+                    onCheats = { showCheats = true },
                     onClose = { showMenu = false },
                     onExit = { onExit() }
                 )
             }
         }
 
-        // ★★ v68 金手指/插卡面板（街机 FBN ini / PGM3 插卡+金手指 / Cemu）
+        // ★★ v68 金手指/插卡面板（v69 起全核心：RAM .cht / FBN ini / PGM3 插卡+金手指 / Cemu）
         if (showCheats && loaded) {
             CheatsDialog(
                 engine = engine,
                 gameTitle = game.title,
-                onDismiss = { showCheats = false }
+                onDismiss = { showCheats = false },
+                cheatKey = game.id,
+                platform = platform
             )
+        }
+
+        // ★★ v69 全核心 RAM 金手指：游戏加载完成后自动重放上次的补丁。
+        //   无 .cht 文件也必须下发空列表 —— 核心单例跨游戏复用，
+        //   不清空会把上一局的补丁漏进这一局。
+        LaunchedEffect(loaded, engine) {
+            if (!loaded) return@LaunchedEffect
+            val ramEngine = engine as? com.nesstation.app.core.engine.RamCheatEngine ?: return@LaunchedEffect
+            try { pushPersistedRamCheats(context, game.id, ramEngine, platform) } catch (_: Throwable) {}
         }
 
         // State slot picker dialog
@@ -5793,6 +5803,8 @@ fun EmulatorScreen(
                 },
                 javaIsPerGame = javaHasOverride,
                 onResetJavaToGlobal = if (platform == GamePlatform.JAVA) resetJavaToGlobal else null,
+                // ★★ v69 全核心金手指入口（设置面板 = 「核心设置」）
+                onOpenCheats = { showSettings = false; showCheats = true },
                 onClose = { showSettings = false }
             )
         }
@@ -15890,7 +15902,9 @@ private fun SettingsPanel(
     // J2ME 每游戏单独设置：当前游戏是否已有专属配置 + 恢复全局默认回调。
     // 非 JAVA 平台 / 无存储键时传默认值，UI 不显示相关控件。
     javaIsPerGame: Boolean = false,
-    onResetJavaToGlobal: (() -> Unit)? = null
+    onResetJavaToGlobal: (() -> Unit)? = null,
+    // ★★ v69 全核心金手指入口（非空时在面板顶部显示金手指行）。
+    onOpenCheats: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var biosStatus by remember { mutableStateOf(checkFdsBiosStatus(context)) }
@@ -15911,6 +15925,27 @@ private fun SettingsPanel(
             IconButton(onClick = onClose) { Icon(Icons.Rounded.Close, "关闭", tint = Color.White) }
         }
         Spacer(Modifier.size(8.dp))
+
+        // ★★ v69 全核心金手指入口（用户要求：游戏内设置/核心设置里要有金手指）
+        if (onOpenCheats != null) {
+            Row(
+                Modifier.fillMaxWidth().clickable { onOpenCheats() }
+                    .background(Color(0x332F6FB2), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Build, null, tint = Color(0xFF7ED957))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("金手指", color = Color.White, fontSize = 14.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                    Text("无限血/无限币 · .cht 金手指 · 热生效",
+                        color = Color(0xFF9FB2C8), fontSize = 11.sp)
+                }
+                Text("›", color = Color(0xFF9FB2C8), fontSize = 16.sp)
+            }
+            Spacer(Modifier.size(8.dp))
+        }
 
         // Common video settings for all platforms
         DropdownSetting("画面缩放",

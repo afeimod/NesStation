@@ -32,6 +32,13 @@ namespace pcecore::rom {
 std::string loadFromFile(const std::string& path, int& regionOut);
 
 void unload();
+
+// v69 全核心金手指：取核心当前暴露的 SYSTEM_RAM / SAVE_RAM 区域指针。
+// 指针归核心所有，仅在 emulation 线程的帧回调内使用；未加载游戏时两组均
+// 返回 NULL/0（调用方按越界跳过处理）。见 shared/cheat_engine.h。
+void cheatRamRegions(void** sysRam, size_t* sysSize,
+                     void** saveRam, size_t* saveSize);
+
 void resetEmulation(bool hard);
 void stepFrame();
 

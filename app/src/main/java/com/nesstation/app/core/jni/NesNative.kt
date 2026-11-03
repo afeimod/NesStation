@@ -121,6 +121,13 @@ object NesNative {
      */
     @JvmStatic external fun setCoreOption(key: String, value: String)
 
+    /** ★★ v69 全核心金手指：下发补丁列表（5 个 Int 一组：
+     *  enabled / 地址（区域偏移或 CPU 总线地址）/ 值 / 字节数 1|2|4 / 位掩码，
+     *  位掩码 0 = 整段写入）。空数组 = 清空全部。核心在每帧 runFrame 前重放
+     *  补丁（RetroArch 同款逐帧 poke，游戏改写 RAM 也会被再补上）。
+     *  布局见 core/jni/shared/cheat_engine.h。 */
+    @JvmStatic external fun cheatSetList(list: IntArray)
+
     // --- Video geometry ---
 
     /** Current video width reported by the core (e.g. 256, or 302 with NTSC filter). */

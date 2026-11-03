@@ -7,6 +7,7 @@
 
 #include "pce_bridge.h"
 #include "pce_loader.h"
+#include "shared/cheat_engine.h"  // v69 全核心金手指
 
 #include <jni.h>
 #include <android/log.h>
@@ -128,7 +129,19 @@ Java_com_nesstation_app_core_jni_PceNative_reset(JNIEnv*, jclass, jboolean hard)
 
 JNIEXPORT void JNICALL
 Java_com_nesstation_app_core_jni_PceNative_runFrame(JNIEnv*, jclass) {
+    // ★★ v69 全核心金手指：帧前把补丁打到核心 RAM（列表为空时零开销直通）。
+    if (coreshared::cheatActive()) {
+        void* sysRam = nullptr; size_t sysSize = 0;
+        void* saveRam = nullptr; size_t saveSize = 0;
+        pcecore::rom::cheatRamRegions(&sysRam, &sysSize, &saveRam, &saveSize);
+        coreshared::cheatApplyRegions(sysRam, sysSize, saveRam, saveSize);
+    }
     pcecore::Engine::instance().runFrame();
+}
+
+JNIEXPORT void JNICALL
+Java_com_nesstation_app_core_jni_PceNative_cheatSetList(JNIEnv* env, jclass, jintArray list) {
+    coreshared::cheatSetList(env, list);
 }
 
 JNIEXPORT void JNICALL

@@ -11,6 +11,7 @@
 
 #include "bridge.h"
 #include "rom_loader.h"
+#include "shared/cheat_engine.h"  // v69 全核心金手指
 
 #include <jni.h>
 #include <android/log.h>
@@ -148,7 +149,15 @@ Java_com_nesstation_app_core_jni_NesNative_reset(JNIEnv*, jclass, jboolean hard)
 
 JNIEXPORT void JNICALL
 Java_com_nesstation_app_core_jni_NesNative_runFrame(JNIEnv*, jclass) {
+    // ★★ v69 全核心金手指（NES/fceux）：帧前把补丁打到 CPU 总线
+    //   （FCEU_CheatGetByte/SetByte —— 列表为空时零开销直通）。
+    nescore::rom::applyCheatFrame();
     nescore::Engine::instance().runFrame();
+}
+
+JNIEXPORT void JNICALL
+Java_com_nesstation_app_core_jni_NesNative_cheatSetList(JNIEnv* env, jclass, jintArray list) {
+    coreshared::cheatSetList(env, list);
 }
 
 JNIEXPORT void JNICALL

@@ -42,6 +42,8 @@ import com.nesstation.app.core.engine.CemuEngine
 import info.cemu.cemu.nativeinterface.NativeCheats
 import com.nesstation.app.core.engine.FbNeoEngine
 import com.nesstation.app.core.engine.Pgm3Engine
+import com.nesstation.app.core.engine.RamCheatEngine
+import com.nesstation.app.core.model.GamePlatform
 import org.json.JSONObject
 import java.io.File
 
@@ -161,11 +163,15 @@ private fun fbnCheatKey(driver: String, entry: CheatEntry) =
 fun CheatsDialog(
     engine: Any?,
     gameTitle: String,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    // ★★ v69：RAM 金手指用的每游戏稳定键（game.id）+ 平台（地址归一化）。
+    cheatKey: String = "",
+    platform: GamePlatform = GamePlatform.NES
 ) {
     val isPgm3 = engine is Pgm3Engine
     val isFbn = engine is FbNeoEngine
     val isCemu = engine is CemuEngine
+    val isRamCheat = engine is RamCheatEngine
     var tab by remember { mutableStateOf(0) } // PGM3: 0=金手指 1=插卡
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -194,10 +200,16 @@ fun CheatsDialog(
                     FbnCheatsContent(engine as FbNeoEngine)
                 } else if (isCemu) {
                     CemuCheatsContent(engine as CemuEngine)
+                } else if (isRamCheat) {
+                    RamCheatsContent(engine as RamCheatEngine, cheatKey, platform)
                 } else {
                     Text(
-                        "当前核心未接入金手指。\n\n已内置支持：街机（FBN）、三国战记3HD（PGM3）、Wii U（Cemu）；" +
-                            "PSP 与 NDS 的金手指开关在 设置→核心设置。",
+                        "当前核心未接入金手指。\n\n已内置支持：\n" +
+                            "· 8/16 位主机（NES/SFC/GB/GBA/MD/PCE/PSX/DC/NDS）—— 读 RetroArch 格式 .cht 金手指文件\n" +
+                            "· 街机（FBN）—— 官方金手指包 .ini\n" +
+                            "· 三国战记3HD（PGM3）—— 金手指 + 虚拟插卡\n" +
+                            "· Wii U（Cemu）—— 游戏规则 txt\n" +
+                            "PSP / NDS(DraStic) 的金手指开关在 设置→核心设置。",
                         fontSize = 13.sp, lineHeight = 19.sp
                     )
                 }
@@ -705,4 +717,313 @@ private fun CemuCheatsContent(engine: CemuEngine) {
         Text("重新加载金手指", fontSize = 12.sp)
     }
     MsgLine(msg)
+}
+
+// ---------------------------------------------------------------------------
+// ★★ v69 全核心 RAM 金手指（RetroArch 同款：.cht 文件 + 每帧补丁）
+//
+// 覆盖核心：NES(fceux 总线) / SFC(snes9x) / GB·GBA(mgba) / MD(genesis_plus_gx)
+// / PCE(geargrafx) / PSX(pcsx_rearmed) / DC(flycast) / NDS(melonDS)。
+// 补丁经 RamCheatEngine.pushCheatPatchList 下发，核心每帧 runFrame 前重放
+// （游戏改写 RAM 也会被再补上 —— 无限血/无限币标准做法，布局见
+// core/jni/shared/cheat_engine.h）。
+// ---------------------------------------------------------------------------
+
+/** 单条 RAM 金手指（.cht 里的一条 cheatN_*）。 */
+data class RamCheat(
+    val index: Int,
+    val desc: String,
+    val address: Long,
+    val value: Int,
+    val size: Int,        // 1/2/4 字节（小端）
+    val mask: Int,        // 0 = 整段写；否则按位读-改-写
+    val enabledInFile: Boolean,
+    val supported: Boolean
+)
+
+private fun chtNumber(s: String): Long = try {
+    val t = s.trim().removeSuffix("L")
+    when {
+        t.startsWith("0x") || t.startsWith("0X") -> t.substring(2).toLong(16)
+        t.startsWith("$") -> t.substring(1).toLong(16)
+        else -> t.toLong()
+    }
+} catch (_: Throwable) { -1L }
+
+/** 解析 RetroArch 格式 .cht（cheats = N / cheatI_desc / _enable / _address / _value / _memory_search_size / _address_bit_position / _cheat_type）。 */
+fun parseRetroArchCht(file: File): List<RamCheat> {
+    if (!file.isFile) return emptyList()
+    // index -> 字段表（RetroArch 写出的字段顺序不固定，逐行收集）
+    val rows = HashMap<Int, HashMap<String, String>>()
+    try {
+        file.readLines().forEach { raw ->
+            val line = raw.trim()
+            val m = Regex("^cheat(\\d+)_([A-Za-z_]+)\\s*=\\s*(.+)$").find(line) ?: return@forEach
+            val idx = m.groupValues[1].toIntOrNull() ?: return@forEach
+            rows.getOrPut(idx) { HashMap() }[m.groupValues[2].lowercase()] = m.groupValues[3].trim()
+        }
+    } catch (_: Throwable) {
+        // 坏行忽略（返回已解析部分）
+    }
+    return rows.keys.sorted().mapNotNull { i ->
+        val f = rows[i] ?: return@mapNotNull null
+        val desc = f["desc"]?.removePrefix("\"")?.removeSuffix("\"") ?: "金手指 $i"
+        val addr = chtNumber(f["address"] ?: return@mapNotNull null)
+        if (addr < 0) return@mapNotNull null
+        val value = chtNumber(f["value"] ?: "0").toInt()
+        val sizeFromCht = (chtNumber(f["memory_search_size"] ?: "0")).toInt()
+        val size = when (sizeFromCht) { 1 -> 2; 2 -> 4; else -> 1 } // 0=1B,1=2B,2=4B
+        val mask = (chtNumber(f["address_bit_position"] ?: "0")).toInt()
+            .let { if (it in 1..0xFFFFFF) it else 0 }
+        val type = (chtNumber(f["cheat_type"] ?: "1")).toInt()
+        RamCheat(
+            index = i, desc = desc, address = addr, value = value, size = size, mask = mask,
+            enabledInFile = (f["enable"] ?: "").equals("true", true) ||
+                (f["enable"] ?: "") == "1",
+            supported = type == 1  // 1 = CHEAT_TYPE_STANDARD（普通 RAM poke）
+        )
+    }
+}
+
+/**
+ * 总线地址 → 核心内存区域偏移（各核心 retro_get_memory_data(SYSTEM_RAM)
+ * 的基址约定不同；越界条目原生侧会静默跳过，这里尽量归一到能命中的偏移）。
+ */
+fun normalizeCheatAddress(platform: GamePlatform, addr: Long): Int {
+    val a = addr
+    return when (platform) {
+        // snes9x SYSTEM_RAM = WRAM 128KB（$7E0000 起）；0x0000-0x1FFFF 直映
+        GamePlatform.SFC -> when {
+            a in 0x7E0000L until 0x800000L -> (a - 0x7E0000L).toInt()
+            else -> a.toInt()
+        }
+        // mgba：GB WRAM $C000-$DFFF（E000 echo）；GBA EWRAM $02000000 / IWRAM $03000000
+        GamePlatform.GB -> when {
+            a in 0xC000L until 0xE000L -> (a - 0xC000L).toInt()
+            a in 0xE000L until 0xF000L -> (a - 0xE000L).toInt()
+            else -> a.toInt()
+        }
+        GamePlatform.GBA -> when {
+            a in 0x02000000L until 0x02040000L -> (a - 0x02000000L).toInt()
+            a in 0x03000000L until 0x03008000L -> (a - 0x03000000L).toInt()
+            else -> a.toInt()
+        }
+        // genesis_plus_gx：68K work RAM 64KB（$FF0000 起）
+        GamePlatform.MD -> when {
+            a in 0xFF0000L until 0x1000000L -> (a - 0xFF0000L).toInt()
+            else -> a.toInt()
+        }
+        // geargrafx：主 RAM 8KB（$1F0000 起）
+        GamePlatform.PCE -> when {
+            a in 0x1F0000L until 0x1F2000L -> (a - 0x1F0000L).toInt()
+            else -> a.toInt()
+        }
+        // pcsx_rearmed：主 RAM 2MB；cht 地址常带 KUSEG 基址 0x80000000
+        GamePlatform.PSX -> when {
+            a >= 0x80000000L -> (a and 0x1FFFFFFFL).toInt()
+            else -> a.toInt()
+        }
+        // melonDS：DS 主 RAM 4MB（$02000000 起）
+        GamePlatform.NDS -> when {
+            a in 0x02000000L until 0x02400000L -> (a - 0x02000000L).toInt()
+            else -> a.toInt()
+        }
+        // flycast / NES(fceux 总线) / 其他：原样（越界由原生侧跳过）
+        else -> a.toInt()
+    }
+}
+
+/** 组装补丁列表（5 Int 一组：enabled / 偏移 / 值 / 字节数 / 位掩码）。 */
+private fun buildRamPatchList(
+    entries: List<RamCheat>,
+    enabled: Map<Int, Boolean>,
+    platform: GamePlatform
+): IntArray {
+    val out = ArrayList<Int>(entries.size * 5)
+    for (e in entries) {
+        if (!e.supported) continue
+        val on = enabled[e.index] ?: e.enabledInFile
+        out.add(if (on) 1 else 0)
+        out.add(normalizeCheatAddress(platform, e.address))
+        out.add(e.value)
+        out.add(e.size)
+        out.add(e.mask)
+    }
+    return out.toIntArray()
+}
+
+/** 每游戏持久化（SharedPreferences "ram_cheats"，值 = {条目下标: 开关}）。 */
+fun loadRamCheatEnabled(context: android.content.Context, cheatKey: String): Map<Int, Boolean> {
+    if (cheatKey.isBlank()) return emptyMap()
+    return try {
+        val json = JSONObject(
+            context.getSharedPreferences("ram_cheats", android.content.Context.MODE_PRIVATE)
+                .getString(cheatKey, "{}") ?: "{}"
+        )
+        val map = HashMap<Int, Boolean>()
+        for (k in json.keys()) {
+            val i = k.toIntOrNull() ?: continue
+            map[i] = json.optBoolean(k, false)
+        }
+        map
+    } catch (_: Throwable) { emptyMap() }
+}
+
+fun saveRamCheatEnabled(
+    context: android.content.Context, cheatKey: String, enabled: Map<Int, Boolean>
+) {
+    if (cheatKey.isBlank()) return
+    try {
+        val json = JSONObject()
+        for ((k, v) in enabled) json.put(k.toString(), v)
+        context.getSharedPreferences("ram_cheats", android.content.Context.MODE_PRIVATE)
+            .edit().putString(cheatKey, json.toString()).apply()
+    } catch (_: Throwable) {}
+}
+
+/** cheat 文件路径（<filesDir>/cheats/<cheatKey>.cht）。 */
+fun ramCheatFile(context: android.content.Context, cheatKey: String): File {
+    val safe = cheatKey.ifBlank { "game" }.replace(Regex("[^A-Za-z0-9._-]"), "_")
+    return File(File(context.filesDir, "cheats").apply { mkdirs() }, "$safe.cht")
+}
+
+/**
+ * 游戏加载后自动重放上次的 RAM 金手指（EmulatorScreen LaunchedEffect 调）。
+ * 无 cheat 文件也必须下发一次空列表 —— 核心引擎是跨游戏复用的单例，
+ * 不清空会把上一局的补丁漏进这一局。
+ */
+fun pushPersistedRamCheats(
+    context: android.content.Context,
+    cheatKey: String,
+    engine: RamCheatEngine,
+    platform: GamePlatform
+) {
+    val entries = parseRetroArchCht(ramCheatFile(context, cheatKey))
+    val enabled = loadRamCheatEnabled(context, cheatKey)
+    try { engine.pushCheatPatchList(buildRamPatchList(entries, enabled, platform)) } catch (_: Throwable) {}
+}
+
+@Composable
+private fun RamCheatsContent(
+    engine: RamCheatEngine,
+    cheatKey: String,
+    platform: GamePlatform
+) {
+    val context = LocalContext.current
+    val chtFile = remember(cheatKey) { ramCheatFile(context, cheatKey) }
+    var reloadTick by remember { mutableStateOf(0) }
+    val entries = remember(chtFile, reloadTick) { parseRetroArchCht(chtFile) }
+    var enabled by remember(chtFile, reloadTick) {
+        mutableStateOf(loadRamCheatEnabled(context, cheatKey))
+    }
+    var info by remember { mutableStateOf<String?>(null) }
+
+    // 打开面板即生效当前选择（进入游戏时 pushPersistedRamCheats 已重放过一次）
+    androidx.compose.runtime.LaunchedEffect(chtFile, reloadTick) {
+        try { engine.pushCheatPatchList(buildRamPatchList(entries, enabled, platform)) } catch (_: Throwable) {}
+    }
+
+    fun toggle(e: RamCheat) {
+        val cur = enabled[e.index] ?: e.enabledInFile
+        val next = enabled + (e.index to !cur)
+        enabled = next
+        saveRamCheatEnabled(context, cheatKey, next)
+        try { engine.pushCheatPatchList(buildRamPatchList(entries, next, platform)) } catch (_: Throwable) {}
+    }
+
+    Text(
+        "RetroArch 格式 .cht 金手指，每帧自动补丁（热生效，无需重启）。\n" +
+            "把 ${chtFile.name} 放到或导入：\n${chtFile.absolutePath}",
+        fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 17.sp
+    )
+    Spacer(Modifier.padding(3.dp))
+
+    if (entries.isEmpty()) {
+        Text(
+            "还没有 ${platform.displayName} 的 .cht 金手指文件。\n\n" +
+                "RetroArch 的 cheats 目录、金手指网站的 .cht 都可以直接用；" +
+                "导入后立即生效（地址为游戏总线地址，本核心会自动映射到内存区域）。",
+            fontSize = 13.sp, lineHeight = 19.sp
+        )
+        RamImportCheatFileButton(chtFile) { ok ->
+            info = if (ok) "已导入 ${chtFile.name}" else "导入失败"
+            if (ok) reloadTick++
+        }
+        MsgLine(info)
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        itemsIndexed(entries, key = { _, e -> e.index }) { _, e ->
+            val on = enabled[e.index] ?: e.enabledInFile
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(Color(0x14203040), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = on, onCheckedChange = { if (e.supported) toggle(e) })
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        e.desc, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        color = if (e.supported) Color.White else Color(0xFF6B7A8C)
+                    )
+                    Text(
+                        if (e.supported)
+                            "地址 0x%X · 值 %d · %d 字节".format(e.address, e.value, e.size)
+                        else "该条目类型暂不支持（仅支持标准 RAM 补丁）",
+                        fontSize = 11.sp, color = Color(0xFF8FA0B5),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+    Spacer(Modifier.padding(2.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        TextButton(onClick = {
+            val off = entries.filter { it.supported }.associate { it.index to false }
+            enabled = off
+            saveRamCheatEnabled(context, cheatKey, off)
+            try { engine.pushCheatPatchList(buildRamPatchList(entries, off, platform)) } catch (_: Throwable) {}
+            info = "已全部关闭"
+        }) {
+            Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
+            Text("全部关闭", fontSize = 12.sp)
+        }
+        RamImportCheatFileButton(chtFile) { ok ->
+            info = if (ok) "已导入 ${chtFile.name}（覆盖旧文件）" else "导入失败"
+            if (ok) reloadTick++
+        }
+    }
+    MsgLine(info)
+}
+
+/** SAF 导入 .cht（复制为 <cheats>/<cheatKey>.cht）。 */
+@Composable
+private fun RamImportCheatFileButton(dst: File, onResult: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        var ok = false
+        try {
+            dst.parentFile?.mkdirs()
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                dst.outputStream().use { input.copyTo(it) }
+            }
+            ok = dst.length() > 0
+        } catch (_: Throwable) {
+            ok = false
+        }
+        onResult(ok)
+    }
+    TextButton(onClick = { launcher.launch("*/*") }) {
+        Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
+        Text("导入 .cht 文件", fontSize = 12.sp)
+    }
 }

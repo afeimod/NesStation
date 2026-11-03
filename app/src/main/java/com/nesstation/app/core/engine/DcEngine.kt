@@ -38,13 +38,18 @@ import kotlin.concurrent.thread
  *   bit4=Up, bit5=Down, bit6=Left, bit7=Right,
  *   bit8=B, bit9=Y, bit10=L, bit11=R
  */
-class DcEngine private constructor() : EmulatorEngine, DcCoreEngine {
+class DcEngine private constructor() : EmulatorEngine, DcCoreEngine, RamCheatEngine {
 
     /**
      * DC frame buffer. Standard VGA is 640x480; internal resolution up to
      * 1280x960 (2x) is covered for the screenshot path (larger sizes fall
      * back to a dynamic-size capture buffer).
      */
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { DcNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
+
     override val frameBuffer = IntArray(1280 * 1024)
 
     private val running = AtomicBoolean(false)

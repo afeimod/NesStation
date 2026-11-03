@@ -10,6 +10,7 @@
 
 #include "dc_bridge.h"
 #include "dc_loader.h"
+#include "shared/cheat_engine.h"  // v69 全核心金手指
 
 #include <jni.h>
 #include <android/log.h>
@@ -161,7 +162,19 @@ Java_com_nesstation_app_core_jni_DcNative_reset(JNIEnv*, jobject, jboolean hard)
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_nesstation_app_core_jni_DcNative_runFrame(JNIEnv*, jobject) {
+    // ★★ v69 全核心金手指：帧前把补丁打到核心 RAM（列表为空时零开销直通）。
+    if (coreshared::cheatActive()) {
+        void* sysRam = nullptr; size_t sysSize = 0;
+        void* saveRam = nullptr; size_t saveSize = 0;
+        dccore::rom::cheatRamRegions(&sysRam, &sysSize, &saveRam, &saveSize);
+        coreshared::cheatApplyRegions(sysRam, sysSize, saveRam, saveSize);
+    }
     dccore::Engine::instance().runFrame();
+}
+
+JNIEXPORT void JNICALL
+Java_com_nesstation_app_core_jni_DcNative_cheatSetList(JNIEnv* env, jobject, jintArray list) {
+    coreshared::cheatSetList(env, list);
 }
 
 extern "C" JNIEXPORT void JNICALL

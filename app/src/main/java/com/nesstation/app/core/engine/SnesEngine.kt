@@ -35,7 +35,12 @@ import kotlin.concurrent.thread
  *   bit0=A, bit1=B, bit2=Select, bit3=Start, bit4=Up, bit5=Down, bit6=Left, bit7=Right
  *   bit8=X, bit9=Y, bit10=L, bit11=R
  */
-class SnesEngine private constructor() : EmulatorEngine {
+class SnesEngine private constructor() : EmulatorEngine, RamCheatEngine {
+
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { SnesNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
 
     override val frameBuffer = IntArray(512 * 478) // max SNES resolution
 

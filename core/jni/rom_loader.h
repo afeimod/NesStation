@@ -24,6 +24,12 @@ std::string loadFromFile(const std::string& path, int& regionOut);
 // Tear down the current game + core.
 void unload();
 
+// v69 全核心金手指（NES）：把 coreshared::g_cheatList 里的补丁逐字节打到
+// fceux 的 CPU 总线上（FCEU_CheatGetByte/SetByte —— fceux 自家金手指引擎
+// 用的同一对入口，ARead/BWrite 表自动处理所有 mapper 的地址译码）。
+// 在每次 stepFrame 之前由 bridge 调用；列表为空时立刻返回（零开销）。
+void applyCheatFrame();
+
 // Soft/hard reset (libretro only exposes retro_reset()).
 void resetEmulation(bool hard);
 

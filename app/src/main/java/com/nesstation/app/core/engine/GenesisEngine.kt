@@ -42,7 +42,7 @@ import kotlin.concurrent.thread
  * NOTE: Genesis-Plus-GX does NOT support the SEGA Saturn (SS). Saturn
  * requires a separate Saturn core (Yabause / Mednafen).
  */
-class GenesisEngine private constructor() : EmulatorEngine {
+class GenesisEngine private constructor() : EmulatorEngine, RamCheatEngine {
 
     /**
      * SEGA frame buffer. Resolutions vary by system:
@@ -52,6 +52,11 @@ class GenesisEngine private constructor() : EmulatorEngine {
      *   SG-1k: 256x192
      * We size for the largest common case (512x512 with margin).
      */
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { GenesisNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
+
     override val frameBuffer = IntArray(512 * 512)
 
     private val running = AtomicBoolean(false)

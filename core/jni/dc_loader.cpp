@@ -1167,6 +1167,20 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
     return "";
 }
 
+
+void cheatRamRegions(void** sysRam, size_t* sysSize,
+                     void** saveRam, size_t* saveSize) {
+    if (sysRam) *sysRam = nullptr;
+    if (sysSize) *sysSize = 0;
+    if (saveRam) *saveRam = nullptr;
+    if (saveSize) *saveSize = 0;
+    if (!s_loaded) return;
+    if (sysRam) *sysRam = s_retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+    if (sysSize) *sysSize = s_retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+    if (saveRam) *saveRam = s_retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    if (saveSize) *saveSize = s_retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+}
+
 void unload() {
     if (s_loaded) {
         if (s_gameLoaded) {

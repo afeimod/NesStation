@@ -29,7 +29,7 @@ import kotlin.concurrent.thread
  *   bit4=Up, bit5=Down, bit6=Left, bit7=Right,
  *   bit8=△(Triangle), bit9=○(Circle), bit10=L1, bit11=R1
  */
-class PsxEngine private constructor() : EmulatorEngine {
+class PsxEngine private constructor() : EmulatorEngine, RamCheatEngine {
 
     /**
      * PSX frame buffer. PSX resolutions vary: 320x240 (NTSC), 320x256 (PAL),
@@ -40,6 +40,11 @@ class PsxEngine private constructor() : EmulatorEngine {
      *   拒收/裁切增强帧（PAL 320x256 → 640x512、512x240 → 1024x480），
      *   扩到 1024x512 覆盖全部增强档位（约 2MB 常驻，可接受）。
      */
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { PsxNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
+
     override val frameBuffer = IntArray(1024 * 512)
 
     private val running = AtomicBoolean(false)

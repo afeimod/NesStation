@@ -36,7 +36,12 @@ import kotlin.concurrent.thread
  *  - [unload] / [shutdown] stop the thread and release audio.
  *  - [setPad1] pushes controller state to the core for the next frame.
  */
-class NesEngine private constructor() : EmulatorEngine {
+class NesEngine private constructor() : EmulatorEngine, RamCheatEngine {
+
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { NesNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
 
     override val frameBuffer = IntArray(256 * 240)
 

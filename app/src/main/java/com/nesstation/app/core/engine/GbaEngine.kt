@@ -38,7 +38,12 @@ import kotlin.concurrent.thread
  *   bit8=L, bit9=R
  * GB/GBC only uses bit0-bit7 (no L/R).
  */
-class GbaEngine private constructor() : EmulatorEngine {
+class GbaEngine private constructor() : EmulatorEngine, RamCheatEngine {
+
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { GbaNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
 
     override val frameBuffer = IntArray(240 * 160) // GBA max resolution
 

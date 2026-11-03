@@ -26,6 +26,7 @@
 
 #include "rom_loader.h"
 #include "shared/core_shared.h"
+#include "shared/cheat_engine.h"
 #include "hqx/hqx.h"
 
 #include <android/log.h>
@@ -44,6 +45,7 @@
 #include <vector>
 
 #include "fceux/driver.h"
+#include "fceux/cheat.h"   // FCEU_CheatGetByte/SetByte（v69 金手指）
 #include "fceux/fceu.h"
 #include "fceux/file.h"
 #include "fceux/state.h"
@@ -439,6 +441,17 @@ std::string loadFromFile(const std::string& path, int& regionOut) {
     LOGI("fceux ROM loaded: %s  rate=%d  vidSystem=%d  region=%d",
          path.c_str(), s_sampleRate, s_vidSystem, s_region);
     return "";
+}
+
+void applyCheatFrame() {
+    if (!coreshared::cheatActive()) return;
+    coreshared::cheatApplyByteBus(
+        [](uint32_t a) -> uint8_t {
+            return static_cast<uint8_t>(FCEU_CheatGetByte(a));
+        },
+        [](uint32_t a, uint8_t v) {
+            FCEU_CheatSetByte(a, v);
+        });
 }
 
 void unload() {

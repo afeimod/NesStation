@@ -69,6 +69,20 @@ fun CoreSettingsPanel(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize()
     ) {
+        // ★★ v69 全核心金手指 —— 核心设置侧的入口指引。
+        //   游戏内的功能入口在：游戏内菜单「金手指」按钮 / 游戏内
+        //   「核心设置」面板顶部的金手指行（两者打开同一个金手指面板）。
+        item {
+            InfoRow(
+                "金手指（全核心支持）：运行游戏后，点游戏内菜单的「金手指」按钮，" +
+                    "或 游戏内菜单 → 设置（核心设置）→「金手指」。\n" +
+                    "· NES/SFC/GB/GBA/MD/PCE/PSX/DC/NDS —— 导入 RetroArch 格式 .cht，每帧补丁热生效\n" +
+                    "· 街机（FBN）—— 官方金手指包 .ini\n" +
+                    "· 三国战记3HD —— 金手指 + 虚拟插卡（记忆卡）\n" +
+                    "· Wii U（Cemu）—— 游戏规则 txt\n" +
+                    "· PSP / NDS(DraStic) —— 核心自带金手指开关在下方对应平台设置里"
+            )
+        }
         when (platform) {
             GamePlatform.NES -> item {
                 SettingsSection("FC / NES (FCEUX)") {

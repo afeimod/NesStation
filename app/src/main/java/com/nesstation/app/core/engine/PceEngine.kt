@@ -43,7 +43,7 @@ import kotlin.concurrent.thread
  * Video: Geargrafx outputs RGB565 at 256×242 (NTSC) / 256×263 (PAL) max.
  * Filter buffers sized to 512×512 max.
  */
-class PceEngine private constructor() : EmulatorEngine {
+class PceEngine private constructor() : EmulatorEngine, RamCheatEngine {
 
     /**
      * PCE frame buffer. Resolutions vary by system:
@@ -52,6 +52,11 @@ class PceEngine private constructor() : EmulatorEngine {
      *   PCE-CD:  256×224
      * We size for the largest common case (512×512 with margin).
      */
+    // ★★ v69 全核心金手指：补丁列表直通核心 JNI（见 RamCheatEngine 注释）。
+    override fun pushCheatPatchList(list: IntArray) {
+        try { PceNative.cheatSetList(list) } catch (_: Throwable) {}
+    }
+
     override val frameBuffer = IntArray(512 * 512)
 
     private val running = AtomicBoolean(false)
