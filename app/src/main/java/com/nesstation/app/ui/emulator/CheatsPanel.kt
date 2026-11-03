@@ -499,11 +499,13 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
 
     val cards = remember(tick) { engine.listCardFiles() }
 
-    fun act(player: Int, action: String): Unit = when (action) {
-        "insert" -> { val e = engine.insertCard(player); info = e ?: "1P/2P 卡已插入（P${player + 1}）"; tick++ }
-        "eject" -> { val e = engine.ejectCard(player); info = e ?: "已弹卡（P${player + 1}）"; tick++ }
-        "save" -> { val e = engine.saveCard(player); info = e ?: "已存卡（P${player + 1}）"; tick++ }
-        else -> {}
+    fun act(player: Int, action: String) {
+        when (action) {
+            "insert" -> { val e = engine.insertCard(player); info = e ?: "1P/2P 卡已插入（P${player + 1}）"; tick += 1 }
+            "eject" -> { val e = engine.ejectCard(player); info = e ?: "已弹卡（P${player + 1}）"; tick += 1 }
+            "save" -> { val e = engine.saveCard(player); info = e ?: "已存卡（P${player + 1}）"; tick += 1 }
+            else -> {}
+        }
     }
 
     Column(Modifier.fillMaxWidth()) {
