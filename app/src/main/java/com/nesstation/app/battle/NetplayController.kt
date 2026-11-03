@@ -170,10 +170,21 @@ class NetplayController(
         private const val CATCHUP_LAG_BATCH = 10
         private const val CATCHUP_LAG_MARGIN = 6L
 
-        // ★★ v66 等待远端输入硬超时：活跃槽位输入 >8s 未到（对端假死/半开连接）
-        //   —— 旧版无限等待 = 永久黑屏冻结；现在明确报"对手无响应"并停模拟。
-        //   （正常抖动下等待上限 ≈ 预测窗 16 帧 + RTT ≈ 0.3s，8s 已留足裕量）
-        private const val AWAIT_INPUT_TIMEOUT_MS = 8000L
+        // ★★ v67 等待远端输入【软】提示阈值（v66 的 8s 硬超时已废除 —— 实测
+        //   灾难：8s 把"对手短暂后台/网络抖动"判成死局，之后每帧都在 8s 超时
+        //   循环里跑零输入帧 = 永久发散 + 游戏以 8s/帧龟速假死）。小马/RetroArch
+        //   同款语义 =【阻塞真暂停】：引擎线程停在 beforeFrame，核心一帧不跑，
+        //   对手恢复输入的瞬间无缝续跑（零发散）。这里只做【提示】不做杀局：
+        //   >30s 提示"对手无响应"；>60s 每 15s 重申一次（用户永远知道卡在哪、
+        //   该不该退，而不是黑屏干瞪眼）。
+        private const val AWAIT_STALL_NOTICE_MS = 30000L
+        private const val AWAIT_STALL_REPEAT_MS = 15000L
+        // ★★ v67 启动门看门狗（"一直获取画面"根治）：进房后引擎挂在启动门等
+        //   同步画面/开局 —— 就绪包丢失 / 服务器竞态 / 旧服务器不编排重开
+        //   等任何原因卡住时：>15s 自动重发 ready（服务器重新看到就能重走同步）；
+        //   >45s 升级为明确提示（附出路）。绝不允许无限黑屏干等。
+        private const val GATE_RESEND_READY_MS = 15000L
+        private const val GATE_ESCALATE_MS = 45000L
         /** 检查点无效哨兵（tag 可为负 —— warmup 帧也存，作 frame 0 的重放基点） */
         private val RB_INVALID = java.lang.Long.MIN_VALUE
         /** RTT 探测次数/间隔（★★ v4.4 提速：4×1300ms+180ms×3 最坏 ~6s → 3×800ms+60ms×2 最坏 ~2.5s） */
@@ -327,6 +338,48 @@ class NetplayController(
     //   更新）：对局中追帧的落后度 = max(活跃远端槽位) - 本端发号帧。
     //   旧版只有回滚模式维护 rbSlotLatest，延迟模式无法感知自身落后。
     private val slotLatestFrame = java.util.concurrent.atomic.AtomicLongArray(5)
+
+    // ★★ v67 启动门看门狗簿记（仅引擎线程读写；门放行即清零）
+    /** 引擎本次挂上启动门的时刻（0 = 未挂门）。 */
+    private var gateParkStartMs = 0L
+    /** 上次看门狗重发 ready 的时刻（限频 15s/次 —— 服务器状态机可能要多次喂）。 */
+    private var gateLastResendMs = 0L
+    /** 上次升级提示时刻（>45s 后每 8s 重申出路）。 */
+    private var gateLastEscalateMs = 0L
+
+    /**
+     * ★★ v67 服务器能力门控：restart_req 全员重开编排是协议 v47 引入的 —— 更老
+     *   的服务器收到该消息【静默丢弃】（unknown type），请求方若傻等重开广播就
+     *   永久挂门（用户实测"一直获取画面"的根因链之一）。srv 随 hello 下发
+     *   （0 = 老服务器无此字段）。
+     */
+    private fun serverSupportsRestart(): Boolean = serverProtoVersion >= 47
+
+    /**
+     * ★★ v67 请求全员重开（能力门控版）：服务器支持 → 正常编排自救；不支持 →
+     *   绝不静默等待，直接给出明确出路提示（退出重进 = 唯一一致自救）。
+     */
+    private fun requestRestartOrReport(reason: String) {
+        if (serverSupportsRestart()) {
+            try { net?.sendRestartReq() } catch (_: Throwable) {}
+        } else {
+            android.util.Log.w("NetplayController",
+                "restart_req dropped: server proto=$serverProtoVersion (<47)")
+            dispatch { it.onNetplayLost("$reason（服务器版本过旧，无法自动重开）—— 请退出后重新加入房间") }
+        }
+    }
+
+    /**
+     * ★★ v67 看门狗重发 ready：清守卫后复用 notifyEngineReady 全链路（探测 →
+     *   RTT → sendReady）。引擎此刻挂在启动门 = 核心空闲，跨线程出档探测安全。
+     */
+    private fun forceReadyResend() {
+        val n = net ?: return
+        readySent = false
+        engineLoaded = false
+        notifyEngineReady()
+        android.util.Log.w("NetplayController", "gate watchdog: ready re-sent (parked too long)")
+    }
     /** 最早待纠正帧（Long.MAX_VALUE = 无；网络线程 CAS 取 min，引擎线程消费）。 */
     private val rbPendingFrom = java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE)
     /** 最后已执行的网络帧（execFrame = netFrame - inputDelay）。 */
@@ -513,7 +566,7 @@ class NetplayController(
                     } catch (t: Throwable) {
                         android.util.Log.w("NetplayController", "catchup begin failed", t)
                         dispatch { it.onSyncStatus("追赶装载失败，已请求全员重新同步…") }
-                        try { net?.sendRestartReq() } catch (_: Throwable) {}
+                        requestRestartOrReport("同步画面装载失败")
                     }
                 }, "battle-catchup").apply { isDaemon = true }.start()
                 return
@@ -886,7 +939,7 @@ class NetplayController(
                     //   本端先从各自暂停帧裸恢复（不装载），等 restart 到达接管；
                     //   混合旧客户端的房间服务器会回 error 说明 —— 也不卡死。
                     dispatch { it.onSyncStatus("同步画面装载失败，已请求全员重新开局…") }
-                    try { net?.sendRestartReq() } catch (_: Throwable) {}
+                    requestRestartOrReport("同步画面装载失败")
                 } else {
                     // ★★ v4.7 内部帧号计数器 = 存档帧：全员下一个发出的网络帧号
                     //   严格一致（引擎此刻挂在门上，无并发消费 —— 改写安全）
@@ -1464,14 +1517,30 @@ class NetplayController(
                         val now = System.currentTimeMillis()
                         if (now - lastWaitNoticeMs > 1500) {
                             lastWaitNoticeMs = now
-                            // ★★ v55 提示语区分场景（用户实测“等待同步开始太久”
-                            //   的截图误导性提示）：已加入在跑的房间 = 在等
-                            //   服务器发同步画面包（马上快进追赶）；初始开局 =
-                            //   在等全员就绪统一开跑。
+                            // ★★ v55 提示语区分场景（已加入在跑的房间 = 在等服务器发同步画面包；初始开局 =
+                            //   在等全员就绪统一开跑）。★★ v67 启动门看门狗：卡"获取同步画面"
+                            //   不可能再无限 —— >15s 自动重发 ready（治就绪包丢失/服务器竞态）；
+                            //   >45s 升级为附出路的明确提示；提示带已等秒数（活感，非死机）。
                             val inPlayingRoom = net?.roomPlaying == true
+                            if (gateParkStartMs == 0L) gateParkStartMs = now
+                            val gateWaited = now - gateParkStartMs
+                            if (inPlayingRoom) {
+                                if (gateWaited >= GATE_RESEND_READY_MS &&
+                                    now - gateLastResendMs >= GATE_RESEND_READY_MS) {
+                                    gateLastResendMs = now
+                                    forceReadyResend()
+                                }
+                                if (gateWaited >= GATE_ESCALATE_MS &&
+                                    now - gateLastEscalateMs >= 8000) {
+                                    gateLastEscalateMs = now
+                                    dispatch {
+                                        it.onNetplayLost("同步画面获取超时（${gateWaited / 1000} 秒）—— 请退出后重新加入房间；若反复出现，请确认双方 APP 与服务器均为最新版本")
+                                    }
+                                }
+                            }
                             dispatch {
                                 it.onNetplayWait(if (inPlayingRoom)
-                                    "已加入对战，正在获取同步画面（马上开始快进追赶）…"
+                                    "已加入对战，正在获取同步画面…（${gateWaited / 1000}s）"
                                 else "等待同步开始（全员就绪后自动开跑）…")
                             }
                         }
@@ -1493,6 +1562,11 @@ class NetplayController(
                     }
                 }
             }
+            // ★★ v67 门已放行：清启动门看门狗簿记（下次挂门重新计时）
+            gateParkStartMs = 0L
+            gateLastResendMs = 0L
+            gateLastEscalateMs = 0L
+
             // 门放行后若又有重开请求 → 本次帧跳过（下一迭代在顶部应用复位）
             if (restartPending) {
                 // ★★ v4.7 零输入过渡帧：本帧未发号（计数器未消费）—— afterFrame
@@ -1523,7 +1597,7 @@ class NetplayController(
                     catchupMode = false
                     catchupProgressText = ""
                     dispatch { it.onSyncStatus("追赶不可用，请求全员重新同步…") }
-                    try { n0.sendRestartReq() } catch (_: Throwable) {}
+                    requestRestartOrReport("追赶不可用")
                     zeroPadFrame = true
                     return IntArray(4)
                 }
@@ -1554,7 +1628,7 @@ class NetplayController(
                             catchupMode = false
                             catchupProgressText = ""
                             dispatch { it.onSyncStatus("追赶失败（输入历史缺口），已请求全员重新同步…") }
-                            try { n0.sendRestartReq() } catch (_: Throwable) {}
+                            requestRestartOrReport("追赶失败（输入历史缺口）")
                             zeroPadFrame = true
                             return IntArray(4)
                         }
@@ -1575,7 +1649,7 @@ class NetplayController(
                         catchupMode = false
                         catchupProgressText = ""
                         dispatch { it.onSyncStatus("追赶重放失败，请求全员重新同步…") }
-                        try { n0.sendRestartReq() } catch (_: Throwable) {}
+                        requestRestartOrReport("追赶重放失败")
                         zeroPadFrame = true
                         return IntArray(4)
                     }
@@ -1784,9 +1858,10 @@ class NetplayController(
      */
     private fun awaitSlotInput(slot: Int, targetFrame: Long): Int? {
         var lastNotice = 0L
-        // ★★ v66 硬超时：正常抖动下等待上限 ≈ 预测窗 16 帧 + RTT（< 0.5s）。
-        //   超过 8s 还等不到 = 对端假死/半开连接（TCP 未断但永远不会有输入了）
-        //   —— 旧版无限等 = 永久黑屏冻结；现在明确报“对手无响应”并停模拟。
+        // ★★ v67 软等待（v66 硬超时废除）：阻塞在引擎线程 = 核心一帧不跑 = 真暂停
+        //   —— 对手从短暂卡顿/切后台恢复后输入无缝续上，零发散（小马同款）。
+        //   v66 的 8s 硬超时是灾难：超时后每帧继续发号+跑零输入帧，与对手真实输入
+        //   永久错开，且游戏以 8s/帧龟速假死 —— 比卡住更糟。现在只做提示不杀局。
         val startMs = System.currentTimeMillis()
         while (true) {
             padsHistory[slot][targetFrame]?.let { return it }
@@ -1807,21 +1882,15 @@ class NetplayController(
             val n = net
             val now = System.currentTimeMillis()
             if (n == null || !n.isConnected) return null
-            // ★★ v66 硬超时判定（门事件优先 —— 上面的检查已让路）
-            if (now - startMs > AWAIT_INPUT_TIMEOUT_MS) {
-                android.util.Log.w("NetplayController",
-                    "await input timeout: slot=$slot frame=$targetFrame (${AWAIT_INPUT_TIMEOUT_MS}ms)")
-                dispatch { it.onNetplayLost("对手长时间无响应（超过 8 秒），连接可能已中断") }
-                return null
-            }
-            if (lastNotice == 0L) {
-                if (now - lastNotice >= 60) {
-                    lastNotice = now
-                    dispatch { it.onNetplayWait("网络抖动：等待 ${slot}P 输入中…（画面短暂停顿属正常）") }
-                }
+            // ★★ v67 软提示判定（门事件优先 —— 上面的检查已让路；等待绝不中止）
+            val waitedMs = now - startMs
+            if (waitedMs >= AWAIT_STALL_NOTICE_MS &&
+                (lastNotice == 0L || now - lastNotice >= AWAIT_STALL_REPEAT_MS)) {
+                lastNotice = now
+                dispatch { it.onNetplayLost("对手已 ${waitedMs / 1000} 秒无响应 —— 画面暂停等待恢复；持续无响应请对手检查网络或退出重进") }
             } else if (now - lastNotice >= 1000) {
                 lastNotice = now
-                dispatch { it.onNetplayWait("网络抖动：等待 ${slot}P 输入中…（画面短暂停顿属正常）") }
+                dispatch { it.onNetplayWait("网络抖动：等待 ${slot}P 输入中…（${waitedMs / 1000}s，短暂停顿属正常）") }
             }
             try { Thread.sleep(2) } catch (_: InterruptedException) { return null }
         }
@@ -2007,6 +2076,8 @@ class NetplayController(
                                 //   旧版直接 return 全 0 跑帧 —— 与其他端的在途
                                 //   真实输入不一致 → 单端永久发散。
                                 if (restartPending || syncPaused) gateEventPending = true
+                                // ★★ v67 断连早退也是零输入过渡帧：不记账（防把垃圾帧写进检查点）
+                                zeroPadFrame = true
                                 return IntArray(4)
                             }
                         }
@@ -2020,6 +2091,8 @@ class NetplayController(
                     if (pad == null) pad = awaitSlotInput(slot, execFrame)
                     if (pad == null) {
                         if (restartPending || syncPaused) gateEventPending = true
+                        // ★★ v67 断连早退也是零输入过渡帧：不记账（防把垃圾帧写进检查点）
+                        zeroPadFrame = true
                         return IntArray(4) // 门事件/断连
                     }
                     pads[slot - 1] = pad
@@ -2069,6 +2142,11 @@ class NetplayController(
         val n = net ?: return
         if (!io.supportsRollback()) return
         if (activeLag() < CATCHUP_LAG_TRIGGER) return
+        // ★★ v67 安全护栏：未进锁步 / 有待纠正帧 / 同步或重开流程中 —— 绝不在
+        //   未校准的时间线上直跑补帧（会把纠错/重开流程搅成永久发散）。
+        if (!started || lastIssuedNetFrame < 0) return
+        if (rbPendingFrom.get() != Long.MAX_VALUE) return
+        if (syncPaused || restartPending || catchupMode) return
         inputDelay = n.inputDelay.coerceIn(0, 16)
         // 音频：追帧帧的输出发生在错误的墙钟时刻，直跑前丢弃积压（与回滚重放一致）
         try { io.discardPendingAudio() } catch (_: Throwable) {}
@@ -2197,15 +2275,15 @@ class NetplayController(
         if (base == RB_INVALID) return false
         val lastExec = rbLastExecuted
         if (lastExec - base > RB_MAX_REPLAY) {
-            // ★★ v66 放弃纠正 = 时间线与对手永久分叉（旧版只弹提示继续跑，
-            //   用户看到的就是"波动后画面再也不同步"）。能走到这里说明检查点
-            //   系统已连续异常（正常深度 ≈ 预测窗+2 帧），唯一自救 = 请求服务器
-            //   编排全员重开（与追赶失败/装载失败同一自救通道），绝不静默发散。
-            android.util.Log.w("NetplayController", "replay too deep (${lastExec - base}f) — request full resync")
+            // ★★ v67 回退 v66"请求全员重开"（实测把可恢复的深抖动升级成全员重开，
+            //   旧服务器上更会把房间挂死在启动门）。且该分支几乎不可达：检查点环
+            //   32 帧 × 逐帧存档，正常重放深度 ≈ 预测窗+2。恢复旧语义 = 跳过本次
+            //   纠正继续跑（极端情况短暂不同步，后续正常纠错继续工作），绝不为此
+            //   打断整局对齐。
+            android.util.Log.w("NetplayController", "replay too deep (${lastExec - base}f) — skip correction")
             rbPendingFrom.set(Long.MAX_VALUE)
-            dispatch { it.onNetplayWait("同步纠正失败（回滚过深），已请求全员重新同步…") }
-            try { net?.sendRestartReq() } catch (_: Throwable) {}
-            return true // 已处置（本帧继续跑，重开请求由门接管）
+            dispatch { it.onNetplayWait("网络深度抖动：已跳过本次纠正，可能短暂不同步…") }
+            return true // 已处置（本帧继续跑）
         }
         // 1) 丢掉预测帧产生的待播音频（防重复音效；重放的新样本随后入环）
         try { io.discardPendingAudio() } catch (_: Throwable) {}
@@ -2351,6 +2429,10 @@ class NetplayController(
         rbMaxDepth = 0
         // ★★ v66 追帧簿记清零（全新会话）
         for (s in 1..4) slotLatestFrame.set(s, -1L)
+        // ★★ v67 看门狗簿记清零（全新会话）
+        gateParkStartMs = 0L
+        gateLastResendMs = 0L
+        gateLastEscalateMs = 0L
     }
 
     /** 当前是否已收到同步开始信号。 */

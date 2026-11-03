@@ -3134,6 +3134,8 @@ fun EmulatorScreen(
             }
             override fun onNetplayLost(reason: String) {
                 netplayStatusText = reason
+                // ★★ v67 对战中断类提示同步弹 Toast（只改状态条会被画面盖住，用户看不到为何卡住）
+                try { android.widget.Toast.makeText(context, reason, android.widget.Toast.LENGTH_LONG).show() } catch (_: Throwable) {}
             }
             // ★★ v4.3 对战平台后加入（1P 单机即开 + 2P/3P/4P 中途接入）
             override fun onReadyDetail(role: String, inputDelay: Int, slot: Int, players: List<Int>, playing: Boolean) {
