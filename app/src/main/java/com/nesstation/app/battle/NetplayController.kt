@@ -167,8 +167,19 @@ class NetplayController(
         //   落后者恃 60fps 慢慢爬"的单向收敛：两端帧号差距快速闭合，
         //   画面（帧号）重新对齐，不再"波动后永远差一截"。
         private const val CATCHUP_LAG_TRIGGER = 20L
-        private const val CATCHUP_LAG_BATCH = 10
+        // ★★ v68 追帧提速（用户实测 v66/v67 "追赶还是太慢，小马不慢"）：
+        //   10 → 30 帧 —— 单个可见帧内最多补半秒差距（30 帧 ≈ 500ms），
+        //   配合下方逐帧磁盘存档的去除，实测追帧吞吐提升一个数量级。
+        private const val CATCHUP_LAG_BATCH = 30
         private const val CATCHUP_LAG_MARGIN = 6L
+        /** ★★ v68 追帧突发期间检查点存档间隔（帧）：
+         *  v66 实现逐帧存档（每直跑帧一次 retro_serialize + fwrite），
+         *  街机核心单次存档 3~10ms —— 30 帧突发 = 30 次磁盘 IO，追帧速度
+         *  被磁盘卡死（实测几倍速都跑不到）。检查点环的用途 = 回滚纠错时
+         *  找 "目标帧之前的最新快照"，突发期间每 [BURST] 帧存一档 + 突发
+         *  末帧必存，回滚重放深度 ≤ [BURST] 帧（RB_MAX_REPLAY=96 充裕），
+         *  重放本身无 IO 远快于逐帧存档 —— 吞吐腾给真正的模拟。 */
+        private const val CATCHUP_BURST_CK_EVERY = 8
 
         // ★★ v67 等待远端输入【软】提示阈值（v66 的 8s 硬超时已废除 —— 实测
         //   灾难：8s 把"对手短暂后台/网络抖动"判成死局，之后每帧都在 8s 超时
@@ -1644,7 +1655,12 @@ class NetplayController(
                         zeroPadFrame = true
                         return IntArray(4)
                     }
-                    try { io.discardPendingAudio() } catch (_: Throwable) {}
+                    // ★★ v68 音频丢弃降频：每帧丢弃（锁 + 循环读空音频环）在
+                    //   万帧级追赶里是可观开销，且音频环会自然回绕覆盖旧样本
+                    //   —— 每 32 帧清一次足够，把吞吐留给模拟本体。
+                    if ((netFrameCounter and 31L) == 0L) {
+                        try { io.discardPendingAudio() } catch (_: Throwable) {}
+                    }
                     if (!io.runFrameDirect(pads)) {
                         catchupMode = false
                         catchupProgressText = ""
@@ -2172,7 +2188,9 @@ class NetplayController(
                 if (!io.runFrameDirect(IntArray(4))) break
                 inputLog[execFrame] = IntArray(4)
                 rbLastExecuted = execFrame
-                rbSaveCheckpoint(io, execFrame)
+                // ★★ v68 突发期间降频存档（见 CATCHUP_BURST_CK_EVERY 注释 ——
+                //   逐帧磁盘存档是追帧慢的头号瓶颈）
+                if ((done + 1) % CATCHUP_BURST_CK_EVERY == 0) rbSaveCheckpoint(io, execFrame)
             } else {
                 val pads = IntArray(4)
                 var missing = false
@@ -2195,13 +2213,19 @@ class NetplayController(
                 if (!io.runFrameDirect(pads)) break
                 inputLog[execFrame] = pads.copyOf()
                 rbLastExecuted = execFrame
-                rbSaveCheckpoint(io, execFrame)   // 逐帧存档（纠错窗口同步前移）
+                // ★★ v68 突发期间降频存档（每 8 帧 + 循环外末帧 —— 逐帧磁盘
+                //   存档是追帧慢的头号瓶颈，存档本身 3~10ms/次 × 30 帧）
+                if ((done + 1) % CATCHUP_BURST_CK_EVERY == 0) rbSaveCheckpoint(io, execFrame)
             }
             lastIssuedNetFrame = burstFrame
             netFrameCounter = burstFrame + 1L
             done++
         }
         if (done > 0) {
+            // ★★ v68 突发末帧必存检查点：突发可能因 lag 收敛/缺帧提前结束，
+            //   降频存档的最后一档落后末帧最多 7 帧 —— 补一档保证"回滚基点
+            //   尽量贴近当前执行帧"（重放深度再砍半），成本仅一次存档。
+            rbSaveCheckpoint(io, rbLastExecuted)
             try { io.discardPendingAudio() } catch (_: Throwable) {}
             android.util.Log.i("NetplayController",
                 "lag catch-up burst: ${done}f (lag $startLag → ${activeLag()})")

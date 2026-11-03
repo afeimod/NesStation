@@ -60,6 +60,19 @@ class FbNeoEngine private constructor() : EmulatorEngine {
     @Volatile private var hasSurface = false
     @Volatile private var _paused = false
 
+    // ★★ v68 金手指支持：核心侧内置 FBNeo 金手指引擎，从
+    //   <systemDir>/fbneo/cheats/ 读 <驱动名>.ini（cheat "名"/default N/
+    //   N "选项", cpu, addr, val 格式）并暴露 fbneo-cheat-<n>-<drv>-<名>
+    //   核心选项（值 = "<i> - <选项文本>"）。前端只需：①知道当前驱动名
+    //   （zip 名）以解析同一份 ini；②setCoreOption 热切换（fbneo_loader 的
+    //   GET_VARIABLE 通路已就绪）。两个字段为 CheatsPanel 服务。
+    /** 当前游戏驱动名（romset zip 名，如 kof97；未加载 = 空串）。 */
+    @Volatile var currentDriverName: String = ""
+        private set
+    /** 会话 systemDir（<filesDir>/fbneo；cheat ini 在其下 fbneo/cheats/）。 */
+    @Volatile var systemDirPath: String = ""
+        private set
+
     // === Netplay (lockstep hook) ===
     @Volatile private var _frameHook: NetplayHook? = null
     @Volatile private var _netFrame: Long = 0L
@@ -99,6 +112,8 @@ class FbNeoEngine private constructor() : EmulatorEngine {
         cleanup()
 
         FbNeoNative.setPaths(systemDir, saveDir)
+        systemDirPath = systemDir
+        currentDriverName = rom.nameWithoutExtension
 
         // ★★ 改版 .dif 兼容（kof97t 三问等）：上游审计要求 romset 同时包含
         //   完整改版 ROM 与 .dif 差分文件，用户手里的"完整 ROM 版"zip 因缺

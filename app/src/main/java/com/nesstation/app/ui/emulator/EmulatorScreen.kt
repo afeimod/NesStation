@@ -2303,6 +2303,8 @@ fun EmulatorScreen(
     var showMenu by remember { mutableStateOf(false) }
     var showLayoutEditor by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    // ★★ v68 金手指/插卡面板开关
+    var showCheats by remember { mutableStateOf(false) }
     var saveLoadSlot by remember { mutableStateOf(0) } // 0-9 state slots
     var showSlotPicker by remember { mutableStateOf<String?>(null) } // "save" | "load" | null
     var showFFSpeedPicker by remember { mutableStateOf(false) }
@@ -5472,10 +5474,24 @@ fun EmulatorScreen(
                     onLayoutEditor = { showLayoutEditor = true },
                     onSettings = { showSettings = true },
                     onCoreLog = { showCoreLog = true },
+                    // ★★ v68 金手指/插卡（街机 FBN / 三国战记3HD PGM3 / Wii U Cemu）
+                    onCheats = if (engine is com.nesstation.app.core.engine.FbNeoEngine ||
+                        engine is com.nesstation.app.core.engine.Pgm3Engine ||
+                        engine is com.nesstation.app.core.engine.CemuEngine
+                    ) ({ showCheats = true }) else null,
                     onClose = { showMenu = false },
                     onExit = { onExit() }
                 )
             }
+        }
+
+        // ★★ v68 金手指/插卡面板（街机 FBN ini / PGM3 插卡+金手指 / Cemu）
+        if (showCheats && loaded) {
+            CheatsDialog(
+                engine = engine,
+                gameTitle = game.title,
+                onDismiss = { showCheats = false }
+            )
         }
 
         // State slot picker dialog
@@ -12284,6 +12300,8 @@ private fun MenuOverlay(
     onLayoutEditor: () -> Unit,
     onSettings: () -> Unit,
     onCoreLog: () -> Unit = {},
+    /** ★★ v68 金手指/插卡面板（引擎支持时非空 —— 街机/PGM3/Cemu）。 */
+    onCheats: (() -> Unit)? = null,
     onClose: () -> Unit,
     onExit: () -> Unit
 ) {
@@ -12337,6 +12355,12 @@ private fun MenuOverlay(
             FocusableIconButton(onClick = onSaveState, label = "存档") { Icon(Icons.Rounded.Save, "存档", tint = Color.White) }
             FocusableIconButton(onClick = onLoadState, label = "读档") { Icon(Icons.Rounded.Upload, "读档", tint = Color.White) }
             FocusableIconButton(onClick = onReset, label = "重置") { Icon(Icons.Rounded.Refresh, "重置", tint = Color(0xFFFFD66B)) }
+            // ★★ v68 金手指/插卡（引擎支持时显示）
+            if (onCheats != null) {
+                FocusableIconButton(onClick = onCheats, label = "金手指") {
+                    Icon(Icons.Rounded.Build, "金手指", tint = Color(0xFF7ED957))
+                }
+            }
             FocusableIconButton(onClick = onLayoutEditor, label = "手柄布局") { Icon(Icons.Rounded.Tune, "手柄布局", tint = Color.White) }
             FocusableIconButton(onClick = onSettings, label = "设置") { Icon(Icons.Rounded.Settings, "设置", tint = Color.White) }
             FocusableIconButton(onClick = onCoreLog, label = "核心日志") { Icon(Icons.Rounded.Description, "核心日志", tint = Color.White) }

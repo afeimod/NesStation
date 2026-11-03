@@ -79,6 +79,50 @@ class Pgm3Activity private constructor() {
          *  .configure：configPath = 金手指 ini 路径，文件不存在是合法状态）。 */
         @JvmStatic external fun nativeCheatConfigure(configPath: String): Boolean
 
+        // ★★ v68 金手指运行时（对齐参考实现 Pgm3CheatDialog 的游戏内菜单）：
+        //   签名经 libpgm3.so 反汇编核实（Java_..._nativeCheatGetList 调
+        //   Cheats::list → JSON 串；nativeCheatSetOption(entry, option) 调
+        //   Cheats::select；nativeCheatResetAll 调 Cheats::reset）。
+
+        /** 当前游戏可用金手指清单（JSON）：
+         *  {"path":"...","error":"...","entries":[
+         *    {"name":"...","options":["...","..."],"selected":N,"source":"..."}]}
+         *  entries 顺序 = ini 里 cheat 声明顺序；selected = 当前选项下标。
+         *  必须在会话运行中调用（核心 attach 到游戏 ELF 后才有内容）。 */
+        @JvmStatic external fun nativeCheatGetList(): String?
+
+        /** 选中金手指条目 [entry] 的第 [option] 个选项（0 = 通常为关闭）。
+         *  返回 false = 参数越界 / 应用失败（原因见 nativeCheatError）。 */
+        @JvmStatic external fun nativeCheatSetOption(entry: Int, option: Int): Boolean
+
+        /** 全部金手指恢复默认（默认通常 = 0 = 关闭）。 */
+        @JvmStatic external fun nativeCheatResetAll()
+
+        /** 金手指子系统最近一次错误描述（诊断用）。 */
+        @JvmStatic external fun nativeCheatError(): String?
+
+        // ★★ v68 虚拟插卡（IGS 记忆卡 —— 三国战记3HD 的武将进度/装备/功勋
+        //   存在街机 IC 卡上，本接口 = 虚拟 IC 卡的建/选/插/弹/存，对齐参考
+        //   实现 Pgm3CardDialog。签名经 libpgm3.so 反汇编核实：
+        //   nativeCardAction(action, player, name) 分派
+        //   createVirtualCard / enableVirtualCard(true|false) / saveVirtualCard /
+        //   selectVirtualCard；nativeCardStatus 返回状态位掩码；
+        //   nativeCardPath 返回当前卡文件路径。）
+
+        /** 卡操作。[action]：0 = 新建卡（[name] = 完整卡文件路径）；
+         *  1 = 插卡（启用当前选中的卡）；2 = 弹卡；3 = 存卡（落盘）；
+         *  4 = 选卡（[name] = 已存在的卡文件路径）。
+         *  [player] 0/1（1P/2P 各一张）。[name] 仅 0/4 需要。
+         *  返回 false = 失败（原因见 nativeCardError）。 */
+        @JvmStatic external fun nativeCardAction(action: Int, player: Int, name: String?): Boolean
+
+        /** 卡状态位掩码：bit0 = 有卡名、bit1 = 已插入、bit2/3 = 子系统状态。
+         *  0 = 该玩家位无卡。 */
+        @JvmStatic external fun nativeCardStatus(player: Int): Int
+
+        /** 当前选中的卡文件路径（无卡 = 空串）。 */
+        @JvmStatic external fun nativeCardPath(player: Int): String?
+
         /** ★★ v62 应用完整性初始化（对齐参考实现 afbn Pgm3Activity.onCreate：
          *  loadLibrary 成功后立即 nativeLuaConfigure(AppIntegrity.getSigningDigest(this),
          *  packageName) —— 32 字节签名摘要 + 包名；核心据此开启受保护 Lua 脚本

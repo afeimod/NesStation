@@ -158,6 +158,11 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     @Volatile private var surfaceReady = false
     @Volatile private var pausedExt = false
 
+    /** ★★ v68 会话根目录（<filesDir>/PGM3，loadRom 时赋值）—— 虚拟插卡 /
+     *  金手指 facade 的文件定位基准（memcard/kov3hd、cheats/ 子目录）。 */
+    @Volatile var sessionRoot: File? = null
+        private set
+
     /** ★★ v58 启动进度（等待首帧期间由 guard 更新，前端轮询显示；null = 无启动进行中）。 */
     @Volatile var bootProgress: String? = null
         private set
@@ -209,6 +214,15 @@ class Pgm3Engine private constructor() : EmulatorEngine {
 
         /** CHD 镜像名（kov3hd 必需的伴生光盘）。 */
         private const val PGM3_CHD_NAME = "kov3hd_m105.chd"
+
+        // ★★ v68 虚拟插卡 / 持久化常量（nativeCardAction 的 action 值 ——
+        //   经 libpgm3.so 反汇编核实：0=新建 1=插卡 2=弹卡 3=存卡 4=选卡）
+        private const val CARD_CREATE = 0
+        private const val CARD_INSERT = 1
+        private const val CARD_EJECT = 2
+        private const val CARD_SAVE = 3
+        private const val CARD_SELECT = 4
+        private const val PREFS_CARDS = "pgm3_cards"
 
         /** 运行时固件（assets/pgm3_runtime → <root>/runtime）。 */
         private val RUNTIME_ASSETS = listOf(
@@ -437,6 +451,7 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             root.mkdirs()
             File(root, "fram-save").apply { if (!isDirectory) mkdirs() }
             File(root, "memcard/kov3hd").apply { if (!isDirectory) mkdirs() }
+            sessionRoot = root
 
             // ★★ v59 记忆卡/金手指子系统配置（用户实测"无法正常启动"的根因）：
             //    反编译参考实现（afbn-release-64.apk，其 kov3hd 实测可运行）
@@ -459,6 +474,35 @@ class Pgm3Engine private constructor() : EmulatorEngine {
                 } catch (_: Throwable) { null }?.takeIf { it.isNotBlank() } ?: "未知错误")
                 android.util.Log.e(TAG, "nativeCardConfigure failed: $lastErr")
                 return false
+            }
+
+            // ★★ v68 虚拟插卡持久化：用户在游戏菜单里选过卡（1P/2P 各一张）
+            //    → 本次启动自动"选卡 + 插卡"，三国战记3HD 的武将进度/装备/功勋
+            //    无缝接续。卡文件必须位于 nativeCardConfigure 配置的目录
+            //    （memcard/kov3hd）内 —— 核心侧有路径校验，越界路径会被拒绝。
+            //    失败仅记日志不中止启动（没插卡游戏照常能跑，只是不读进度）。
+            try {
+                val prefs = ctx.getSharedPreferences(PREFS_CARDS, Context.MODE_PRIVATE)
+                for (p in 0..1) {
+                    val path = prefs.getString("card_p$p", null) ?: continue
+                    val f = File(path)
+                    if (!f.isFile || !f.parentFile?.absolutePath.equals(
+                            memcardDir.absolutePath, ignoreCase = true)) {
+                        android.util.Log.w(TAG, "auto-insert p$p: 卡文件缺失或不在记忆卡目录: $path")
+                        continue
+                    }
+                    val selOk = Pgm3Activity.nativeCardAction(CARD_SELECT, p, path)
+                    if (selOk) {
+                        val insOk = Pgm3Activity.nativeCardAction(CARD_INSERT, p, null)
+                        android.util.Log.i(TAG,
+                            "auto-insert p$p: ${f.name} select=ok insert=$insOk")
+                    } else {
+                        android.util.Log.w(TAG, "auto-insert p$p: select 失败: " +
+                            (Pgm3Activity.nativeCardError() ?: "?"))
+                    }
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "persisted card auto-insert: ${t.message}")
             }
             // 金手指配置：目录 + ini 路径（文件不存在是合法状态 —— 核心按需读取）
             val cheatsDir = File(root, "cheats").apply { if (!isDirectory) mkdirs() }
@@ -1210,4 +1254,129 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     private var fpsState: Triple<Long, Int, Double> = Triple(0L, 0, 0.0)
 
     override fun lastError(): String = lastErr
+
+    // =====================================================================
+    // ★★ v68 虚拟插卡（IGS 记忆卡）—— 对齐参考实现 Pgm3CardDialog。
+    //   三国战记3HD 的武将进度/等级/装备/功勋存放在街机 IC 卡上，核心的
+    //   虚拟卡子系统由 nativeCardConfigure（v59 已接入）+ 卡管理动作组成。
+    //   卡文件必须位于 memcard/kov3hd 目录内（核心侧有路径校验）。
+    //   全部方法线程安全：可在 UI 线程调用（核心侧自持锁），但要求会话
+    //   已启动（nativeCardConfigure 之后的任意时机，含游戏中热插拔）。
+    // =====================================================================
+
+    /** 记忆卡目录（卡文件必须在此目录内）。null = 会话未初始化。 */
+    fun memcardDir(): File? = sessionRoot?.let { File(it, "memcard/kov3hd") }
+
+    /** 金手指 ini 路径（<root>/cheats/kov3hd.ini；文件可不存在）。 */
+    fun cheatIniFile(): File? = sessionRoot?.let { File(File(it, "cheats"), "kov3hd.ini") }
+
+    /** 列出记忆卡目录内现有卡文件（按修改时间倒序）。 */
+    fun listCardFiles(): List<File> =
+        memcardDir()?.listFiles { f -> f.isFile }
+            ?.sortedByDescending { it.lastModified() } ?: emptyList()
+
+    /** 卡子系统错误串（最近一次失败原因；null = 无）。 */
+    private fun cardError(): String? = try {
+        Pgm3Activity.nativeCardError()?.takeIf { it.isNotBlank() }
+    } catch (_: Throwable) { null }
+
+    /** 新建卡文件并选为 [player] 的当前卡（不自动插卡）。返回 null = 成功。 */
+    fun createCard(player: Int, name: String): String? {
+        if (!started) return "会话未启动"
+        val dir = memcardDir() ?: return "记忆卡目录未就绪"
+        // 卡名净化：仅留常用文件名字符，防路径逃逸（核心侧同样校验）
+        val safe = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .ifBlank { return "卡名不能为空" }
+        val f = File(dir, if (safe.endsWith(".bin")) safe else "$safe.bin")
+        return try {
+            if (Pgm3Activity.nativeCardAction(CARD_CREATE, player, f.absolutePath)) null
+            else cardError() ?: "新建卡失败"
+        } catch (t: Throwable) { "新建卡失败：${t.message}" }
+    }
+
+    /** 选择已有卡文件为 [player] 的当前卡。返回 null = 成功。 */
+    fun selectCard(player: Int, file: File): String? {
+        if (!started) return "会话未启动"
+        return try {
+            if (Pgm3Activity.nativeCardAction(CARD_SELECT, player, file.absolutePath)) null
+            else cardError() ?: "选卡失败"
+        } catch (t: Throwable) { "选卡失败：${t.message}" }
+    }
+
+    /** 插卡（启用当前选中卡 —— 游戏开始读写它）。返回 null = 成功。 */
+    fun insertCard(player: Int): String? {
+        if (!started) return "会话未启动"
+        return try {
+            if (Pgm3Activity.nativeCardAction(CARD_INSERT, player, null)) null
+            else cardError() ?: "插卡失败"
+        } catch (t: Throwable) { "插卡失败：${t.message}" }
+    }
+
+    /** 弹卡。返回 null = 成功。 */
+    fun ejectCard(player: Int): String? {
+        if (!started) return "会话未启动"
+        return try {
+            if (Pgm3Activity.nativeCardAction(CARD_EJECT, player, null)) null
+            else cardError() ?: "弹卡失败"
+        } catch (t: Throwable) { "弹卡失败：${t.message}" }
+    }
+
+    /** 立即把当前卡内容落盘（平时由核心自动保存，此为手动兜底）。 */
+    fun saveCard(player: Int): String? {
+        if (!started) return "会话未启动"
+        return try {
+            if (Pgm3Activity.nativeCardAction(CARD_SAVE, player, null)) null
+            else cardError() ?: "存卡失败"
+        } catch (t: Throwable) { "存卡失败：${t.message}" }
+    }
+
+    /** 卡状态位掩码（bit1 = 已插入）；[cardPath] = 当前选中卡路径。 */
+    fun cardStatus(player: Int): Int = try {
+        if (started) Pgm3Activity.nativeCardStatus(player) else 0
+    } catch (_: Throwable) { 0 }
+
+    fun cardPath(player: Int): String? = try {
+        if (started) Pgm3Activity.nativeCardPath(player) else null
+    } catch (_: Throwable) { null }
+
+    /** 持久化插卡选择（下次启动自动选卡+插卡；null = 清除）。 */
+    fun persistCardChoice(player: Int, path: String?) {
+        try {
+            val ctx = appContext ?: return
+            ctx.getSharedPreferences(PREFS_CARDS, Context.MODE_PRIVATE)
+                .edit().putString("card_p$player", path).apply()
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "persistCardChoice: ${t.message}")
+        }
+    }
+
+    /** 当前持久化的插卡选择（UI 回显用）。 */
+    fun persistedCardChoice(player: Int): String? = try {
+        appContext?.getSharedPreferences(PREFS_CARDS, Context.MODE_PRIVATE)
+            ?.getString("card_p$player", null)
+    } catch (_: Throwable) { null }
+
+    // =====================================================================
+    // ★★ v68 金手指 —— 对齐参考实现 Pgm3CheatDialog 的游戏内菜单。
+    //   核心侧解析 <root>/cheats/kov3hd.ini（FBNeo 金手指 ini 格式）并在
+    //   模拟帧上应用；前端只负责清单展示与选项切换（JSON 协议）。
+    // =====================================================================
+
+    /** 金手指清单 JSON（null = 会话未运行 / 核心未返回清单）。 */
+    fun cheatListJson(): String? = try {
+        if (started) Pgm3Activity.nativeCheatGetList() else null
+    } catch (t: Throwable) {
+        android.util.Log.w(TAG, "cheatListJson: ${t.message}")
+        null
+    }
+
+    /** 切换金手指条目选项。false = 失败（原因在 nativeCheatError）。 */
+    fun cheatSetOption(entry: Int, option: Int): Boolean = try {
+        started && Pgm3Activity.nativeCheatSetOption(entry, option)
+    } catch (_: Throwable) { false }
+
+    /** 全部金手指恢复默认。 */
+    fun cheatResetAll() {
+        try { if (started) Pgm3Activity.nativeCheatResetAll() } catch (_: Throwable) {}
+    }
 }
