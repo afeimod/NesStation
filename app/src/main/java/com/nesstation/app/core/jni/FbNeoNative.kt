@@ -149,6 +149,19 @@ object FbNeoNative {
      */
     @JvmStatic external fun setCoreOption(key: String, value: String)
 
+    /**
+     * ★★ v71 金手指 / PGM2 插卡面板数据源。
+     *
+     * 返回核心在 retro_load_game 期间注册的选项定义 JSON（加载器 v71 起捕获
+     * SET_CORE_OPTIONS 定义，不再丢弃）：
+     *   [{"key":"fbneo-cheat-0-kof97-...","desc":"[Cheat][kof97.ini] ...",
+     *     "default":"0 - Disabled",
+     *     "values":[{"v":"0 - Disabled","l":"Disabled"}, ...]}, ...]
+     * 仅含 fbneo-cheat-*（金手指）与 fbneo-pgm2-ic-*（PGM2 记忆卡槽）。
+     * 游戏未加载 / 核心未注册时返回空串。
+     */
+    @JvmStatic external fun getCheatOptionsJson(): String
+
     @JvmStatic external fun videoWidth(): Int
     @JvmStatic external fun videoHeight(): Int
 

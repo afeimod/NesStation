@@ -1298,17 +1298,45 @@ class Pgm3Engine private constructor() : EmulatorEngine {
      * .so 全量反汇编确认无 ".bin" 字面量引用）。参考实现（afbn）的卡
      * 文件也允许非 .bin 名。带路径分隔的输入仍会被核心拒绝（合法 ——
      * 目录必须固定在 memcard/kov3hd 内），这里预净化防逃逸。
+     *
+     * ★ v71 建卡"文件不存在"根治（.so 反汇编逐条核实 createVirtualCard）：
+     *  1) 核心以 open(path, O_WRONLY|O_CREAT|O_EXCL, 0600) 建卡 —— 同名卡
+     *     已存在时报"无法新建卡片，文件可能已存在"（EEXIST），这里检测到
+     *     文件已存在时自动追加时间戳重试一次（对齐参考实现 %03d 防撞名）；
+     *  2) selectVirtualCard 以 realpath 校验卡文件（失败报"记忆卡文件不存在"）
+     *     —— 目录缺失会让 open 虽 O_CREAT 也失败（ENOENT），故建卡前确保
+     *     memcard/kov3hd 目录存在；
+     *  3) 失败时透传核心错误串（cardError），不再笼统"新建卡失败"。
      */
     fun createCard(player: Int, name: String): String? {
         if (!started) return "会话未启动"
         val dir = memcardDir() ?: return "记忆卡目录未就绪"
         // 卡名净化：仅留常用文件名字符，防路径逃逸（核心侧同样校验）
-        val safe = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val base = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
             .ifBlank { return "卡名不能为空" }
-        val f = File(dir, safe)
+        // ★ v71 目录兜底：open(O_CREAT) 不会建父目录，缺目录时核心
+        //   realpath/写文件都会以"文件不存在"告终。
+        try { if (!dir.isDirectory) dir.mkdirs() } catch (_: Throwable) {}
+        val f = File(dir, base)
         return try {
-            if (Pgm3Activity.nativeCardAction(CARD_CREATE, player, f.absolutePath)) null
-            else cardError() ?: "新建卡失败"
+            if (Pgm3Activity.nativeCardAction(CARD_CREATE, player, f.absolutePath)) {
+                null
+            } else {
+                val nativeErr = cardError()
+                if (f.isFile || f.exists()) {
+                    // EEXIST 族：同名卡已存在 —— 自动追加时间戳重试一次
+                    val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                        .format(java.util.Date())
+                    val dot = base.lastIndexOf('.')
+                    val renamed = if (dot > 0) "${base.substring(0, dot)}_$stamp${base.substring(dot)}"
+                                  else "${base}_$stamp"
+                    val f2 = File(dir, renamed)
+                    if (Pgm3Activity.nativeCardAction(CARD_CREATE, player, f2.absolutePath)) null
+                    else cardError() ?: nativeErr ?: "新建卡失败（重试仍被核心拒绝）"
+                } else {
+                    nativeErr ?: "新建卡失败"
+                }
+            }
         } catch (t: Throwable) { "新建卡失败：${t.message}" }
     }
 

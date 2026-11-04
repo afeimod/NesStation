@@ -268,6 +268,13 @@ Java_com_nesstation_app_core_jni_FbNeoNative_setCoreOption(JNIEnv* env, jclass, 
     if (cval) env->ReleaseStringUTFChars(value, cval);
 }
 
+// ★★ v71 金手指 / PGM2 插卡面板数据源：核心注册的选项定义 JSON。
+JNIEXPORT jstring JNICALL
+Java_com_nesstation_app_core_jni_FbNeoNative_getCheatOptionsJson(JNIEnv* env, jclass) {
+    const std::string json = fbneocore::rom::getCheatOptionsJson();
+    return env->NewStringUTF(json.c_str());
+}
+
 // --- Video geometry ---
 
 JNIEXPORT jint JNICALL

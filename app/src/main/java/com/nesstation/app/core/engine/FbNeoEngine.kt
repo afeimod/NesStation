@@ -72,6 +72,20 @@ class FbNeoEngine private constructor() : EmulatorEngine {
     /** 会话 systemDir（<filesDir>/fbneo；cheat ini 在其下 fbneo/cheats/）。 */
     @Volatile var systemDirPath: String = ""
         private set
+    /** ★ v71 会话 saveDir（PGM2 记忆卡在其下 fbneo/pgm2_memcards/）。 */
+    @Volatile var saveDirPath: String = ""
+        private set
+
+    /**
+     * ★★ v71 核心注册的金手指 / PGM2 插卡选项定义 JSON（详见 FbNeoNative）。
+     * 空 = 游戏未加载或核心未注册任何金手指/插卡选项。
+     */
+    fun cheatOptionsJson(): String = try {
+        if (isLoaded) FbNeoNative.getCheatOptionsJson() else ""
+    } catch (t: Throwable) {
+        android.util.Log.w("FbNeoEngine", "getCheatOptionsJson: ${t.message}")
+        ""
+    }
 
     // === Netplay (lockstep hook) ===
     @Volatile private var _frameHook: NetplayHook? = null
@@ -113,6 +127,7 @@ class FbNeoEngine private constructor() : EmulatorEngine {
 
         FbNeoNative.setPaths(systemDir, saveDir)
         systemDirPath = systemDir
+        saveDirPath = saveDir
         currentDriverName = rom.nameWithoutExtension
 
         // ★★ 改版 .dif 兼容（kof97t 三问等）：上游审计要求 romset 同时包含

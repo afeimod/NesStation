@@ -80,6 +80,13 @@ void setSurface(void* nativeWindow);
 // --- Core options ---
 void setCoreOption(const std::string& key, const std::string& value);
 
+// --- v71 核心选项定义查询（金手指 / PGM2 插卡） ---
+// 返回捕获的 fbneo-cheat-* / fbneo-pgm2-ic-* 选项定义 JSON 数组：
+//   [{"key":...,"desc":...,"default":...,"values":[{"v":...,"l":...},...]},...]
+// 游戏未加载 / 核心未注册选项时返回空串。
+std::string getCheatOptionsJson();
+void clearCapturedOptions();
+
 // --- Video geometry ---
 int  videoWidth();
 int  videoHeight();

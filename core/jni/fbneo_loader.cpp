@@ -196,6 +196,52 @@ static std::mutex s_optMtx;
 static std::map<std::string, std::string> s_options;
 static std::atomic<bool> s_optionsChanged{false};
 
+// ★★ v71 核心选项定义捕获（金手指 / PGM2 插卡面板数据源）。
+//
+// 核心在 retro_load_game 期间经 RETRO_ENVIRONMENT_SET_CORE_OPTIONS（本加载器
+// 应答 GET_CORE_OPTIONS_VERSION=1，上游 retro_common.cpp 据此走 V1 通路）注册
+// 全部选项定义 —— 其中包括：
+//   · fbneo-cheat-<num>-<drv>-<名>   ：金手指（create_variables_from_cheats 生成，
+//     值 = "i - 选项文本"，apply_cheats_from_variables 按字符串精确匹配启用）
+//   · fbneo-pgm2-ic-p1..p4           ：PGM2 记忆卡槽（retro_pgm2_cards.cpp，
+//     值 = empty/default/temporary/new/latest_new_card_file/<卡文件全路径>）
+//   · fbneo-dipswitch-* 等           ：其余选项（前端按 key 前缀过滤）
+// 此前这些定义被直接丢弃，前端只能自己解析 cheat ini —— 文件名/格式/编码稍有
+// 出入清单就不对（用户实测"金手指好多条只显示一条"）。现完整捕获供前端查询。
+struct CapturedCoreOption {
+    std::string key;
+    std::string desc;
+    std::string defaultValue;
+    std::vector<std::pair<std::string, std::string>> values;  // (value, label)
+};
+static std::mutex s_capOptMtx;
+static std::vector<CapturedCoreOption> s_capturedOptions;
+static std::atomic<bool> s_capturedOptionsValid{false};
+
+template <typename DefT>
+static void captureCoreOptionsFromDefs(const DefT* defs) {
+    if (!defs) return;
+    std::vector<CapturedCoreOption> caps;
+    for (; defs->key; ++defs) {
+        CapturedCoreOption c;
+        c.key = defs->key ? defs->key : "";
+        c.desc = defs->desc ? defs->desc : "";
+        c.defaultValue = defs->default_value ? defs->default_value : "";
+        if (defs->values) {
+            for (int vi = 0; vi < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++vi) {
+                if (!defs->values[vi].value) break;
+                c.values.emplace_back(defs->values[vi].value,
+                                      defs->values[vi].label ? defs->values[vi].label : "");
+            }
+        }
+        if (!c.key.empty()) caps.push_back(std::move(c));
+    }
+    std::lock_guard<std::mutex> lk(s_capOptMtx);
+    s_capturedOptions = std::move(caps);
+    s_capturedOptionsValid.store(true, std::memory_order_release);
+    LOGI("Captured %zu core option definitions", s_capturedOptions.size());
+}
+
 // ---------------------------------------------------------------------------
 // Initialize FBNeo core options with sensible defaults.
 // Keys MUST match FBNeo's libretro_core_options.h exactly.
@@ -398,8 +444,25 @@ static bool cb_environment(unsigned cmd, void* data) {
             return true;
 
         case RETRO_ENVIRONMENT_SET_CORE_OPTIONS:
-        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL:
+            // ★★ v71：捕获定义（金手指/插卡面板数据源），不再直接丢弃。
+            captureCoreOptionsFromDefs(
+                static_cast<const struct retro_core_option_definition*>(data));
             return true;
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL: {
+            auto* intl = static_cast<const struct retro_core_options_intl*>(data);
+            if (intl) captureCoreOptionsFromDefs(intl->us);   // 以英/美定义为准
+            return true;
+        }
+
+#ifdef RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: {
+            // 加载器应答版本 1，正常不会走到这里；防御性兼容 V2 定义。
+            auto* opts = static_cast<const struct retro_core_options_v2*>(data);
+            if (opts) captureCoreOptionsFromDefs(opts->definitions);
+            return true;
+        }
+#endif
 
         case RETRO_ENVIRONMENT_SET_GEOMETRY:
             return true;
@@ -849,6 +912,7 @@ void unload() {
         s_retro_deinit();
         s_loaded = false;
     }
+    clearCapturedOptions();   // ★ v71：卸载即失效（面板读到空 = 游戏未加载）
     s_sampleRate = 0;
     s_region = 0;
     s_audio.reset();
@@ -1012,6 +1076,63 @@ void setCoreOption(const std::string& key, const std::string& value) {
     }
     s_optionsChanged.store(true, std::memory_order_release);
     LOGI("Core option set: %s = %s", key.c_str(), value.c_str());
+}
+
+// --- v71 核心选项定义查询（金手指 / PGM2 插卡） ---
+
+static std::string jsonEscape(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + 8);
+    char buf[8];
+    for (unsigned char c : in) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += (char)c;
+                }
+        }
+    }
+    return out;
+}
+
+std::string getCheatOptionsJson() {
+    std::lock_guard<std::mutex> lk(s_capOptMtx);
+    if (!s_capturedOptionsValid.load(std::memory_order_acquire)) return "";
+    std::string out = "[";
+    bool first = true;
+    for (const auto& o : s_capturedOptions) {
+        const bool isCheat = o.key.rfind("fbneo-cheat-", 0) == 0;
+        const bool isCard  = o.key.rfind("fbneo-pgm2-ic-", 0) == 0;
+        if (!isCheat && !isCard) continue;
+        if (!first) out += ",";
+        first = false;
+        out += "{\"key\":\"" + jsonEscape(o.key) + "\"";
+        out += ",\"desc\":\"" + jsonEscape(o.desc) + "\"";
+        out += ",\"default\":\"" + jsonEscape(o.defaultValue) + "\"";
+        out += ",\"values\":[";
+        for (size_t i = 0; i < o.values.size(); ++i) {
+            if (i) out += ",";
+            out += "{\"v\":\"" + jsonEscape(o.values[i].first) + "\"";
+            out += ",\"l\":\"" + jsonEscape(o.values[i].second) + "\"}";
+        }
+        out += "]}";
+    }
+    out += "]";
+    return out;
+}
+
+void clearCapturedOptions() {
+    std::lock_guard<std::mutex> lk(s_capOptMtx);
+    s_capturedOptions.clear();
+    s_capturedOptionsValid.store(false, std::memory_order_release);
 }
 
 int videoWidth()  { return (int)s_videoW; }

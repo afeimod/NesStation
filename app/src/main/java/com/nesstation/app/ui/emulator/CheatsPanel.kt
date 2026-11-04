@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nesstation.app.core.engine.AfbnEngine
 import com.nesstation.app.core.engine.CemuEngine
 import info.cemu.cemu.nativeinterface.NativeCheats
 import com.nesstation.app.core.engine.FbNeoEngine
@@ -158,6 +159,62 @@ private fun fbnCheatKey(driver: String, entry: CheatEntry) =
     "fbneo-cheat-${entry.num}-$driver-${cheatKey(entry.name)}"
 
 // ---------------------------------------------------------------------------
+// ★★ v71 核心注册的选项定义（金手指 / PGM2 插卡的真实清单 —— 上游
+//   create_variables_from_cheats + retro_pgm2_cards 经 SET_CORE_OPTIONS 注册，
+//   fbneo_loader v71 起捕获。以此为准，前端不再依赖 ini 解析猜清单。）
+// ---------------------------------------------------------------------------
+
+/** 核心注册的单个选项定义。values.first = 提交给核心的值（必须原样回传），second = 显示文本。 */
+data class FbnCoreOption(
+    val key: String,
+    val desc: String,
+    val default: String,
+    val values: List<Pair<String, String>>
+)
+
+private fun parseFbnCoreOptions(json: String?): List<FbnCoreOption> {
+    if (json.isNullOrBlank()) return emptyList()
+    val out = ArrayList<FbnCoreOption>()
+    try {
+        val arr = org.json.JSONArray(json)
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val key = o.optString("key")
+            if (key.isEmpty()) continue
+            val vals = ArrayList<Pair<String, String>>()
+            val va = o.optJSONArray("values")
+            if (va != null) {
+                for (j in 0 until va.length()) {
+                    val v = va.optJSONObject(j) ?: continue
+                    val vv = v.optString("v")
+                    if (vv.isEmpty()) continue
+                    vals.add(vv to v.optString("l", vv))
+                }
+            }
+            if (vals.isEmpty()) continue
+            out.add(FbnCoreOption(key, o.optString("desc"), o.optString("default"), vals))
+        }
+    } catch (_: Throwable) {}
+    return out
+}
+
+/** PGM2 记忆卡槽选项（fbneo-pgm2-ic-p1..pN；非插卡游戏 = 空）。 */
+private fun fbnCardSlotOptions(engine: FbNeoEngine): List<FbnCoreOption> =
+    parseFbnCoreOptions(engine.cheatOptionsJson())
+        .filter { it.key.startsWith("fbneo-pgm2-ic-") }
+        .sortedBy { it.key }
+
+/** 卡槽选项值分组：固定选择（empty/default/temporary/new/latest_new_card_file）与卡文件（绝对路径）。 */
+private fun splitFbnCardValues(opt: FbnCoreOption): Pair<List<Pair<String, String>>, List<Pair<String, String>>> {
+    val fixed = ArrayList<Pair<String, String>>()
+    val files = ArrayList<Pair<String, String>>()
+    for (v in opt.values) {
+        if (v.first.startsWith("/")) files.add(v) else fixed.add(v)
+    }
+    return fixed to files
+}
+
+// ---------------------------------------------------------------------------
 // 主面板
 // ---------------------------------------------------------------------------
 
@@ -172,9 +229,10 @@ fun CheatsDialog(
 ) {
     val isPgm3 = engine is Pgm3Engine
     val isFbn = engine is FbNeoEngine
+    val isAfbn = engine is AfbnEngine
     val isCemu = engine is CemuEngine
     val isRamCheat = engine is RamCheatEngine
-    var tab by remember { mutableStateOf(0) } // PGM3: 0=金手指 1=插卡
+    var tab by remember { mutableStateOf(0) } // PGM3: 0=金手指 1=插卡；FBN/afbn 同构
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
@@ -183,7 +241,7 @@ fun CheatsDialog(
         title = {
             Column {
                 Text(
-                    if (isPgm3) "金手指 / 插卡" else "金手指",
+                    if (isPgm3 || (isFbn && tab == 1) || (isAfbn && tab == 1)) "金手指 / 插卡" else "金手指",
                     fontSize = 18.sp, fontWeight = FontWeight.SemiBold
                 )
                 Text(gameTitle, fontSize = 12.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -199,7 +257,30 @@ fun CheatsDialog(
                         else -> Pgm3CardsContent(engine as Pgm3Engine)
                     }
                 } else if (isFbn) {
-                    FbnCheatsContent(engine as FbNeoEngine)
+                    val e = engine as FbNeoEngine
+                    // ★ v71：FBN 核心注册了 fbneo-pgm2-ic-* 选项 = 该驱动有记忆卡槽
+                    val cardSlots = remember(e.currentDriverName) { fbnCardSlotOptions(e) }
+                    if (cardSlots.isEmpty()) {
+                        FbnCheatsContent(e)
+                    } else {
+                        TabRowLite(0, 1, tab) { tab = it }
+                        when (tab) {
+                            0 -> FbnCheatsContent(e)
+                            else -> FbnCardsContent(e, cardSlots)
+                        }
+                    }
+                } else if (isAfbn) {
+                    val e = engine as AfbnEngine
+                    val supported = remember(e.hashCode()) { try { e.pgm2CardSupported() && e.pgm2MaxCardSlots() > 0 } catch (_: Throwable) { false } }
+                    if (!supported) {
+                        AfbnCheatsContent(e)
+                    } else {
+                        TabRowLite(0, 1, tab) { tab = it }
+                        when (tab) {
+                            0 -> AfbnCheatsContent(e)
+                            else -> AfbnCardsContent(e)
+                        }
+                    }
                 } else if (isCemu) {
                     CemuCheatsContent(engine as CemuEngine)
                 } else if (isRamCheat) {
@@ -209,7 +290,9 @@ fun CheatsDialog(
                         "本核心暂无专用金手指面板。\n\n已支持的核心（同在本面板）：\n" +
                             "· 8/16 位主机（NES/SFC/GB/GBA/MD/PCE/PSX/DC/NDS）—— RetroArch .cht 金手指，" +
                             "支持添加/编辑/删除，每帧补丁热生效\n" +
-                            "· 街机（FBN）—— 官方金手指包 .ini，全部选项直选 + 自定义条目\n" +
+                            "· 街机（FBN）—— 核心清单（cheat.dat/ini 全量，热生效）+ ini 编辑（增/改/删）；" +
+                            "PGM2 游戏（三国战纪2/西游释厄传2/三国战纪3）另有插卡页\n" +
+                            "· 改版街机（afbn 核心：三剑圣等 666 改版）—— 核心原生金手指 + PGM2 插卡\n" +
                             "· 三国战记3HD（PGM3）—— 金手指 + 虚拟插卡（IC 卡）\n" +
                             "· Wii U（Cemu）—— 游戏规则 txt 清单开关\n" +
                             "PSP / NDS(DraStic) 的金手指开关在 设置→核心设置。",
@@ -262,19 +345,228 @@ private fun cheatHexOrDec(s: String): Long = try {
 
 @Composable
 private fun FbnCheatsContent(engine: FbNeoEngine) {
-    val context = LocalContext.current
     val driver = engine.currentDriverName
     val cheatsDir = remember(engine.systemDirPath) {
         File(File(engine.systemDirPath, "fbneo"), "cheats").apply { mkdirs() }
     }
     val iniFile = remember(cheatsDir, driver) { File(cheatsDir, "$driver.ini") }
+
+    // ★★ v71 双模式：
+    //  · 核心清单（默认）—— fbneo_loader v71 起捕获核心经 SET_CORE_OPTIONS 注册的
+    //    fbneo-cheat-* 定义。这是核心【实际加载】的金手指（ini + cheat.dat +
+    //    父集回退 + include 全算入），与"只显示一条"的前端 ini 猜测彻底告别。
+    //  · ini 编辑模式 —— 增/改/删条目写回 <driver>.ini（重启游戏生效）。
+    val coreOptions = remember(driver) {
+        parseFbnCoreOptions(engine.cheatOptionsJson()).filter { it.key.startsWith("fbneo-cheat-") }
+    }
+    var iniMode by remember(iniFile) { mutableStateOf(coreOptions.isEmpty()) }
+
+    Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            Modifier
+                .background(if (!iniMode) Color(0xFF2F6FB2) else Color(0x338090A0), RoundedCornerShape(8.dp))
+                .clickable { iniMode = false }
+                .padding(horizontal = 12.dp, vertical = 5.dp)
+        ) { Text("核心清单（热生效）", color = Color.White, fontSize = 12.sp) }
+        Box(
+            Modifier
+                .background(if (iniMode) Color(0xFF2F6FB2) else Color(0x338090A0), RoundedCornerShape(8.dp))
+                .clickable { iniMode = true }
+                .padding(horizontal = 12.dp, vertical = 5.dp)
+        ) { Text("ini 编辑", color = Color.White, fontSize = 12.sp) }
+    }
+
+    if (iniMode) {
+        FbnIniCheatsContent(engine, cheatsDir, iniFile)
+    } else {
+        FbnCoreCheatsContent(engine, coreOptions, driver)
+    }
+}
+
+/** 核心清单模式：选项即核心注册的 fbneo-cheat-*，值串必须原样回传（apply_cheats_from_variables 精确匹配）。 */
+@Composable
+private fun FbnCoreCheatsContent(engine: FbNeoEngine, coreOptions: List<FbnCoreOption>, driver: String) {
+    val context = LocalContext.current
+    var selected by remember(coreOptions, driver) { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    var info by remember { mutableStateOf<String?>(null) }
+    var expandedKey by remember(coreOptions) { mutableStateOf<String?>(null) }
+
+    // 打开时回放上次选择（持久化键 = 核心选项 key，与 ini 模式共享 "fbn_cheats"）
+    LaunchedEffect(coreOptions, driver) {
+        if (coreOptions.isEmpty()) return@LaunchedEffect
+        val map = HashMap<String, Int>()
+        try {
+            val json = JSONObject(
+                context.getSharedPreferences("fbn_cheats", android.content.Context.MODE_PRIVATE)
+                    .getString(driver, "{}") ?: "{}"
+            )
+            for (o in coreOptions) {
+                val v = json.optString(o.key, "")
+                if (v.isNotEmpty()) {
+                    val i = o.values.indexOfFirst { it.first == v }
+                    if (i >= 0) {
+                        map[o.key] = i
+                        engine.setCoreOption(o.key, v)
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+        selected = map
+    }
+
+    fun persist(o: FbnCoreOption, i: Int) {
+        try {
+            val prefs = context.getSharedPreferences("fbn_cheats", android.content.Context.MODE_PRIVATE)
+            val json = JSONObject(prefs.getString(driver, "{}") ?: "{}")
+            json.put(o.key, o.values[i].first)
+            prefs.edit().putString(driver, json.toString()).apply()
+        } catch (_: Throwable) {}
+    }
+
+    if (coreOptions.isEmpty()) {
+        Text(
+            "核心没有注册本游戏的金手指选项。\n\n" +
+                "两种可能：\n" +
+                "1. 未放金手指文件 —— 切到「ini 编辑」导入官方 $driver.ini（支持 cheat \"名\" / default N / N \"选项\", cpu, 地址, 值…），导入后重启游戏；\n" +
+                "2. 该游戏没有官方金手指。\n\n" +
+                "核心会同时查找：cheat.dat（MAME 格式）、<驱动>.ini、<驱动>.dat、父 ROM 的同名文件。",
+            fontSize = 13.sp, lineHeight = 19.sp
+        )
+        return
+    }
+
+    fun displayName(o: FbnCoreOption): String {
+        // 上游 friendly_name = "[Cheat][<file>] <heading><name>" —— 去掉前缀直接显示条目名
+        var d = o.desc
+        if (d.startsWith("[Cheat][")) {
+            val close = d.indexOf("] ")
+            if (close >= 0) d = d.substring(close + 2)
+        }
+        return d.ifBlank { o.key }
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        itemsIndexed(coreOptions, key = { _, o -> o.key }) { _, o ->
+            val selIdx = selected[o.key] ?: o.values.indexOfFirst { it.first == o.default }.takeIf { it >= 0 } ?: 0
+            val expanded = expandedKey == o.key
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(Color(0x14203040), RoundedCornerShape(8.dp))
+                    .clickable { expandedKey = if (expanded) null else o.key }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(displayName(o), fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "选项 ${selIdx + 1}/${o.values.size}：${o.values.getOrNull(selIdx)?.second ?: "?"}" +
+                                if (expanded) "（点此收起）" else "（点击展开全部 ${o.values.size} 个选项）",
+                            fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    TextButton(onClick = {
+                        val next = (selIdx + 1) % o.values.size
+                        selected = selected + (o.key to next)
+                        engine.setCoreOption(o.key, o.values[next].first)
+                        persist(o, next)
+                    }) { Text("切换", fontSize = 12.sp) }
+                }
+                if (expanded) {
+                    o.values.forEachIndexed { vi, (vv, vl) ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    selected = selected + (o.key to vi)
+                                    engine.setCoreOption(o.key, vv)
+                                    persist(o, vi)
+                                }
+                                .padding(start = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = vi == selIdx, onClick = {
+                                selected = selected + (o.key to vi)
+                                engine.setCoreOption(o.key, vv)
+                                persist(o, vi)
+                            })
+                            Text(vl.ifBlank { vv }, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.padding(2.dp))
+    TextButton(onClick = {
+        val json = JSONObject()
+        coreOptions.forEach { o ->
+            engine.setCoreOption(o.key, o.default)
+            json.put(o.key, o.default)
+        }
+        try {
+            context.getSharedPreferences("fbn_cheats", android.content.Context.MODE_PRIVATE)
+                .edit().putString(driver, json.toString()).apply()
+        } catch (_: Throwable) {}
+        selected = coreOptions.associate { o ->
+            o.key to (o.values.indexOfFirst { it.first == o.default }.takeIf { it >= 0 } ?: 0)
+        }
+        info = "已全部恢复默认（${coreOptions.size} 项）"
+    }) {
+        Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
+        Text("全部恢复默认", fontSize = 12.sp)
+    }
+    MsgLine(info)
+    Text(
+        "清单来自核心（含 cheat.dat / ini / 父集回退的全部条目）。切换立即热生效，0 号选项通常为 Disabled。" +
+            "要新增/修改金手指请切到「ini 编辑」。",
+        fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+    )
+}
+
+/** ini 分块读取：返回 (前导文本, 每个 cheat 声明一个块)。 */
+private fun readFbnIniBlocks(file: File): Pair<String, List<String>> {
+    if (!file.isFile) return "" to emptyList()
+    val preamble = StringBuilder()
+    val blocks = ArrayList<String>()
+    var cur: StringBuilder? = null
+    for (line in file.readLines()) {
+        val t = line.trimStart()
+        if (t.startsWith("cheat ") || t == "cheat") {
+            cur?.let { blocks.add(it.toString()) }
+            cur = StringBuilder(line).append('\n')
+        } else {
+            val c = cur
+            if (c != null) c.append(line).append('\n') else preamble.append(line).append('\n')
+        }
+    }
+    cur?.let { blocks.add(it.toString()) }
+    return preamble.toString() to blocks
+}
+
+private fun writeFbnIniBlocks(file: File, preamble: String, blocks: List<String>) {
+    file.parentFile?.mkdirs()
+    val sb = StringBuilder(preamble)
+    for (b in blocks) {
+        sb.append(b)
+        if (!b.endsWith("\n")) sb.append('\n')
+    }
+    file.writeText(sb.toString())
+}
+
+/** ini 编辑模式：v70 的清单/导入/新增 + v71 的逐条编辑与删除。 */
+@Composable
+private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: File) {
+    val context = LocalContext.current
+    val driver = engine.currentDriverName
     var entries by remember(iniFile) { mutableStateOf(parseFbnCheatIni(iniFile)) }
     var selected by remember(iniFile) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     var info by remember { mutableStateOf<String?>(null) }
-    // ★ v70：展开查看全部选项（每条目可展开为一个 radio 选项列表直接选）
     var expandedNum by remember(iniFile) { mutableStateOf<Int?>(null) }
-    // ★ v70：追加自定义条目对话框
     var showAddEntry by remember { mutableStateOf(false) }
+    // ★ v71 编辑/删除
+    var editBlockIdx by remember { mutableStateOf<Int?>(null) }
 
     // 打开时回放上次选择（跨启动持久化在 "fbn_cheats"）
     LaunchedEffect(iniFile, driver) {
@@ -339,9 +631,6 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
             Column(
                 Modifier.fillMaxWidth()
                     .background(Color(0x14203040), RoundedCornerShape(8.dp))
-                    // ★ v70：点条目 = 展开/收起全部选项（此前每条只露当前一个
-                    //   选项文本，用户反馈"好多条只显示一条" —— 即每个条目
-                    //   只能看到一个选项，其余选项不可见）
                     .clickable { expandedNum = if (expanded) null else e.num }
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
@@ -354,7 +643,6 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
                             fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
-                    // 循环切换（0=通常为"Disabled"，再点回到 0）
                     TextButton(onClick = {
                         val next = (selIdx + 1) % e.options.size
                         selected = selected + (e.num to next)
@@ -364,7 +652,6 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
                     }) { Text("切换", fontSize = 12.sp) }
                 }
                 if (expanded) {
-                    // ★ v70：全部选项直选（radio）—— 与"切换"按钮等效，但可见可选
                     e.options.forEachIndexed { oi, ot ->
                         Row(
                             Modifier.fillMaxWidth()
@@ -386,6 +673,25 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
                             Text(ot, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                     }
+                    // ★ v71 编辑 / 删除（写回 ini，重启游戏后核心加载新定义）
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = { editBlockIdx = entries.indexOfFirst { it.num == e.num }.takeIf { it >= 0 } }) {
+                            Text("编辑", fontSize = 11.sp)
+                        }
+                        TextButton(onClick = {
+                            try {
+                                val (pre, blocks) = readFbnIniBlocks(iniFile)
+                                val idx = entries.indexOfFirst { it.num == e.num }
+                                if (idx in blocks.indices) {
+                                    val nb = blocks.toMutableList()
+                                    nb.removeAt(idx)
+                                    writeFbnIniBlocks(iniFile, pre, nb)
+                                    entries = parseFbnCheatIni(iniFile)
+                                    info = "已删除「${e.name}」—— 重启游戏后生效"
+                                }
+                            } catch (t: Throwable) { info = "删除失败：${t.message}" }
+                        }) { Text("删除", fontSize = 11.sp, color = Color(0xFFD06050)) }
+                    }
                 }
             }
         }
@@ -393,7 +699,6 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
     Spacer(Modifier.padding(2.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         TextButton(onClick = {
-            // 恢复默认：全部条目写回 default（核心语义 = default 0 = 关闭）
             val json = JSONObject()
             entries.forEach { e ->
                 val v = "${e.default} - ${e.options.getOrElse(e.default) { "" }}"
@@ -416,7 +721,6 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        // ★ v70：追加自定义金手指条目（写回 <driver>.ini，重启游戏后核心生成新选项）
         TextButton(onClick = { showAddEntry = true }) {
             Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
             Text("添加自定义条目", fontSize = 12.sp)
@@ -424,8 +728,8 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
     }
     MsgLine(info)
     Text(
-        "热生效：切换后立即应用，无需重启游戏。0 号选项通常为 Disabled（关闭）。" +
-            "点条目名可展开全部选项；「添加自定义条目」写回 ini，重启游戏后由核心加载。",
+        "ini 编辑模式：新增/修改/删除写回 $driver.ini，重启游戏后由核心加载。" +
+            "要热生效的开关请切回「核心清单」。",
         fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
     )
 
@@ -485,6 +789,522 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
                         value = enVal, onValueChange = { enVal = it },
                         label = { Text("写入值（如 0x64 = 100）") }, singleLine = true
                     )
+                }
+            }
+        )
+    }
+
+    // ★ v71 编辑既有条目对话框（原文编辑选项行，最大限度保留语法）
+    editBlockIdx?.let { idx ->
+        val blocks = remember(idx) { readFbnIniBlocks(iniFile).second }
+        val block = blocks.getOrNull(idx)
+        if (block == null) {
+            editBlockIdx = null
+        } else {
+            // 从块中解析出名称 / default / 选项行
+            val lines = block.lines().filter { it.isNotBlank() }
+            val nameLine = lines.firstOrNull { it.trimStart().startsWith("cheat") } ?: ""
+            val curName = quotedToken(nameLine, nameLine.indexOf('"').coerceAtLeast(0))?.first ?: ""
+            val defLine = lines.firstOrNull { it.trimStart().startsWith("default") }
+            val curDefault = defLine?.substringAfter("default")?.trim() ?: "0"
+            val optionLines = lines.filter { it !== nameLine && it !== defLine }
+                .filter { it.trimStart().firstOrNull()?.isDigit() == true }
+            var edName by remember(idx) { mutableStateOf(curName) }
+            var edDefault by remember(idx) { mutableStateOf(curDefault) }
+            var edLines by remember(idx) { mutableStateOf(optionLines.joinToString("\n")) }
+            AlertDialog(
+                onDismissRequest = { editBlockIdx = null },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val name = edName.trim().ifBlank { "未命名" }
+                        val def = edDefault.trim().toIntOrNull()?.coerceIn(0, 999) ?: 0
+                        val body = edLines.trim()
+                        if (body.isEmpty()) {
+                            info = "选项行不能为空（每行格式：N \"选项文本\", cpu, 地址, 值）"
+                            return@TextButton
+                        }
+                        try {
+                            val (pre, blks) = readFbnIniBlocks(iniFile)
+                            val nb = blks.toMutableList()
+                            val newBlock = buildString {
+                                append("cheat \"").append(name).append("\"\n")
+                                append("default ").append(def).append('\n')
+                                append(body).append('\n')
+                            }
+                            if (idx in nb.indices) nb[idx] = newBlock else nb.add(newBlock)
+                            writeFbnIniBlocks(iniFile, pre, nb)
+                            entries = parseFbnCheatIni(iniFile)
+                            info = "已保存「$name」—— 重启游戏后生效"
+                            editBlockIdx = null
+                        } catch (t: Throwable) { info = "保存失败：${t.message}" }
+                    }) { Text("保存") }
+                },
+                dismissButton = { TextButton(onClick = { editBlockIdx = null }) { Text("取消") } },
+                title = { Text("编辑金手指条目", fontSize = 16.sp) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "写回 $driver.ini 后重启游戏生效。选项行每行一条：N \"文本\", cpu, 地址, 值（十六进制需 0x 前缀）。",
+                            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+                        )
+                        OutlinedTextField(
+                            value = edName, onValueChange = { edName = it },
+                            label = { Text("条目名称") }, singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = edDefault, onValueChange = { edDefault = it },
+                            label = { Text("默认选项号（0 = 关闭）") }, singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = edLines, onValueChange = { edLines = it },
+                            label = { Text("选项行（每行一条）") }, minLines = 3, maxLines = 6
+                        )
+                    }
+                }
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ★★ v71 街机（FBNeo 核心）PGM2 记忆卡 —— 核心选项 fbneo-pgm2-ic-p1..4 驱动。
+//   上游 retro_pgm2_cards.cpp：卡目录 <saveDir>/fbneo/pgm2_memcards/，默认卡
+//   <drv>_pN_default.pg2 自动建；"new" 核心自产时间戳卡并 SET_VARIABLE 回
+//   latest_new_card_file；卡文件接受 .pg2/.bin（≤120 个/槽）。选卡后需在
+//   进入选人画面之前生效。
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun FbnCardsContent(engine: FbNeoEngine, cardSlots: List<FbnCoreOption>) {
+    val context = LocalContext.current
+    var selected by remember(cardSlots) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var info by remember { mutableStateOf<String?>(null) }
+    var pickFor by remember { mutableStateOf<String?>(null) }
+
+    val cardDir = remember(engine.saveDirPath) {
+        engine.saveDirPath.takeIf { it.isNotBlank() }?.let { File(File(it, "fbneo"), "pgm2_memcards") }
+    }
+
+    // 回放持久化选择
+    LaunchedEffect(cardSlots) {
+        val map = HashMap<String, String>()
+        try {
+            val prefs = context.getSharedPreferences("fbn_cards", android.content.Context.MODE_PRIVATE)
+            for (o in cardSlots) {
+                val v = prefs.getString(o.key, null) ?: continue
+                if (o.values.any { it.first == v }) {
+                    map[o.key] = v
+                    engine.setCoreOption(o.key, v)
+                }
+            }
+        } catch (_: Throwable) {}
+        selected = map
+    }
+
+    fun persist(key: String, v: String) {
+        try {
+            context.getSharedPreferences("fbn_cards", android.content.Context.MODE_PRIVATE)
+                .edit().putString(key, v).apply()
+        } catch (_: Throwable) {}
+    }
+
+    fun apply(opt: FbnCoreOption, v: String) {
+        engine.setCoreOption(opt.key, v)
+        persist(opt.key, v)
+        selected = selected + (opt.key to v)
+        info = when {
+            v == "new" -> "已建新卡 —— 核心自动切换到「最新新卡文件」并插入"
+            v == "empty" -> "已弹出（空槽）"
+            v == "temporary" -> "使用临时卡（内存卡，退出即失效）"
+            v.startsWith("/") -> "已选卡：${File(v).name}"
+            else -> "已应用：$v"
+        }
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            "PGM2 基板 IC 卡（三国战纪2群雄争霸 / 西游释厄传2 / 三国战纪3 等）。" +
+                (cardDir?.let { "\n卡文件目录：${it.absolutePath}" } ?: ""),
+            fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 16.sp
+        )
+        Spacer(Modifier.padding(2.dp))
+        for (opt in cardSlots) {
+            val (fixed, files) = splitFbnCardValues(opt)
+            val slotLabel = opt.key.substringAfterLast("fbneo-pgm2-ic-").uppercase()
+            val cur = selected[opt.key] ?: opt.default
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(Color(0x14203040), RoundedCornerShape(10.dp))
+                    .padding(8.dp)
+            ) {
+                Text(
+                    "$slotLabel 记忆卡 —— " + when {
+                        cur == "empty" -> "空槽"
+                        cur == "temporary" -> "临时卡"
+                        cur == "default" -> "默认卡"
+                        cur == "new" -> "正在建卡…"
+                        cur == "latest_new_card_file" -> "最新新卡"
+                        cur.startsWith("/") -> File(cur).name
+                        else -> cur
+                    },
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = { apply(opt, "empty") }) { Text("空槽", fontSize = 11.sp) }
+                    TextButton(onClick = { apply(opt, "default") }) { Text("默认卡", fontSize = 11.sp) }
+                    TextButton(onClick = { apply(opt, "temporary") }) { Text("临时卡", fontSize = 11.sp) }
+                    TextButton(onClick = { apply(opt, "new") }) { Text("建卡", fontSize = 11.sp) }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = { apply(opt, "latest_new_card_file") }) { Text("最新新卡", fontSize = 11.sp) }
+                    TextButton(onClick = { pickFor = opt.key }) { Text("选卡（${files.size}）", fontSize = 11.sp) }
+                }
+            }
+            Spacer(Modifier.padding(2.dp))
+        }
+        MsgLine(info)
+        Text(
+            "核心在每次切换时自动保存当前卡。新建的卡要等下次启动才会进「选卡」列表（本局用「最新新卡」即可）。" +
+                "建议在选人画面之前完成选卡。",
+            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+        )
+    }
+
+    pickFor?.let { key ->
+        val opt = cardSlots.firstOrNull { it.key == key } ?: run { pickFor = null; null }
+        if (opt != null) {
+            val (_, files) = splitFbnCardValues(opt)
+            AlertDialog(
+                onDismissRequest = { pickFor = null },
+                confirmButton = { TextButton(onClick = { pickFor = null }) { Text("关闭") } },
+                title = { Text("选择 ${opt.key.substringAfterLast("fbneo-pgm2-ic-").uppercase()} 记忆卡", fontSize = 16.sp) },
+                text = {
+                    if (files.isEmpty()) {
+                        Text("还没有卡文件 —— 点「建卡」新建，或「默认卡」用核心自建卡。", fontSize = 13.sp)
+                    } else {
+                        LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                            itemsIndexed(files) { _, (path, label) ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable {
+                                        apply(opt, path)
+                                        pickFor = null
+                                    }.padding(horizontal = 4.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(checked = (selected[opt.key] ?: opt.default) == path, onCheckedChange = null)
+                                    Text(label.ifBlank { File(path).name }, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ★★ v71 afbn 核心（改版街机）金手指 —— libarcade.so 原生金手指引擎，
+//   nativeCheatGetList JSON 协议（与 libpgm3 同族；解析容错）。
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun AfbnCheatsContent(engine: AfbnEngine) {
+    var raw by remember { mutableStateOf<String?>(null) }
+    var info by remember { mutableStateOf<String?>(null) }
+    var expandedIdx by remember { mutableStateOf<Int?>(null) }
+
+    fun refresh() { raw = engine.cheatListJson() }
+    LaunchedEffect(Unit) { refresh() }
+
+    // 容错解析：entries/cheats/list 数组或顶层数组；name/desc/title，options/opts/values，selected/current/cur
+    val parsed = remember(raw) {
+        val list = ArrayList<Triple<Int, String, List<String>>>() // (idx, name, options)
+        val selMap = HashMap<Int, Int>()
+        var note = ""
+        val r = raw
+        try {
+            if (r == null || r.isBlank()) {
+                note = "null"
+            } else {
+                val trimmed = r.trimStart()
+                val arr: org.json.JSONArray? = if (trimmed.startsWith("[")) {
+                    try { org.json.JSONArray(r) } catch (_: Throwable) { null }
+                } else {
+                    JSONObject(r).let { o ->
+                        o.optJSONArray("entries") ?: o.optJSONArray("cheats")
+                            ?: o.optJSONArray("list") ?: o.optJSONArray("cheatlist")
+                    }
+                }
+                if (arr == null) {
+                    note = "raw"
+                } else {
+                    for (i in 0 until arr.length()) {
+                        val e = arr.optJSONObject(i)
+                        if (e != null) {
+                            val name = e.optString("name", e.optString("desc", e.optString("title", "")))
+                            val opts = ArrayList<String>()
+                            val oa = e.optJSONArray("options") ?: e.optJSONArray("opts") ?: e.optJSONArray("values")
+                            if (oa != null) {
+                                for (j in 0 until oa.length()) {
+                                    val s = oa.optString(j)
+                                    if (s.isNotEmpty()) opts.add(s)
+                                }
+                            }
+                            list.add(Triple(i, name, opts))
+                            selMap[i] = e.optInt("selected", e.optInt("current", e.optInt("cur", 0)))
+                        } else {
+                            val s = arr.optString(i)
+                            if (s.isNotEmpty()) list.add(Triple(i, s, emptyList()))
+                        }
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            note = "error"
+        }
+        Triple(list, selMap, note)
+    }
+    val entries = parsed.first
+    val selectedMap = parsed.second
+    val note = parsed.third
+
+    if (raw == null || note == "null") {
+        Text(
+            "核心未返回金手指清单（会话未启动或核心未加载金手指）。afbn 核心会自动查找 " +
+                "cheat.dat / <驱动>.ini 等官方金手指包文件。",
+            fontSize = 13.sp, lineHeight = 19.sp
+        )
+        return
+    }
+    if (note == "raw" || note == "error") {
+        Text("核心返回了无法识别的清单格式：", fontSize = 13.sp)
+        Text(
+            raw!!.take(600),
+            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+        )
+        return
+    }
+    if (entries.isEmpty()) {
+        Text("本游戏没有金手指条目（核心返回空清单）。", fontSize = 13.sp)
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        itemsIndexed(entries) { _, (idx, name, opts) ->
+            val selIdx = selectedMap[idx] ?: 0
+            val expanded = expandedIdx == idx
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(Color(0x14203040), RoundedCornerShape(8.dp))
+                    .clickable { expandedIdx = if (expanded) null else idx }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(name.ifBlank { "条目 $idx" }, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        if (opts.isNotEmpty()) {
+                            Text(
+                                "选项 ${selIdx.coerceIn(0, opts.size - 1) + 1}/${opts.size}：${opts.getOrElse(selIdx.coerceIn(0, (opts.size - 1).coerceAtLeast(0))) { "?" }}" +
+                                    if (expanded) "（点此收起）" else "（点击展开全部 ${opts.size} 个选项）",
+                                fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    if (opts.size > 1) {
+                        TextButton(onClick = {
+                            val next = (selIdx + 1) % opts.size
+                            val ok = engine.cheatSetOption(idx, next)
+                            info = if (ok) null else "应用失败（条目 $idx）"
+                            refresh()
+                        }) { Text("切换", fontSize = 12.sp) }
+                    }
+                }
+                if (expanded && opts.isNotEmpty()) {
+                    opts.forEachIndexed { oi, ot ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    val ok = engine.cheatSetOption(idx, oi)
+                                    info = if (ok) null else "应用失败（条目 $idx）"
+                                    refresh()
+                                }
+                                .padding(start = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = oi == selIdx, onClick = {
+                                val ok = engine.cheatSetOption(idx, oi)
+                                info = if (ok) null else "应用失败（条目 $idx）"
+                                refresh()
+                            })
+                            Text(ot, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Spacer(Modifier.padding(2.dp))
+    TextButton(onClick = {
+        engine.cheatResetAll()
+        info = "已全部恢复默认"
+        refresh()
+    }) {
+        Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
+        Text("全部恢复默认", fontSize = 12.sp)
+    }
+    MsgLine(info)
+}
+
+// ---------------------------------------------------------------------------
+// ★★ v71 afbn 核心 PGM2 记忆卡 —— 参考 APK 插卡菜单同源 JNI
+//   （nativePgm2* 家族：建卡核心自产 p<槽>_memorycard_<时间戳>.pg2，
+//   内置 blank_kov2nl/orleg2 卡模板；接受 .pg2/.bin/.mem/.fc）。
+// ---------------------------------------------------------------------------
+
+/** 递归收集 JSON 里全部字符串（卡清单协议容错）。 */
+private fun collectJsonStrings(o: Any?, out: ArrayList<String>) {
+    when (o) {
+        is JSONObject -> {
+            val it = o.keys()
+            while (it.hasNext()) collectJsonStrings(o.opt(it.next()), out)
+        }
+        is org.json.JSONArray -> for (i in 0 until o.length()) collectJsonStrings(o.opt(i), out)
+        is String -> if (o.isNotBlank()) out.add(o)
+    }
+}
+
+@Composable
+private fun AfbnCardsContent(engine: AfbnEngine) {
+    var tick by remember { mutableStateOf(0) }
+    var info by remember { mutableStateOf<String?>(null) }
+    var pickFor by remember { mutableStateOf<Int?>(null) }
+
+    val slots = remember(tick) {
+        try { if (engine.pgm2CardSupported()) engine.pgm2MaxCardSlots() else 0 } catch (_: Throwable) { 0 }
+    }
+
+    if (slots <= 0) {
+        Text(
+            "本游戏不支持记忆卡（仅 PGM2 基板游戏支持：三国战纪2群雄争霸 / 西游释厄传2 / 三国战纪3 等）。",
+            fontSize = 13.sp, lineHeight = 19.sp
+        )
+        return
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            "PGM2 基板 IC 卡 —— 武将/角色进度存 IC 卡。核心自动管理卡文件（建卡自产" +
+                " p<槽>_memorycard_<时间戳>.pg2，模板内置）。先建卡或选卡，再插卡。",
+            fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 16.sp
+        )
+        Spacer(Modifier.padding(3.dp))
+        for (s in 0 until slots) {
+            val status = remember(tick, s) { engine.pgm2CardStatus(s) }
+            val enabled = remember(tick, s) { try { engine.pgm2IsCardEnabled(s) } catch (_: Throwable) { false } }
+            val path = remember(tick, s) { engine.pgm2CardPath(s) }
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(Color(0x14203040), RoundedCornerShape(10.dp))
+                    .padding(8.dp)
+            ) {
+                Text(
+                    "P${s + 1} 记忆卡" + when {
+                        enabled -> "（已插入）"
+                        path != null -> "（已选中未插入）"
+                        status != 0 -> "（占用）"
+                        else -> "（空）"
+                    },
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    path?.let { File(it).name } ?: "未选卡",
+                    fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = {
+                        val e = engine.pgm2CreateCard(s)
+                        info = e ?: "已建卡（P${s + 1}）：${engine.pgm2CardPath(s)?.let { f -> File(f).name } ?: ""} —— 点「插卡」启用"
+                        tick += 1
+                    }) { Text("建卡", fontSize = 11.sp) }
+                    TextButton(onClick = { pickFor = s }) { Text("选卡", fontSize = 11.sp) }
+                    if (enabled) {
+                        TextButton(onClick = {
+                            val e = engine.pgm2EjectCard(s)
+                            info = e ?: "已弹卡（P${s + 1}）"
+                            tick += 1
+                        }) { Text("弹卡", fontSize = 11.sp) }
+                    } else {
+                        TextButton(onClick = {
+                            val e = engine.pgm2InsertCard(s)
+                            info = e ?: "已插卡（P${s + 1}）"
+                            tick += 1
+                        }) { Text("插卡", fontSize = 11.sp) }
+                    }
+                    TextButton(onClick = {
+                        val e = engine.pgm2SaveCard(s)
+                        info = e ?: "已存卡（P${s + 1}）"
+                        tick += 1
+                    }) { Text("存卡", fontSize = 11.sp) }
+                }
+            }
+            Spacer(Modifier.padding(2.dp))
+        }
+        MsgLine(info)
+    }
+
+    pickFor?.let { slot ->
+        val files = remember(slot, tick) {
+            val out = ArrayList<String>()
+            val rawJson = engine.pgm2ListCardFilesJson(slot)
+            if (rawJson != null) {
+                try {
+                    collectJsonStrings(if (rawJson.trimStart().startsWith("[")) org.json.JSONArray(rawJson) else JSONObject(rawJson), out)
+                } catch (_: Throwable) {}
+            }
+            // 过滤出像卡文件的条目；无路径的裸文件名尝试用核心数据目录的 memcard/ 拼全路径
+            val dirs = listOfNotNull(
+                org.libsdl.app.SDLActivity.datapath.takeIf { it.isNotBlank() }?.let { File(File(it, "memcard").absolutePath) },
+                org.libsdl.app.SDLActivity.romdatapath.takeIf { it.isNotBlank() }?.let { File(File(it, "memcard").absolutePath) }
+            )
+            val seen = LinkedHashSet<String>()
+            for (s0 in out) {
+                val t = s0.trim()
+                if (t.contains("/")) { seen.add(t); continue }
+                if (listOf(".pg2", ".bin", ".mem", ".fc").any { t.lowercase().endsWith(it) }) {
+                    val full = dirs.firstOrNull { File(it, t).isFile }?.let { File(it, t).absolutePath } ?: t
+                    seen.add(full)
+                }
+            }
+            seen.toList()
+        }
+        AlertDialog(
+            onDismissRequest = { pickFor = null },
+            confirmButton = { TextButton(onClick = { pickFor = null }) { Text("关闭") } },
+            title = { Text("选择 P${slot + 1} 记忆卡", fontSize = 16.sp) },
+            text = {
+                if (files.isEmpty()) {
+                    Text("核心未返回卡文件清单 —— 先「建卡」。", fontSize = 13.sp)
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                        itemsIndexed(files) { _, f ->
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    val err = engine.pgm2SelectCardPath(slot, f)
+                                    info = err ?: "已选卡（P${slot + 1}）：${File(f).name} —— 点「插卡」启用"
+                                    pickFor = null
+                                    tick += 1
+                                }.padding(horizontal = 4.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(checked = engine.pgm2CardPath(slot) == f, onCheckedChange = null)
+                                Text(File(f).name, fontSize = 13.sp)
+                            }
+                        }
+                    }
                 }
             }
         )

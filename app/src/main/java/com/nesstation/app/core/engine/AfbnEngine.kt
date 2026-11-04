@@ -416,6 +416,102 @@ class AfbnEngine private constructor() : EmulatorEngine {
     override fun setRegion(region: Int) { /* 驱动自带区域 */ }
     override fun setSampleRate(rate: Int) { /* 音频由核心线程回调自持 */ }
 
+    // =====================================================================
+    // ★★ v71 金手指（libarcade.so 原生金手指引擎 —— 参考 APK 同源 JNI）。
+    //   核心自读金手指包（cheat.dat / <drv>.ini / .cht），前端只做清单展示
+    //   与选项切换（JSON 协议，与 libpgm3 同族）。推模型核心：全部走
+    //   SDLActivity 静态 native，要求会话已启动（started）。
+    // =====================================================================
+
+    /** 金手指清单 JSON（null = 会话未启动 / 核心未返回清单）。 */
+    fun cheatListJson(): String? {
+        if (!started) return null
+        return try { SDLActivity.nativeCheatGetList()?.takeIf { it.isNotBlank() } } catch (t: Throwable) {
+            android.util.Log.w(TAG, "nativeCheatGetList: ${t.message}"); null
+        }
+    }
+
+    /** 选中金手指条目 option（0 = 关闭）。false = 失败。 */
+    fun cheatSetOption(entry: Int, option: Int): Boolean {
+        if (!started) return false
+        return try { SDLActivity.nativeCheatSetOption(entry, option) } catch (t: Throwable) {
+            android.util.Log.w(TAG, "nativeCheatSetOption: ${t.message}"); false
+        }
+    }
+
+    /** 全部金手指恢复默认。 */
+    fun cheatResetAll() {
+        if (!started) return
+        try { SDLActivity.nativeCheatResetAll() } catch (t: Throwable) {
+            android.util.Log.w(TAG, "nativeCheatResetAll: ${t.message}")
+        }
+    }
+
+    // =====================================================================
+    // ★★ v71 PGM2 虚拟插卡（三国战纪2群雄争霸 / 西游释厄传2 / 三国战纪3
+    //   等 PGM2 基板 IC 卡 —— 参考 APK 插卡菜单同源 JNI）。卡文件由核心
+    //   全权管理：建卡自产 p<槽>_memorycard_<时间戳>.pg2，模板内置。
+    // =====================================================================
+
+    /** 当前驱动是否支持 PGM2 记忆卡。 */
+    fun pgm2CardSupported(): Boolean = try {
+        started && SDLActivity.nativePgm2IsCardSupported()
+    } catch (_: Throwable) { false }
+
+    /** 卡槽数（0 = 不支持）。 */
+    fun pgm2MaxCardSlots(): Int = try {
+        if (started) SDLActivity.nativePgm2GetMaxCardSlots() else 0
+    } catch (_: Throwable) { 0 }
+
+    /** 槽位状态位掩码。 */
+    fun pgm2CardStatus(slot: Int): Int = try {
+        if (started) SDLActivity.nativePgm2GetCardStatus(slot) else 0
+    } catch (_: Throwable) { 0 }
+
+    /** 槽位卡是否已启用（插入）。 */
+    fun pgm2IsCardEnabled(slot: Int): Boolean = try {
+        started && SDLActivity.nativePgm2IsCardEnabled(slot)
+    } catch (_: Throwable) { false }
+
+    /** 当前卡文件路径（null = 未选）。 */
+    fun pgm2CardPath(slot: Int): String? = try {
+        if (started) SDLActivity.nativePgm2GetCardPath(slot)?.takeIf { it.isNotBlank() } else null
+    } catch (_: Throwable) { null }
+
+    /** 建卡（核心自产时间戳卡文件并选为当前卡）。返回 null = 成功。 */
+    fun pgm2CreateCard(slot: Int): String? = try {
+        if (started && SDLActivity.nativePgm2CreateCard(slot)) null
+        else "建卡失败（核心拒绝 —— 请确认游戏已进入可插卡状态后重试）"
+    } catch (t: Throwable) { "建卡失败：${t.message}" }
+
+    /** 插卡。返回 null = 成功。 */
+    fun pgm2InsertCard(slot: Int): String? = try {
+        if (started && SDLActivity.nativePgm2InsertCard(slot)) null else "插卡失败（请先建卡或选卡）"
+    } catch (t: Throwable) { "插卡失败：${t.message}" }
+
+    /** 弹卡。返回 null = 成功。 */
+    fun pgm2EjectCard(slot: Int): String? = try {
+        if (started && SDLActivity.nativePgm2EjectCard(slot)) null else "弹卡失败"
+    } catch (t: Throwable) { "弹卡失败：${t.message}" }
+
+    /** 存卡（立即落盘）。返回 null = 成功。 */
+    fun pgm2SaveCard(slot: Int): String? = try {
+        if (started && SDLActivity.nativePgm2SaveCard(slot)) null else "存卡失败"
+    } catch (t: Throwable) { "存卡失败：${t.message}" }
+
+    /** 选卡（路径须经核心 realpath 校验）。返回 null = 成功。 */
+    fun pgm2SelectCardPath(slot: Int, path: String): String? = try {
+        if (started && SDLActivity.nativePgm2SelectCardPath(slot, path)) null
+        else "选卡失败（核心拒绝该路径）"
+    } catch (t: Throwable) { "选卡失败：${t.message}" }
+
+    /** 卡文件清单 JSON（null = 会话未启动 / 核心未返回）。 */
+    fun pgm2ListCardFilesJson(slot: Int): String? = try {
+        if (started) SDLActivity.nativePgm2ListCardFiles(slot)?.takeIf { it.isNotBlank() } else null
+    } catch (t: Throwable) {
+        android.util.Log.w(TAG, "nativePgm2ListCardFiles: ${t.message}"); null
+    }
+
     override fun saveState(slot: Int, dst: File): Boolean {
         lastErr = "afbn 引擎暂不支持即时存档（进度走核心内部存档）"
         return false

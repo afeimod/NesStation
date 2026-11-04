@@ -2370,6 +2370,49 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     public static native void pauseemu();
     public static native void resumeemu();
 
+    // ★★ v71 金手指（libarcade.so 原生导出，参考 APK 金手指菜单同源）。
+    // 返回 JSON 串（核心自产，含 \\t/\\n/\\r/\\\\ 转义），协议与 libpgm3 的
+    // nativeCheatGetList 同族：{"entries":[{"name":...,"options":[...],"selected":N}]}。
+    // 游戏未加载 / 无金手指时核心返回 "No cheats available." 或 null。
+    public static native String nativeCheatGetList();
+    /** 选中金手指条目 option（0 = 关闭）。false = 失败（游戏未加载/条目无效）。 */
+    public static native boolean nativeCheatSetOption(int entry, int option);
+    /** 全部金手指恢复默认。 */
+    public static native void nativeCheatResetAll();
+
+    // ★★ v71 PGM2 记忆卡（三国战纪2群雄争霸/西游释厄传2/三国战纪3 等 PGM2
+    // 基板 IC 卡 —— libarcade.so 原生导出，参考 APK 插卡菜单同源）。
+    // 卡文件由核心自管（建卡时核心自产 p<槽>_memorycard_<时间戳>.pg2，模板
+    // blank_kov2nl_japan_card.pg2 / blank_orleg2_china_card.pg2 内置）。
+    /** 当前驱动是否支持 PGM2 记忆卡（非 PGM2 游戏返回 false）。 */
+    public static native boolean nativePgm2IsCardSupported();
+    /** 卡槽数（参考实现槽位表：kov3 系 2，kov2nl/orleg2 系 4；不支持 = 0）。 */
+    public static native int nativePgm2GetMaxCardSlots();
+    /** 当前激活卡槽（UI 回显）。 */
+    public static native int nativePgm2GetActiveCardSlot();
+    /** 槽位状态位掩码（bit 含义见核心；0 = 空）。 */
+    public static native int nativePgm2GetCardStatus(int slot);
+    /** 切换激活卡槽。false = 失败。 */
+    public static native boolean nativePgm2SetActiveCardSlot(int slot);
+    /** 插卡（启用当前选中卡）。false = 失败（未选卡时核心报"请先选择或新建卡片"）。 */
+    public static native boolean nativePgm2InsertCard(int slot);
+    /** 弹卡。 */
+    public static native boolean nativePgm2EjectCard(int slot);
+    /** 建卡：核心自产时间戳卡文件并选为当前卡（无需传名）。false = 失败。 */
+    public static native boolean nativePgm2CreateCard(int slot);
+    /** 立即把当前卡内容落盘。 */
+    public static native boolean nativePgm2SaveCard(int slot);
+    /** 槽位卡是否已启用（插入）。 */
+    public static native boolean nativePgm2IsCardEnabled(int slot);
+    /** 启用/停用槽位卡。 */
+    public static native boolean nativePgm2SetCardEnabled(int slot, boolean enabled);
+    /** 选卡：把卡文件路径设为当前卡（核心 realpath 校验）。false = 失败。 */
+    public static native boolean nativePgm2SelectCardPath(int slot, String path);
+    /** 当前卡文件路径（null/空 = 未选）。 */
+    public static native String nativePgm2GetCardPath(int slot);
+    /** 卡文件清单 JSON（核心扫描；接受 .pg2/.bin/.mem/.fc）。 */
+    public static native String nativePgm2ListCardFiles(int slot);
+
     /**
      * afbn 桥便捷包装（非 JNI）：AfbnEngine v56 以 nativePause(布尔)
      * 形参挂起/恢复模拟 —— true → pauseemu()（surface 未就绪/外部暂停时
