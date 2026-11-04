@@ -215,13 +215,24 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         /** CHD 镜像名（kov3hd 必需的伴生光盘）。 */
         private const val PGM3_CHD_NAME = "kov3hd_m105.chd"
 
-        // ★★ v68 虚拟插卡 / 持久化常量（nativeCardAction 的 action 值 ——
-        //   经 libpgm3.so 反汇编核实：0=新建 1=插卡 2=弹卡 3=存卡 4=选卡）
-        private const val CARD_CREATE = 0
+        // ★★ v70 虚拟插卡 / 持久化常量（nativeCardAction 的 action 值）。
+        //   ★ v70 重大修正（libpgm3.so 反汇编逐字节核实，v68 注释写反了）：
+        //     Java_..._nativeCardAction 分派（x2 = action）：
+        //       0 → Pgm3User::selectVirtualCard(player, name)   —— 选卡（文件必须已存在）
+        //       1 → Pgm3User::enableVirtualCard(player, true)   —— 插卡
+        //       2 → Pgm3User::enableVirtualCard(player, false)  —— 弹卡
+        //       3 → Pgm3User::saveVirtualCard(player)           —— 存卡
+        //       4 → Pgm3User::createVirtualCard(player, name)   —— 新建卡（核心内部
+        //           建完文件后自会走一遍 select —— 建卡即选中）
+        //   v68 把 0/4 当作"新建/选卡"下发 → 用户点"建卡"实际调用的是
+        //   selectVirtualCard（打开一个还不存在的文件）→ 核心报
+        //   "文件不存在"（即用户实测的"建卡总是提示文件不存在"）。
+        //   v70 起按真实语义交换两值。
+        private const val CARD_SELECT = 0
         private const val CARD_INSERT = 1
         private const val CARD_EJECT = 2
         private const val CARD_SAVE = 3
-        private const val CARD_SELECT = 4
+        private const val CARD_CREATE = 4
         private const val PREFS_CARDS = "pgm3_cards"
 
         /** 运行时固件（assets/pgm3_runtime → <root>/runtime）。 */
@@ -1280,14 +1291,21 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         Pgm3Activity.nativeCardError()?.takeIf { it.isNotBlank() }
     } catch (_: Throwable) { null }
 
-    /** 新建卡文件并选为 [player] 的当前卡（不自动插卡）。返回 null = 成功。 */
+    /**
+     * 新建卡文件并选为 [player] 的当前卡（不自动插卡）。返回 null = 成功。
+     * ★ v70：卡名原样作为文件名（扩展名任意 —— 核心的 createVirtualCard
+     * 只做 basename 校验（rfind('/')），不拼接、不限定 .bin 后缀；
+     * .so 全量反汇编确认无 ".bin" 字面量引用）。参考实现（afbn）的卡
+     * 文件也允许非 .bin 名。带路径分隔的输入仍会被核心拒绝（合法 ——
+     * 目录必须固定在 memcard/kov3hd 内），这里预净化防逃逸。
+     */
     fun createCard(player: Int, name: String): String? {
         if (!started) return "会话未启动"
         val dir = memcardDir() ?: return "记忆卡目录未就绪"
         // 卡名净化：仅留常用文件名字符，防路径逃逸（核心侧同样校验）
         val safe = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
             .ifBlank { return "卡名不能为空" }
-        val f = File(dir, if (safe.endsWith(".bin")) safe else "$safe.bin")
+        val f = File(dir, safe)
         return try {
             if (Pgm3Activity.nativeCardAction(CARD_CREATE, player, f.absolutePath)) null
             else cardError() ?: "新建卡失败"

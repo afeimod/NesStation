@@ -22,6 +22,8 @@ import androidx.compose.material.icons.rounded.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -204,11 +206,12 @@ fun CheatsDialog(
                     RamCheatsContent(engine as RamCheatEngine, cheatKey, platform)
                 } else {
                     Text(
-                        "当前核心未接入金手指。\n\n已内置支持：\n" +
-                            "· 8/16 位主机（NES/SFC/GB/GBA/MD/PCE/PSX/DC/NDS）—— 读 RetroArch 格式 .cht 金手指文件\n" +
-                            "· 街机（FBN）—— 官方金手指包 .ini\n" +
-                            "· 三国战记3HD（PGM3）—— 金手指 + 虚拟插卡\n" +
-                            "· Wii U（Cemu）—— 游戏规则 txt\n" +
+                        "本核心暂无专用金手指面板。\n\n已支持的核心（同在本面板）：\n" +
+                            "· 8/16 位主机（NES/SFC/GB/GBA/MD/PCE/PSX/DC/NDS）—— RetroArch .cht 金手指，" +
+                            "支持添加/编辑/删除，每帧补丁热生效\n" +
+                            "· 街机（FBN）—— 官方金手指包 .ini，全部选项直选 + 自定义条目\n" +
+                            "· 三国战记3HD（PGM3）—— 金手指 + 虚拟插卡（IC 卡）\n" +
+                            "· Wii U（Cemu）—— 游戏规则 txt 清单开关\n" +
                             "PSP / NDS(DraStic) 的金手指开关在 设置→核心设置。",
                         fontSize = 13.sp, lineHeight = 19.sp
                     )
@@ -246,6 +249,17 @@ private fun MsgLine(text: String?) = text?.let {
 // 街机（FBNeo）金手指
 // ---------------------------------------------------------------------------
 
+/** 16进制/十进制通用解析（支持 0x / $ 前缀）。null = 无法解析。 */
+private fun cheatHexOrDec(s: String): Long = try {
+    val t = s.trim()
+    when {
+        t.startsWith("0x") || t.startsWith("0X") -> t.substring(2).toLong(16)
+        t.startsWith("$") -> t.substring(1).toLong(16)
+        t.isNotEmpty() -> t.toLong()
+        else -> -1L
+    }
+} catch (_: Throwable) { -1L }
+
 @Composable
 private fun FbnCheatsContent(engine: FbNeoEngine) {
     val context = LocalContext.current
@@ -257,6 +271,10 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
     var entries by remember(iniFile) { mutableStateOf(parseFbnCheatIni(iniFile)) }
     var selected by remember(iniFile) { mutableStateOf<Map<Int, Int>>(emptyMap()) }
     var info by remember { mutableStateOf<String?>(null) }
+    // ★ v70：展开查看全部选项（每条目可展开为一个 radio 选项列表直接选）
+    var expandedNum by remember(iniFile) { mutableStateOf<Int?>(null) }
+    // ★ v70：追加自定义条目对话框
+    var showAddEntry by remember { mutableStateOf(false) }
 
     // 打开时回放上次选择（跨启动持久化在 "fbn_cheats"）
     LaunchedEffect(iniFile, driver) {
@@ -317,27 +335,58 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
     ) {
         itemsIndexed(entries, key = { _, e -> e.num }) { _, e ->
             val selIdx = selected[e.num] ?: e.default
-            Row(
+            val expanded = expandedNum == e.num
+            Column(
                 Modifier.fillMaxWidth()
                     .background(Color(0x14203040), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    // ★ v70：点条目 = 展开/收起全部选项（此前每条只露当前一个
+                    //   选项文本，用户反馈"好多条只显示一条" —— 即每个条目
+                    //   只能看到一个选项，其余选项不可见）
+                    .clickable { expandedNum = if (expanded) null else e.num }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(e.name, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        "选项 ${selIdx.coerceIn(0, (e.options.size - 1).coerceAtLeast(0)) + 1}/${e.options.size}：${e.options.getOrElse(selIdx) { "?" }}",
-                        fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(e.name, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "选项 ${selIdx.coerceIn(0, (e.options.size - 1).coerceAtLeast(0)) + 1}/${e.options.size}：${e.options.getOrElse(selIdx) { "?" }}" +
+                                if (expanded) "（点此收起）" else "（点击展开全部 ${e.options.size} 个选项）",
+                            fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    // 循环切换（0=通常为"Disabled"，再点回到 0）
+                    TextButton(onClick = {
+                        val next = (selIdx + 1) % e.options.size
+                        selected = selected + (e.num to next)
+                        val v = "$next - ${e.options[next]}"
+                        engine.setCoreOption(fbnCheatKey(driver, e), v)
+                        persist(e, next)
+                    }) { Text("切换", fontSize = 12.sp) }
                 }
-                // 循环切换（0=通常为"Disabled"，再点回到 0）
-                TextButton(onClick = {
-                    val next = (selIdx + 1) % e.options.size
-                    selected = selected + (e.num to next)
-                    val v = "$next - ${e.options[next]}"
-                    engine.setCoreOption(fbnCheatKey(driver, e), v)
-                    persist(e, next)
-                }) { Text("切换", fontSize = 12.sp) }
+                if (expanded) {
+                    // ★ v70：全部选项直选（radio）—— 与"切换"按钮等效，但可见可选
+                    e.options.forEachIndexed { oi, ot ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    selected = selected + (e.num to oi)
+                                    val v = "$oi - $ot"
+                                    engine.setCoreOption(fbnCheatKey(driver, e), v)
+                                    persist(e, oi)
+                                }
+                                .padding(start = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = oi == selIdx, onClick = {
+                                selected = selected + (e.num to oi)
+                                val v = "$oi - $ot"
+                                engine.setCoreOption(fbnCheatKey(driver, e), v)
+                                persist(e, oi)
+                            })
+                            Text(ot, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
             }
         }
     }
@@ -366,11 +415,80 @@ private fun FbnCheatsContent(engine: FbNeoEngine) {
             if (ok) entries = parseFbnCheatIni(iniFile)
         }
     }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // ★ v70：追加自定义金手指条目（写回 <driver>.ini，重启游戏后核心生成新选项）
+        TextButton(onClick = { showAddEntry = true }) {
+            Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
+            Text("添加自定义条目", fontSize = 12.sp)
+        }
+    }
     MsgLine(info)
     Text(
-        "热生效：切换后立即应用，无需重启游戏。0 号选项通常为 Disabled（关闭）。",
+        "热生效：切换后立即应用，无需重启游戏。0 号选项通常为 Disabled（关闭）。" +
+            "点条目名可展开全部选项；「添加自定义条目」写回 ini，重启游戏后由核心加载。",
         fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
     )
+
+    // ★ v70 追加自定义条目对话框（FBNeo 官方 ini 语法）
+    if (showAddEntry) {
+        var enName by remember { mutableStateOf("自定义金手指") }
+        var enAddr by remember { mutableStateOf("") }
+        var enVal by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddEntry = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    val a = cheatHexOrDec(enAddr)
+                    val v = cheatHexOrDec(enVal)
+                    if (a < 0 || v < 0 || a > 0xFFFFFFL || v > 0xFFL) {
+                        info = "地址需 0x0–0xFFFFFF，值需 0x0–0xFF（示例：地址 0x815D70，值 0x64）"
+                        showAddEntry = false
+                        return@TextButton
+                    }
+                    try {
+                        iniFile.parentFile?.mkdirs()
+                        val add = StringBuilder()
+                        if (iniFile.isFile && iniFile.length() > 0) {
+                            val cur = iniFile.readText()
+                            if (!cur.endsWith("\n")) add.append('\n')
+                        }
+                        add.append("cheat \"${enName.trim().ifBlank { "自定义金手指" }}\"\n")
+                        add.append("default 0\n")
+                        add.append("0 \"Disabled\"\n")
+                        add.append("1 \"启用\", 0, 0x${a.toString(16)}, 0x${v.toString(16)}\n")
+                        iniFile.appendText(add.toString())
+                        entries = parseFbnCheatIni(iniFile)
+                        info = "已追加「${enName.trim()}」—— 重启游戏后核心加载新条目"
+                    } catch (t: Throwable) {
+                        info = "写入失败：${t.message}"
+                    }
+                    showAddEntry = false
+                }) { Text("写入 ini") }
+            },
+            dismissButton = { TextButton(onClick = { showAddEntry = false }) { Text("取消") } },
+            title = { Text("添加自定义金手指（FBNeo）", fontSize = 16.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "追加到 $driver.ini：启用时向内存地址写入固定值（8 位写）。",
+                        fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 16.sp
+                    )
+                    OutlinedTextField(
+                        value = enName, onValueChange = { enName = it },
+                        label = { Text("名称") }, singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = enAddr, onValueChange = { enAddr = it },
+                        label = { Text("内存地址（如 0x815D70）") }, singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = enVal, onValueChange = { enVal = it },
+                        label = { Text("写入值（如 0x64 = 100）") }, singleLine = true
+                    )
+                }
+            }
+        )
+    }
 }
 
 /** SAF 导入：用户选一个 .ini / .dat → 复制为 <cheatsDir>/<driver>.ini。 */
@@ -380,6 +498,16 @@ private fun ImportCheatFileButton(
     driver: String,
     onResult: (Boolean) -> Unit
 ) {
+    ImportToButton(File(cheatsDir, "$driver.ini"), "导入金手指文件", onResult)
+}
+
+/** ★ v70 通用 SAF 导入（复制用户所选文件到 [dst]）。 */
+@Composable
+private fun ImportToButton(
+    dst: File,
+    label: String,
+    onResult: (Boolean) -> Unit
+) {
     val context = LocalContext.current
     val launcher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -387,8 +515,7 @@ private fun ImportCheatFileButton(
         if (uri == null) return@rememberLauncherForActivityResult
         var ok = false
         try {
-            cheatsDir.mkdirs()
-            val dst = File(cheatsDir, "$driver.ini")
+            dst.parentFile?.mkdirs()
             context.contentResolver.openInputStream(uri)?.use { input ->
                 dst.outputStream().use { input.copyTo(it) }
             }
@@ -400,7 +527,7 @@ private fun ImportCheatFileButton(
     }
     TextButton(onClick = { launcher.launch("*/*") }) {
         Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
-        Text("导入金手指文件", fontSize = 12.sp)
+        Text(label, fontSize = 12.sp)
     }
 }
 
@@ -412,6 +539,8 @@ private fun ImportCheatFileButton(
 private fun Pgm3CheatsContent(engine: Pgm3Engine) {
     var raw by remember { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<String?>(null) }
+    // ★ v70：展开查看全部选项
+    var expandedIdx by remember { mutableStateOf<Int?>(null) }
 
     fun refresh() { raw = engine.cheatListJson() }
     LaunchedEffect(Unit) { refresh() }
@@ -452,10 +581,23 @@ private fun Pgm3CheatsContent(engine: Pgm3Engine) {
                 "\n（文件不存在属正常 —— 放入后重进游戏即可加载）",
             fontSize = 13.sp, lineHeight = 19.sp
         )
+        // ★ v70：直接导入 kov3hd 金手指 ini（无需手动找目录）
+        engine.cheatIniFile()?.let { dst ->
+            ImportToButton(dst, "导入 kov3hd 金手指 ini") { ok ->
+                info = if (ok) "已导入 —— 退出并重进游戏后核心加载新金手指" else "导入失败"
+            }
+        }
+        MsgLine(info)
         return
     }
     if (entries.isEmpty()) {
         Text("当前 ini 没有可用条目（或全部被核心判定为无效声明）。", fontSize = 13.sp)
+        engine.cheatIniFile()?.let { dst ->
+            ImportToButton(dst, "导入 kov3hd 金手指 ini") { ok ->
+                info = if (ok) "已导入 —— 退出并重进游戏后核心加载新金手指" else "导入失败"
+            }
+        }
+        MsgLine(info)
         return
     }
     LazyColumn(
@@ -464,36 +606,74 @@ private fun Pgm3CheatsContent(engine: Pgm3Engine) {
     ) {
         itemsIndexed(entries) { _, (idx, name, opts) ->
             val selIdx = selected[idx] ?: 0
-            Row(
+            val expanded = expandedIdx == idx
+            Column(
                 Modifier.fillMaxWidth()
                     .background(Color(0x14203040), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    // ★ v70：点条目 = 展开/收起全部选项（与 FBN 同样：此前每条只露当前一个选项）
+                    .clickable { expandedIdx = if (expanded) null else idx }
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(name.ifBlank { "条目 $idx" }, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        "选项 ${selIdx + 1}/${opts.size}：${opts.getOrElse(selIdx) { "?" }}",
-                        fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(name.ifBlank { "条目 $idx" }, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            "选项 ${selIdx + 1}/${opts.size}：${opts.getOrElse(selIdx) { "?" }}" +
+                                if (expanded) "（点此收起）" else "（点击展开全部 ${opts.size} 个选项）",
+                            fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    TextButton(onClick = {
+                        val next = (selIdx + 1) % opts.size.coerceAtLeast(1)
+                        val ok = engine.cheatSetOption(idx, next)
+                        info = if (ok) null else "应用失败（条目 $idx）"
+                        refresh()
+                    }) { Text("切换", fontSize = 12.sp) }
                 }
-                TextButton(onClick = {
-                    val next = (selIdx + 1) % opts.size.coerceAtLeast(1)
-                    val ok = engine.cheatSetOption(idx, next)
-                    info = if (ok) null else "应用失败（条目 $idx）"
-                    refresh()
-                }) { Text("切换", fontSize = 12.sp) }
+                if (expanded) {
+                    // ★ v70：全部选项直选（radio）
+                    opts.forEachIndexed { oi, ot ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    val ok = engine.cheatSetOption(idx, oi)
+                                    info = if (ok) null else "应用失败（条目 $idx）"
+                                    refresh()
+                                }
+                                .padding(start = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = oi == selIdx,
+                                onClick = {
+                                    val ok = engine.cheatSetOption(idx, oi)
+                                    info = if (ok) null else "应用失败（条目 $idx）"
+                                    refresh()
+                                }
+                            )
+                            Text(ot, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
             }
         }
     }
     Spacer(Modifier.padding(2.dp))
-    TextButton(onClick = {
-        engine.cheatResetAll()
-        info = "已全部恢复默认"
-        refresh()
-    }) {
-        Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
-        Text("全部恢复默认", fontSize = 12.sp)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        TextButton(onClick = {
+            engine.cheatResetAll()
+            info = "已全部恢复默认"
+            refresh()
+        }) {
+            Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
+            Text("全部恢复默认", fontSize = 12.sp)
+        }
+        // ★ v70：导入 kov3hd 金手指 ini（覆盖后需重进游戏让核心重新解析）
+        engine.cheatIniFile()?.let { dst ->
+            ImportToButton(dst, "导入金手指 ini") { ok ->
+                info = if (ok) "已导入 —— 退出并重进游戏后核心加载新金手指" else "导入失败"
+            }
+        }
     }
     MsgLine(info)
 }
@@ -594,7 +774,7 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                 confirmButton = {
                     TextButton(onClick = {
                         val err = engine.createCard(p, name)
-                        info = err ?: "已创建并选卡（P${p + 1}）：$name.bin —— 点\"插卡\"启用"
+                        info = err ?: "已创建并选卡（P${p + 1}）：${name.trim()} —— 点\"插卡\"启用"
                         if (err == null) engine.persistCardChoice(p, engine.cardPath(p))
                         showNewCardFor = null
                         tick++
@@ -603,12 +783,18 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                 dismissButton = { TextButton(onClick = { showNewCardFor = null }) { Text("取消") } },
                 title = { Text("新建 P${p + 1} 记忆卡", fontSize = 16.sp) },
                 text = {
-                    androidx.compose.material3.OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("卡名（存为 <卡名>.bin）") },
-                        singleLine = true
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            label = { Text("卡名（原样作为卡文件名，扩展名可任意，如 .bin / .sav / .card）") },
+                            singleLine = true
+                        )
+                        Text(
+                            "核心不限扩展名：已有的非 .bin 卡文件可直接\"选卡\"使用；新建时输入什么名就存什么文件。",
+                            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+                        )
+                    }
                 }
             )
         }
@@ -903,6 +1089,34 @@ fun pushPersistedRamCheats(
     try { engine.pushCheatPatchList(buildRamPatchList(entries, enabled, platform)) } catch (_: Throwable) {}
 }
 
+/**
+ * 把条目表写回 RetroArch 格式 .cht（★ v70 编辑器用）。
+ * 保留原 index 编号（允许空洞）—— enabled 开关持久化按键依赖 index 稳定；
+ * RetroArch/本项目解析器均按 cheatI_* 逐行读取，不要求连续编号。
+ */
+fun writeRetroArchCht(file: File, entries: List<RamCheat>) {
+    file.parentFile?.mkdirs()
+    val sb = StringBuilder()
+    sb.append("cheats = ").append(entries.size).append('\n')
+    for (e in entries) {
+        sb.append('\n')
+        sb.append("cheat").append(e.index).append("_desc = \"")
+            .append(e.desc.replace("\"", "'")).append("\"\n")
+        sb.append("cheat").append(e.index).append("_enable = ")
+            .append(if (e.enabledInFile) "true" else "false").append('\n')
+        sb.append("cheat").append(e.index).append("_address = 0x")
+            .append(e.address.toString(16)).append('\n')
+        sb.append("cheat").append(e.index).append("_address_bit_position = ")
+            .append(e.mask).append('\n')
+        sb.append("cheat").append(e.index).append("_cheat_type = 1\n")
+        sb.append("cheat").append(e.index).append("_memory_search_size = ")
+            .append(when (e.size) { 2 -> 1; 4 -> 2; else -> 0 }).append('\n')
+        sb.append("cheat").append(e.index).append("_value = ")
+            .append(e.value).append('\n')
+    }
+    file.writeText(sb.toString())
+}
+
 @Composable
 private fun RamCheatsContent(
     engine: RamCheatEngine,
@@ -917,6 +1131,9 @@ private fun RamCheatsContent(
         mutableStateOf(loadRamCheatEnabled(context, cheatKey))
     }
     var info by remember { mutableStateOf<String?>(null) }
+    // ★ v70 编辑器：editTarget = null 关闭；RamCheat? 为编辑对象；新建用哨兵空条目
+    var editTarget by remember { mutableStateOf<RamCheat?>(null) }
+    var showAdd by remember { mutableStateOf(false) }
 
     // 打开面板即生效当前选择（进入游戏时 pushPersistedRamCheats 已重放过一次）
     androidx.compose.runtime.LaunchedEffect(chtFile, reloadTick) {
@@ -949,7 +1166,36 @@ private fun RamCheatsContent(
             info = if (ok) "已导入 ${chtFile.name}" else "导入失败"
             if (ok) reloadTick++
         }
+        // ★ v70：没有文件也能直接新建条目（首次创建 .cht）
+        TextButton(onClick = { showAdd = true }) {
+            Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
+            Text("添加金手指", fontSize = 12.sp)
+        }
         MsgLine(info)
+        // ★ v70：新建对话框（空文件状态也可用）
+        if (showAdd) {
+            RamCheatEditDialog(
+                title = "添加金手指",
+                initial = null,
+                onDismiss = { showAdd = false },
+                onSave = { e ->
+                    val nextIndex = (parseRetroArchCht(chtFile).maxOfOrNull { it.index } ?: -1) + 1
+                    val list = parseRetroArchCht(chtFile) + e.copy(index = nextIndex)
+                    try {
+                        writeRetroArchCht(chtFile, list)
+                        if (e.enabledInFile) {
+                            enabled = enabled + (nextIndex to true)
+                            saveRamCheatEnabled(context, cheatKey, enabled)
+                        }
+                        reloadTick++
+                        info = "已添加「${e.desc}」并立即生效"
+                    } catch (t: Throwable) {
+                        info = "写入失败：${t.message}"
+                    }
+                    showAdd = false
+                }
+            )
+        }
         return
     }
 
@@ -973,12 +1219,30 @@ private fun RamCheatsContent(
                     )
                     Text(
                         if (e.supported)
-                            "地址 0x%X · 值 %d · %d 字节".format(e.address, e.value, e.size)
+                            "地址 0x%X · 值 %s · %d 字节".format(
+                                e.address,
+                                if (e.size == 4) "0x%X".format(e.value.toLong() and 0xFFFFFFFFL) else e.value.toString(),
+                                e.size
+                            )
                         else "该条目类型暂不支持（仅支持标准 RAM 补丁）",
                         fontSize = 11.sp, color = Color(0xFF8FA0B5),
                         maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                 }
+                // ★ v70 编辑器：编辑 / 删除（写回 .cht 后立即重放补丁）
+                TextButton(onClick = { editTarget = e }) { Text("编辑", fontSize = 11.sp) }
+                TextButton(onClick = {
+                    val list = entries.filterNot { it.index == e.index }
+                    try {
+                        writeRetroArchCht(chtFile, list)
+                        enabled = enabled - e.index
+                        saveRamCheatEnabled(context, cheatKey, enabled)
+                        reloadTick++
+                        info = "已删除「${e.desc}」"
+                    } catch (t: Throwable) {
+                        info = "删除失败：${t.message}"
+                    }
+                }) { Text("删除", fontSize = 11.sp, color = Color(0xFFE06C5A)) }
             }
         }
     }
@@ -994,12 +1258,173 @@ private fun RamCheatsContent(
             Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
             Text("全部关闭", fontSize = 12.sp)
         }
+        // ★ v70：添加金手指条目（内存地址/值自定义）
+        TextButton(onClick = { showAdd = true }) {
+            Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
+            Text("添加金手指", fontSize = 12.sp)
+        }
         RamImportCheatFileButton(chtFile) { ok ->
             info = if (ok) "已导入 ${chtFile.name}（覆盖旧文件）" else "导入失败"
             if (ok) reloadTick++
         }
     }
     MsgLine(info)
+    Text(
+        "地址为游戏总线地址（自动映射到核心内存区域）；编辑/删除/添加立即重放补丁，热生效。",
+        fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+    )
+
+    // ★ v70：编辑现有条目对话框
+    editTarget?.let { target ->
+        RamCheatEditDialog(
+            title = "编辑金手指",
+            initial = target,
+            onDismiss = { editTarget = null },
+            onSave = { e ->
+                val list = entries.map { if (it.index == target.index) e.copy(index = target.index) else it }
+                try {
+                    writeRetroArchCht(chtFile, list)
+                    // 文件内 enable 变化同步到持久化开关表
+                    if (e.enabledInFile != (enabled[target.index] ?: target.enabledInFile)) {
+                        enabled = enabled + (target.index to e.enabledInFile)
+                        saveRamCheatEnabled(context, cheatKey, enabled)
+                    }
+                    reloadTick++
+                    info = "已更新「${e.desc}」并立即生效"
+                } catch (t: Throwable) {
+                    info = "写入失败：${t.message}"
+                }
+                editTarget = null
+            }
+        )
+    }
+
+    // ★ v70：新建条目对话框
+    if (showAdd) {
+        RamCheatEditDialog(
+            title = "添加金手指",
+            initial = null,
+            onDismiss = { showAdd = false },
+            onSave = { e ->
+                val nextIndex = (entries.maxOfOrNull { it.index } ?: -1) + 1
+                try {
+                    writeRetroArchCht(chtFile, entries + e.copy(index = nextIndex))
+                    if (e.enabledInFile) {
+                        enabled = enabled + (nextIndex to true)
+                        saveRamCheatEnabled(context, cheatKey, enabled)
+                    }
+                    reloadTick++
+                    info = "已添加「${e.desc}」并立即生效"
+                } catch (t: Throwable) {
+                    info = "写入失败：${t.message}"
+                }
+                showAdd = false
+            }
+        )
+    }
+}
+
+/**
+ * ★ v70 RAM 金手指编辑对话框（添加/编辑共用）。
+ * 地址/值支持 0x 十六进制、$ 十六进制、十进制；掩码 0 = 整段写，
+ * 非 0 = 按位读-改-写（RetroArch cheat_address_bit_position 语义）。
+ */
+@Composable
+private fun RamCheatEditDialog(
+    title: String,
+    initial: RamCheat?,
+    onDismiss: () -> Unit,
+    onSave: (RamCheat) -> Unit
+) {
+    var desc by remember { mutableStateOf(initial?.desc ?: "") }
+    var addr by remember { mutableStateOf(initial?.let { "0x%X".format(it.address) } ?: "") }
+    var value by remember {
+        mutableStateOf(
+            initial?.let {
+                if (it.size == 4) "0x%X".format(it.value.toLong() and 0xFFFFFFFFL)
+                else it.value.toString()
+            } ?: ""
+        )
+    }
+    var sizeIdx by remember { mutableStateOf(listOf(1, 2, 4).indexOf(initial?.size ?: 1).coerceAtLeast(0)) }
+    var maskText by remember { mutableStateOf(initial?.mask?.toString() ?: "0") }
+    var enabled by remember { mutableStateOf(initial?.enabledInFile ?: true) }
+    var err by remember { mutableStateOf<String?>(null) }
+    val sizeBytes = listOf(1, 2, 4)[sizeIdx]
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = {
+                val a = cheatHexOrDec(addr)
+                val vRaw = cheatHexOrDec(value)
+                val mask = cheatHexOrDec(maskText)
+                val maxVal = when (sizeBytes) { 4 -> 0xFFFFFFFFL; 2 -> 0xFFFFL; else -> 0xFFL }
+                when {
+                    desc.isBlank() -> err = "请填写描述"
+                    a < 0 || a > 0xFFFFFFFFL -> err = "地址无效（范围 0x0–0xFFFFFFFF）"
+                    vRaw < 0 || vRaw > maxVal -> err = "值超出 ${sizeBytes} 字节范围（0–$maxVal）"
+                    mask < 0 || mask > 0xFFFFFFL -> err = "掩码无效（0 = 整段写；或 0x1–0xFFFFFF）"
+                    else -> {
+                        onSave(
+                            RamCheat(
+                                index = initial?.index ?: 0,
+                                desc = desc.trim(),
+                                address = a,
+                                value = vRaw.toInt(),
+                                size = sizeBytes,
+                                mask = mask.toInt(),
+                                enabledInFile = enabled,
+                                supported = true
+                            )
+                        )
+                    }
+                }
+            }) { Text("保存并生效") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        title = { Text(title, fontSize = 16.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    value = desc, onValueChange = { desc = it },
+                    label = { Text("描述（如：无限血）") }, singleLine = true
+                )
+                OutlinedTextField(
+                    value = addr, onValueChange = { addr = it },
+                    label = { Text("内存地址（如 0x815D70 / ${'$'}815D70 / 十进制）") }, singleLine = true
+                )
+                OutlinedTextField(
+                    value = value, onValueChange = { value = it },
+                    label = { Text("写入值（如 0x64 = 100）") }, singleLine = true
+                )
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("字节数", fontSize = 12.sp, color = Color(0xFF8FA0B5))
+                    listOf("1 字节" to 0, "2 字节" to 1, "4 字节" to 2).forEach { (label, idx) ->
+                        TextButton(onClick = { sizeIdx = idx }) {
+                            Text(
+                                label, fontSize = 12.sp,
+                                color = if (sizeIdx == idx) Color(0xFF7ED957) else Color(0xFF8FA0B5),
+                                fontWeight = if (sizeIdx == idx) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = maskText, onValueChange = { maskText = it },
+                    label = { Text("位掩码（0 = 整段写；非 0 = 按位，如 0x80 只改最高位）") }, singleLine = true
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = enabled, onCheckedChange = { enabled = it })
+                    Text("保存后立即启用", fontSize = 12.sp)
+                }
+                err?.let { Text(it, color = Color(0xFFE06C5A), fontSize = 12.sp) }
+                Text(
+                    "地址为游戏总线地址（NES 的 ${'$'}0000-${'$'}FFFF、SFC 的 ${'$'}7E0000 段等，会自动映射到核心内存区域）。",
+                    fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+                )
+            }
+        }
+    )
 }
 
 /** SAF 导入 .cht（复制为 <cheats>/<cheatKey>.cht）。 */
