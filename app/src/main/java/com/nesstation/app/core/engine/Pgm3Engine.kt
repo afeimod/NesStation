@@ -461,7 +461,6 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             //    fram.pending/fram.lock）。
             root.mkdirs()
             File(root, "fram-save").apply { if (!isDirectory) mkdirs() }
-            File(root, "memcard/kov3hd").apply { if (!isDirectory) mkdirs() }
             sessionRoot = root
 
             // ★★ v59 记忆卡/金手指子系统配置（用户实测"无法正常启动"的根因）：
@@ -472,7 +471,24 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             //    （= nativeCheatConfigure，失败仅提示不中止）→ 工作线程 nativeRun。
             //    此前本项目从未调用 nativeCardConfigure —— 核心的记忆卡子系统
             //    未初始化即启动，参考实现里这是必经步骤。现对齐补齐。
-            val memcardDir = File(root, "memcard/kov3hd")
+            // ★★ v73 记忆卡目录 = 外部可见存储（对齐参考实现 EmuPreferences：
+            //    卡目录在 getExternalFilesDir 下，文件管理器可直接放入已有卡
+            //    文件，如 kov3_player0.memcard）；旧内部目录的卡自动迁过来，
+            //    持久化选卡路径同步改写（restore 块内）。
+            val memcardDir = memcardDir() ?: File(root, "memcard/kov3hd")
+            try {
+                if (!memcardDir.isDirectory) memcardDir.mkdirs()
+                val legacy = File(root, "memcard/kov3hd")
+                if (legacy.isDirectory &&
+                    legacy.canonicalPath != memcardDir.canonicalPath) {
+                    legacy.listFiles { f -> f.isFile }?.forEach { f ->
+                        val dst = File(memcardDir, f.name)
+                        if (!dst.exists()) {
+                            try { f.copyTo(dst, overwrite = false) } catch (_: Throwable) {}
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
             val cardOk = try {
                 Pgm3Activity.nativeCardConfigure(memcardDir.absolutePath)
             } catch (t: Throwable) {
@@ -495,7 +511,16 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             try {
                 val prefs = ctx.getSharedPreferences(PREFS_CARDS, Context.MODE_PRIVATE)
                 for (p in 0..1) {
-                    val path = prefs.getString("card_p$p", null) ?: continue
+                    var path = prefs.getString("card_p$p", null) ?: continue
+                    // ★ v73 旧内部目录的持久化路径 → 改写到迁移后新目录同名文件
+                    if (!File(path).isFile || !File(path).parentFile?.absolutePath.equals(
+                            memcardDir.absolutePath, ignoreCase = true)) {
+                        val nf = File(memcardDir, File(path).name)
+                        if (nf.isFile) {
+                            path = nf.absolutePath
+                            prefs.edit().putString("card_p$p", path).apply()
+                        }
+                    }
                     val f = File(path)
                     if (!f.isFile || !f.parentFile?.absolutePath.equals(
                             memcardDir.absolutePath, ignoreCase = true)) {
@@ -1093,6 +1118,9 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         cancelRequested.set(true)
         lateFailure = null
         if (wasSessionRunning) {
+            // ★ v73 退出前把两个玩家的卡内容落盘（参考实现 onPause→saveAll
+            //   同语义；必须在 nativeStop 之前 —— 会话没了卡内存就没了）
+            try { saveAllCards() } catch (_: Throwable) {}
             needsProcessRestart = true   // 粘滞标志已置位：下次启动走重启流程
             try { Pgm3Activity.nativeStop() } catch (_: Throwable) {}
         }
@@ -1275,8 +1303,22 @@ class Pgm3Engine private constructor() : EmulatorEngine {
     //   已启动（nativeCardConfigure 之后的任意时机，含游戏中热插拔）。
     // =====================================================================
 
-    /** 记忆卡目录（卡文件必须在此目录内）。null = 会话未初始化。 */
-    fun memcardDir(): File? = sessionRoot?.let { File(it, "memcard/kov3hd") }
+    /**
+     * 记忆卡目录（卡文件必须在此目录内）。
+     * ★★ v73 迁到【外部可见存储】：参考实现（afbn）卡目录 =
+     * <外部files>/afbn/memcard/kov3hd（EmuPreferences.resolvePrivateBaseDir
+     * = getExternalFilesDir(null)，文件管理器可直接浏览）—— 用户可把已有
+     * 卡文件（如 kov3_player0.memcard）直接放进去再"选卡"。此前用内部
+     * filesDir/PGM3/memcard/kov3hd，用户无法导入已有卡 → 「插卡没变化」。
+     * 外部目录不可用时回退内部 filesDir（参考实现同回退语义）。
+     */
+    fun memcardDir(): File? {
+        val c = appContext ?: return null
+        val base = try {
+            c.getExternalFilesDir(null) ?: c.filesDir
+        } catch (_: Throwable) { c.filesDir }
+        return File(File(base, "PGM3"), "memcard/kov3hd")
+    }
 
     /** 金手指 ini 路径（<root>/cheats/kov3hd.ini；文件可不存在）。 */
     fun cheatIniFile(): File? = sessionRoot?.let { File(File(it, "cheats"), "kov3hd.ini") }
@@ -1312,8 +1354,16 @@ class Pgm3Engine private constructor() : EmulatorEngine {
         if (!started) return "会话未启动"
         val dir = memcardDir() ?: return "记忆卡目录未就绪"
         // 卡名净化：仅留常用文件名字符，防路径逃逸（核心侧同样校验）
-        val base = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        // ★ v73 对齐参考实现命名（全部静默完成，不弹任何提示）：
+        //   1) 没有扩展名 → 自动补 .bin（参考实现 lambda$show$5 同语义）；
+        //   2) 名字不含 1p/2p 玩家标记 → 自动加 "1p_"/"2p_" 前缀（参考
+        //      实现 matchesPlayer 直接弹 Toast 拒绝，这里改静默自动纠正）。
+        var base = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
             .ifBlank { return "卡名不能为空" }
+        if (!base.contains('.')) base += ".bin"
+        val tag = "${player + 1}p"
+        val stem = base.substringBeforeLast('.', missingDelimiterValue = base).lowercase()
+        if (!stem.contains(tag) && !stem.startsWith("p${player + 1}_")) base = "${tag}_" + base
         // ★ v71 目录兜底：open(O_CREAT) 不会建父目录，缺目录时核心
         //   realpath/写文件都会以"文件不存在"告终。
         try { if (!dir.isDirectory) dir.mkdirs() } catch (_: Throwable) {}
@@ -1374,6 +1424,18 @@ class Pgm3Engine private constructor() : EmulatorEngine {
             if (Pgm3Activity.nativeCardAction(CARD_SAVE, player, null)) null
             else cardError() ?: "存卡失败"
         } catch (t: Throwable) { "存卡失败：${t.message}" }
+    }
+
+    /**
+     * ★ v73 两个玩家卡全部落盘（对齐参考实现 onPause → Pgm3CardDialog.saveAll：
+     * 退后台/退出游戏时核心内存中的卡内容必须写回卡文件，否则游戏内
+     * 存档「退出就没」）。无卡/未启动时静默跳过；错误仅忽略不打扰用户。
+     */
+    fun saveAllCards() {
+        if (!started) return
+        for (p in 0..1) {
+            try { Pgm3Activity.nativeCardAction(CARD_SAVE, p, null) } catch (_: Throwable) {}
+        }
     }
 
     /** 卡状态位掩码（bit1 = 已插入）；[cardPath] = 当前选中卡路径。 */

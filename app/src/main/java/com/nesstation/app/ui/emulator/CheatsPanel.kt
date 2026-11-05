@@ -1527,6 +1527,13 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
             fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 17.sp
         )
         Spacer(Modifier.padding(3.dp))
+        // ★ v73 展示记忆卡目录（外部可见存储：文件管理器可直接放入已有卡文件）
+        Text(
+            "记忆卡目录（把已有卡文件放进去，选卡即可看到）：\n" +
+                (engine.memcardDir()?.absolutePath ?: "未就绪"),
+            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+        )
+        Spacer(Modifier.padding(3.dp))
         for (p in 0..1) {
             val status = engine.cardStatus(p)
             val inserted = status and 0x2 != 0
@@ -1588,13 +1595,21 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
 
         // 新建卡
         showNewCardFor?.let { p ->
-            var name by remember(p) { mutableStateOf("我的卡") }
+            // ★ v73 默认卡名对齐参考实现（Pgm3CardDialog：1p_yyyyMMddHHmm，.bin 由引擎自动补）
+            var name by remember(p) {
+                mutableStateOf(
+                    "${p + 1}p_" + java.text.SimpleDateFormat("yyyyMMddHHmm", java.util.Locale.US)
+                        .format(java.util.Date())
+                )
+            }
             AlertDialog(
                 onDismissRequest = { showNewCardFor = null },
                 confirmButton = {
                     TextButton(onClick = {
                         val err = engine.createCard(p, name)
-                        info = err ?: "已创建并选卡（P${p + 1}）：${name.trim()} —— 点\"插卡\"启用"
+                        info = err ?: ("已创建并选卡（P${p + 1}）：" +
+                            (engine.cardPath(p)?.let { File(it).name } ?: "") +
+                            " —— 点\"插卡\"启用")
                         if (err == null) engine.persistCardChoice(p, engine.cardPath(p))
                         showNewCardFor = null
                         tick++
@@ -1607,11 +1622,11 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
-                            label = { Text("卡名（原样作为卡文件名，扩展名可任意，如 .bin / .sav / .card）") },
+                            label = { Text("卡名（自动补 .bin 与 1p_/2p_ 玩家标记）") },
                             singleLine = true
                         )
                         Text(
-                            "核心不限扩展名：已有的非 .bin 卡文件可直接\"选卡\"使用；新建时输入什么名就存什么文件。",
+                            "已有的任意扩展名卡文件（.bin / .memcard / .sav…）放进上方记忆卡目录，\"选卡\"即可看到并使用。",
                             fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
                         )
                     }
@@ -1627,7 +1642,7 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                 title = { Text("选择 P${p + 1} 记忆卡", fontSize = 16.sp) },
                 text = {
                     if (cards.isEmpty()) {
-                        Text("记忆卡目录还没有卡文件 —— 先\"建卡\"。", fontSize = 13.sp)
+                        Text("记忆卡目录还没有卡文件 —— 先\"建卡\"，或把已有卡文件放进记忆卡目录。", fontSize = 13.sp)
                     } else {
                         LazyColumn(Modifier.heightIn(max = 280.dp)) {
                             itemsIndexed(cards) { _, f ->
@@ -1646,7 +1661,8 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                                         Text(f.name, fontSize = 13.sp)
                                         Text(
                                             java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-                                                .format(java.util.Date(f.lastModified())) + " · ${f.length() / 1024}KB",
+                                                .format(java.util.Date(f.lastModified())) +
+                                            (if (f.length() < 1024) " · ${f.length()}B" else " · ${f.length() / 1024}KB"),
                                             fontSize = 11.sp, color = Color(0xFF8FA0B5)
                                         )
                                     }
