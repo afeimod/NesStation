@@ -10,22 +10,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.border
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Eject
-import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Save
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,11 +34,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.nesstation.app.core.engine.AfbnEngine
 import com.nesstation.app.core.engine.CemuEngine
 import info.cemu.cemu.nativeinterface.NativeCheats
@@ -227,81 +230,99 @@ fun CheatsDialog(
     cheatKey: String = "",
     platform: GamePlatform = GamePlatform.NES
 ) {
-    val isPgm3 = engine is Pgm3Engine
-    val isFbn = engine is FbNeoEngine
-    val isAfbn = engine is AfbnEngine
-    val isCemu = engine is CemuEngine
-    val isRamCheat = engine is RamCheatEngine
+    val pgm3 = engine as? Pgm3Engine
+    val fbn = engine as? FbNeoEngine
+    val afbn = engine as? AfbnEngine
+    // Tab 显示条件提前算好（原逻辑不变：FBN 有卡槽选项 / afbn 支持插卡才双页）
+    val fbnCardSlots = if (fbn != null) {
+        remember(fbn.currentDriverName) { fbnCardSlotOptions(fbn) }
+    } else emptyList()
+    val afbnSupported = if (afbn != null) {
+        remember(afbn.hashCode()) {
+            try { afbn.pgm2CardSupported() && afbn.pgm2MaxCardSlots() > 0 } catch (_: Throwable) { false }
+        }
+    } else false
+    val showTabs = pgm3 != null || (fbn != null && fbnCardSlots.isNotEmpty()) ||
+        (afbn != null && afbnSupported)
     var tab by remember { mutableStateOf(0) } // PGM3: 0=金手指 1=插卡；FBN/afbn 同构
-    AlertDialog(
+
+    // ★★ v74 UI 重制：M3 AlertDialog → 自研紧凑弹窗。
+    //  横屏痛点：M3 弹窗内容高度不受控 + 大标题 + 底部整条按钮栏，横屏直接被裁掉。
+    //  现在 = 0.96 屏宽 + 0.92 屏高上限 + 头部一行（标题+✕）+ 内容区兜底滚动，
+    //  任何屏幕方向都完整可见且可滑；各列表仍用自己的 LazyColumn 滚动。
+    Dialog(
         onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("关闭") }
-        },
-        title = {
-            Column {
-                Text(
-                    if (isPgm3 || (isFbn && tab == 1) || (isAfbn && tab == 1)) "金手指 / 插卡" else "金手指",
-                    fontSize = 18.sp, fontWeight = FontWeight.SemiBold
-                )
-                Text(gameTitle, fontSize = 12.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        },
-        text = {
-            Column {
-                if (isPgm3) {
-                    TabRowLite(0, 1, tab) { tab = it }
-                    Spacer(Modifier.width(0.dp))
-                    when (tab) {
-                        0 -> Pgm3CheatsContent(engine as Pgm3Engine)
-                        else -> Pgm3CardsContent(engine as Pgm3Engine)
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        val screenH = LocalConfiguration.current.screenHeightDp.dp
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = Color(0xF71E2A3A),
+            contentColor = Color.White,
+            modifier = Modifier.fillMaxWidth(0.96f).heightIn(max = screenH * 0.92f)
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 8.dp)
+            ) {
+                // —— 头部一行：标题 + 游戏名 + ✕（替代原 title 区 + 底部关闭按钮栏）——
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (pgm3 != null || (showTabs && tab == 1)) "金手指 / 插卡" else "金手指",
+                            fontSize = 16.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            gameTitle, fontSize = 11.sp, color = Color(0xFF8FA0B5),
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
                     }
-                } else if (isFbn) {
-                    val e = engine as FbNeoEngine
-                    // ★ v71：FBN 核心注册了 fbneo-pgm2-ic-* 选项 = 该驱动有记忆卡槽
-                    val cardSlots = remember(e.currentDriverName) { fbnCardSlotOptions(e) }
-                    if (cardSlots.isEmpty()) {
-                        FbnCheatsContent(e)
-                    } else {
-                        TabRowLite(0, 1, tab) { tab = it }
-                        when (tab) {
-                            0 -> FbnCheatsContent(e)
-                            else -> FbnCardsContent(e, cardSlots)
+                    DialogCloseX(onDismiss)
+                }
+                if (showTabs) TabRowLite(0, 1, tab) { tab = it }
+                // —— 内容区：剩余高度内兜底滚动（各列表内部各自滚动，此处管列表之外的溢出）——
+                // ★ 用 Column 保持与旧版 AlertDialog.text 相同的纵向堆叠语义（各 Content
+                //   可能发出多个兄弟组件，用 Box 会重叠）
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    when {
+                        pgm3 != null -> when (tab) {
+                            0 -> Pgm3CheatsContent(pgm3)
+                            else -> Pgm3CardsContent(pgm3)
                         }
-                    }
-                } else if (isAfbn) {
-                    val e = engine as AfbnEngine
-                    val supported = remember(e.hashCode()) { try { e.pgm2CardSupported() && e.pgm2MaxCardSlots() > 0 } catch (_: Throwable) { false } }
-                    if (!supported) {
-                        AfbnCheatsContent(e)
-                    } else {
-                        TabRowLite(0, 1, tab) { tab = it }
-                        when (tab) {
-                            0 -> AfbnCheatsContent(e)
-                            else -> AfbnCardsContent(e)
+                        fbn != null -> {
+                            if (fbnCardSlots.isEmpty()) FbnCheatsContent(fbn)
+                            else when (tab) {
+                                0 -> FbnCheatsContent(fbn)
+                                else -> FbnCardsContent(fbn, fbnCardSlots)
+                            }
                         }
+                        afbn != null -> {
+                            if (!afbnSupported) AfbnCheatsContent(afbn)
+                            else when (tab) {
+                                0 -> AfbnCheatsContent(afbn)
+                                else -> AfbnCardsContent(afbn)
+                            }
+                        }
+                        engine is CemuEngine -> CemuCheatsContent(engine)
+                        engine is RamCheatEngine -> RamCheatsContent(engine, cheatKey, platform)
+                        else -> Text(
+                            "本核心暂无专用金手指面板。已支持：8/16 位主机（RetroArch .cht，添加/编辑/删除，每帧补丁热生效）、" +
+                                "街机 FBN（核心清单热生效 + ini 编辑，PGM2 游戏另有插卡页）、afbn 改版街机（原生金手指 + PGM2 插卡）、" +
+                                "三国战记3HD（PGM3 金手指 + IC 卡）、Wii U（Cemu 规则 txt）。" +
+                                "PSP / NDS(DraStic) 的金手指开关在 设置→核心设置。",
+                            fontSize = 12.sp, lineHeight = 17.sp
+                        )
                     }
-                } else if (isCemu) {
-                    CemuCheatsContent(engine as CemuEngine)
-                } else if (isRamCheat) {
-                    RamCheatsContent(engine as RamCheatEngine, cheatKey, platform)
-                } else {
-                    Text(
-                        "本核心暂无专用金手指面板。\n\n已支持的核心（同在本面板）：\n" +
-                            "· 8/16 位主机（NES/SFC/GB/GBA/MD/PCE/PSX/DC/NDS）—— RetroArch .cht 金手指，" +
-                            "支持添加/编辑/删除，每帧补丁热生效\n" +
-                            "· 街机（FBN）—— 核心清单（cheat.dat/ini 全量，热生效）+ ini 编辑（增/改/删）；" +
-                            "PGM2 游戏（三国战纪2/西游释厄传2/三国战纪3）另有插卡页\n" +
-                            "· 改版街机（afbn 核心：三剑圣等 666 改版）—— 核心原生金手指 + PGM2 插卡\n" +
-                            "· 三国战记3HD（PGM3）—— 金手指 + 虚拟插卡（IC 卡）\n" +
-                            "· Wii U（Cemu）—— 游戏规则 txt 清单开关\n" +
-                            "PSP / NDS(DraStic) 的金手指开关在 设置→核心设置。",
-                        fontSize = 13.sp, lineHeight = 19.sp
-                    )
                 }
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -326,6 +347,102 @@ private fun TabRowLite(a: Int, b: Int, sel: Int, onSelect: (Int) -> Unit) {
 @Composable
 private fun MsgLine(text: String?) = text?.let {
     Text(it, color = Color(0xFFE8A33D), fontSize = 12.sp, lineHeight = 16.sp)
+}
+
+// ---------------------------------------------------------------------------
+// ★★ v74 弹窗 UI 重制公共件 —— 横屏适配（屏高比例上限 + 兜底滚动）+ 紧凑件
+//   （用户反馈：弹窗臃肿 / 横屏显示不全 / 好多地方无法滑动）
+// ---------------------------------------------------------------------------
+
+/** 弹窗内列表高度上限 = 屏高的 46%（横屏短边也安全），最低 150dp。 */
+@Composable
+private fun dlgListMax(): Dp {
+    val h = LocalConfiguration.current.screenHeightDp.dp
+    return (h * 0.46f).coerceAtLeast(150.dp)
+}
+
+/** 选卡子弹窗列表高度上限 = 屏高的 56%，最低 140dp。 */
+@Composable
+private fun dlgPickMax(): Dp {
+    val h = LocalConfiguration.current.screenHeightDp.dp
+    return (h * 0.56f).coerceAtLeast(140.dp)
+}
+
+/** ★ v74 紧凑小按钮（替代 TextButton：约 24dp 高 vs 40dp+，一行能放更多操作）。 */
+@Composable
+private fun MiniBtn(
+    label: String,
+    filled: Boolean = false,
+    danger: Boolean = false,
+    active: Boolean = false,
+    onClick: () -> Unit
+) {
+    Text(
+        label,
+        fontSize = 12.sp,
+        color = when {
+            danger -> Color(0xFFE06C5A)
+            filled -> Color.White
+            active -> Color(0xFF7ED957)
+            else -> Color(0xFF9CC4E8)
+        },
+        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier
+            .background(
+                if (filled) Color(0xFF2F6FB2) else Color(0x338090A0),
+                RoundedCornerShape(7.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    )
+}
+
+/** ★ v74 可折叠使用说明（默认一行，点开才展开 —— 说明文字不再常驻撑高弹窗）。 */
+@Composable
+private fun HintBar(text: String) {
+    var open by remember { mutableStateOf(false) }
+    Column {
+        Row(
+            Modifier.fillMaxWidth().clickable { open = !open },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("使用说明", fontSize = 11.sp, color = Color(0xFF5B9BD5))
+            Spacer(Modifier.width(6.dp))
+            Text(if (open) "收起" else "展开", fontSize = 11.sp, color = Color(0xFF5B9BD5))
+        }
+        if (open) {
+            Text(
+                text, fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp,
+                modifier = Modifier.padding(top = 3.dp)
+            )
+        }
+    }
+}
+
+/** ★ v74 弹窗右上角小关闭钮（替代 M3 底部整条按钮栏）。 */
+@Composable
+private fun DialogCloseX(onClose: () -> Unit) {
+    Box(
+        Modifier
+            .size(26.dp)
+            .background(Color(0x338090A0), CircleShape)
+            .clickable(onClick = onClose),
+        contentAlignment = Alignment.Center
+    ) { Text("✕", fontSize = 12.sp, color = Color(0xFFC8D6E5)) }
+}
+
+/** ★ v74 紧凑选中指示（替代 48dp Checkbox，行高减半）。 */
+@Composable
+private fun PickDot(checked: Boolean) {
+    Box(
+        Modifier
+            .size(16.dp)
+            .border(1.dp, if (checked) Color(0xFF2F6FB2) else Color(0xFF5B7A99), CircleShape)
+            .background(if (checked) Color(0xFF2F6FB2) else Color.Transparent, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        if (checked) Box(Modifier.size(6.dp).background(Color.White, CircleShape))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +563,7 @@ private fun FbnCoreCheatsContent(engine: FbNeoEngine, coreOptions: List<FbnCoreO
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(max = dlgListMax()),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         itemsIndexed(coreOptions, key = { _, o -> o.key }) { _, o ->
@@ -467,12 +584,12 @@ private fun FbnCoreCheatsContent(engine: FbNeoEngine, coreOptions: List<FbnCoreO
                             fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
-                    TextButton(onClick = {
+                    MiniBtn("切换") {
                         val next = (selIdx + 1) % o.values.size
                         selected = selected + (o.key to next)
                         engine.setCoreOption(o.key, o.values[next].first)
                         persist(o, next)
-                    }) { Text("切换", fontSize = 12.sp) }
+                    }
                 }
                 if (expanded) {
                     o.values.forEachIndexed { vi, (vv, vl) ->
@@ -499,7 +616,7 @@ private fun FbnCoreCheatsContent(engine: FbNeoEngine, coreOptions: List<FbnCoreO
         }
     }
     Spacer(Modifier.padding(2.dp))
-    TextButton(onClick = {
+    MiniBtn("全部恢复默认") {
         val json = JSONObject()
         coreOptions.forEach { o ->
             engine.setCoreOption(o.key, o.default)
@@ -513,9 +630,6 @@ private fun FbnCoreCheatsContent(engine: FbNeoEngine, coreOptions: List<FbnCoreO
             o.key to (o.values.indexOfFirst { it.first == o.default }.takeIf { it >= 0 } ?: 0)
         }
         info = "已全部恢复默认（${coreOptions.size} 项）"
-    }) {
-        Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
-        Text("全部恢复默认", fontSize = 12.sp)
     }
     MsgLine(info)
     Text(
@@ -622,7 +736,7 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(max = dlgListMax()),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         itemsIndexed(entries, key = { _, e -> e.num }) { _, e ->
@@ -643,13 +757,13 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
                             fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
-                    TextButton(onClick = {
+                    MiniBtn("切换") {
                         val next = (selIdx + 1) % e.options.size
                         selected = selected + (e.num to next)
                         val v = "$next - ${e.options[next]}"
                         engine.setCoreOption(fbnCheatKey(driver, e), v)
                         persist(e, next)
-                    }) { Text("切换", fontSize = 12.sp) }
+                    }
                 }
                 if (expanded) {
                     e.options.forEachIndexed { oi, ot ->
@@ -675,10 +789,8 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
                     }
                     // ★ v71 编辑 / 删除（写回 ini，重启游戏后核心加载新定义）
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        TextButton(onClick = { editBlockIdx = entries.indexOfFirst { it.num == e.num }.takeIf { it >= 0 } }) {
-                            Text("编辑", fontSize = 11.sp)
-                        }
-                        TextButton(onClick = {
+                        MiniBtn("编辑") { editBlockIdx = entries.indexOfFirst { it.num == e.num }.takeIf { it >= 0 } }
+                        MiniBtn("删除", danger = true) {
                             try {
                                 val (pre, blocks) = readFbnIniBlocks(iniFile)
                                 val idx = entries.indexOfFirst { it.num == e.num }
@@ -690,7 +802,7 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
                                     info = "已删除「${e.name}」—— 重启游戏后生效"
                                 }
                             } catch (t: Throwable) { info = "删除失败：${t.message}" }
-                        }) { Text("删除", fontSize = 11.sp, color = Color(0xFFD06050)) }
+                        }
                     }
                 }
             }
@@ -698,7 +810,7 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
     }
     Spacer(Modifier.padding(2.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        TextButton(onClick = {
+        MiniBtn("全部恢复默认") {
             val json = JSONObject()
             entries.forEach { e ->
                 val v = "${e.default} - ${e.options.getOrElse(e.default) { "" }}"
@@ -711,20 +823,12 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
             } catch (_: Throwable) {}
             selected = entries.associate { it.num to it.default }
             info = "已全部恢复默认（${entries.size} 项）"
-        }) {
-            Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
-            Text("全部恢复默认", fontSize = 12.sp)
         }
         ImportCheatFileButton(cheatsDir, driver) { ok ->
             info = if (ok) "已导入：$driver.ini（重新打开本面板生效）" else "导入失败"
             if (ok) entries = parseFbnCheatIni(iniFile)
         }
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        TextButton(onClick = { showAddEntry = true }) {
-            Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
-            Text("添加自定义条目", fontSize = 12.sp)
-        }
+        MiniBtn("添加自定义条目") { showAddEntry = true }
     }
     MsgLine(info)
     Text(
@@ -741,13 +845,13 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
         AlertDialog(
             onDismissRequest = { showAddEntry = false },
             confirmButton = {
-                TextButton(onClick = {
+                MiniBtn("写入 ini", filled = true) {
                     val a = cheatHexOrDec(enAddr)
                     val v = cheatHexOrDec(enVal)
                     if (a < 0 || v < 0 || a > 0xFFFFFFL || v > 0xFFL) {
                         info = "地址需 0x0–0xFFFFFF，值需 0x0–0xFF（示例：地址 0x815D70，值 0x64）"
                         showAddEntry = false
-                        return@TextButton
+                        return@MiniBtn
                     }
                     try {
                         iniFile.parentFile?.mkdirs()
@@ -767,10 +871,10 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
                         info = "写入失败：${t.message}"
                     }
                     showAddEntry = false
-                }) { Text("写入 ini") }
+                }
             },
-            dismissButton = { TextButton(onClick = { showAddEntry = false }) { Text("取消") } },
-            title = { Text("添加自定义金手指（FBNeo）", fontSize = 16.sp) },
+            dismissButton = { MiniBtn("取消") { showAddEntry = false } },
+            title = { Text("添加自定义金手指（FBNeo）", fontSize = 14.sp) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
@@ -815,13 +919,13 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
             AlertDialog(
                 onDismissRequest = { editBlockIdx = null },
                 confirmButton = {
-                    TextButton(onClick = {
+                    MiniBtn("保存", filled = true) {
                         val name = edName.trim().ifBlank { "未命名" }
                         val def = edDefault.trim().toIntOrNull()?.coerceIn(0, 999) ?: 0
                         val body = edLines.trim()
                         if (body.isEmpty()) {
                             info = "选项行不能为空（每行格式：N \"选项文本\", cpu, 地址, 值）"
-                            return@TextButton
+                            return@MiniBtn
                         }
                         try {
                             val (pre, blks) = readFbnIniBlocks(iniFile)
@@ -837,10 +941,10 @@ private fun FbnIniCheatsContent(engine: FbNeoEngine, cheatsDir: File, iniFile: F
                             info = "已保存「$name」—— 重启游戏后生效"
                             editBlockIdx = null
                         } catch (t: Throwable) { info = "保存失败：${t.message}" }
-                    }) { Text("保存") }
+                    }
                 },
-                dismissButton = { TextButton(onClick = { editBlockIdx = null }) { Text("取消") } },
-                title = { Text("编辑金手指条目", fontSize = 16.sp) },
+                dismissButton = { MiniBtn("取消") { editBlockIdx = null } },
+                title = { Text("编辑金手指条目", fontSize = 14.sp) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
@@ -924,8 +1028,8 @@ private fun FbnCardsContent(engine: FbNeoEngine, cardSlots: List<FbnCoreOption>)
     Column(Modifier.fillMaxWidth()) {
         Text(
             "PGM2 基板 IC 卡（三国战纪2群雄争霸 / 西游释厄传2 / 三国战纪3 等）。" +
-                (cardDir?.let { "\n卡文件目录：${it.absolutePath}" } ?: ""),
-            fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 16.sp
+                (cardDir?.let { " · 卡目录：${it.absolutePath}" } ?: ""),
+            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
         )
         Spacer(Modifier.padding(2.dp))
         for (opt in cardSlots) {
@@ -935,7 +1039,7 @@ private fun FbnCardsContent(engine: FbNeoEngine, cardSlots: List<FbnCoreOption>)
             Column(
                 Modifier.fillMaxWidth()
                     .background(Color(0x14203040), RoundedCornerShape(10.dp))
-                    .padding(8.dp)
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
             ) {
                 Text(
                     "$slotLabel 记忆卡 —— " + when {
@@ -949,25 +1053,19 @@ private fun FbnCardsContent(engine: FbNeoEngine, cardSlots: List<FbnCoreOption>)
                     },
                     fontSize = 13.sp, fontWeight = FontWeight.SemiBold
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    TextButton(onClick = { apply(opt, "empty") }) { Text("空槽", fontSize = 11.sp) }
-                    TextButton(onClick = { apply(opt, "default") }) { Text("默认卡", fontSize = 11.sp) }
-                    TextButton(onClick = { apply(opt, "temporary") }) { Text("临时卡", fontSize = 11.sp) }
-                    TextButton(onClick = { apply(opt, "new") }) { Text("建卡", fontSize = 11.sp) }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    TextButton(onClick = { apply(opt, "latest_new_card_file") }) { Text("最新新卡", fontSize = 11.sp) }
-                    TextButton(onClick = { pickFor = opt.key }) { Text("选卡（${files.size}）", fontSize = 11.sp) }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    MiniBtn("空槽") { apply(opt, "empty") }
+                    MiniBtn("默认卡") { apply(opt, "default") }
+                    MiniBtn("临时卡") { apply(opt, "temporary") }
+                    MiniBtn("建卡") { apply(opt, "new") }
+                    MiniBtn("最新新卡") { apply(opt, "latest_new_card_file") }
+                    MiniBtn("选卡(${files.size})") { pickFor = opt.key }
                 }
             }
             Spacer(Modifier.padding(2.dp))
         }
         MsgLine(info)
-        Text(
-            "核心在每次切换时自动保存当前卡。新建的卡要等下次启动才会进「选卡」列表（本局用「最新新卡」即可）。" +
-                "建议在选人画面之前完成选卡。",
-            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
-        )
+        HintBar("核心在每次切换时自动保存当前卡；新建的卡要等下次启动才进「选卡」列表（本局用「最新新卡」即可）；建议在选人画面之前完成选卡。")
     }
 
     pickFor?.let { key ->
@@ -976,22 +1074,22 @@ private fun FbnCardsContent(engine: FbNeoEngine, cardSlots: List<FbnCoreOption>)
             val (_, files) = splitFbnCardValues(opt)
             AlertDialog(
                 onDismissRequest = { pickFor = null },
-                confirmButton = { TextButton(onClick = { pickFor = null }) { Text("关闭") } },
-                title = { Text("选择 ${opt.key.substringAfterLast("fbneo-pgm2-ic-").uppercase()} 记忆卡", fontSize = 16.sp) },
+                confirmButton = { MiniBtn("关闭", filled = true) { pickFor = null } },
+                title = { Text("选择 ${opt.key.substringAfterLast("fbneo-pgm2-ic-").uppercase()} 记忆卡", fontSize = 14.sp) },
                 text = {
                     if (files.isEmpty()) {
                         Text("还没有卡文件 —— 点「建卡」新建，或「默认卡」用核心自建卡。", fontSize = 13.sp)
                     } else {
-                        LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                        LazyColumn(Modifier.heightIn(max = dlgPickMax())) {
                             itemsIndexed(files) { _, (path, label) ->
                                 Row(
                                     Modifier.fillMaxWidth().clickable {
                                         apply(opt, path)
                                         pickFor = null
-                                    }.padding(horizontal = 4.dp, vertical = 8.dp),
+                                    }.padding(horizontal = 4.dp, vertical = 5.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Checkbox(checked = (selected[opt.key] ?: opt.default) == path, onCheckedChange = null)
+                                    PickDot(checked = (selected[opt.key] ?: opt.default) == path)
                                     Text(label.ifBlank { File(path).name }, fontSize = 13.sp)
                                 }
                             }
@@ -1091,7 +1189,7 @@ private fun AfbnCheatsContent(engine: AfbnEngine) {
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(max = dlgListMax()),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         itemsIndexed(entries) { _, (idx, name, opts) ->
@@ -1115,12 +1213,12 @@ private fun AfbnCheatsContent(engine: AfbnEngine) {
                         }
                     }
                     if (opts.size > 1) {
-                        TextButton(onClick = {
+                        MiniBtn("切换") {
                             val next = (selIdx + 1) % opts.size
                             val ok = engine.cheatSetOption(idx, next)
                             info = if (ok) null else "应用失败（条目 $idx）"
                             refresh()
-                        }) { Text("切换", fontSize = 12.sp) }
+                        }
                     }
                 }
                 if (expanded && opts.isNotEmpty()) {
@@ -1148,13 +1246,10 @@ private fun AfbnCheatsContent(engine: AfbnEngine) {
         }
     }
     Spacer(Modifier.padding(2.dp))
-    TextButton(onClick = {
+    MiniBtn("全部恢复默认") {
         engine.cheatResetAll()
         info = "已全部恢复默认"
         refresh()
-    }) {
-        Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
-        Text("全部恢复默认", fontSize = 12.sp)
     }
     MsgLine(info)
 }
@@ -1199,7 +1294,7 @@ private fun AfbnCardsContent(engine: AfbnEngine) {
         Text(
             "PGM2 基板 IC 卡 —— 武将/角色进度存 IC 卡。核心自动管理卡文件（建卡自产" +
                 " p<槽>_memorycard_<时间戳>.pg2，模板内置）。先建卡或选卡，再插卡。",
-            fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 16.sp
+            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
         )
         Spacer(Modifier.padding(3.dp))
         for (s in 0 until slots) {
@@ -1209,7 +1304,7 @@ private fun AfbnCardsContent(engine: AfbnEngine) {
             Column(
                 Modifier.fillMaxWidth()
                     .background(Color(0x14203040), RoundedCornerShape(10.dp))
-                    .padding(8.dp)
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
             ) {
                 Text(
                     "P${s + 1} 记忆卡" + when {
@@ -1224,31 +1319,31 @@ private fun AfbnCardsContent(engine: AfbnEngine) {
                     path?.let { File(it).name } ?: "未选卡",
                     fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    TextButton(onClick = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    MiniBtn("建卡") {
                         val e = engine.pgm2CreateCard(s)
                         info = e ?: "已建卡（P${s + 1}）：${engine.pgm2CardPath(s)?.let { f -> File(f).name } ?: ""} —— 点「插卡」启用"
                         tick += 1
-                    }) { Text("建卡", fontSize = 11.sp) }
-                    TextButton(onClick = { pickFor = s }) { Text("选卡", fontSize = 11.sp) }
+                    }
+                    MiniBtn("选卡") { pickFor = s }
                     if (enabled) {
-                        TextButton(onClick = {
+                        MiniBtn("弹卡") {
                             val e = engine.pgm2EjectCard(s)
                             info = e ?: "已弹卡（P${s + 1}）"
                             tick += 1
-                        }) { Text("弹卡", fontSize = 11.sp) }
+                        }
                     } else {
-                        TextButton(onClick = {
+                        MiniBtn("插卡") {
                             val e = engine.pgm2InsertCard(s)
                             info = e ?: "已插卡（P${s + 1}）"
                             tick += 1
-                        }) { Text("插卡", fontSize = 11.sp) }
+                        }
                     }
-                    TextButton(onClick = {
+                    MiniBtn("存卡") {
                         val e = engine.pgm2SaveCard(s)
                         info = e ?: "已存卡（P${s + 1}）"
                         tick += 1
-                    }) { Text("存卡", fontSize = 11.sp) }
+                    }
                 }
             }
             Spacer(Modifier.padding(2.dp))
@@ -1283,13 +1378,13 @@ private fun AfbnCardsContent(engine: AfbnEngine) {
         }
         AlertDialog(
             onDismissRequest = { pickFor = null },
-            confirmButton = { TextButton(onClick = { pickFor = null }) { Text("关闭") } },
-            title = { Text("选择 P${slot + 1} 记忆卡", fontSize = 16.sp) },
+            confirmButton = { MiniBtn("关闭", filled = true) { pickFor = null } },
+            title = { Text("选择 P${slot + 1} 记忆卡", fontSize = 14.sp) },
             text = {
                 if (files.isEmpty()) {
                     Text("核心未返回卡文件清单 —— 先「建卡」。", fontSize = 13.sp)
                 } else {
-                    LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                    LazyColumn(Modifier.heightIn(max = dlgPickMax())) {
                         itemsIndexed(files) { _, f ->
                             Row(
                                 Modifier.fillMaxWidth().clickable {
@@ -1297,10 +1392,10 @@ private fun AfbnCardsContent(engine: AfbnEngine) {
                                     info = err ?: "已选卡（P${slot + 1}）：${File(f).name} —— 点「插卡」启用"
                                     pickFor = null
                                     tick += 1
-                                }.padding(horizontal = 4.dp, vertical = 8.dp),
+                                }.padding(horizontal = 4.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Checkbox(checked = engine.pgm2CardPath(slot) == f, onCheckedChange = null)
+                                PickDot(checked = engine.pgm2CardPath(slot) == f)
                                 Text(File(f).name, fontSize = 13.sp)
                             }
                         }
@@ -1345,10 +1440,7 @@ private fun ImportToButton(
         }
         onResult(ok)
     }
-    TextButton(onClick = { launcher.launch("*/*") }) {
-        Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
-        Text(label, fontSize = 12.sp)
-    }
+    MiniBtn(label) { launcher.launch("*/*") }
 }
 
 // ---------------------------------------------------------------------------
@@ -1421,7 +1513,7 @@ private fun Pgm3CheatsContent(engine: Pgm3Engine) {
         return
     }
     LazyColumn(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(max = dlgListMax()),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         itemsIndexed(entries) { _, (idx, name, opts) ->
@@ -1443,12 +1535,12 @@ private fun Pgm3CheatsContent(engine: Pgm3Engine) {
                             fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
-                    TextButton(onClick = {
+                    MiniBtn("切换") {
                         val next = (selIdx + 1) % opts.size.coerceAtLeast(1)
                         val ok = engine.cheatSetOption(idx, next)
                         info = if (ok) null else "应用失败（条目 $idx）"
                         refresh()
-                    }) { Text("切换", fontSize = 12.sp) }
+                    }
                 }
                 if (expanded) {
                     // ★ v70：全部选项直选（radio）
@@ -1480,13 +1572,10 @@ private fun Pgm3CheatsContent(engine: Pgm3Engine) {
     }
     Spacer(Modifier.padding(2.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        TextButton(onClick = {
+        MiniBtn("全部恢复默认") {
             engine.cheatResetAll()
             info = "已全部恢复默认"
             refresh()
-        }) {
-            Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
-            Text("全部恢复默认", fontSize = 12.sp)
         }
         // ★ v70：导入 kov3hd 金手指 ini（覆盖后需重进游戏让核心重新解析）
         engine.cheatIniFile()?.let { dst ->
@@ -1521,19 +1610,16 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
     }
 
     Column(Modifier.fillMaxWidth()) {
+        // ★ v74 卡目录一行常显（外部放卡文件的入口），使用说明折叠进 HintBar
         Text(
-            "武将进度/装备/功勋保存在 IC 卡（记忆卡）里：先建卡或选卡，再插卡；" +
-                "游戏内存档后自动写入卡文件。选中卡会在下次启动时自动插入。",
-            fontSize = 12.sp, color = Color(0xFF8FA0B5), lineHeight = 17.sp
+            "卡目录：" + (engine.memcardDir()?.absolutePath ?: "未就绪"),
+            fontSize = 10.sp, color = Color(0xFF6E8299), lineHeight = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis
         )
-        Spacer(Modifier.padding(3.dp))
-        // ★ v73 展示记忆卡目录（外部可见存储：文件管理器可直接放入已有卡文件）
-        Text(
-            "记忆卡目录（把已有卡文件放进去，选卡即可看到）：\n" +
-                (engine.memcardDir()?.absolutePath ?: "未就绪"),
-            fontSize = 11.sp, color = Color(0xFF8FA0B5), lineHeight = 15.sp
+        HintBar(
+            "武将进度/装备/功勋保存在 IC 卡（记忆卡）里：先建卡或选卡，再插卡；游戏内存档后自动写入卡文件，" +
+                "选中卡会在下次启动时自动插入。已有卡文件（任意扩展名）放进上面的卡目录，点「选卡」即可看到并使用。"
         )
-        Spacer(Modifier.padding(3.dp))
+        Spacer(Modifier.padding(2.dp))
         for (p in 0..1) {
             val status = engine.cardStatus(p)
             val inserted = status and 0x2 != 0
@@ -1543,7 +1629,7 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
             Row(
                 Modifier.fillMaxWidth()
                     .background(Color(0x14203040), RoundedCornerShape(10.dp))
-                    .padding(8.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
@@ -1561,28 +1647,20 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                         fontSize = 11.sp, color = Color(0xFF8FA0B5), maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                 }
-                Column(horizontalAlignment = Alignment.End) {
-                    Row {
-                        TextButton(onClick = { showNewCardFor = p }) { Text("建卡", fontSize = 11.sp) }
-                        TextButton(onClick = { showPickFor = p }) { Text("选卡", fontSize = 11.sp) }
-                    }
-                    Row {
-                        if (inserted) {
-                            TextButton(onClick = { act(p, "eject") }) {
-                                Icon(Icons.Rounded.Eject, null, Modifier.width(14.dp)); Text("弹卡", fontSize = 11.sp)
-                            }
-                        } else {
-                            TextButton(onClick = {
-                                val e = engine.insertCard(p)
-                                info = e ?: "已插卡（P${p + 1}）"
-                                if (e == null) engine.persistCardChoice(p, engine.cardPath(p))
-                                tick++
-                            }) { Text("插卡", fontSize = 11.sp) }
-                        }
-                        TextButton(onClick = { act(p, "save") }) {
-                            Icon(Icons.Rounded.Save, null, Modifier.width(14.dp)); Text("存卡", fontSize = 11.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    MiniBtn("建卡") { showNewCardFor = p }
+                    MiniBtn("选卡") { showPickFor = p }
+                    if (inserted) {
+                        MiniBtn("弹卡") { act(p, "eject") }
+                    } else {
+                        MiniBtn("插卡") {
+                            val e = engine.insertCard(p)
+                            info = e ?: "已插卡（P${p + 1}）"
+                            if (e == null) engine.persistCardChoice(p, engine.cardPath(p))
+                            tick++
                         }
                     }
+                    MiniBtn("存卡") { act(p, "save") }
                 }
             }
             Spacer(Modifier.padding(2.dp))
@@ -1605,7 +1683,7 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
             AlertDialog(
                 onDismissRequest = { showNewCardFor = null },
                 confirmButton = {
-                    TextButton(onClick = {
+                    MiniBtn("创建", filled = true) {
                         val err = engine.createCard(p, name)
                         info = err ?: ("已创建并选卡（P${p + 1}）：" +
                             (engine.cardPath(p)?.let { File(it).name } ?: "") +
@@ -1613,10 +1691,10 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                         if (err == null) engine.persistCardChoice(p, engine.cardPath(p))
                         showNewCardFor = null
                         tick++
-                    }) { Text("创建") }
+                    }
                 },
-                dismissButton = { TextButton(onClick = { showNewCardFor = null }) { Text("取消") } },
-                title = { Text("新建 P${p + 1} 记忆卡", fontSize = 16.sp) },
+                dismissButton = { MiniBtn("取消") { showNewCardFor = null } },
+                title = { Text("新建 P${p + 1} 记忆卡", fontSize = 14.sp) },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         OutlinedTextField(
@@ -1638,13 +1716,13 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
         showPickFor?.let { p ->
             AlertDialog(
                 onDismissRequest = { showPickFor = null },
-                confirmButton = { TextButton(onClick = { showPickFor = null }) { Text("关闭") } },
-                title = { Text("选择 P${p + 1} 记忆卡", fontSize = 16.sp) },
+                confirmButton = { MiniBtn("关闭", filled = true) { showPickFor = null } },
+                title = { Text("选择 P${p + 1} 记忆卡", fontSize = 14.sp) },
                 text = {
                     if (cards.isEmpty()) {
                         Text("记忆卡目录还没有卡文件 —— 先\"建卡\"，或把已有卡文件放进记忆卡目录。", fontSize = 13.sp)
                     } else {
-                        LazyColumn(Modifier.heightIn(max = 280.dp)) {
+                        LazyColumn(Modifier.heightIn(max = dlgPickMax())) {
                             itemsIndexed(cards) { _, f ->
                                 Row(
                                     Modifier.fillMaxWidth().clickable {
@@ -1653,10 +1731,10 @@ private fun Pgm3CardsContent(engine: Pgm3Engine) {
                                         if (err == null) engine.persistCardChoice(p, f.absolutePath)
                                         showPickFor = null
                                         tick++
-                                    }.padding(horizontal = 4.dp, vertical = 8.dp),
+                                    }.padding(horizontal = 4.dp, vertical = 5.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Checkbox(checked = engine.cardPath(p) == f.absolutePath, onCheckedChange = null)
+                                    PickDot(checked = engine.cardPath(p) == f.absolutePath)
                                     Column {
                                         Text(f.name, fontSize = 13.sp)
                                         Text(
@@ -1707,7 +1785,7 @@ private fun CemuCheatsContent(engine: CemuEngine) {
             fontSize = 13.sp, lineHeight = 19.sp
         )
         else -> LazyColumn(
-            modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(max = dlgListMax()),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             itemsIndexed(enabled) { i, on ->
@@ -1734,10 +1812,7 @@ private fun CemuCheatsContent(engine: CemuEngine) {
         }
     }
     Spacer(Modifier.padding(2.dp))
-    TextButton(onClick = { reload() }) {
-        Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
-        Text("重新加载金手指", fontSize = 12.sp)
-    }
+    MiniBtn("重新加载金手指") { reload() }
     MsgLine(msg)
 }
 
@@ -2003,10 +2078,7 @@ private fun RamCheatsContent(
             if (ok) reloadTick++
         }
         // ★ v70：没有文件也能直接新建条目（首次创建 .cht）
-        TextButton(onClick = { showAdd = true }) {
-            Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
-            Text("添加金手指", fontSize = 12.sp)
-        }
+        MiniBtn("添加金手指") { showAdd = true }
         MsgLine(info)
         // ★ v70：新建对话框（空文件状态也可用）
         if (showAdd) {
@@ -2036,7 +2108,7 @@ private fun RamCheatsContent(
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp),
+        modifier = Modifier.fillMaxWidth().heightIn(max = dlgListMax()),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         itemsIndexed(entries, key = { _, e -> e.index }) { _, e ->
@@ -2066,8 +2138,8 @@ private fun RamCheatsContent(
                     )
                 }
                 // ★ v70 编辑器：编辑 / 删除（写回 .cht 后立即重放补丁）
-                TextButton(onClick = { editTarget = e }) { Text("编辑", fontSize = 11.sp) }
-                TextButton(onClick = {
+                MiniBtn("编辑") { editTarget = e }
+                MiniBtn("删除", danger = true) {
                     val list = entries.filterNot { it.index == e.index }
                     try {
                         writeRetroArchCht(chtFile, list)
@@ -2078,27 +2150,21 @@ private fun RamCheatsContent(
                     } catch (t: Throwable) {
                         info = "删除失败：${t.message}"
                     }
-                }) { Text("删除", fontSize = 11.sp, color = Color(0xFFE06C5A)) }
+                }
             }
         }
     }
     Spacer(Modifier.padding(2.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        TextButton(onClick = {
+        MiniBtn("全部关闭") {
             val off = entries.filter { it.supported }.associate { it.index to false }
             enabled = off
             saveRamCheatEnabled(context, cheatKey, off)
             try { engine.pushCheatPatchList(buildRamPatchList(entries, off, platform)) } catch (_: Throwable) {}
             info = "已全部关闭"
-        }) {
-            Icon(Icons.Rounded.Refresh, null, Modifier.width(16.dp))
-            Text("全部关闭", fontSize = 12.sp)
         }
         // ★ v70：添加金手指条目（内存地址/值自定义）
-        TextButton(onClick = { showAdd = true }) {
-            Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
-            Text("添加金手指", fontSize = 12.sp)
-        }
+        MiniBtn("添加金手指") { showAdd = true }
         RamImportCheatFileButton(chtFile) { ok ->
             info = if (ok) "已导入 ${chtFile.name}（覆盖旧文件）" else "导入失败"
             if (ok) reloadTick++
@@ -2190,7 +2256,7 @@ private fun RamCheatEditDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
-            TextButton(onClick = {
+            MiniBtn("保存并生效", filled = true) {
                 val a = cheatHexOrDec(addr)
                 val vRaw = cheatHexOrDec(value)
                 val mask = cheatHexOrDec(maskText)
@@ -2215,10 +2281,10 @@ private fun RamCheatEditDialog(
                         )
                     }
                 }
-            }) { Text("保存并生效") }
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-        title = { Text(title, fontSize = 16.sp) },
+        dismissButton = { MiniBtn("取消") { onDismiss() } },
+        title = { Text(title, fontSize = 14.sp) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedTextField(
@@ -2236,13 +2302,7 @@ private fun RamCheatEditDialog(
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("字节数", fontSize = 12.sp, color = Color(0xFF8FA0B5))
                     listOf("1 字节" to 0, "2 字节" to 1, "4 字节" to 2).forEach { (label, idx) ->
-                        TextButton(onClick = { sizeIdx = idx }) {
-                            Text(
-                                label, fontSize = 12.sp,
-                                color = if (sizeIdx == idx) Color(0xFF7ED957) else Color(0xFF8FA0B5),
-                                fontWeight = if (sizeIdx == idx) FontWeight.SemiBold else FontWeight.Normal
-                            )
-                        }
+                        MiniBtn(label, active = sizeIdx == idx) { sizeIdx = idx }
                     }
                 }
                 OutlinedTextField(
@@ -2283,8 +2343,5 @@ private fun RamImportCheatFileButton(dst: File, onResult: (Boolean) -> Unit) {
         }
         onResult(ok)
     }
-    TextButton(onClick = { launcher.launch("*/*") }) {
-        Icon(Icons.Rounded.Add, null, Modifier.width(16.dp))
-        Text("导入 .cht 文件", fontSize = 12.sp)
-    }
+    MiniBtn("导入 .cht 文件") { launcher.launch("*/*") }
 }

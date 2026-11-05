@@ -12263,12 +12263,13 @@ private fun CoreLogDialog(platform: GamePlatform, onDismiss: () -> Unit) {
     }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("核心日志（诊断）") },
+        title = { Text("核心日志（诊断）", fontSize = 16.sp) },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp)
+                    // ★ v74 横屏适配：固定 420dp 横屏直接超屏，改为屏高 58%（最低 180dp）
+                    .heightIn(max = (LocalConfiguration.current.screenHeightDp.dp * 0.58f).coerceAtLeast(180.dp))
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
@@ -12478,7 +12479,7 @@ private fun SlotPickerDialog(
         onDismissRequest = onDismiss,
         title = {
             Column {
-                Text(if (mode == "save") "保存即时存档" else "读取即时存档")
+                Text(if (mode == "save") "保存即时存档" else "读取即时存档", fontSize = 16.sp)
                 Text(
                     text = gameTitle,
                     fontSize = 12.sp,
@@ -12508,7 +12509,8 @@ private fun SlotPickerDialog(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 360.dp),
+                        // ★ v74 横屏适配：固定 360dp 横屏超屏，改为屏高 52%（最低 180dp）
+                        .heightIn(max = (LocalConfiguration.current.screenHeightDp.dp * 0.52f).coerceAtLeast(180.dp)),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(slotStates, key = { it.slot }) { state ->
@@ -13145,7 +13147,7 @@ private fun DosKeyPickerDialog(
             modifier = Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth(0.9f)
-                .heightIn(max = 400.dp)
+                .heightIn(max = (LocalConfiguration.current.screenHeightDp.dp * 0.86f).coerceAtLeast(240.dp))
                 .background(Color(0xEE1E2A3A), RoundedCornerShape(16.dp))
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
@@ -13333,7 +13335,7 @@ private fun DosKeyDeleteDialog(
             modifier = Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth(0.85f)
-                .heightIn(max = 350.dp)
+                .heightIn(max = (LocalConfiguration.current.screenHeightDp.dp * 0.8f).coerceAtLeast(220.dp))
                 .background(Color(0xEE1E2A3A), RoundedCornerShape(16.dp))
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
@@ -15339,7 +15341,7 @@ private fun KeyVisibilityDialog(
             modifier = Modifier
                 .align(Alignment.Center)
                 .fillMaxWidth(0.9f)
-                .heightIn(max = 460.dp)
+                .heightIn(max = (LocalConfiguration.current.screenHeightDp.dp * 0.86f).coerceAtLeast(240.dp))
                 .background(Color(0xEE1E2A3A), RoundedCornerShape(16.dp))
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
@@ -15914,9 +15916,9 @@ private fun SettingsPanel(
     )
 
     Column(
-        modifier = Modifier.fillMaxWidth().padding(16.dp)
+        modifier = Modifier.fillMaxWidth().padding(12.dp)
             .background(Color(0xDD1E2A3A), RoundedCornerShape(16.dp))
-            .padding(16.dp)
+            .padding(12.dp)
             .verticalScroll(rememberScrollState())
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
