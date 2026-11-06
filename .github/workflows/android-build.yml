@@ -102,19 +102,23 @@ jobs:
           # 缺失即在 :eden-core:configureCMake* 处报
           # [CXX1300] CMake '3.31.6' was not found in SDK, PATH。
           #
-          # ★ CMake 不走 sdkmanager：runner 的 sdkmanager 安装 cmake 包会静默
-          #   失败（2026-11-06 构建日志里 cmake/3.30.4 全程 0 引用，被 || true
-          #   吞掉；多包同装时还可能拖挂其他组件）。改为从官方仓库直连下载
-          #   zip 解压 —— dl.google.com/android/repository/cmake-<版本>-linux.zip
-          #   （即 repository2-3.xml 里 sdkmanager 用的同一 URL，sha1 亦来自
-          #   该索引），zip 顶层就是 bin/、doc/（无包裹目录），自带
-          #   bin/cmake + bin/ninja，解压到 $ANDROID_HOME/cmake/<版本>/ 即是
-          #   AGP 期望的布局。
+          # ★ NDK / CMake 均不走 sdkmanager：runner 的 sdkmanager 安装大组件
+          #   （cmake、ndk）会静默失败——2026-11-06 构建日志里 cmake/3.30.4 与
+          #   ndk/28.2.13676358 全程 0 引用、目录不存在，错误被
+          #   "> /dev/null 2>&1 || true" 吞掉（多包同装时还可能拖挂其他组件）。
+          #   改为从官方仓库直连下载 zip 解压，与 sdkmanager 用同一 URL 源
+          #   （dl.google.com/android/repository/，见 repository2-3.xml 索引）：
+          #   · CMake: cmake-<版本>-linux.zip，顶层就是 bin/、doc/，解压到
+          #     $ANDROID_HOME/cmake/<版本>/ 即是 AGP 期望布局。
+          #   · NDK: android-ndk-<r版本>-linux.zip，顶层为 android-ndk-<r版本>/，
+          #     需挪到 $ANDROID_HOME/ndk/<Pkg.Revision>/（AGP 按 source.properties
+          #     的 Pkg.Revision 匹配目录名）。两个 NDK zip 的 sha1 取自官方
+          #     repository2-3.xml 索引；Pkg.Revision 已离线核实：
+          #     r28c→28.2.13676358、r29→29.0.14206865。
+          #   platforms / build-tools 用 sdkmanager 装小包无此问题（镜像已预装）。
           sdkmanager \
             "platforms;android-34" \
             "build-tools;34.0.0" \
-            "ndk;28.2.13676358" \
-            "ndk;29.0.14206865" \
             > /dev/null 2>&1 || true
           # 直连安装 CMake（下载 → sha1 校验 → 解压 → 验证；幂等，已装跳过）
           install_cmake() {
@@ -133,6 +137,37 @@ jobs:
               || { echo "::warning::cmake $v 解压失败"; return 1; }
             test -x "$ANDROID_HOME/cmake/$v/bin/cmake"
           }
+          # 直连安装 NDK（下载 → sha1 校验 → 解压 → 校验 Pkg.Revision →
+          # 挪入 SDK → 验证 ndk-build；幂等，已装跳过）。参数：
+          #   <Pkg.Revision> <ReleaseName> <sha1>，如
+          #   install_ndk "28.2.13676358" "r28c" "a7b54a5de87fecd125a17d54f73c446199e72a64"
+          install_ndk() {
+            local rev="$1" rel="$2" sha="$3"
+            if [ -x "$ANDROID_HOME/ndk/$rev/ndk-build" ]; then
+              echo "ndk $rev 已存在，跳过"
+              return 0
+            fi
+            curl -fsSL -o "/tmp/ndk-$rel-linux.zip" \
+              "https://dl.google.com/android/repository/android-ndk-$rel-linux.zip" \
+              || { echo "::error::ndk $rev 下载失败"; return 1; }
+            echo "$sha  /tmp/ndk-$rel-linux.zip" | sha1sum -c - >/dev/null 2>&1 \
+              || { echo "::error::ndk $rev sha1 校验失败（官方索引更新过？）"; return 1; }
+            rm -rf "/tmp/ndk-$rel-extract"
+            mkdir -p "/tmp/ndk-$rel-extract"
+            unzip -q "/tmp/ndk-$rel-linux.zip" -d "/tmp/ndk-$rel-extract" \
+              || { echo "::error::ndk $rev 解压失败"; return 1; }
+            test -f "/tmp/ndk-$rel-extract/android-ndk-$rel/source.properties" \
+              || { echo "::error::ndk $rel 包结构异常（缺 source.properties）"; return 1; }
+            grep -q "^Pkg.Revision = $rev$" "/tmp/ndk-$rel-extract/android-ndk-$rel/source.properties" \
+              || { echo "::error::ndk $rel 包内 Pkg.Revision 与 $rev 不符"; return 1; }
+            # ANDROID_HOME 在 /usr/local 下属 root，写入需 sudo；先挪后 chmod 保证可读
+            sudo mkdir -p "$ANDROID_HOME/ndk"
+            sudo rm -rf "$ANDROID_HOME/ndk/$rev"
+            sudo mv "/tmp/ndk-$rel-extract/android-ndk-$rel" "$ANDROID_HOME/ndk/$rev"
+            sudo chmod -R a+rX "$ANDROID_HOME/ndk/$rev"
+            rm -f "/tmp/ndk-$rel-linux.zip"   # 及时删 zip，给后续核心构建腾磁盘
+            test -x "$ANDROID_HOME/ndk/$rev/ndk-build"
+          }
           # 3.31.6：eden-core 精确匹配，硬性必需（装不上直接报错，别等到
           # 构建 17 分钟后才在 CXX1300 处天折）
           install_cmake "3.31.6" "a54551dabd5daf8cc99f7f51769fd00ca759be0a" \
@@ -141,6 +176,13 @@ jobs:
           # AGP 会回退 SDK 内其他 >=3.25 的版本（镜像预装），仅告警不中断
           install_cmake "3.30.4" "b7d4287a46737718d88611655608d567fcc07c1e" \
             || echo "::warning::cmake 3.30.4 安装失败，cemu-core 将回退 SDK 内其他 >=3.25 的 CMake"
+          # NDK r28c → 28.2.13676358：app / ARMSX2 / eden-core 用（C++20 工具链，
+          # std::lexicographical_compare_three_way 需 r28c 起的 libc++）
+          install_ndk "28.2.13676358" "r28c" "a7b54a5de87fecd125a17d54f73c446199e72a64" \
+            || { echo "::error::ndk 28.2.13676358 安装失败（app/ARMSX2/eden-core 必需）"; exit 1; }
+          # NDK r29 → 29.0.14206865：:cemu-core（Cemu Wii U）按上游 Cemu-AZ 固定
+          install_ndk "29.0.14206865" "r29" "87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b" \
+            || { echo "::error::ndk 29.0.14206865 安装失败（cemu-core 必需）"; exit 1; }
           # fail-fast：关键组件缺失立即给出可操作报错。cmake 3.30.4 不在此列
           #（cemu 为宽松匹配，上面已告警；历史上它从未装上过，也从未被需要）。
           for n in "ndk/28.2.13676358" "ndk/29.0.14206865"; do
