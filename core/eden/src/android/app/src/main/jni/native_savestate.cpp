@@ -1,46 +1,68 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v2 ★★★
 //
-// 移植自 NesStation 的 Cemu 集成
-// （core/cemu/src/android/app/src/main/cpp/NativeQuickSave.cpp），逐块对应：
+// v1：NAND 存档数据快照 + legacy（关停游戏→写回→前端重启）。
+// v2：新增 state.bin 进程内全量状态捕获/原地恢复 —— 与 Cemu 的
+//     NativeQuickSave.cpp（core/cemu/src/android/app/src/main/cpp/）
+//     语义逐块对齐：
 //
 //   Cemu (Wii U)                        Eden (Switch / yuzu 系)
 //   ─────────────────────────────      ─────────────────────────────────────
 //   CafeSystem::IsTitleRunning()   →   EmulationSession::IsRunning()
 //   g_renderer->RequestScreenshot  →   RendererBase::RequestScreenshot
 //   CafeSaveState::EmulationFreeze →   本文件 EmulationFreeze（RAII）
-//     （核心全量冻结 + state.bin）       ★ yuzu 系差异：内核对象无序列化
-//                                        器，无进程内 state.bin 路径；冻结
-//                                        用于保证存档数据拷贝的瞬时一致性
-//   MLC usr/save 按标题拷贝         →   NAND user/save 按标题拷贝
-//                                     （account 旧/新布局 + device 布局）
+//     （System 全量冻结）               ★ yuzu 系差异：冻结序列
+//                                        System::Pause（挂起+等停稳）
+//                                        + GPU().WaitForIdle（异步 GPU 排空）
+//                                        + GPU().ObtainContext（独占图形上下文）
+//   CaptureStateToFileLocked       →   CaptureStateBin（本文件）
+//     state.bin（全量内存+线程）         ★ 页表 QueryInfo 遍历 + 4KB 页粒度
+//                                        zstd 压缩 + 全线程寄存器组（0x320）
+//   RestoreStateFromFile           →   RestoreStateBin（本文件，原地恢复）
+//     （原地恢复，不重启）                ★ 写回内存 → InvalidateGPUCache
+//                                        → 逐核 ClearInstructionCache + icache
+//                                        刷新 → 写回线程寄存器组 → 解冻续跑
+//   MLC usr/save 按标题拷贝         →   NAND user/save 按标题拷贝（后备）
 //   CafeSystem::ShutdownTitle()    →   EmulationSession::HaltEmulation()
-//                                        + WaitForShutdown()（新增）
+//                                        + WaitForShutdown()（legacy 路径）
 //
-// 异步 GPU 架构（用户要求的核心点）：
-//   yuzu 系 GPU 模拟运行在独立线程（video_core/gpu_thread），CPU 侧只是
-//   提交命令表。直接在运行中拷贝存档数据会捕获到“半执行”状态 —— 例如
-//   NVDEC 异步解码帧正写回 guest 内存、栅栏未落地的半更新缓冲。本实现
-//   的冻结序列与上游 ReloadDiskShaderCache 完全一致（在树内已被验证的
-//   同步模式）：
-//       System::Pause()                 —— 内核挂起全部 guest 线程
-//       GPU().WaitForIdle()             —— 投递同步栅栏并等待 GPU 线程
-//                                           排空（异步 GPU 排空 ★）
-//       GPU().ObtainContext()           —— 独占 GPU 图形上下文
-//       ... 拷贝存档数据 ...
-//       GPU().ReleaseContext()
-//       System::Run()                   —— 解冻（若冻结前未暂停）
+// 状态一致性依据（已对照 Eden 内核源码逐行核对）：
+//   · KernelCore::SuspendEmulation：挂起全部线程后自旋等待所有核心调度器
+//     卸下 guest 线程 —— System::Pause() 返回即全部寄存器已停放进
+//     KThread::m_thread_context（KScheduler::Unload → PhysicalCore::
+//     SaveContext → interface->GetContext(thread->GetContext())）。
+//   · 恢复只需写回 m_thread_context：线程重回核心时 KScheduler::Reload →
+//     PhysicalCore::LoadContext → interface->SetContext(...)（dynarmic 与
+//     NCE 实现同一契约）。
+//   · GPU 线程异步执行命令表：存档前 WaitForIdle 投递同步栅栏并等待排空
+//     （与树内 ReloadDiskShaderCache 同步序列同源）；再 FlushAll 把在途
+//     宿主→guest 脏写回刷入 guest 内存，捕获视图一致。
+//   · 恢复写回后 InvalidateGPUCache：纹理/缓冲宿主缓存全部失效，从还原
+//     后的 guest 内存重建（GPU 缓存是 guest 内存的派生视图）。
+//   · HLE 服务（vsync/音频/HID）运行在宿主真实时间轴：原地恢复后自然
+//     继续触发事件，唤醒（恢复上下文的）等待线程。
 
 #include "native_savestate.h"
 
 #include "native.h"
 
+#include "common/common_funcs.h"
 #include "common/fs/path_util.h"
+#include "common/logging.h"
+#include "common/zstd_compression.h"
 #include "core/core.h"
+#include "core/hardware_properties.h"
+#include "core/hle/kernel/k_memory_block.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/kernel.h"
+#include "core/hle/result.h"
 #include "core/loader/loader.h"
+#include "core/memory.h"
 #include "video_core/gpu.h"
+#include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 
 #include <dlfcn.h> // dlsym: malloc_trim 运行时解析（见 TrimHeap）
@@ -48,12 +70,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -71,6 +93,62 @@ using native_savestate::kMaxSlots;
 
 constexpr int kThumbMaxWidth = 320;
 constexpr int kThumbMaxHeight = 180;
+
+// ---------------------------------------------------------------------------
+// state.bin v2 —— 进程内全量状态文件格式
+//
+//   [StateHeaderV2]
+//   [RegionDescV2 × region_count]        （区段描述符数组）
+//   [压缩负载 × region_count]              （逐区段 zstd 帧，顺序与描述符一致）
+//   [线程记录 × thread_count]              （32B 元数据 + 0x320B 寄存器组）
+//
+//   区段来源：页表 QueryInfo 遍历，凡 KMemoryState::FlagMapped 且宿主
+//   有后备页（GetPointerSilent 非空）皆捕获；超过 kChunkSize 的区段拆
+//   成多个连续描述符。4KB 页粒度逐页拷贝（宿主后备页不保证连续）。
+// ---------------------------------------------------------------------------
+
+constexpr char kStateMagic[4] = {'E', 'D', 'S', 'S'};
+constexpr u32 kStateVersion = 2;
+constexpr size_t kChunkSize = 4 * 1024 * 1024; // 4MB 未压缩分片
+constexpr size_t kPageSize = 4 * 1024;          // ≤ 宿主页表粒度，见下注
+
+// 注：Common::PageTable::PageBits ≥ 12（4KB），kPageSize 逐页寻址总是
+// 落在单个页表项内 —— 对更大页粒度的实现同样安全。
+
+struct StateHeaderV2 {
+    char magic[4];
+    u32 version;
+    u64 program_id;
+    u32 region_count;
+    u32 thread_count;
+    u64 total_uncompressed; // 全部区段未压缩字节（统计/校验）
+    u32 flags;              // 保留，0
+    u32 reserved[3];
+};
+static_assert(sizeof(StateHeaderV2) == 48);
+
+struct RegionDescV2 {
+    u64 guest_va;
+    u64 size;              // 未压缩字节数（≤ kChunkSize）
+    u32 mem_state;         // KMemoryState 原始值（诊断用）
+    u32 mem_perm;          // KMemoryPermission 原始值（诊断用）
+    u64 compressed_size;   // zstd 压缩后字节
+    u64 uncompressed_size; // == size（冗余校验）
+};
+static_assert(sizeof(RegionDescV2) == 40);
+
+struct ThreadMetaV2 {
+    u64 thread_id;
+    u64 tls_addr;
+    u32 raw_state; // 已屏蔽 SuspendFlagMask 的 ThreadState
+    s32 active_core;
+    s32 priority;
+    u32 reserved;
+};
+static_assert(sizeof(ThreadMetaV2) == 32);
+
+constexpr size_t kThreadRecordSize =
+    sizeof(ThreadMetaV2) + sizeof(Kernel::Svc::ThreadContext);
 
 // ---------------------------------------------------------------------------
 // 会话 / 标题信息
@@ -127,27 +205,27 @@ fs::path GetSlotSaveDir(u64 program_id, int slot) {
     return GetSlotDir(program_id, slot) / "savedata";
 }
 
+fs::path GetSlotStatePath(u64 program_id, int slot) {
+    return GetSlotDir(program_id, slot) / "state.bin";
+}
+
 fs::path NandRoot() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::NANDDir);
 }
 
 // ---------------------------------------------------------------------------
-// 按标题的 NAND 用户存档定位
+// 按标题的 NAND 用户存档定位（legacy 后备数据源）
 //
 // yuzu 系存档布局（savedata_factory.cpp GetFullPath）：
 //   旧 account： nand/user/save/0000000000000000/<uidHiLo>/<titleId>
 //   新 account： nand/user/save/account/<uuid>/<baseTitleId>/0
 //   device   ： nand/user/save/device/<titleId>/0
 //   cache    ： nand/user/save/cache/<titleId>（可再生的派生数据，不快照）
-//
-// 存档属性里的 title_id 为进程程序 ID（或其基数）。此处按叶子目录名
-// 匹配「程序 ID / 基程序 ID（~0xFF）」两形态，收集 (源路径, 相对 nand
-// 的相对路径) 列表，槽内镜像保持原目录结构 —— 写回时按相对路径原样还原。
 // ---------------------------------------------------------------------------
 
 struct SaveDirEntry {
-    fs::path source;      // nand 下的绝对源路径
-    fs::path relative;    // 相对 nand 根的相对路径（含 user/save 前缀）
+    fs::path source;   // nand 下的绝对源路径
+    fs::path relative; // 相对 nand 根的相对路径（含 user/save 前缀）
 };
 
 bool MatchesTitleDir(const std::string& name, u64 program_id) {
@@ -382,9 +460,11 @@ void WriteThumbnailTGA(const fs::path& path, const u8* bgra, int width, int heig
 
     std::vector<u8> thumbData(static_cast<size_t>(thumbWidth) * thumbHeight * 3);
     for (int y = 0; y < thumbHeight; ++y) {
-        const int srcY = std::min(height - 1, static_cast<int>(static_cast<s64>(y) * height / thumbHeight));
+        const int srcY =
+            std::min(height - 1, static_cast<int>(static_cast<s64>(y) * height / thumbHeight));
         for (int x = 0; x < thumbWidth; ++x) {
-            const int srcX = std::min(width - 1, static_cast<int>(static_cast<s64>(x) * width / thumbWidth));
+            const int srcX =
+                std::min(width - 1, static_cast<int>(static_cast<s64>(x) * width / thumbWidth));
             const u8* src = bgra + (static_cast<size_t>(srcY) * width + srcX) * 4;
             u8* dst = thumbData.data() + (static_cast<size_t>(y) * thumbWidth + x) * 3;
             dst[0] = src[0]; // B
@@ -469,10 +549,12 @@ bool CaptureScreenshotToThumbnail(const fs::path& thumbPath) {
 }
 
 // ---------------------------------------------------------------------------
-// 冻结（★ 异步 GPU 同步架构核心）★
+// 冻结（★ 异步 GPU 同步架构核心）
 //
 // 与树内已验证的 ReloadDiskShaderCache 同步序列完全一致：
 //   Pause → GPU().WaitForIdle() → ObtainContext() ... ReleaseContext → Run
+// Pause() 返回即：全部 guest 线程挂起且寄存器停放进
+// KThread::m_thread_context（SuspendEmulation 自旋等待核心卸载线程）。
 // ---------------------------------------------------------------------------
 
 class EmulationFreeze {
@@ -483,7 +565,7 @@ public:
             m_system.Pause();
         }
         // ★ 异步 GPU 排空：投递同步操作并等待 GPU 线程越过栅栏 —— 确保
-        //   存档数据拷贝时，guest 可见内存/NAND 视图不再有在途 GPU 写入
+        //   捕获/写回时 guest 可见内存/NAND 视图不再有在途 GPU 写入
         //   （NVDEC 解码帧回写、半更新的缓冲等）。
         m_system.GPU().WaitForIdle();
         m_system.GPU().ObtainContext();
@@ -509,7 +591,414 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// 存档数据快照 / 还原
+// state.bin —— 捕获（quickSaveSlot 调用，必须持冻结）
+// ---------------------------------------------------------------------------
+
+// 页表遍历收集全部已映射区段（base/size 对），供捕获使用。
+// 遍历方式 = svcQueryMemory 同源序列（KPageTableBase::QueryInfo），
+// 从地址空间起点逐步推进直至地址回绕/越界。
+bool CollectMappedRegions(Core::System& system, std::vector<std::pair<u64, u64>>& out) {
+    out.clear();
+
+    Kernel::KProcess* process = system.ApplicationProcess();
+    if (process == nullptr) {
+        return false;
+    }
+    Kernel::KProcessPageTable& page_table = process->GetPageTable();
+
+    const u64 as_start = Common::GetInteger(page_table.GetAddressSpaceStart());
+    const u64 as_size = page_table.GetAddressSpaceSize();
+
+    u64 cur = as_start;
+    while (cur < as_start + as_size) {
+        Kernel::KMemoryInfo info{};
+        Kernel::Svc::PageInfo page_info{};
+        const Common::ProcessAddress addr{cur};
+        if (R_FAILED(page_table.QueryInfo(std::addressof(info), std::addressof(page_info),
+                                          addr))) {
+            break;
+        }
+
+        const u64 base = static_cast<u64>(info.m_address);
+        const u64 size = static_cast<u64>(info.m_size);
+        if (size == 0) {
+            break; // 防御：QueryInfo 保证 size>0，双保险
+        }
+
+        const bool mapped =
+            True(static_cast<Kernel::KMemoryState>(info.m_state) & Kernel::KMemoryState::FlagMapped);
+        if (mapped) {
+            // 区段起点可能低于 cur（块包含 cur），裁剪到未覆盖部分
+            const u64 seg_start = std::max(cur, base);
+            const u64 seg_end = base + size;
+            if (seg_end > seg_start) {
+                out.emplace_back(seg_start, seg_end - seg_start);
+            }
+        }
+
+        const u64 next = base + size;
+        if (next <= cur) {
+            break; // 回绕/溢出防御
+        }
+        cur = next;
+    }
+    return !out.empty();
+}
+
+// 逐 4KB 页拷贝一段 guest 内存到 host 缓冲（拷贝端）。宿主后备页不保证
+// 连续，必须逐页寻址；无后备页（MMIO 等）静默跳过。
+// 返回实际拷贝的字节数（可能小于请求值 —— 尾部无后备页时截断）。
+size_t CopyGuestRangeOut(Core::System& system, u64 va, size_t size, u8* dst) {
+    Core::Memory::Memory& memory = system.ApplicationMemory();
+    size_t done = 0;
+    while (done < size) {
+        const u64 page_va = va + done;
+        const size_t in_page = kPageSize - (page_va % kPageSize);
+        const size_t take = std::min(in_page, size - done);
+        const u8* src = memory.GetPointerSilent(Common::ProcessAddress{page_va});
+        if (src == nullptr) {
+            break; // 无后备页：截断（诊断已由区段首页非空保证大概率整段可用）
+        }
+        std::memcpy(dst + done, src, take);
+        done += take;
+    }
+    return done;
+}
+
+// 捕获 state.bin：header + 区段描述符 + zstd 压缩负载 + 线程记录。
+// 写入走临时负载文件后合并（描述符在压缩完成后才知道大小）。
+// 成功时返回 true；失败时 *err 填充诊断信息并清理临时文件。
+bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 program_id,
+                     std::string* err) {
+    *err = {};
+
+    Kernel::KProcess* process = system.ApplicationProcess();
+    if (process == nullptr) {
+        *err = "application process is null";
+        return false;
+    }
+
+    // 1) 收集全部已映射区段
+    std::vector<std::pair<u64, u64>> regions;
+    if (!CollectMappedRegions(system, regions)) {
+        *err = "no mapped regions found";
+        return false;
+    }
+
+    // 2) 逐段逐片压缩到临时负载文件
+    const fs::path payload_tmp = state_path.string() + ".payload.tmp";
+    const fs::path state_tmp = state_path.string() + ".tmp";
+    std::vector<RegionDescV2> descs;
+    std::vector<u8> page_scratch(kChunkSize);
+
+    {
+        std::ofstream payload(payload_tmp, std::ios::binary | std::ios::trunc);
+        if (!payload) {
+            *err = "failed to open payload temp file";
+            return false;
+        }
+
+        u64 total_uncompressed = 0;
+        for (const auto& [va, size] : regions) {
+            u64 off = 0;
+            while (off < size) {
+                const size_t take = static_cast<size_t>(std::min<u64>(kChunkSize, size - off));
+                const size_t got = CopyGuestRangeOut(system, va + off, take, page_scratch.data());
+                if (got != take) {
+                    // 段尾出现无后备页（罕见）：按实际拷贝量截断该分片
+                    if (got == 0) {
+                        off += take;
+                        continue;
+                    }
+                }
+                const std::vector<u8> compressed =
+                    Common::Compression::CompressDataZSTD(page_scratch.data(), got, 1);
+                if (compressed.empty()) {
+                    payload.close();
+                    fs::remove(payload_tmp);
+                    *err = fmt::format("zstd compress failed @ {:016x}", va + off);
+                    return false;
+                }
+                payload.write(reinterpret_cast<const char*>(compressed.data()),
+                               static_cast<std::streamsize>(compressed.size()));
+                if (!payload) {
+                    fs::remove(payload_tmp);
+                    *err = "payload write failed";
+                    return false;
+                }
+
+                RegionDescV2 desc{};
+                desc.guest_va = va + off;
+                desc.size = got;
+                desc.mem_state = 0; // 诊断字段：块粒度状态不保留（分片跨块无意义）
+                desc.mem_perm = 0;
+                desc.compressed_size = compressed.size();
+                desc.uncompressed_size = got;
+                descs.push_back(desc);
+
+                total_uncompressed += got;
+                off += take;
+            }
+        }
+        payload.close();
+
+        // 3) 线程记录（挂起态：寄存器组已停放进 KThread::m_thread_context）
+        std::vector<u8> thread_blob;
+        u32 thread_count = 0;
+        for (auto& thread : process->GetThreadList()) {
+            if (thread.IsDummyThread()) {
+                continue; // HLE 宿主辅助线程，无 guest 寄存器语义
+            }
+            ThreadMetaV2 meta{};
+            meta.thread_id = thread.GetThreadId();
+            meta.tls_addr = Common::GetInteger(thread.GetTlsAddress());
+            meta.raw_state = static_cast<u32>(thread.GetRawState() &
+                                              ~Kernel::ThreadState::SuspendFlagMask);
+            meta.active_core = thread.GetActiveCore();
+            meta.priority = thread.GetPriority();
+            meta.reserved = 0;
+
+            const Kernel::Svc::ThreadContext& ctx = thread.GetContext();
+            thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&meta),
+                               reinterpret_cast<const u8*>(&meta) + sizeof(meta));
+            thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&ctx),
+                               reinterpret_cast<const u8*>(&ctx) + sizeof(ctx));
+            ++thread_count;
+        }
+
+        // 4) 合并写最终 state.bin（先写临时文件再原子替换）
+        {
+            std::ofstream out(state_tmp, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                fs::remove(payload_tmp);
+                *err = "failed to open state.bin temp file";
+                return false;
+            }
+
+            StateHeaderV2 header{};
+            std::memcpy(header.magic, kStateMagic, sizeof(kStateMagic));
+            header.version = kStateVersion;
+            header.program_id = program_id;
+            header.region_count = static_cast<u32>(descs.size());
+            header.thread_count = thread_count;
+            header.total_uncompressed = total_uncompressed;
+            header.flags = 0;
+
+            out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+            out.write(reinterpret_cast<const char*>(descs.data()),
+                      static_cast<std::streamsize>(descs.size() * sizeof(RegionDescV2)));
+
+            // 负载文件按 16MB 步长搬入（文件布局：header → 描述符 → 压缩负载
+            // → 线程记录，与 RestoreStateBin 的读取顺序严格一致）
+            std::ifstream pin(payload_tmp, std::ios::binary);
+            if (!pin) {
+                out.close();
+                fs::remove(payload_tmp);
+                fs::remove(state_tmp);
+                *err = "failed to reopen payload temp file";
+                return false;
+            }
+            std::vector<char> buf(16 * 1024 * 1024);
+            while (pin) {
+                pin.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+                const auto n = pin.gcount();
+                if (n > 0) {
+                    out.write(buf.data(), n);
+                    if (!out) {
+                        fs::remove(payload_tmp);
+                        fs::remove(state_tmp);
+                        *err = "state.bin write failed (disk full?)";
+                        return false;
+                    }
+                }
+            }
+
+            // 线程记录位于全部压缩负载之后（与 RestoreStateBin 读取顺序一致）
+            out.write(reinterpret_cast<const char*>(thread_blob.data()),
+                      static_cast<std::streamsize>(thread_blob.size()));
+            if (!out) {
+                fs::remove(payload_tmp);
+                fs::remove(state_tmp);
+                *err = "state.bin write failed (disk full?)";
+                return false;
+            }
+            out.close();
+        }
+
+        fs::remove(payload_tmp);
+    }
+
+    std::error_code ec;
+    fs::rename(state_tmp, state_path, ec);
+    if (ec) {
+        // rename 失败兜底：删除旧 state 后移动
+        fs::remove(state_path, ec);
+        ec.clear();
+        fs::rename(state_tmp, state_path, ec);
+        if (ec) {
+            fs::remove(state_tmp, ec);
+            *err = "failed to finalize state.bin";
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// state.bin —— 原地恢复（quickRestoreSlot 调用，必须持冻结）
+// ---------------------------------------------------------------------------
+
+// 逐 4KB 页写回一段 guest 内存（还原端）。写指令页后刷新 icache
+// （NCE 直接从 guest 内存页执行代码；dynarmic 仅作数据，刷新无害）。
+size_t CopyGuestRangeIn(Core::System& system, u64 va, size_t size, const u8* src) {
+    Core::Memory::Memory& memory = system.ApplicationMemory();
+    size_t done = 0;
+    while (done < size) {
+        const u64 page_va = va + done;
+        const size_t in_page = kPageSize - (page_va % kPageSize);
+        const size_t take = std::min(in_page, size - done);
+        u8* dst = memory.GetPointerSilent(Common::ProcessAddress{page_va});
+        if (dst == nullptr) {
+            break; // 该页当前无映射/无后备（存档后有解映射）：截断
+        }
+        std::memcpy(dst, src + done, take);
+        __builtin___clear_cache(reinterpret_cast<char*>(dst),
+                                reinterpret_cast<char*>(dst + take));
+        done += take;
+    }
+    return done;
+}
+
+bool RestoreStateBin(Core::System& system, const fs::path& state_path, u64 program_id,
+                     std::string* err) {
+    *err = {};
+
+    std::error_code ec;
+    if (!fs::exists(state_path, ec)) {
+        *err = "state.bin missing";
+        return false;
+    }
+
+    std::ifstream in(state_path, std::ios::binary);
+    if (!in) {
+        *err = "failed to open state.bin";
+        return false;
+    }
+
+    // 1) 头部校验
+    StateHeaderV2 header{};
+    in.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (in.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
+        std::memcmp(header.magic, kStateMagic, sizeof(kStateMagic)) != 0) {
+        *err = "bad state.bin magic";
+        return false;
+    }
+    if (header.version != kStateVersion) {
+        *err = fmt::format("unsupported state.bin version {}", header.version);
+        return false;
+    }
+    if (header.program_id != program_id) {
+        *err = fmt::format("program id mismatch: slot {:016x} vs current {:016x}",
+                           header.program_id, program_id);
+        return false;
+    }
+
+    // 2) 区段描述符
+    std::vector<RegionDescV2> descs(header.region_count);
+    if (!descs.empty()) {
+        in.read(reinterpret_cast<char*>(descs.data()),
+                static_cast<std::streamsize>(descs.size() * sizeof(RegionDescV2)));
+        if (in.gcount() != static_cast<std::streamsize>(descs.size() * sizeof(RegionDescV2))) {
+            *err = "state.bin descs truncated";
+            return false;
+        }
+    }
+
+    // 3) 逐分片解压写回 guest 内存
+    {
+        std::vector<u8> comp_scratch;
+        for (const auto& desc : descs) {
+            comp_scratch.resize(static_cast<size_t>(desc.compressed_size));
+            in.read(reinterpret_cast<char*>(comp_scratch.data()),
+                    static_cast<std::streamsize>(comp_scratch.size()));
+            if (in.gcount() != static_cast<std::streamsize>(comp_scratch.size())) {
+                *err = fmt::format("payload truncated @ {:016x}", desc.guest_va);
+                return false;
+            }
+
+            const std::vector<u8> decompressed =
+                Common::Compression::DecompressDataZSTD(std::span<const u8>{comp_scratch});
+            if (decompressed.size() != desc.uncompressed_size) {
+                *err = fmt::format("zstd size mismatch @ {:016x}", desc.guest_va);
+                return false;
+            }
+
+            // 写回（只写当前已映射部分；尾部解映射页截断为可接受损失）
+            if (desc.uncompressed_size > 0) {
+                CopyGuestRangeIn(system, desc.guest_va, desc.uncompressed_size,
+                                 decompressed.data());
+            }
+        }
+    }
+
+    // 4) GPU 指令/数据缓存一致性：宿主纹理、缓冲、渲染目标缓存全部
+    //    失效，从还原后的 guest 内存重建（GPU 缓存是 guest 内存的派生
+    //    视图 —— InvalidateGPUCache 与 ReloadDiskShaderCache 同源语义）。
+    if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
+        rasterizer->InvalidateGPUCache();
+        rasterizer->FlushCommands();
+    }
+
+    // 5) ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存）
+    if (Kernel::KProcess* process = system.ApplicationProcess(); process != nullptr) {
+        for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core) {
+            if (Core::ArmInterface* iface = process->GetArmInterface(core); iface != nullptr) {
+                iface->ClearInstructionCache();
+            }
+        }
+    }
+
+    // 6) 线程寄存器组原地写回（按 thread_id 匹配；不改动当前调度状态：
+    //    挂起的线程解冻后被重新调度时经 KScheduler::Reload →
+    //    LoadContext → SetContext 装载恢复后的寄存器组 —— 从存档时刻继续）
+    {
+        Kernel::KProcess* process = system.ApplicationProcess();
+        if (process == nullptr) {
+            *err = "application process is null";
+            return false;
+        }
+
+        std::vector<u8> record(kThreadRecordSize);
+        Kernel::Svc::ThreadContext ctx_copy{};
+        for (u32 i = 0; i < header.thread_count; ++i) {
+            in.read(reinterpret_cast<char*>(record.data()),
+                    static_cast<std::streamsize>(record.size()));
+            if (in.gcount() != static_cast<std::streamsize>(record.size())) {
+                *err = fmt::format("thread record {} truncated", i);
+                return false;
+            }
+
+            ThreadMetaV2 meta{};
+            std::memcpy(&meta, record.data(), sizeof(meta));
+            std::memcpy(&ctx_copy, record.data() + sizeof(meta), sizeof(ctx_copy));
+
+            for (auto& thread : process->GetThreadList()) {
+                if (thread.GetThreadId() != meta.thread_id || thread.IsDummyThread()) {
+                    continue;
+                }
+                // 逐字段写回（GetContext 返回可写引用；v 寄存器数组直接拷贝）
+                Kernel::Svc::ThreadContext& dst = thread.GetContext();
+                std::memcpy(&dst, &ctx_copy, sizeof(Kernel::Svc::ThreadContext));
+                break;
+            }
+        }
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// 存档数据快照 / 还原（NAND，legacy 后备 —— 与 v1 一致）
 // ---------------------------------------------------------------------------
 
 bool SnapshotTitleSaveData(u64 program_id, const fs::path& slot_save_dir) {
@@ -563,7 +1052,8 @@ bool RestoreTitleSaveData(u64 program_id, const fs::path& slot_save_dir) {
             }
         } else if (l1name == "device") {
             for (const auto& title_dir : fs::directory_iterator{level1.path(), ec}) {
-                fs::remove_all(nand / "user" / "save" / "device" / title_dir.path().filename(), ec);
+                fs::remove_all(nand / "user" / "save" / "device" / title_dir.path().filename(),
+                               ec);
                 ec.clear();
             }
         } else {
@@ -645,18 +1135,28 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_getQuickSaveInfo([[maybe_unused]] JNIEnv* 
 
         for (int slot = 1; slot <= kMaxSlots; ++slot) {
             const fs::path slot_dir = GetSlotDir(program_id, slot);
-            const bool has_data = SlotHasSaveData(program_id, slot);
-            const std::string timestamp = has_data ? ReadSlotInfoFile(slot_dir) : std::string();
-            const u64 size = has_data ? GetDirectorySize(GetSlotSaveDir(program_id, slot)) : 0;
+            const fs::path state_path = GetSlotStatePath(program_id, slot);
+            std::error_code ec;
+            const bool has_state = fs::exists(state_path, ec);
+            const bool has_save_data = SlotHasSaveData(program_id, slot);
+            const bool exists = has_state || has_save_data;
+            const std::string timestamp = exists ? ReadSlotInfoFile(slot_dir) : std::string();
+            u64 size = 0;
+            if (has_state) {
+                size += fs::file_size(state_path, ec);
+            }
+            if (has_save_data) {
+                size += GetDirectorySize(GetSlotSaveDir(program_id, slot));
+            }
             const bool thumb = [&] {
-                std::error_code ec;
-                return fs::exists(slot_dir / "thumb.tga", ec);
+                std::error_code ec2;
+                return fs::exists(slot_dir / "thumb.tga", ec2);
             }();
 
             fmt::format_to(std::back_inserter(json),
                            R"({{"slot":{},"exists":{},"timestamp":"{}","sizeBytes":{},"hasState":{},"thumb":{}}}{})",
-                           slot, has_data ? "true" : "false", EscapeJsonString(timestamp), size,
-                           has_data ? "true" : "false", thumb ? "true" : "false",
+                           slot, exists ? "true" : "false", EscapeJsonString(timestamp), size,
+                           has_state ? "true" : "false", thumb ? "true" : "false",
                            slot < kMaxSlots ? "," : "");
         }
 
@@ -665,8 +1165,8 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_getQuickSaveInfo([[maybe_unused]] JNIEnv* 
         const std::string backup_timestamp =
             backup_exists ? ReadSlotInfoFile(backup_dir) : std::string();
         const bool backup_thumb = [&] {
-            std::error_code ec;
-            return fs::exists(backup_dir / "thumb.tga", ec);
+            std::error_code ec2;
+            return fs::exists(backup_dir / "thumb.tga", ec2);
         }();
 
         json += fmt::format(
@@ -692,13 +1192,6 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickSaveSlot([[maybe_unused]] JNIEnv* env
             return native_savestate::RESULT_ERROR_NOT_RUNNING;
         }
 
-        // 本实现的存档载体 = 按标题快照的 NAND 用户存档：游戏内尚无任何
-        // 存档（首次游玩未保存过）时无物可快照 —— 如实报 NO_SAVE_DATA，
-        // 引导玩家先在游戏内保存（与 Cemu 契约同款语义）。
-        if (CollectTitleSaveDirs(program_id).empty()) {
-            return native_savestate::RESULT_ERROR_NO_SAVE_DATA;
-        }
-
         const fs::path slot_dir = GetSlotDir(program_id, static_cast<int>(slot));
         std::error_code ec;
         fs::create_directories(slot_dir, ec);
@@ -714,16 +1207,35 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickSaveSlot([[maybe_unused]] JNIEnv* env
             CaptureScreenshotToThumbnail(slot_dir / "thumb.tga");
         }
 
-        // ★ 冻结 + 异步 GPU 排空，RAII 解冻（与 Cemu EmulationFreeze 同构）
+        // ★ 冻结 + 异步 GPU 排空 + 全量状态捕获（RAII 解冻）
         {
             EmulationFreeze freeze{system};
-            if (!SnapshotTitleSaveData(program_id, GetSlotSaveDir(program_id, static_cast<int>(slot)))) {
+
+            // 在途 GPU 脏写回（宿主→guest）刷入 guest 内存后再捕获，
+            // 保证 state.bin 与 NAND 快照视图一致（与 Cemu 同等语义）。
+            if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
+                rasterizer->FlushAll();
+            }
+
+            std::string state_err;
+            const bool state_ok =
+                CaptureStateBin(system, GetSlotStatePath(program_id, static_cast<int>(slot)),
+                                program_id, &state_err);
+            if (!state_ok) {
+                LOG_ERROR(Frontend, "Eden savestate capture failed: {}", state_err);
                 return native_savestate::RESULT_ERROR_IO;
             }
+
+            // NAND 存档数据按标题快照（后备：模拟器重启后仍可用该槽）
+            if (!SnapshotTitleSaveData(program_id, GetSlotSaveDir(program_id, static_cast<int>(slot)))) {
+                // 仅影响后备路径；state.bin 已就位，不算失败
+                LOG_WARNING(Frontend, "Eden savestate: NAND save copy failed (non-fatal)");
+            }
+
             WriteSlotInfoFile(slot_dir);
         }
 
-        // 归还空闲堆页（槽位拷贝的临时缓冲）
+        // 归还空闲堆页（压缩缓冲与槽位拷贝的临时缓冲）
         TrimHeap();
         return native_savestate::RESULT_OK;
     } catch (...) {
@@ -736,8 +1248,6 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
                                                        [[maybe_unused]] jobject thiz,
                                                        jint slot, jint flags) {
     try {
-        (void)flags; // 预留（核心支持进程内 state.bin 恢复前，唯一路径即下述流程）
-
         if (!IsTitleRunning()) {
             return native_savestate::RESULT_ERROR_NOT_RUNNING;
         }
@@ -747,7 +1257,41 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
             return native_savestate::RESULT_ERROR_NOT_RUNNING;
         }
 
-        if (!SlotHasSaveData(program_id, static_cast<int>(slot))) {
+        const fs::path state_path = GetSlotStatePath(program_id, static_cast<int>(slot));
+        const fs::path slot_save_dir = GetSlotSaveDir(program_id, static_cast<int>(slot));
+        std::error_code ec;
+        const bool has_state = fs::exists(state_path, ec);
+        const bool has_save_data = SlotHasSaveData(program_id, static_cast<int>(slot));
+        if (!has_state && !has_save_data) {
+            return native_savestate::RESULT_ERROR_SLOT_EMPTY;
+        }
+
+        // ★★ 首选路径：state.bin 进程内原地恢复（= Cemu RestoreStateFromFile）
+        //    游戏暂停 → 内存被快照覆盖 → 从快照时刻继续 —— 完全不重启。
+        if (has_state) {
+            Core::System& system = Session().System();
+            {
+                EmulationFreeze freeze{system};
+                std::string state_err;
+                if (!RestoreStateBin(system, state_path, program_id, &state_err)) {
+                    LOG_ERROR(Frontend, "Eden savestate in-place restore failed: {}", state_err);
+                    if ((flags & native_savestate::RESTORE_FLAG_ALLOW_LEGACY) == 0) {
+                        // 不静默回落破坏性 legacy 路径 —— 如实报错
+                        return native_savestate::RESULT_ERROR_STATE_RESTORE_FAILED;
+                    }
+                    // 安全模式：继续走下方 legacy 路径
+                } else {
+                    TrimHeap();
+                    return native_savestate::RESULT_OK_RESTORED_IN_PLACE;
+                }
+            }
+        }
+
+        // ── legacy 路径（老槽位无 state.bin / 原地恢复失败且允许回落）──
+        // 与 Cemu ShutdownTitle 同语义：先自动备份当前存档（autobackup 槽），
+        // 停止运行中的游戏让游戏释放全部存档文件句柄，杜绝写回与还原拷贝
+        // 竞争，随后写回 NAND，由前端 relaunchGame() 进程内重启游戏。
+        if (!has_save_data) {
             return native_savestate::RESULT_ERROR_SLOT_EMPTY;
         }
 
@@ -760,15 +1304,14 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
             }
         }
 
-        // 停止运行中的游戏（= Cemu ShutdownTitle）：让游戏释放全部存档
-        // 文件句柄，杜绝写回与还原拷贝竞争。随后等待核心关停完成。
+        // 停止运行中的游戏（= Cemu ShutdownTitle）
         Session().HaltEmulation();
         if (!Session().WaitForShutdown(std::chrono::seconds(10))) {
             return native_savestate::RESULT_ERROR_IO;
         }
 
         // 槽位存档数据写回 NAND
-        if (!RestoreTitleSaveData(program_id, GetSlotSaveDir(program_id, static_cast<int>(slot)))) {
+        if (!RestoreTitleSaveData(program_id, slot_save_dir)) {
             return native_savestate::RESULT_ERROR_IO;
         }
 

@@ -1,30 +1,57 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生槽位契约 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生槽位契约 v2 ★★★
 //
-// 架构移植自 NesStation 的 Cemu（Wii U）集成
-// （core/cemu/src/android/app/src/main/cpp/NativeQuickSave.{h,cpp}，
-//  上游 Cemu-AZ QuickSaveSlotsDialog 语义），适配 yuzu 系（Eden）核心：
+// v2 新增（对齐 Cemu 的原地恢复语义 —— 与
+// core/cemu/src/android/app/src/main/cpp/NativeQuickSave.cpp 逐块对应）：
 //
 //   · 槽位布局：<EdenDir>/savestates/<programId016x>/{slot1..slot6,autobackup}
-//     每槽 = thumb.tga（缩略图）+ info.txt（时间戳）+ savedata/（该作
-//     NAND 用户存档的按标题快照 —— account/device 两种布局均覆盖）。
+//     每槽 = thumb.tga（缩略图）+ info.txt（时间戳）
+//            + state.bin（★ v2：进程内全量状态 —— 原地恢复载体）
+//            + savedata/（该作 NAND 用户存档快照 —— 冷启动后备，
+//              account/device 两种布局均覆盖）
 //
 //   · 存档（quickSaveSlot）：截图（运行中）→ EmulationFreeze
 //     （System::Pause → GPU().WaitForIdle() → GPU().ObtainContext()，
 //      ★异步 GPU 同步：yuzu 系 GPU 在独立线程异步执行，必须先排空
-//      同步栅栏再拷贝存档数据，保证数据落在 NAND 的时刻一致）→
-//      按标题拷贝存档 → 解冻恢复运行。
+//      同步栅栏；再 rasterizer->FlushAll() 把在途 GPU 写回刷入 guest
+//      内存，保证捕获一致性）→
+//      ① 页表 QueryInfo 遍历全部已映射区段，4KB 页粒度读取并按 zstd
+//         压缩写入 state.bin；
+//      ② 全部 guest 线程的完整寄存器组（Svc::ThreadContext，0x320 字节：
+//         X0-X30/SP/PC/PSTATE/V0-V31/FPCR/FPSR/TPIDR）逐线程落盘。
+//     再按标题快照 NAND 存档 → 解冻恢复运行。
 //
-//   · 读档（quickRestoreSlot）：自动备份当前存档（autobackup 槽）→
-//     HaltEmulation + 等待核心关停（游戏释放全部存档文件句柄，防止
-//     写回与拷贝竞争）→ 槽位存档数据写回 NAND → 返回 RESULT_OK，
-//     由前端（EdenEngine.relaunchGame）进程内重启游戏加载恢复的存档
-//     （= Cemu legacy 恢复路径语义）。
+//   · 读档（quickRestoreSlot）：state.bin 存在 → ★ 原地恢复（首选路径，
+//     与 Cemu RestoreStateFromFile 语义一致）：
+//       冻结 → 验证魔数/版本/程序 ID → 逐区段解压写回 guest 内存
+//       （写回后 rasterizer->InvalidateGPUCache() 使纹理/缓冲等宿主
+//       GPU 缓存从还原后的内存重建；逐 ARM 核 ClearInstructionCache()
+//       + 逐页 __builtin___clear_cache 保证 NCE/dynarmic 指令缓存一致）
+//       → 按 thread_id 匹配写回各线程寄存器组 → 解冻 → 返回
+//       RESULT_OK_RESTORED_IN_PLACE —— 游戏从存档时刻继续，不重启。
+//     恢复失败：默认报 RESULT_ERROR_STATE_RESTORE_FAILED（不静默破坏），
+//     flags 置 RESTORE_FLAG_ALLOW_LEGACY 才回落 legacy 路径。
+//
+//   · legacy 路径（老槽位无 state.bin）：自动备份当前存档（autobackup）
+//     → HaltEmulation + 等待核心关停 → 槽位存档数据写回 NAND →
+//     返回 RESULT_OK，由前端 relaunchGame() 进程内重启游戏。
+//
+// 状态一致性依据（Eden 内核逐行核对）：
+//   · KernelCore::SuspendEmulation 挂起全部线程后自旋等待所有核心
+//     调度器卸下 guest 线程 —— System::Pause() 返回即代表全部寄存器
+//     已停放进 KThread::m_thread_context（KScheduler::Unload →
+//     PhysicalCore::SaveContext）。
+//   · 恢复时仅需写回 m_thread_context：线程重回核心时
+//     KScheduler::Reload → PhysicalCore::LoadContext →
+//     interface->SetContext(m_thread_context)（dynarmic/NCE 同一契约）。
+//   · HLE 服务（vsync/音频/HID…）运行在宿主真实时间轴上，原地恢复后
+//     自然继续触发事件并唤醒等待线程 —— 无需冻结时间轴。
 //
 // 结果码 / JSON 槽位信息 schema 与 Cemu 的 NativeQuickSave 逐字段一致，
-// 前端（EdenEngine / EmulatorScreen）按同一套 RESULT_* 分支处理。
+// 前端（EdenEngine / EmulatorScreen）按同一套 RESULT_* 分支处理
+// （RESULT_OK_RESTORED_IN_PLACE 分支前端已预置，v2 起真正可用）。
 
 #pragma once
 
@@ -39,7 +66,7 @@ constexpr int RESULT_ERROR_NOT_RUNNING = 1;
 constexpr int RESULT_ERROR_NO_SAVE_DATA = 2;
 constexpr int RESULT_ERROR_SLOT_EMPTY = 3;
 constexpr int RESULT_ERROR_IO = 4;
-// 预留：核心未来支持进程内全量状态恢复（state.bin）时启用
+// v2 已实现：state.bin 进程内全量原地恢复（= Cemu RestoreStateFromFile）
 constexpr int RESULT_OK_RESTORED_IN_PLACE = 5;
 constexpr int RESULT_ERROR_STATE_RESTORE_FAILED = 6;
 
