@@ -9,6 +9,8 @@ add_library(yuzu-android SHARED
     emu_window/emu_window.h
     native.cpp
     native.h
+    native_savestate.cpp
+    native_savestate.h
     native_config.cpp
     native_freedreno.cpp
     android_settings.cpp

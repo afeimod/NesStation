@@ -283,4 +283,52 @@ object NativeLibrary {
     external fun playTimeManagerGetCurrentTitleId(): Long
     external fun playTimeManagerResetProgramPlayTime(programId: String)
     external fun playTimeManagerSetPlayTime(programId: String, playTimeMs: Long)
+
+    // ------------------------------------------------------------------
+    // ★★ v10：即时存档（原生槽位）—— Cemu NativeQuickSave 同构契约 ★★
+    //   native 实现见 core/eden/src/android/app/src/main/jni/
+    //   native_savestate.cpp（符号绑定 Java_org_yuzu_yuzu_1emu_
+    //   NativeLibrary_quickSaveSlot 等，与 Cemu 的
+    //   info.cemu.cemu.nativeinterface.NativeQuickSave 逐字段同构）。
+    //   槽位 1..6 + autobackup，<EdenDir>/savestates/<programId>/。
+    // ------------------------------------------------------------------
+
+    // 结果码 —— 与 Cemu NativeQuickSave 契约一致
+    const val RESULT_OK: Int = 0
+    const val RESULT_ERROR_NOT_RUNNING: Int = 1
+    const val RESULT_ERROR_NO_SAVE_DATA: Int = 2
+    const val RESULT_ERROR_SLOT_EMPTY: Int = 3
+    const val RESULT_ERROR_IO: Int = 4
+    const val RESULT_OK_RESTORED_IN_PLACE: Int = 5
+    const val RESULT_ERROR_STATE_RESTORE_FAILED: Int = 6
+
+    // 读档 flags（核心支持进程内 state.bin 恢复前预留）
+    const val RESTORE_FLAG_ALLOW_LEGACY: Int = 1
+
+    /**
+     * 原生槽位即时存档（阻塞：截图等待 + 冻结 + 存档数据拷贝，
+     * 必须在 IO 线程调用）。
+     * @param slot 原生槽位 1..6
+     * @return [RESULT_OK] / [RESULT_ERROR_NOT_RUNNING] / [RESULT_ERROR_IO]
+     */
+    external fun quickSaveSlot(slot: Int): Int
+
+    /**
+     * 原生槽位读档（阻塞：自动备份 + 关停核心 + 存档写回 NAND，
+     * 必须在 IO 线程调用）。成功返回 [RESULT_OK]（legacy 语义：存档
+     * 数据已还原、游戏已关停，由引擎 relaunchGame() 进程内重启）。
+     * @param slot 原生槽位 1..6
+     * @param flags [RESTORE_FLAG_ALLOW_LEGACY] 预留
+     */
+    external fun quickRestoreSlot(slot: Int, flags: Int): Int
+
+    /**
+     * 槽位信息 JSON（schema 与 Cemu NativeQuickSave.getQuickSaveInfo
+     * 逐字段一致：titleId/titleName/maxSlots/slots[]/autoBackup）。
+     * 阻塞，IO 线程调用。
+     */
+    external fun getQuickSaveInfo(): String
+
+    /** 槽位缩略图（无图返回 null）。阻塞，IO 线程调用。 */
+    external fun getQuickSaveThumbnail(slot: Int): android.graphics.Bitmap?
 }

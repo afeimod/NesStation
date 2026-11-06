@@ -156,6 +156,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+// ★ v10：Switch（Eden）即时存档 —— 结果码/槽位契约与 Cemu 同构
+import org.yuzu.yuzu_emu.NativeLibrary as EdenNativeLibrary
 
 // ---------------------------------------------------------------------------
 // TV mode detection — used to hide the touch-only on-screen gamepad on TV
@@ -5233,6 +5235,30 @@ fun EmulatorScreen(
                                     }
                                 }
                             }
+                        } else if (platform == GamePlatform.NSWITCH) {
+                            // ★ v10：Switch（Eden）即时存档 —— Cemu 同构语义：
+                            //   1) 原生槽位 1..6（UI 槽位 %6+1 映射）；
+                            //   2) native 调用在 IO 线程（截图等待 + 冻结
+                            //      （含★异步 GPU 同步：Pause → GPU
+                            //      WaitForIdle → ObtainContext）+ 存档数据
+                            //      拷贝会阻塞数秒，主线程调用会 ANR）。
+                            val eden = engine as? com.nesstation.app.core.engine.EdenEngine
+                            val nSlot = (saveLoadSlot % 6) + 1
+                            if (eden == null) {
+                                Toast.makeText(context, "Eden 核心未就绪", Toast.LENGTH_SHORT).show()
+                            } else {
+                                resetScope.launch {
+                                    val r = withContext(Dispatchers.IO) { eden.quickSaveSlotRaw(nSlot) }
+                                    if (r == EdenNativeLibrary.RESULT_OK ||
+                                        r == EdenNativeLibrary.RESULT_OK_RESTORED_IN_PLACE) {
+                                        Toast.makeText(context, "已快速存档 [槽位 $nSlot]", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context,
+                                            "存档失败：${edenQuickSaveResultMessage(r) ?: "未知错误"}",
+                                            Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }
                         } else {
                             val savesDirS = java.io.File(context.filesDir, "saves").apply { mkdirs() }
                             val slot = saveLoadSlot
@@ -5277,6 +5303,34 @@ fun EmulatorScreen(
                                         else ->
                                             Toast.makeText(context,
                                                 "读档失败：${cemuQuickSaveResultMessage(r) ?: "未知错误"}",
+                                                Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }
+                        } else if (platform == GamePlatform.NSWITCH) {
+                            // ★ v10：Switch（Eden）读档 —— Cemu 同构语义：
+                            //   native 调用在 IO 线程（自动备份 + 关停核心 +
+                            //   NAND 写回会阻塞数秒）；RESULT_OK（legacy 语义：
+                            //   存档数据已还原、游戏已关停）→ 进程内重启游戏。
+                            val eden = engine as? com.nesstation.app.core.engine.EdenEngine
+                            val nSlot = (saveLoadSlot % 6) + 1
+                            if (eden == null) {
+                                Toast.makeText(context, "Eden 核心未就绪", Toast.LENGTH_SHORT).show()
+                            } else {
+                                resetScope.launch {
+                                    val r = withContext(Dispatchers.IO) { eden.quickRestoreSlotRaw(nSlot, 0) }
+                                    when (r) {
+                                        EdenNativeLibrary.RESULT_OK_RESTORED_IN_PLACE ->
+                                            Toast.makeText(context, "已读取存档 [槽位 $nSlot]", Toast.LENGTH_SHORT).show()
+                                        EdenNativeLibrary.RESULT_OK -> {
+                                            // legacy 恢复：存档数据已写回 NAND、游戏已关停
+                                            // —— EdenEngine.relaunchGame 进程内重启加载
+                                            eden.relaunchGame()
+                                            Toast.makeText(context, "已恢复存档数据，正在重启游戏…", Toast.LENGTH_SHORT).show()
+                                        }
+                                        else ->
+                                            Toast.makeText(context,
+                                                "读档失败：${edenQuickSaveResultMessage(r) ?: "未知错误"}",
                                                 Toast.LENGTH_LONG).show()
                                     }
                                 }
@@ -5528,7 +5582,42 @@ fun EmulatorScreen(
                 gameTitle = game.title,
                 onSlotSelected = { slot ->
                     val stateFile = java.io.File(savesDir, "${game.id}_slot${slot}.state")
-                    if (showSlotPicker == "save") {
+                    if (platform == GamePlatform.NSWITCH) {
+                        // ★ v10：Switch（Eden）—— 引擎 saveState/loadState 走原生
+                        //   槽位（冻结 + NAND 拷贝阻塞数秒），必须派发 IO 线程，
+                        //   否则主线程 ANR。槽位标记文件与通用对话框存在性检查
+                        //   兼容（成功后由引擎写入标记）。
+                        //   ★ 对话框模式在 launch 前捕获（lambda 尾部会把
+                        //     showSlotPicker 置 null，协程内再读必错）。
+                        val wantSave = showSlotPicker == "save"
+                        resetScope.launch {
+                            if (wantSave) {
+                                val ok = withContext(Dispatchers.IO) {
+                                    try { engine.saveState(slot, stateFile) } catch (t: Throwable) { false }
+                                }
+                                if (ok) {
+                                    Toast.makeText(context, "存档已保存 [槽位 $slot]", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val reason = engine.lastError().takeIf { it.isNotBlank() } ?: "核心未能生成即时存档"
+                                    Toast.makeText(context, "存档失败：$reason", Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                if (!stateFile.exists()) {
+                                    Toast.makeText(context, "槽位 $slot 无存档", Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                val ok = withContext(Dispatchers.IO) {
+                                    try { engine.loadState(slot, stateFile) } catch (t: Throwable) { false }
+                                }
+                                if (ok) {
+                                    Toast.makeText(context, "存档已读取 [槽位 $slot]，游戏正在重启加载…", Toast.LENGTH_LONG).show()
+                                } else {
+                                    val reason = engine.lastError().takeIf { it.isNotBlank() } ?: "读档失败"
+                                    Toast.makeText(context, "读档失败：$reason", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    } else if (showSlotPicker == "save") {
                         try {
                             // native 链路会校验 serialize 结果与文件写入字节数，
                             // 失败时返回 false（不再产生 35B 假档还提示成功）。
@@ -20000,6 +20089,22 @@ private fun cemuQuickSaveResultMessage(result: Int): String? = when (result) {
     NativeQuickSave.RESULT_ERROR_SLOT_EMPTY -> "该槽位为空。"
     NativeQuickSave.RESULT_ERROR_STATE_RESTORE_FAILED -> "读取即时存档失败，游戏仍在运行。"
     NativeQuickSave.RESULT_ERROR_IO, NativeQuickSave.RESULT_ERROR_NOT_RUNNING -> "发生文件错误，请重试。"
+    else -> "发生文件错误，请重试。"
+}
+
+/**
+ * ★ v10：Switch（Eden）即时存档结果码 → 用户可读消息（cemu 同款风格）。
+ * 结果码定义见 org.yuzu.yuzu_emu.NativeLibrary（与 Cemu NativeQuickSave
+ * 契约一致；native 实现见 core/eden/.../jni/native_savestate.cpp）。
+ */
+private fun edenQuickSaveResultMessage(result: Int): String? = when (result) {
+    EdenNativeLibrary.RESULT_OK, EdenNativeLibrary.RESULT_OK_RESTORED_IN_PLACE -> null
+    EdenNativeLibrary.RESULT_ERROR_NO_SAVE_DATA ->
+        "无存档数据。请先在游戏内保存进度再使用即时存档。"
+    EdenNativeLibrary.RESULT_ERROR_SLOT_EMPTY -> "该槽位为空。"
+    EdenNativeLibrary.RESULT_ERROR_STATE_RESTORE_FAILED -> "读取即时存档失败，游戏仍在运行。"
+    EdenNativeLibrary.RESULT_ERROR_NOT_RUNNING -> "核心未在运行，请先启动游戏。"
+    EdenNativeLibrary.RESULT_ERROR_IO -> "发生文件错误，请重试。"
     else -> "发生文件错误，请重试。"
 }
 

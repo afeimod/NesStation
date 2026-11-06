@@ -704,4 +704,34 @@ object NativeLibrary {
     external fun getFirmwareAvatarCount(): Int
     external fun getFirmwareAvatarImage(index: Int): ByteArray?
     external fun getDefaultAccountBackupJpeg(): ByteArray
+
+    // ------------------------------------------------------------------
+    // ★★ NesStation：即时存档（原生槽位）—— Cemu NativeQuickSave 同构 ★★
+    //   实现见 src/main/jni/native_savestate.cpp。结果码/JSON schema 与
+    //   Cemu-AZ 的 info.cemu.cemu.nativeinterface.NativeQuickSave 一致。
+    // ------------------------------------------------------------------
+
+    const val RESULT_OK: Int = 0
+    const val RESULT_ERROR_NOT_RUNNING: Int = 1
+    const val RESULT_ERROR_NO_SAVE_DATA: Int = 2
+    const val RESULT_ERROR_SLOT_EMPTY: Int = 3
+    const val RESULT_ERROR_IO: Int = 4
+    const val RESULT_OK_RESTORED_IN_PLACE: Int = 5
+    const val RESULT_ERROR_STATE_RESTORE_FAILED: Int = 6
+    const val RESTORE_FLAG_ALLOW_LEGACY: Int = 1
+
+    /** 原生槽位即时存档（阻塞，IO 线程调用）。@param slot 1..6 */
+    external fun quickSaveSlot(slot: Int): Int
+
+    /**
+     * 原生槽位读档（阻塞，IO 线程调用）。[RESULT_OK] = legacy 语义：
+     * 存档数据已还原 NAND、游戏已关停，由前端进程内重启加载。
+     */
+    external fun quickRestoreSlot(slot: Int, flags: Int): Int
+
+    /** 槽位信息 JSON（titleId/titleName/maxSlots/slots[]/autoBackup）。 */
+    external fun getQuickSaveInfo(): String
+
+    /** 槽位缩略图（无图返回 null）。 */
+    external fun getQuickSaveThumbnail(slot: Int): android.graphics.Bitmap?
 }

@@ -72,8 +72,14 @@ import kotlin.concurrent.thread
  * 通过 applySettings 应用）。
  *
  * ROM：.xci/.nsp/.nca/.nro（GameEntry.NSWITCH；.xci/.nsp 为主体格式）。
- * 存档：走游戏内存档（NAND user save）；核心无即时存档（saveState 返回
- * false 并说明）。
+ * 存档（★ v10）：即时存档原生槽位（Cemu NativeQuickSave 同构）——
+ *   [saveState]/[loadState] 走 NativeLibrary.quickSaveSlot/quickRestoreSlot
+ *   （槽位 1..6 + autobackup，<filesDir>/eden/savestates/<programId>/），
+ *   存档 = 冻结（★异步 GPU 同步：Pause → GPU WaitForIdle → ObtainContext）
+ *   + 按标题快照 NAND 用户存档 + 截图缩略图；读档 = 自动备份 + 关停核心
+ *   （释放存档句柄）+ 写回 NAND + [relaunchGame] 进程内重启（= Cemu
+ *   legacy 恢复路径语义）。内核对象无序列化器 → 无进程内 state.bin
+ *   路径，恢复后游戏从快照时刻的存档点继续。
  *
  * Keys / 固件 / 驱动（设置页完整入口）：
  *  - [installKeysFromAssets] 构建者把 prod.keys/title.keys 放进
@@ -1044,16 +1050,160 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     override fun setRegion(region: Int) { /* Switch 无区域强制（游戏卡带自带） */ }
     override fun setSampleRate(rate: Int) { /* 音频由核心内部输出 */ }
 
-    override fun setSaveName(name: String) { /* 存档在 NAND 内，按游戏区分；API 兼容 */ }
+    override fun setSaveName(name: String) { /* 存档在原生槽位按 programId 区分；API 兼容 */ }
+
+    // ------------------------------------------------------------------
+    // 即时存档（★ v10：Cemu NativeQuickSave 同构 —— 原生槽位 1..6 +
+    // autobackup，槽位布局/结果码/JSON schema 与 CemuEngine 完全一致；
+    // native 实现见 core/eden/src/android/app/src/main/jni/
+    // native_savestate.cpp）
+    // ------------------------------------------------------------------
+
+    /** 存/读档串行锁（防并发冻结竞态 → 偶发闪退，与 CemuEngine 同款）。 */
+    private val stateOpLock = Any()
+
+    /** UI 槽位（0..9）→ 原生槽位（1..6）。 */
+    private fun nativeSlotFor(uiSlot: Int): Int = ((uiSlot % 6) + 1).coerceIn(1, 6)
 
     override fun saveState(slot: Int, dst: File): Boolean {
-        lastErrorText = "Switch 核心暂不支持即时存档（请使用游戏内存档）"
-        return false
+        if (!isLoaded) return false
+        return try {
+            val nSlot = nativeSlotFor(slot)
+            // ★ 与读档/其它存档互斥（防并发冻结竞态）
+            val r = synchronized(stateOpLock) { NativeLibrary.quickSaveSlot(nSlot) }
+            when (r) {
+                NativeLibrary.RESULT_OK -> {
+                    // dst 标记文件（UI 槽位列表/时间戳展示用；核心槽位在
+                    // <filesDir>/eden/savestates，进程重启后仍可用）
+                    try {
+                        dst.parentFile?.mkdirs()
+                        dst.writeText("eden-quicksave-slot-$nSlot\n")
+                    } catch (_: Throwable) {}
+                    true
+                }
+                NativeLibrary.RESULT_ERROR_NOT_RUNNING -> {
+                    lastErrorText = "存档失败：核心未在运行"
+                    false
+                }
+                NativeLibrary.RESULT_ERROR_NO_SAVE_DATA -> {
+                    lastErrorText = "存档失败：无存档数据"
+                    false
+                }
+                else -> {
+                    lastErrorText = "存档失败（核心返回码 $r）"
+                    false
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("EdenEngine", "saveState($slot)", t)
+            false
+        }
     }
 
     override fun loadState(slot: Int, src: File): Boolean {
-        lastErrorText = "Switch 核心暂不支持即时读档（请使用游戏内存档）"
-        return false
+        if (!isLoaded) return false
+        return try {
+            val nSlot = nativeSlotFor(slot)
+            // ★ 与存档/其它读档互斥（防并发关停竞态）
+            val r = synchronized(stateOpLock) { NativeLibrary.quickRestoreSlot(nSlot, 0) }
+            when (r) {
+                NativeLibrary.RESULT_OK_RESTORED_IN_PLACE -> true // 预留（进程内 state.bin）
+                NativeLibrary.RESULT_OK -> {
+                    // legacy 路径：存档数据已写回 NAND、核心已关停 →
+                    // 进程内重启游戏加载恢复的存档（= Cemu relaunchTitle）
+                    relaunchGame()
+                    true
+                }
+                NativeLibrary.RESULT_ERROR_SLOT_EMPTY -> {
+                    lastErrorText = "读档失败：槽位 $slot 为空"
+                    false
+                }
+                NativeLibrary.RESULT_ERROR_STATE_RESTORE_FAILED -> {
+                    lastErrorText = "读档失败：状态恢复失败（可用安全模式重试）"
+                    false
+                }
+                else -> {
+                    lastErrorText = "读档失败（核心返回码 $r）"
+                    false
+                }
+            }
+        } catch (t: Throwable) {
+            android.util.Log.w("EdenEngine", "loadState($slot)", t)
+            false
+        }
+    }
+
+    /**
+     * 原生槽位快捷存档（CemuEngine.quickSaveSlotRaw 同款）。
+     * ⚠ 会阻塞（截图等待 + 冻结 + 存档数据拷贝），IO 线程执行。
+     * @param nativeSlot 原生槽位 1..6（直接透传，不做 UI 映射）
+     * @return NativeLibrary.RESULT_* 结果码
+     */
+    fun quickSaveSlotRaw(nativeSlot: Int): Int = try {
+        synchronized(stateOpLock) { NativeLibrary.quickSaveSlot(nativeSlot) }
+    } catch (t: Throwable) {
+        android.util.Log.w("EdenEngine", "quickSaveSlotRaw($nativeSlot)", t)
+        NativeLibrary.RESULT_ERROR_IO
+    }
+
+    /**
+     * 原生槽位读档（CemuEngine.quickRestoreSlotRaw 同款：默认 flags=0）。
+     * ⚠ 阻塞（关停核心 + NAND 写回），IO 线程执行。
+     */
+    fun quickRestoreSlotRaw(nativeSlot: Int, flags: Int): Int = try {
+        synchronized(stateOpLock) { NativeLibrary.quickRestoreSlot(nativeSlot, flags) }
+    } catch (t: Throwable) {
+        android.util.Log.w("EdenEngine", "quickRestoreSlotRaw($nativeSlot)", t)
+        NativeLibrary.RESULT_ERROR_IO
+    }
+
+    /** 槽位信息（含时间戳/大小元数据，Cemu quickSaveInfo 同款）。⚠ 阻塞。 */
+    fun quickSaveInfo(): String? {
+        if (!isLoaded) return null
+        return try { NativeLibrary.getQuickSaveInfo() } catch (_: Throwable) { null }
+    }
+
+    /** 槽位缩略图（无图返回 null）。⚠ 阻塞，IO 线程执行。 */
+    fun quickSaveThumbnail(nativeSlot: Int): android.graphics.Bitmap? = try {
+        NativeLibrary.getQuickSaveThumbnail(nativeSlot)
+    } catch (_: Throwable) { null }
+
+    /**
+     * 进程内重启游戏（CemuEngine.relaunchTitle 同款）：
+     * quickRestoreSlot legacy 路径已把核心关停（run() 返回），此处等待
+     * 模拟线程退出后重新武装启动链（surfaceChanged + run ——
+     * EmulationSession 会以既有 ANativeWindow 重建 EmuWindow），
+     * 游戏启动时自动加载刚写回 NAND 的存档。
+     */
+    fun relaunchGame() {
+        val path = romPath ?: return
+        thread(name = "eden-relaunch", isDaemon = true) {
+            try {
+                // 等待模拟线程收尾（quickRestoreSlot 已等核心关停，
+                // 这里只需 join 线程本身，有界）
+                emuThread?.let { t ->
+                    try { t.join(10_000) } catch (_: InterruptedException) {}
+                }
+                synchronized(lifecycleLock) {
+                    // 期间用户退出/另有重启 → 放弃
+                    if (!isLoaded || romPath == null) return@synchronized
+                    if (emuThread?.isAlive == true) {
+                        lastErrorText = "读档后重启游戏失败（旧模拟线程未退出）"
+                        return@synchronized
+                    }
+                    pendingBoot = false
+                    bootStarted = false
+                    userRequestedStop = false
+                    _paused = false
+                    _ffSpeed = 0
+                    startBootLocked()
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("EdenEngine", "relaunchGame failed", t)
+                lastErrorText = "读档后重启游戏异常：${t.message ?: t.javaClass.simpleName}"
+                try { onPrematureExit?.invoke(lastErrorText) } catch (_: Throwable) {}
+            }
+        }
     }
 
     override fun captureFrame(): FrameCapture? = null

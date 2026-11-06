@@ -336,6 +336,12 @@ Core::SystemResultStatus EmulationSession::InitializeEmulation(const std::string
         return m_load_result;
     }
 
+    // ★★ NesStation 即时存档：新会话开始 —— 重置关停完成事件
+    {
+        std::scoped_lock lock(m_shutdown_mutex);
+        m_shutdown_complete = false;
+    }
+
     // Complete initialization.
     m_system.GPU().Start();
     m_system.GetCpuManager().OnGpuReady();
@@ -378,11 +384,27 @@ void EmulationSession::ShutdownEmulation() {
         m_load_result = Core::SystemResultStatus::ErrorNotInitialized;
         m_window.reset();
         OnEmulationStopped(Core::SystemResultStatus::Success);
+
+        // ★★ NesStation 即时存档：正常关停路径（读档时 quickRestoreSlot
+        //   正在等句柄释放后写回 NAND）
+        {
+            std::scoped_lock lock(m_shutdown_mutex);
+            m_shutdown_complete = true;
+        }
+        m_shutdown_cv.notify_all();
         return;
     }
 
     // Tear down the render window.
     m_window.reset();
+
+    // ★★ NesStation 即时存档：核心关停完成 —— 通知等待者（quickRestore
+    //   正在等句柄释放后写回 NAND）
+    {
+        std::scoped_lock lock(m_shutdown_mutex);
+        m_shutdown_complete = true;
+    }
+    m_shutdown_cv.notify_all();
 }
 
 void EmulationSession::PauseEmulation() {
@@ -401,6 +423,15 @@ void EmulationSession::HaltEmulation() {
     std::scoped_lock lock(m_mutex);
     m_is_running = false;
     m_cv.notify_one();
+}
+
+bool EmulationSession::WaitForShutdown(std::chrono::milliseconds timeout) {
+    // ★★ NesStation 即时存档：等待 ShutdownEmulation 完成 ★★
+    //（不能等 m_is_running —— HaltEmulation 立刻置 false 但真正的
+    //  ShutdownMainProcess 还在运行线程里执行；存档句柄全部释放完的
+    //  唯一可靠信号是 ShutdownEmulation 末尾的置位）
+    std::unique_lock lock(m_shutdown_mutex);
+    return m_shutdown_cv.wait_for(lock, timeout, [this] { return m_shutdown_complete; });
 }
 
 void EmulationSession::RunEmulation() {

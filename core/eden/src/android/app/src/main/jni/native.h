@@ -6,6 +6,10 @@
 
 #include <optional>
 
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+
 #include <android/native_window_jni.h>
 #include "common/android/applets/software_keyboard.h"
 #include "core/core.h"
@@ -44,6 +48,13 @@ public:
     void PauseEmulation();
     void UnPauseEmulation();
     void HaltEmulation();
+
+    // ★★ NesStation 即时存档：等待核心关停完成 ★★
+    // HaltEmulation 只置位 m_is_running 并唤醒运行循环 —— 真正的
+    // ShutdownMainProcess（释放游戏全部存档文件句柄）在运行线程的
+    // SCOPE_EXIT 里执行。quickRestoreSlot（JNI）在写回 NAND 存档前
+    // 必须等它落地，否则拷贝会与在途写回竞争。
+    bool WaitForShutdown(std::chrono::milliseconds timeout);
     void RunEmulation();
     void ShutdownEmulation();
     void RequestDiskShaderCacheReload(u64 program_id);
@@ -99,4 +110,10 @@ private:
     // Program index for next boot
     std::atomic<s32> m_next_program_index = -1;
     std::atomic<u64> m_next_program_id = 0;
+
+    // ★★ NesStation 即时存档：核心关停完成事件（ShutdownEmulation 末尾
+    // 置位 + 通知；InitializeEmulation 重置）★★
+    std::mutex m_shutdown_mutex;
+    std::condition_variable m_shutdown_cv;
+    bool m_shutdown_complete{false};
 };
