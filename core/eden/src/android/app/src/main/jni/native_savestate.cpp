@@ -606,7 +606,9 @@ bool CollectMappedRegions(Core::System& system, std::vector<std::pair<u64, u64>>
     }
     Kernel::KProcessPageTable& page_table = process->GetPageTable();
 
-    const u64 as_start = Common::GetInteger(page_table.GetAddressSpaceStart());
+    // GetInteger 是定义在 Common 命名空间外的全局模板（common/typed_address.h
+    // 中 } // namespace Common 之后），不能加 Common:: 前缀限定
+    const u64 as_start = GetInteger(page_table.GetAddressSpaceStart());
     const u64 as_size = page_table.GetAddressSpaceSize();
 
     u64 cur = as_start;
@@ -751,7 +753,7 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             }
             ThreadMetaV2 meta{};
             meta.thread_id = thread.GetThreadId();
-            meta.tls_addr = Common::GetInteger(thread.GetTlsAddress());
+            meta.tls_addr = GetInteger(thread.GetTlsAddress());
             meta.raw_state = static_cast<u32>(thread.GetRawState() &
                                               ~Kernel::ThreadState::SuspendFlagMask);
             meta.active_core = thread.GetActiveCore();
