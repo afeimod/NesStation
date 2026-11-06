@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 #include "common/container/unordered_map.h"
 #include <assert.h>
 
@@ -156,6 +157,40 @@ public:
     std::optional<FreeInfo> FreeHandle(Handle::Id handle, bool internal_session);
 
     void UnmapAllHandles(NvCore::SessionId session_id);
+
+    // ★★★ NesStation savestate：nvmap 句柄表快照 / 回放 ★★★
+    //
+    // nvmap 句柄表（含每个句柄的 SMMU 设备地址分配与 DAddr→guest VA 映射）
+    // 是宿主侧 HLE 状态，回滚 guest 内存不会回滚它。快照/回放保证读档后
+    // GPU 经 GMMU→SMMU→guest RAM 的两级翻译与回滚后的 guest 驱动一致。
+    struct HandleStateRecord {
+        u64 orig_size;
+        u64 size;              // 页对齐大小
+        u64 aligned_size;      // align 对齐大小
+        u64 align;
+        VAddr address;         // guest VA（0 = 无）
+        DAddr d_address;       // 设备 AS 地址（0 = 从未 pin）
+        u32 id;
+        u32 kind;
+        u32 flags_raw;
+        s32 dupes;
+        s32 internal_dupes;
+        s32 pins;
+        u32 pin_virt_address;  // host1x 低位 GPU VA pin（0 = 无）
+        u32 session_id;
+        u32 in_heap;           // 0/1
+        u32 allocated;         // 0/1
+    };
+    static_assert(sizeof(HandleStateRecord) == 88);
+
+    /// 快照当前全部句柄（含设备映射字段）与 id 序列。
+    void SaveHandles(std::vector<HandleStateRecord>& out, u32& next_id_out);
+
+    /// 原地回放：拆除当前全部设备映射 → 丢弃存档后新建的句柄 → 按存档
+    /// 字段重建/覆盖句柄 → 在原设备地址重建 SMMU 分配与映射、heap 映射、
+    /// 低位 pin → 恢复 id 序列。需在 EmulationFreeze（GPU 排空、guest 暂停）
+    /// 下调用。
+    void RestoreHandles(const std::vector<HandleStateRecord>& in, u32 saved_next_id);
 
 private:
     std::list<std::shared_ptr<Handle>> unmap_queue{};

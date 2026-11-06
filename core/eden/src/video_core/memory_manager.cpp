@@ -740,4 +740,96 @@ u8* MemoryManager::GetSpan(const GPUVAddr src_addr, const std::size_t size) {
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// ★★★ NesStation savestate：GMMU 映射快照 / 回放 ★★★
+// ---------------------------------------------------------------------------
+
+void MemoryManager::SaveMappings(std::vector<GpuMappingRecord>& out) const {
+    out.clear();
+
+    // 小页仅存在于 split_address 之下、大页在其上（nvdrv AS 布局）。
+    const auto walk = [&](bool is_big) {
+        const u64 used_bits = is_big ? big_page_bits : page_bits;
+        const u64 used_size = 1ULL << used_bits;
+        const GPUVAddr walk_limit =
+            is_big ? address_space_size
+                   : std::min<GPUVAddr>(split_address, address_space_size);
+        if (walk_limit > address_space_size) {
+            return;
+        }
+
+        std::optional<GpuMappingRecord> cur{};
+        const auto flush = [&] {
+            if (cur) {
+                out.push_back(*cur);
+                cur.reset();
+            }
+        };
+
+        for (GPUVAddr addr = 0; addr < walk_limit; addr += used_size) {
+            const EntryType type = GetEntry(addr, is_big);
+            if (type == EntryType::Free) {
+                flush();
+                continue;
+            }
+            const bool sparse = type == EntryType::Reserved;
+            DAddr dev{};
+            if (!sparse) {
+                const auto translated = GpuToCpuAddress(addr);
+                if (!translated) {
+                    // 页表自相矛盾（Mapped 但无翻译）：截断当前段并跳过
+                    flush();
+                    continue;
+                }
+                dev = *translated;
+            }
+            const u32 kind = static_cast<u32>(GetPageKind(addr));
+            const bool extend =
+                cur && cur->big_pages == (is_big ? 1u : 0u) && cur->sparse == (sparse ? 1u : 0u) &&
+                cur->kind == kind && cur->gpu_addr + cur->size == addr &&
+                (sparse || cur->dev_addr + cur->size == dev);
+            if (extend) {
+                cur->size += used_size;
+            } else {
+                flush();
+                // 值初始化 + 逐字段赋值（保证 padding 清零，落盘格式确定）
+                GpuMappingRecord rec{};
+                rec.gpu_addr = addr;
+                rec.dev_addr = dev;
+                rec.size = used_size;
+                rec.kind = kind;
+                rec.big_pages = is_big ? 1u : 0u;
+                rec.sparse = sparse ? 1u : 0u;
+                cur = rec;
+            }
+        }
+        flush();
+    };
+
+    walk(false); // 小页区
+    walk(true);  // 大页区
+}
+
+void MemoryManager::RestoreMappings(const std::vector<GpuMappingRecord>& in) {
+    // 1) 全量清空当前映射。Unmap() 会逐设备地址段触发 rasterizer->UnmapMemory
+    //    （纹理/缓冲/管线宿主缓存全部丢弃，之后从还原后的 guest 内存重建 ——
+    //    与 Cemu 读档后 queueSaveStateGpuSync(true) 的整体缓存重置同构）。
+    std::vector<GpuMappingRecord> current;
+    SaveMappings(current);
+    for (const auto& rec : current) {
+        Unmap(rec.gpu_addr, rec.size);
+    }
+
+    // 2) 按存档时刻的原地址重放映射（Map/MapSparse 会同步重建页表镜像、
+    //    kind_map，并对每个状态翻转的页触发 rasterizer->ModifyGPUMemory）。
+    for (const auto& rec : in) {
+        if (rec.sparse) {
+            MapSparse(rec.gpu_addr, rec.size, rec.big_pages != 0);
+        } else {
+            Map(rec.gpu_addr, rec.dev_addr, rec.size, static_cast<PTEKind>(rec.kind),
+                rec.big_pages != 0);
+        }
+    }
+}
+
 } // namespace Tegra

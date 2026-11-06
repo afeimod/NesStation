@@ -155,6 +155,30 @@ public:
     const u8* GetSpan(const GPUVAddr src_addr, const std::size_t size) const;
     u8* GetSpan(const GPUVAddr src_addr, const std::size_t size);
 
+    // ★★★ NesStation savestate：GMMU 映射快照 / 回放 ★★★
+    //
+    // Tegra::MemoryManager 是宿主侧 HLE 状态（nvdrv ioctl 驱动），回滚 guest
+    // 内存不会回滚它——存档后游戏重映射 GPU 缓冲会导致 GPU 地址翻译与回滚后
+    // 的 guest 状态分叉，恢复运行后在途命令流按过期页表翻译地址 → 野指针。
+    // 快照/回放让 GMMU 与存档时刻的 guest 驱动状态保持一致。
+    struct GpuMappingRecord {
+        GPUVAddr gpu_addr; // 映射起始 GPU VA
+        DAddr dev_addr;    // 映射目标设备地址（sparse 时为 0）
+        u64 size;          // 字节数（页粒度对齐）
+        u32 kind;          // Tegra::PTEKind
+        u32 big_pages;     // 大页映射 0/1
+        u32 sparse;        // 稀疏预留（EntryType::Reserved）0/1
+    };
+    static_assert(sizeof(GpuMappingRecord) == 40);
+
+    /// 快照当前全部 GPU VA 映射（Mapped + Sparse 预留，按连续段合并）。
+    void SaveMappings(std::vector<GpuMappingRecord>& out) const;
+
+    /// 全量清空当前映射并按原地址重放快照段。清空阶段逐设备地址段触发
+    /// rasterizer->UnmapMemory（= Cemu queueSaveStateGpuSync(true) 的
+    /// 「丢弃全部 GPU 缓存数据、从内存重新上传」同构语义）。
+    void RestoreMappings(const std::vector<GpuMappingRecord>& in);
+
 private:
     template <typename FuncMapped, typename FuncReserved, typename FuncUnmapped>
     inline void MemoryOperation(GPUVAddr gpu_src_addr, std::size_t size, bool is_big_page, FuncMapped&& func_mapped, FuncReserved&& func_reserved, FuncUnmapped&& func_unmapped) const;

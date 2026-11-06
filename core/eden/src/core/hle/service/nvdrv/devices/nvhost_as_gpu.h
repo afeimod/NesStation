@@ -64,6 +64,12 @@ public:
 
     Kernel::KEvent* QueryEvent(u32 event_id) override;
 
+    /// ★ NesStation savestate：暴露本 AS 的 GMMU 实例（快照/回放用；
+    /// AS 生命周期与设备 fd 一致，实例指针在进程内稳定）。
+    [[nodiscard]] Tegra::MemoryManager* GetGMMU() const {
+        return gmmu.get();
+    }
+
     struct VaRegion {
         u64 offset;
         u32 page_size;

@@ -7,6 +7,16 @@
 // v2：新增 state.bin 进程内全量状态捕获/原地恢复 —— 与 Cemu 的
 //     NativeQuickSave.cpp（core/cemu/src/android/app/src/main/cpp/）
 //     语义逐块对齐：
+// v3：新增 nvdrv GPU 状态段（GMMU 映射 + nvmap 句柄表 + SMMU 设备地址
+//     分配）。v2 只回滚 guest 内存，但 GPU 访问链是三层：
+//       GPU VA →(GMMU，宿主 HLE)→ DAddr →(SMMU/nvmap，宿主 HLE)→ guest VA
+//     后两层是宿主侧状态，不随 guest 内存回滚 —— 存档后游戏重映射 GPU
+//     缓冲会导致恢复后按过期页表翻译地址 → blit/memcpy 野指针崩溃
+//    （Redmi socrates 闪退栈：SoftwareBlitEngine::Blit→memcpy）。
+//     v3 随档快照这两层、读档原地址回放，使全链路与 Cemu 的
+//     RestoreStateFromFile 同等一致性；GMMU 全量清空+重放会逐设备
+//     地址段触发 rasterizer 缓存丢弃（= Cemu queueSaveStateGpuSync(true)
+//     「丢弃全部 GPU 缓存数据、从内存重新上传」同构）。
 //
 //   Cemu (Wii U)                        Eden (Switch / yuzu 系)
 //   ─────────────────────────────      ─────────────────────────────────────
@@ -59,9 +69,18 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/result.h"
+#include "core/hle/service/nvdrv/core/container.h"
+#include "core/hle/service/nvdrv/core/nvmap.h"
+#include "core/hle/service/nvdrv/devices/nvdevice.h"
+#include "core/hle/service/nvdrv/devices/nvhost_as_gpu.h"
+#include "core/hle/service/nvdrv/nvdrv.h"
+#include "core/hle/service/nvdrv/nvdrv_interface.h"
+#include "core/hle/service/sm/sm.h"
 #include "core/loader/loader.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
+#include "video_core/host1x/host1x.h"
+#include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 
@@ -77,6 +96,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -108,12 +128,16 @@ constexpr int kThumbMaxHeight = 180;
 // ---------------------------------------------------------------------------
 
 constexpr char kStateMagic[4] = {'E', 'D', 'S', 'S'};
-constexpr u32 kStateVersion = 2;
+constexpr u32 kStateVersion = 3;
 constexpr size_t kChunkSize = 4 * 1024 * 1024; // 4MB 未压缩分片
 constexpr size_t kPageSize = 4 * 1024;          // ≤ 宿主页表粒度，见下注
 
 // 注：Common::PageTable::PageBits ≥ 12（4KB），kPageSize 逐页寻址总是
 // 落在单个页表项内 —— 对更大页粒度的实现同样安全。
+
+// v3：nvdrv GPU 状态段存在标志（GMMU 映射 + nvmap 句柄表随档保存）。
+// 没有该段的 v2 存档原地恢复必拒（宿主 GPU 状态与回滚内存不一致 → 崩溃）。
+constexpr u32 kStateFlagHasNvdrv = 1u << 0;
 
 struct StateHeaderV2 {
     char magic[4];
@@ -122,8 +146,9 @@ struct StateHeaderV2 {
     u32 region_count;
     u32 thread_count;
     u64 total_uncompressed; // 全部区段未压缩字节（统计/校验）
-    u32 flags;              // 保留，0
-    u32 reserved[3];
+    u32 flags;              // bit0: kStateFlagHasNvdrv；其余保留
+    u32 pad0;               // 对齐占位（保持 48B，与 v2 二进制兼容布局）
+    u64 nvdrv_size;         // v3：nvdrv GPU 状态段字节数（无则 0）
 };
 static_assert(sizeof(StateHeaderV2) == 48);
 
@@ -149,6 +174,28 @@ static_assert(sizeof(ThreadMetaV2) == 32);
 
 constexpr size_t kThreadRecordSize =
     sizeof(ThreadMetaV2) + sizeof(Kernel::Svc::ThreadContext);
+
+// v3 nvdrv 段：
+//   [NvdrvHeaderV3]
+//   [GmmuSectionV3 + GpuMappingRecord × mapping_count] × gmmu_count
+//   [HandleStateRecord × handle_count]
+//（GpuMappingRecord = Tegra::MemoryManager::GpuMappingRecord，
+//  HandleStateRecord = NvCore::NvMap::HandleStateRecord，均 POD）
+
+struct NvdrvHeaderV3 {
+    u32 gmmu_count;     // GMMU 实例段数
+    u32 handle_count;   // nvmap 句柄记录数
+    u32 next_handle_id; // nvmap id 序列
+    u32 reserved;
+};
+static_assert(sizeof(NvdrvHeaderV3) == 16);
+
+struct GmmuSectionV3 {
+    u64 gmmu_id;       // Tegra::MemoryManager::GetID()，恢复时按此匹配实例
+    u32 mapping_count; // 该实例的映射记录数
+    u32 reserved;
+};
+static_assert(sizeof(GmmuSectionV3) == 16);
 
 // ---------------------------------------------------------------------------
 // 会话 / 标题信息
@@ -591,6 +638,212 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// nvdrv GPU 状态（v3）—— 宿主侧 HLE 派生状态的快照 / 回放
+//
+// GPU 访问链：GPU VA →(GMMU，Tegra::MemoryManager)→ DAddr
+//            →(SMMU，MaxwellDeviceMemoryManager)→ guest VA → guest 内存。
+// 存档回滚只还原最后一环（guest 内存）；GMMU 页表、SMMU 分配、nvmap 句柄
+// 表都是宿主侧状态，存档后游戏的重映射会让链路前端与回滚后的 guest 驱动
+// 分叉 → 恢复运行后在途命令流按过期页表翻译 → 野指针（blit/memcpy 崩溃）。
+// 与 Cemu 不同（Cemu 的 GPU 直接走 PPC 地址空间，无此问题），Eden/yuzu 系
+// 必须把这三层随档快照、读档回放，才能达到 Cemu RestoreStateFromFile 的
+// 原地恢复一致性。
+// ---------------------------------------------------------------------------
+
+using NvdrvHandleRecord = Service::Nvidia::NvCore::NvMap::HandleStateRecord;
+using GpuMappingRecord = Tegra::MemoryManager::GpuMappingRecord;
+
+std::shared_ptr<Service::Nvidia::Module> GetNvdrvModule(Core::System& system) {
+    auto nvdrv = system.ServiceManager().GetService<Service::Nvidia::NVDRV>("nvdrv");
+    if (nvdrv == nullptr) {
+        return nullptr;
+    }
+    return nvdrv->GetModule();
+}
+
+struct GmmuInstanceRef {
+    u64 id;
+    Tegra::MemoryManager* mm;
+};
+
+// 收集全部活跃 GMMU 实例：host1x 低位 pin AS + 每个已打开 nvhost_as_gpu
+// 的 per-AS GMMU（channel_state->memory_manager 绑定的就是后者）。
+void CollectGmmuInstances(Core::System& system, Service::Nvidia::Module& nvdrv,
+                          std::vector<GmmuInstanceRef>& out) {
+    out.clear();
+    auto& host1x = system.Host1x();
+    out.push_back({host1x.gmmu_manager.GetID(), &host1x.gmmu_manager});
+    nvdrv.ForEachDevice([&](Service::Nvidia::Devices::nvdevice* device) {
+        auto* as_gpu = dynamic_cast<Service::Nvidia::Devices::nvhost_as_gpu*>(device);
+        if (as_gpu == nullptr) {
+            return;
+        }
+        Tegra::MemoryManager* mm = as_gpu->GetGMMU();
+        if (mm == nullptr) {
+            return;
+        }
+        for (const auto& existing : out) {
+            if (existing.mm == mm) {
+                return; // 同一实例只收一次
+            }
+        }
+        out.push_back({mm->GetID(), mm});
+    });
+}
+
+// 快照 nvdrv GPU 状态（须持 EmulationFreeze）。nvdrv 服务不可用返回 false。
+bool CaptureNvdrvState(Core::System& system, std::vector<u8>& blob_out) {
+    blob_out.clear();
+    auto nvdrv = GetNvdrvModule(system);
+    if (nvdrv == nullptr) {
+        return false;
+    }
+
+    // 1) 各 GMMU 实例映射
+    std::vector<GmmuInstanceRef> instances;
+    CollectGmmuInstances(system, *nvdrv, instances);
+
+    std::vector<u8> body;
+    u32 gmmu_count = 0;
+    for (const auto& inst : instances) {
+        std::vector<GpuMappingRecord> mappings;
+        inst.mm->SaveMappings(mappings);
+
+        GmmuSectionV3 section{};
+        section.gmmu_id = inst.id;
+        section.mapping_count = static_cast<u32>(mappings.size());
+        body.insert(body.end(), reinterpret_cast<const u8*>(&section),
+                    reinterpret_cast<const u8*>(&section) + sizeof(section));
+        if (!mappings.empty()) {
+            body.insert(body.end(), reinterpret_cast<const u8*>(mappings.data()),
+                        reinterpret_cast<const u8*>(mappings.data()) +
+                            mappings.size() * sizeof(GpuMappingRecord));
+        }
+        ++gmmu_count;
+    }
+
+    // 2) nvmap 句柄表
+    auto& nvmap = nvdrv->GetContainer().GetNvMapFile();
+    std::vector<NvdrvHandleRecord> handles;
+    u32 next_handle_id = 0;
+    nvmap.SaveHandles(handles, next_handle_id);
+
+    NvdrvHeaderV3 header{};
+    header.gmmu_count = gmmu_count;
+    header.handle_count = static_cast<u32>(handles.size());
+    header.next_handle_id = next_handle_id;
+
+    blob_out.insert(blob_out.end(), reinterpret_cast<const u8*>(&header),
+                    reinterpret_cast<const u8*>(&header) + sizeof(header));
+    if (!body.empty()) {
+        blob_out.insert(blob_out.end(), body.data(), body.data() + body.size());
+    }
+    if (!handles.empty()) {
+        blob_out.insert(blob_out.end(), reinterpret_cast<const u8*>(handles.data()),
+                        reinterpret_cast<const u8*>(handles.data()) +
+                            handles.size() * sizeof(NvdrvHandleRecord));
+    }
+    return true;
+}
+
+// 回放 nvdrv GPU 状态（须持 EmulationFreeze，且在 guest 内存写回之后、
+// rasterizer 缓存失效之前调用）。失败返回 false 并填 *err（保持原状不再
+// 继续原地恢复——半回放状态不可用）。
+// 段布局（与 CaptureNvdrvState 写入顺序严格一致）：
+//   [NvdrvHeaderV3][GmmuSectionV3 + 映射记录 × mapping_count] × gmmu_count
+//   [句柄记录 × handle_count]
+bool RestoreNvdrvState(Core::System& system, std::span<const u8> blob, std::string* err) {
+    *err = {};
+    if (blob.size() < sizeof(NvdrvHeaderV3)) {
+        *err = "nvdrv section truncated";
+        return false;
+    }
+    NvdrvHeaderV3 header{};
+    std::memcpy(&header, blob.data(), sizeof(header));
+    blob = blob.subspan(sizeof(header));
+
+    auto nvdrv = GetNvdrvModule(system);
+    if (nvdrv == nullptr) {
+        *err = "nvdrv module unavailable";
+        return false;
+    }
+
+    // ---- 解析阶段（顺序 = 文件布局）----
+
+    // 1) 各 GMMU 实例段
+    struct GmmuMappings {
+        u64 gmmu_id;
+        std::vector<GpuMappingRecord> mappings;
+    };
+    std::vector<GmmuMappings> gmmu_sections(header.gmmu_count);
+    for (auto& section_records : gmmu_sections) {
+        if (blob.size() < sizeof(GmmuSectionV3)) {
+            *err = "nvdrv gmmu section truncated";
+            return false;
+        }
+        GmmuSectionV3 section{};
+        std::memcpy(&section, blob.data(), sizeof(section));
+        blob = blob.subspan(sizeof(section));
+
+        section_records.gmmu_id = section.gmmu_id;
+        section_records.mappings.resize(section.mapping_count);
+        const size_t mappings_bytes =
+            section_records.mappings.size() * sizeof(GpuMappingRecord);
+        if (blob.size() < mappings_bytes) {
+            *err = "nvdrv gmmu mappings truncated";
+            return false;
+        }
+        if (!section_records.mappings.empty()) {
+            std::memcpy(section_records.mappings.data(), blob.data(), mappings_bytes);
+        }
+        blob = blob.subspan(mappings_bytes);
+    }
+
+    // 2) nvmap 句柄记录
+    std::vector<NvdrvHandleRecord> handles(header.handle_count);
+    const size_t handles_bytes = handles.size() * sizeof(NvdrvHandleRecord);
+    if (blob.size() < handles_bytes) {
+        *err = "nvdrv handle records truncated";
+        return false;
+    }
+    if (!handles.empty()) {
+        std::memcpy(handles.data(), blob.data(), handles_bytes);
+    }
+    blob = blob.subspan(handles_bytes);
+
+    // ---- 执行阶段 ----
+
+    // 3) GMMU 映射：按存档 gmmu_id 匹配当前实例，全量清空 + 按原地址重放
+    //   （清空即触发 rasterizer 对全部受影响设备地址段的缓存丢弃）。
+    std::vector<GmmuInstanceRef> instances;
+    CollectGmmuInstances(system, *nvdrv, instances);
+    for (const auto& section_records : gmmu_sections) {
+        Tegra::MemoryManager* mm = nullptr;
+        for (const auto& inst : instances) {
+            if (inst.id == section_records.gmmu_id) {
+                mm = inst.mm;
+                break;
+            }
+        }
+        if (mm == nullptr) {
+            // 存档后该 AS 被重建（罕见）：跳过该实例映射，记日志
+            LOG_WARNING(Frontend,
+                        "Eden savestate: gmmu instance {} no longer exists, skipped",
+                        section_records.gmmu_id);
+            continue;
+        }
+        mm->RestoreMappings(section_records.mappings);
+    }
+
+    // 4) nvmap 句柄表回放：拆除当前设备映射 → 丢弃存档后新建句柄 → 按存档
+    //    在原设备地址重建 SMMU 分配/映射、heap 映射与低位 pin（其低位 pin
+    //    的 GMMU 重映射与第 3 步幂等）。
+    auto& nvmap = nvdrv->GetContainer().GetNvMapFile();
+    nvmap.RestoreHandles(handles, header.next_handle_id);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // state.bin —— 捕获（quickSaveSlot 调用，必须持冻结）
 // ---------------------------------------------------------------------------
 
@@ -768,6 +1021,16 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             ++thread_count;
         }
 
+        // 3.5) nvdrv GPU 状态（v3）：GMMU 映射 + nvmap 句柄表（宿主侧 HLE
+        //      派生状态，须随档保存；不可用时该槽将拒绝原地恢复）
+        std::vector<u8> nvdrv_blob;
+        const bool nvdrv_ok = CaptureNvdrvState(system, nvdrv_blob);
+        if (!nvdrv_ok) {
+            LOG_WARNING(Frontend,
+                        "Eden savestate: nvdrv GPU state unavailable, "
+                        "in-place restore disabled for this slot");
+        }
+
         // 4) 合并写最终 state.bin（先写临时文件再原子替换）
         {
             std::ofstream out(state_tmp, std::ios::binary | std::ios::trunc);
@@ -784,7 +1047,9 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             header.region_count = static_cast<u32>(descs.size());
             header.thread_count = thread_count;
             header.total_uncompressed = total_uncompressed;
-            header.flags = 0;
+            header.flags = nvdrv_ok ? kStateFlagHasNvdrv : 0;
+            header.pad0 = 0;
+            header.nvdrv_size = nvdrv_blob.size();
 
             out.write(reinterpret_cast<const char*>(&header), sizeof(header));
             out.write(reinterpret_cast<const char*>(descs.data()),
@@ -812,6 +1077,19 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
                         *err = "state.bin write failed (disk full?)";
                         return false;
                     }
+                }
+            }
+
+            // nvdrv 段（紧随压缩负载之后、线程记录之前；与 RestoreStateBin
+            // 读取顺序严格一致）
+            if (!nvdrv_blob.empty()) {
+                out.write(reinterpret_cast<const char*>(nvdrv_blob.data()),
+                          static_cast<std::streamsize>(nvdrv_blob.size()));
+                if (!out) {
+                    fs::remove(payload_tmp);
+                    fs::remove(state_tmp);
+                    *err = "state.bin write failed (disk full?)";
+                    return false;
                 }
             }
 
@@ -904,6 +1182,12 @@ bool RestoreStateBin(Core::System& system, const fs::path& state_path, u64 progr
                            header.program_id, program_id);
         return false;
     }
+    if ((header.flags & kStateFlagHasNvdrv) == 0 || header.nvdrv_size == 0) {
+        // v2 老档 / nvdrv 段缺失：宿主 GPU 状态无法与回滚内存同步，原地恢复
+        // 必拒（否则必崩）。重新存档即可得到 v3 槽位。
+        *err = "state.bin lacks nvdrv GPU state (v2 slot?) - re-save to upgrade";
+        return false;
+    }
 
     // 2) 区段描述符
     std::vector<RegionDescV2> descs(header.region_count);
@@ -940,6 +1224,27 @@ bool RestoreStateBin(Core::System& system, const fs::path& state_path, u64 progr
                 CopyGuestRangeIn(system, desc.guest_va, desc.uncompressed_size,
                                  decompressed.data());
             }
+        }
+    }
+
+    // 3.5) nvdrv GPU 状态回放：SMMU/nvmap 句柄表 + GMMU 映射（在 guest
+    //      内存写回之后、rasterizer 缓存失效之前）。GMMU 全量清空+重放
+    //      本身就会按设备地址段触发 rasterizer 缓存丢弃 —— Cemu
+    //      queueSaveStateGpuSync(true) 的「丢弃全部 GPU 缓存数据」同构。
+    {
+        std::vector<u8> nvdrv_blob(static_cast<size_t>(header.nvdrv_size));
+        if (!nvdrv_blob.empty()) {
+            in.read(reinterpret_cast<char*>(nvdrv_blob.data()),
+                    static_cast<std::streamsize>(nvdrv_blob.size()));
+            if (in.gcount() != static_cast<std::streamsize>(nvdrv_blob.size())) {
+                *err = "nvdrv section truncated";
+                return false;
+            }
+        }
+        std::string nvdrv_err;
+        if (!RestoreNvdrvState(system, nvdrv_blob, &nvdrv_err)) {
+            *err = "nvdrv restore failed: " + nvdrv_err;
+            return false;
         }
     }
 

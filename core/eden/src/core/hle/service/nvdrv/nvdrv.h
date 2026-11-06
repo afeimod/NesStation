@@ -71,6 +71,15 @@ public:
         return std::static_pointer_cast<T>(itr->second);
     }
 
+    /// ★ NesStation savestate：遍历当前全部已打开的设备实例（按原始
+    /// nvdevice 基类指针；用于枚举 nvhost_as_gpu 的各 AS GMMU 实例）。
+    template <typename Func>
+    void ForEachDevice(Func&& func) {
+        for (auto& [fd, device] : open_files) {
+            func(device.get());
+        }
+    }
+
     NvResult VerifyFD(DeviceFD fd) const;
 
     /// Opens a device node and returns a file descriptor to it.
