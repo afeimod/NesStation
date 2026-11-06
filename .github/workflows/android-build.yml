@@ -93,35 +93,61 @@ jobs:
           # Cemu 源码全局开启 LTO/IPO（RelWithDebInfo），CMake 3.22 在 NDK 工具链
           # 下无法正确处理 LTO 链接，会回退到宿主机 /usr/bin/ld.gold（NDK 无
           # LLVMgold.so 插件、gold 不识别 aarch64 crt 文件），报
-          # "unsupported ELF machine number 183"。SDK 仓库中满足 >=3.25 的版本
-          # 为 cmake;3.30.4，与 cemu-core/build.gradle.kts 的 version="3.25.0+"
-          # 匹配。
+          # "unsupported ELF machine number 183"。
           #
           # Eden(Switch) 的根 CMake 要求 cmake_minimum_required(VERSION 3.31)，
           # eden-core/build.gradle.kts 固定 version = "3.31.6"（AGP 精确匹配）。
           # 不能指望 runner 系统自带的 CMake：AGP 指定精确版本时只认 SDK 内的
-          # $ANDROID_HOME/cmake/<版本>/（镜像更新后系统 CMake 版本会漂移），
+          # $ANDROID_HOME/cmake/<版本>/（镜像更新后系统/预装 CMake 版本会漂移），
           # 缺失即在 :eden-core:configureCMake* 处报
           # [CXX1300] CMake '3.31.6' was not found in SDK, PATH。
+          #
+          # ★ CMake 不走 sdkmanager：runner 的 sdkmanager 安装 cmake 包会静默
+          #   失败（2026-11-06 构建日志里 cmake/3.30.4 全程 0 引用，被 || true
+          #   吞掉；多包同装时还可能拖挂其他组件）。改为从官方仓库直连下载
+          #   zip 解压 —— dl.google.com/android/repository/cmake-<版本>-linux.zip
+          #   （即 repository2-3.xml 里 sdkmanager 用的同一 URL，sha1 亦来自
+          #   该索引），zip 顶层就是 bin/、doc/（无包裹目录），自带
+          #   bin/cmake + bin/ninja，解压到 $ANDROID_HOME/cmake/<版本>/ 即是
+          #   AGP 期望的布局。
           sdkmanager \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "ndk;28.2.13676358" \
             "ndk;29.0.14206865" \
-            "cmake;3.30.4" \
-            "cmake;3.31.6" \
             > /dev/null 2>&1 || true
-          # fail-fast：sdkmanager 输出被静默（|| true 容错已装组件的非零退出码），
-          # 若组件实际安装失败，会拖到构建中途才以晦涩报错收场（如 CXX1300，
-          # 浪费 17 分钟）。这里立即校验关键组件真实落盘，缺失直接给出
-          # 可操作的错误信息。
-          for c in "$ANDROID_HOME/cmake/3.30.4/bin/cmake" \
-                   "$ANDROID_HOME/cmake/3.31.6/bin/cmake"; do
-            test -x "$c" || { echo "::error::SDK 组件缺失：$c 未安装成功（sdkmanager 静默失败？）"; exit 1; }
-          done
+          # 直连安装 CMake（下载 → sha1 校验 → 解压 → 验证；幂等，已装跳过）
+          install_cmake() {
+            local v="$1" sha="$2"
+            if [ -x "$ANDROID_HOME/cmake/$v/bin/cmake" ]; then
+              echo "cmake $v 已存在，跳过"
+              return 0
+            fi
+            curl -fsSL -o "/tmp/cmake-$v-linux.zip" \
+              "https://dl.google.com/android/repository/cmake-$v-linux.zip" \
+              || { echo "::warning::cmake $v 下载失败"; return 1; }
+            echo "$sha  /tmp/cmake-$v-linux.zip" | sha1sum -c - >/dev/null 2>&1 \
+              || { echo "::warning::cmake $v sha1 校验失败"; return 1; }
+            mkdir -p "$ANDROID_HOME/cmake/$v"
+            unzip -q "/tmp/cmake-$v-linux.zip" -d "$ANDROID_HOME/cmake/$v" \
+              || { echo "::warning::cmake $v 解压失败"; return 1; }
+            test -x "$ANDROID_HOME/cmake/$v/bin/cmake"
+          }
+          # 3.31.6：eden-core 精确匹配，硬性必需（装不上直接报错，别等到
+          # 构建 17 分钟后才在 CXX1300 处天折）
+          install_cmake "3.31.6" "a54551dabd5daf8cc99f7f51769fd00ca759be0a" \
+            || { echo "::error::cmake 3.31.6 安装失败（eden-core 必需）"; exit 1; }
+          # 3.30.4：cemu-core "3.25.0+" 的推荐匹配版本；软性 —— 装不上时
+          # AGP 会回退 SDK 内其他 >=3.25 的版本（镜像预装），仅告警不中断
+          install_cmake "3.30.4" "b7d4287a46737718d88611655608d567fcc07c1e" \
+            || echo "::warning::cmake 3.30.4 安装失败，cemu-core 将回退 SDK 内其他 >=3.25 的 CMake"
+          # fail-fast：关键组件缺失立即给出可操作报错。cmake 3.30.4 不在此列
+          #（cemu 为宽松匹配，上面已告警；历史上它从未装上过，也从未被需要）。
           for n in "ndk/28.2.13676358" "ndk/29.0.14206865"; do
             test -d "$ANDROID_HOME/$n" || { echo "::error::SDK 组件缺失：$ANDROID_HOME/$n 未安装成功"; exit 1; }
           done
+          test -x "$ANDROID_HOME/cmake/3.31.6/bin/cmake" \
+            || { echo "::error::SDK 组件缺失：cmake 3.31.6 未安装成功"; exit 1; }
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/28.2.13676358" >> "$GITHUB_ENV"
           echo ""
@@ -132,6 +158,9 @@ jobs:
           ls "$ANDROID_HOME/cmake/" 2>/dev/null
           echo "=== ndk ==="
           ls "$ANDROID_HOME/ndk/" 2>/dev/null
+          echo "=== cmake 自检 ==="
+          "$ANDROID_HOME/cmake/3.31.6/bin/cmake" --version | head -1
+          "$ANDROID_HOME/cmake/3.31.6/bin/ninja" --version
 
       # ---------- 3.4. 安装 Rust Android 交叉编译目标 ----------
       # ARMSX2 的 librashader（RetroArch .slangp 着色器链）通过 cargo 为 Android
