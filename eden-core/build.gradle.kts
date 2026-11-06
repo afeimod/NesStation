@@ -129,10 +129,16 @@ fun glslangValidatorCMakeArg(): String {
     return "-DGLSLANGVALIDATOR=$path"
 }
 
-/** 运行 --version 校验候选可执行文件可用（非零退出码 / 输出异常均不算） */
+/** 运行 --version 校验候选可执行文件可用（非零退出码 / 输出异常均不算）。
+ *  先补执行位再运行：zip 解压（zip 不保留 Unix 权限）或经 Windows 中转上传
+ *  会把随包预编译的执行位丢成 644，ProcessBuilder 直接报 Permission denied
+ *  而被误判为"架构/glibc 不匹配"，白白回退到 8 分钟的源码构建。
+ *  setExecutable 幂等、失败仅返回 false（PATH 上无写权限的只读文件不受影响，
+ *  由外层 catch 兜底）。 */
 fun verifyRunnable(cand: File): Boolean {
     if (!cand.isFile) return false
     return try {
+        cand.setExecutable(true)
         val p = ProcessBuilder(cand.absolutePath, "--version")
             .redirectErrorStream(true)
             .start()
