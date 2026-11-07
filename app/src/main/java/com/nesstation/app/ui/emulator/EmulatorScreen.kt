@@ -2267,40 +2267,10 @@ fun EmulatorScreen(
         }
     }
 
-    // ★★ v4.2：Switch（Eden）启动看门狗（“小程序启动黑屏没反应”加固）★★
-    //   与 3DS 看门狗同模式：loaded=true 后核心若长时间一帧未出（realtimeFps
-    //   读的是核心真实 PerfStats —— 游戏帧率恒 0；HUD 心跳计数器不算数），
-    //   说明核心线程卡在 Load/渲染初始化且没有任何回调可弹窗 —— 旧版唯一
-    //   的呈现就是无声黑屏。30 秒（给着色器编译留余量）后主动把黑屏变成
-    //   可行动的诊断清单（密钥/固件状态 + 处理建议）。
-    LaunchedEffect(platform, loaded) {
-        if (platform != GamePlatform.NSWITCH || !loaded) return@LaunchedEffect
-        kotlinx.coroutines.delay(30_000)
-        if (!loaded || errorMsg != null) return@LaunchedEffect
-        val edenEngine = engine as? com.nesstation.app.core.engine.EdenEngine
-            ?: return@LaunchedEffect
-        val fps = try { edenEngine.realtimeFps() } catch (_: Throwable) { 0.0 }
-        if (fps > 0.5) return@LaunchedEffect
-        val keysOk = try {
-            org.yuzu.yuzu_emu.NativeLibrary.areKeysPresent()
-        } catch (_: Throwable) { false }
-        val fwOk = try {
-            org.yuzu.yuzu_emu.NativeLibrary.isFirmwareAvailable()
-        } catch (_: Throwable) { false }
-        errorMsg = buildString {
-            append("Switch 核心已加载但 30 秒内没有输出任何画面。\n\n")
-            if (!keysOk) {
-                append("· 缺少 prod.keys 密钥 —— 加密内容无法解密，请在 设置 → 核心设置 → Switch 安装。\n")
-            }
-            if (!fwOk) {
-                append("· 未安装官方固件 —— 系统小程序（相册/Mii/Amiibo/主菜单）内置于固件 zip。\n")
-            }
-            if (keysOk && fwOk) {
-                append("· 密钥与固件均已就绪 —— 可能是着色器编译特别慢（继续等待）或该程序与当前 GPU 驱动不兼容（可到 设置 → Switch·Eden 更换 GPU 驱动后重试）。\n")
-            }
-            append("\n提示：普通游戏首次启动编译着色器可能较慢，等待期间出现该提示属正常现象，可点「继续停留」。")
-        }
-    }
+    // ★★ v4.2 的 Switch（Eden）30 秒黑屏检测弹窗已按用户要求移除（v75）：
+    //    着色器编译较慢的游戏在首帧前会被误报「核心已加载但 30 秒内没有
+    //    输出任何画面」，干扰正常等待。密钥/固件缺失的引导已由
+    //    设置 → 核心设置 → Switch 安装入口覆盖，不再启动时弹窗。
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
 
     var showMenu by remember { mutableStateOf(false) }
@@ -5321,12 +5291,20 @@ fun EmulatorScreen(
                                     val r = withContext(Dispatchers.IO) { eden.quickRestoreSlotRaw(nSlot, 0) }
                                     when (r) {
                                         EdenNativeLibrary.RESULT_OK_RESTORED_IN_PLACE ->
-                                            Toast.makeText(context, "已读取存档 [槽位 $nSlot]", Toast.LENGTH_SHORT).show()
-                                        EdenNativeLibrary.RESULT_OK -> {
+                                            Toast.makeText(context, "已读取存档 [槽位 $nSlot]，原地恢复", Toast.LENGTH_SHORT).show()
+                                        EdenNativeLibrary.RESULT_OK,
+                                        EdenNativeLibrary.RESULT_OK_LEGACY_RESTART -> {
                                             // legacy 恢复：存档数据已写回 NAND、游戏已关停
-                                            // —— EdenEngine.relaunchGame 进程内重启加载
+                                            // —— EdenEngine.relaunchGame 进程内重启加载。
+                                            // RESULT_OK_LEGACY_RESTART：存档后内存布局/线程集
+                                            // 已变化，native 自动回落此路径（v4）。
                                             eden.relaunchGame()
-                                            Toast.makeText(context, "已恢复存档数据，正在重启游戏…", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context,
+                                                if (r == EdenNativeLibrary.RESULT_OK_LEGACY_RESTART)
+                                                    "存档后内存布局已变化，已重启游戏加载…"
+                                                else
+                                                    "已恢复存档数据，正在重启游戏…",
+                                                Toast.LENGTH_LONG).show()
                                         }
                                         else ->
                                             Toast.makeText(context,
@@ -5574,12 +5552,49 @@ fun EmulatorScreen(
                 )
             } else {
             val savesDir = java.io.File(context.filesDir, "saves").apply { mkdirs() }
+            // ★ v4（v75）：Switch 槽位行显示真实大小/时间（原生槽位
+            //   quickSaveInfo JSON 的 sizeBytes/timestamp）。标记文件仅 22B
+            //   只用于存在性检查 —— 旧版直接显示其长度是「存档只有 22B」
+            //   误报的根因。
+            val edenNativeSlotInfo: Map<Int, SlotState>? =
+                if (platform == GamePlatform.NSWITCH && loaded) {
+                    remember(showSlotPicker, game.id) {
+                        (engine as? com.nesstation.app.core.engine.EdenEngine)?.let { eden ->
+                            try {
+                                val json = eden.quickSaveInfo()
+                                if (json.isNullOrEmpty()) {
+                                    null
+                                } else {
+                                    val obj = org.json.JSONObject(json)
+                                    val fmt = java.text.SimpleDateFormat(
+                                        "yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                                    val out = HashMap<Int, SlotState>()
+                                    for (ui in 0..9) {
+                                        val nSlot = ((ui % 6) + 1).coerceIn(1, 6)
+                                        val sj = obj.optJSONArray("slots")
+                                            ?.optJSONObject(nSlot - 1) ?: continue
+                                        if (!sj.optBoolean("exists", false)) continue
+                                        val size = sj.optLong("sizeBytes", 0L)
+                                        val ts = try {
+                                            fmt.parse(sj.optString("timestamp", ""))?.time ?: 0L
+                                        } catch (_: Throwable) { 0L }
+                                        out[ui] = SlotState(ui, true, ts, size)
+                                    }
+                                    out
+                                }
+                            } catch (_: Throwable) { null }
+                        }
+                    }
+                } else {
+                    null
+                }
             SlotPickerDialog(
                 mode = showSlotPicker!!,
                 currentSlot = saveLoadSlot,
                 gameId = game.id,
                 savesDir = savesDir,
                 gameTitle = game.title,
+                nativeSlotInfo = edenNativeSlotInfo,
                 onSlotSelected = { slot ->
                     val stateFile = java.io.File(savesDir, "${game.id}_slot${slot}.state")
                     if (platform == GamePlatform.NSWITCH) {
@@ -5602,7 +5617,10 @@ fun EmulatorScreen(
                                     Toast.makeText(context, "存档失败：$reason", Toast.LENGTH_LONG).show()
                                 }
                             } else {
-                                if (!stateFile.exists()) {
+                                // v4：Switch 快捷存档路径（onQuickSave→quickSaveSlotRaw）
+                                // 不写标记文件 —— 存在性检查用原生槽位数据兜底
+                                val nativeHasSave = edenNativeSlotInfo?.get(slot)?.exists == true
+                                if (!stateFile.exists() && !nativeHasSave) {
                                     Toast.makeText(context, "槽位 $slot 无存档", Toast.LENGTH_SHORT).show()
                                     return@launch
                                 }
@@ -5610,7 +5628,22 @@ fun EmulatorScreen(
                                     try { engine.loadState(slot, stateFile) } catch (t: Throwable) { false }
                                 }
                                 if (ok) {
-                                    Toast.makeText(context, "存档已读取 [槽位 $slot]，游戏正在重启加载…", Toast.LENGTH_LONG).show()
+                                    // v4：区分原地恢复（不重启，从存档时刻继续）与
+                                    // legacy 重启路径（布局分叉自动回落 / 老槽位）
+                                    val eden = engine as? com.nesstation.app.core.engine.EdenEngine
+                                    if (eden?.lastRestoreWasRestart == true) {
+                                        Toast.makeText(context,
+                                            "存档已读取 [槽位 $slot]，内存布局已变化——已重启游戏加载…",
+                                            Toast.LENGTH_LONG).show()
+                                    } else if (eden != null) {
+                                        Toast.makeText(context,
+                                            "存档已读取 [槽位 $slot]，已原地恢复",
+                                            Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context,
+                                            "存档已读取 [槽位 $slot]",
+                                            Toast.LENGTH_SHORT).show()
+                                    }
                                 } else {
                                     val reason = engine.lastError().takeIf { it.isNotBlank() } ?: "读档失败"
                                     Toast.makeText(context, "读档失败：$reason", Toast.LENGTH_LONG).show()
@@ -12549,17 +12582,27 @@ private fun SlotPickerDialog(
     savesDir: java.io.File,
     gameTitle: String,
     onSlotSelected: (Int) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    // ★ v4（v75）：原生槽位真实元数据（UI 槽位 → 原生槽位派生的
+    //   存在性/时间/大小）。Switch（Eden）传入 —— 通用标记文件仅 22B
+    //   （存在性检查用），旧版直接显示其长度就是「存档只有 22B」的根因。
+    nativeSlotInfo: Map<Int, SlotState>? = null
 ) {
     // Re-scan the saves directory every time the dialog opens so the
     // slot status is fresh (a savestate written this session shows up).
-    val slotStates = remember(gameId, savesDir, mode) {
+    val slotStates = remember(gameId, savesDir, mode, nativeSlotInfo) {
         (0..9).map { slot ->
-            val file = java.io.File(savesDir, "${gameId}_slot${slot}.state")
-            if (file.exists()) {
-                SlotState(slot, exists = true, lastModified = file.lastModified(), sizeBytes = file.length())
+            val native = nativeSlotInfo?.get(slot)
+            if (native != null && native.exists) {
+                // 原生槽位有真实数据：优先展示真实大小/时间（Switch）
+                native
             } else {
-                SlotState(slot, exists = false, lastModified = 0L, sizeBytes = 0L)
+                val file = java.io.File(savesDir, "${gameId}_slot${slot}.state")
+                if (file.exists()) {
+                    SlotState(slot, exists = true, lastModified = file.lastModified(), sizeBytes = file.length())
+                } else {
+                    SlotState(slot, exists = false, lastModified = 0L, sizeBytes = 0L)
+                }
             }
         }
     }
@@ -12640,12 +12683,18 @@ private fun formatSlotTime(epochMillis: Long): String {
     return "%04d-%02d-%02d %02d:%02d".format(y, mo, d, h, mi)
 }
 
-/** Format file size as "N.N KB" or "N bytes". */
+/** Format file size as "N.N B / KB / MB / GB". ★ v75：补 MB/GB 档 ——
+ *  Switch 即时存档（state.bin 全量内存快照）带几百 MB 级，旧版只到 KB 档
+ *  会显示成「819200.0 KB」。 */
 private fun formatSlotSize(bytes: Long): String {
-    return if (bytes >= 1024) {
-        "%.1f KB".format(bytes / 1024.0)
-    } else {
-        "$bytes B"
+    val kb = 1024.0
+    val mb = kb * 1024
+    val gb = mb * 1024
+    return when {
+        bytes >= gb -> "%.2f GB".format(bytes / gb)
+        bytes >= mb -> "%.1f MB".format(bytes / mb)
+        bytes >= kb -> "%.1f KB".format(bytes / kb)
+        else -> "$bytes B"
     }
 }
 
@@ -20098,7 +20147,9 @@ private fun cemuQuickSaveResultMessage(result: Int): String? = when (result) {
  * 契约一致；native 实现见 core/eden/.../jni/native_savestate.cpp）。
  */
 private fun edenQuickSaveResultMessage(result: Int): String? = when (result) {
-    EdenNativeLibrary.RESULT_OK, EdenNativeLibrary.RESULT_OK_RESTORED_IN_PLACE -> null
+    EdenNativeLibrary.RESULT_OK,
+    EdenNativeLibrary.RESULT_OK_RESTORED_IN_PLACE,
+    EdenNativeLibrary.RESULT_OK_LEGACY_RESTART -> null
     EdenNativeLibrary.RESULT_ERROR_NO_SAVE_DATA ->
         "无存档数据。请先在游戏内保存进度再使用即时存档。"
     EdenNativeLibrary.RESULT_ERROR_SLOT_EMPTY -> "该槽位为空。"

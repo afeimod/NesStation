@@ -73,4 +73,10 @@ struct JNIEnvStub {
     jboolean GetBooleanField(jobject, jfieldID) { return 0; }
     jint RegisterNatives(jclass, const void*, jint) { return 0; }
     jint ThrowNew(jclass, const char*) { return 0; }
+    jmethodID GetStaticMethodID(jclass, const char*, const char*) { return nullptr; }
+    jfieldID GetStaticFieldID(jclass, const char*, const char*) { return nullptr; }
+    jobject GetStaticObjectField(jclass, jfieldID) { return nullptr; }
+    jobject CallStaticObjectMethod(jclass, jmethodID, ...) { return nullptr; }
+    void DeleteLocalRef(jobject) {}
+    jint CallStaticIntMethod(jclass, jmethodID, ...) { return 0; }
 };

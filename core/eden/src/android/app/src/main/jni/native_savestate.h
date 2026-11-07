@@ -69,6 +69,11 @@ constexpr int RESULT_ERROR_IO = 4;
 // v2 已实现：state.bin 进程内全量原地恢复（= Cemu RestoreStateFromFile）
 constexpr int RESULT_OK_RESTORED_IN_PLACE = 5;
 constexpr int RESULT_ERROR_STATE_RESTORE_FAILED = 6;
+// v4 新增：当前会话的内存布局/线程集与存档不一致，原地恢复不可行，
+// native 已自动回落 legacy 路径（关停游戏 + NAND 还原，语义同 RESULT_OK
+// —— 前端同样走 relaunchGame()），以此码让 toast 如实提示
+// 「内存布局已变化，已重启游戏加载」。
+constexpr int RESULT_OK_LEGACY_RESTART = 7;
 
 // restore flags
 constexpr int RESTORE_FLAG_ALLOW_LEGACY = 1;

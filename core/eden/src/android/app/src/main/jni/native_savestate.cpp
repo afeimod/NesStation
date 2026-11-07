@@ -1,58 +1,62 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v2 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v4 ★★★
 //
-// v1：NAND 存档数据快照 + legacy（关停游戏→写回→前端重启）。
-// v2：新增 state.bin 进程内全量状态捕获/原地恢复 —— 与 Cemu 的
-//     NativeQuickSave.cpp（core/cemu/src/android/app/src/main/cpp/）
-//     语义逐块对齐：
-// v3：新增 nvdrv GPU 状态段（GMMU 映射 + nvmap 句柄表 + SMMU 设备地址
-//     分配）。v2 只回滚 guest 内存，但 GPU 访问链是三层：
-//       GPU VA →(GMMU，宿主 HLE)→ DAddr →(SMMU/nvmap，宿主 HLE)→ guest VA
-//     后两层是宿主侧状态，不随 guest 内存回滚 —— 存档后游戏重映射 GPU
-//     缓冲会导致恢复后按过期页表翻译地址 → blit/memcpy 野指针崩溃
-//    （Redmi socrates 闪退栈：SoftwareBlitEngine::Blit→memcpy）。
-//     v3 随档快照这两层、读档原地址回放，使全链路与 Cemu 的
-//     RestoreStateFromFile 同等一致性；GMMU 全量清空+重放会逐设备
-//     地址段触发 rasterizer 缓存丢弃（= Cemu queueSaveStateGpuSync(true)
-//     「丢弃全部 GPU 缓存数据、从内存重新上传」同构）。
+// v4（本轮）：修复 v3 的三个线上问题 ——
+//   ① 读档后闪退（host_memory.cpp:770 断言 / blit memcpy 崩溃）：
+//      根因是「只回滚 guest 内存内容，不校验宿主侧布局」。存档后游戏任何
+//      一次映射变化（堆扩缩、线程栈/TLS、共享内存重映射）都会让回滚后的
+//      guest 代码按过期视图访问内存 → NCE 野地址崩溃。v4 把完整内存块布局
+//      （KMemoryBlockManager 视图：va/size/state/perm/attr，归一化）与
+//      非 dummy 线程 id 集随档快照，读档前逐块比对——完全一致才允许原地
+//      恢复；不一致则自动走 legacy 重启路径（绝不带着分叉状态续跑）。
+//   ② 读档浪费性能：v3 的「临时负载文件 + 合并拷贝」双倍 I/O、每 4KB 页
+//      一次 icache 刷新、整段解压到堆。v4 改为 Cemu 同款流式 zstd
+//      （level 3 + 帧校验和 + pledged size，源直接取 guest 连续后备 run，
+//      无中间拷贝）、有界 1MB 流式解压、host 连续 run 合并拷贝 + 按 run
+//      粒度 icache 刷新。
+//      （注：Cemu 的 MADV_DONTNEED 零页弃置不适用 Eden —— 其竞技场是
+//      memfd 上的 MAP_SHARED，脏页存活于 page cache，madvise 不会归零，
+//      只能照实写回。）
+//   ③ 校验先行：读档先完整校验（头部 / 布局 / 线程集 / 逐帧 zstd 流式
+//      解码丢弃验证）再动内存 —— 撕裂写入永不发生（Cemu 同款保障）；
+//      应用中途 I/O 失败则直接关停核心而不是带着半恢复状态续跑。
+//
+// v4 新结果码 RESULT_OK_LEGACY_RESTART(7)：布局/线程集已变化、原地恢复
+// 不可行时自动走 legacy 路径（重启游戏 + NAND 还原）并以此码告知前端。
+//
+// v3：nvdrv GPU 状态段（GMMU 映射 + nvmap 句柄表 + SMMU 设备地址分配）
+//     随档快照/回放（保留不变，走 SMMU 正规 Map/Unmap API，缓存自洽）。
+// v2：state.bin 进程内全量状态捕获/原地恢复（保留）。
+// v1：NAND 存档数据快照 + legacy（关停游戏→写回→前端重启）（保留）。
 //
 //   Cemu (Wii U)                        Eden (Switch / yuzu 系)
 //   ─────────────────────────────      ─────────────────────────────────────
-//   CafeSystem::IsTitleRunning()   →   EmulationSession::IsRunning()
-//   g_renderer->RequestScreenshot  →   RendererBase::RequestScreenshot
-//   CafeSaveState::EmulationFreeze →   本文件 EmulationFreeze（RAII）
-//     （System 全量冻结）               ★ yuzu 系差异：冻结序列
-//                                        System::Pause（挂起+等停稳）
-//                                        + GPU().WaitForIdle（异步 GPU 排空）
-//                                        + GPU().ObtainContext（独占图形上下文）
-//   CaptureStateToFileLocked       →   CaptureStateBin（本文件）
-//     state.bin（全量内存+线程）         ★ 页表 QueryInfo 遍历 + 4KB 页粒度
-//                                        zstd 压缩 + 全线程寄存器组（0x320）
-//   RestoreStateFromFile           →   RestoreStateBin（本文件，原地恢复）
-//     （原地恢复，不重启）                ★ 写回内存 → InvalidateGPUCache
-//                                        → 逐核 ClearInstructionCache + icache
-//                                        刷新 → 写回线程寄存器组 → 解冻续跑
-//   MLC usr/save 按标题拷贝         →   NAND user/save 按标题拷贝（后备）
-//   CafeSystem::ShutdownTitle()    →   EmulationSession::HaltEmulation()
-//                                        + WaitForShutdown()（legacy 路径）
+//   静态 MMURange 集（布局固定）    →   动态地址空间 → v4 随档快照归一化布局
+//                                        + 读档严格比对，不一致拒绝原地恢复
+//   CafeSaveState::EmulationFreeze  →   本文件 EmulationFreeze（RAII +
+//                                        Pause → GPU WaitForIdle → ObtainContext）
+//   WriteCompressedRange（流式       →   ZstdFrameWriter（同款流式 + 帧校验
+//     zstd level3 + 帧校验和）            和 + 直接从 guest 连续 run 取源）
+//   ValidateCompressedRange（先校    →   ValidateFrame（同款流式解码丢弃）
+//     验后落内存）
+//   ReadCompressedRange（有界流式）  →   ApplyFrame（同款 + run 合并 icache）
+//   进程级冻结串行化（v3.9）        →   FreezeOpMutex()（同款）
+//   logcat 阶段诊断（CemuSaveState）→   tag "EdenSaveState"（阶段+耗时+RSS）
+//   MLC usr/save 按标题拷贝         →   NAND user/save 按标题拷贝
+//   CafeSystem::ShutdownTitle()     →   HaltEmulation + WaitForShutdown
 //
 // 状态一致性依据（已对照 Eden 内核源码逐行核对）：
-//   · KernelCore::SuspendEmulation：挂起全部线程后自旋等待所有核心调度器
-//     卸下 guest 线程 —— System::Pause() 返回即全部寄存器已停放进
-//     KThread::m_thread_context（KScheduler::Unload → PhysicalCore::
-//     SaveContext → interface->GetContext(thread->GetContext())）。
+//   · System::Pause() 返回即全部寄存器已停放进 KThread::m_thread_context
+//     （KernelCore::SuspendEmulation 自旋等待核心卸载 guest 线程）。
 //   · 恢复只需写回 m_thread_context：线程重回核心时 KScheduler::Reload →
-//     PhysicalCore::LoadContext → interface->SetContext(...)（dynarmic 与
-//     NCE 实现同一契约）。
-//   · GPU 线程异步执行命令表：存档前 WaitForIdle 投递同步栅栏并等待排空
-//     （与树内 ReloadDiskShaderCache 同步序列同源）；再 FlushAll 把在途
-//     宿主→guest 脏写回刷入 guest 内存，捕获视图一致。
-//   · 恢复写回后 InvalidateGPUCache：纹理/缓冲宿主缓存全部失效，从还原
-//     后的 guest 内存重建（GPU 缓存是 guest 内存的派生视图）。
-//   · HLE 服务（vsync/音频/HID）运行在宿主真实时间轴：原地恢复后自然
-//     继续触发事件，唤醒（恢复上下文的）等待线程。
+//     PhysicalCore::LoadContext → interface->SetContext（dynarmic/NCE 同一
+//     契约）。
+//   · GPU：Pause → WaitForIdle → ObtainContext 排空异步 GPU；捕获前
+//     rasterizer->FlushAll() 把在途脏写回刷入 guest 内存。
+//   · 布局 + 线程集一致 ⇒ guest 内容回滚后，宿主 HLE 内核视图与存档时刻
+//     逐块相同 ⇒ 无野地址（v3 闪退根因消除）。
 
 #include "native_savestate.h"
 
@@ -61,7 +65,6 @@
 #include "common/common_funcs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
-#include "common/zstd_compression.h"
 #include "core/core.h"
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/k_memory_block.h"
@@ -84,11 +87,21 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 
+#include <zstd.h>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
 #include <dlfcn.h> // dlsym: malloc_trim 运行时解析（见 TrimHeap）
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -115,52 +128,67 @@ constexpr int kThumbMaxWidth = 320;
 constexpr int kThumbMaxHeight = 180;
 
 // ---------------------------------------------------------------------------
-// state.bin v2 —— 进程内全量状态文件格式
+// state.bin v4 —— 进程内全量状态文件格式
 //
-//   [StateHeaderV2]
-//   [RegionDescV2 × region_count]        （区段描述符数组）
-//   [压缩负载 × region_count]              （逐区段 zstd 帧，顺序与描述符一致）
-//   [线程记录 × thread_count]              （32B 元数据 + 0x320B 寄存器组）
+//   [StateHeaderV4]
+//   [BlockDescV4 × block_count]       （完整归一化布局：含未映射块）
+//   [ContentDescV4 × content_count]   （FlagMapped 块的内容帧描述符；
+//                                       compressed 字段先占位后回填）
+//   [zstd 帧 × content_count]         （逐块流式压缩，帧校验和 + pledged size）
+//   [nvdrv 段（NvdrvHeaderV3…）]
+//   [线程记录 × thread_count]          （32B 元数据 + 0x320B 寄存器组）
 //
-//   区段来源：页表 QueryInfo 遍历，凡 KMemoryState::FlagMapped 且宿主
-//   有后备页（GetPointerSilent 非空）皆捕获；超过 kChunkSize 的区段拆
-//   成多个连续描述符。4KB 页粒度逐页拷贝（宿主后备页不保证连续）。
+//   布局来源：页表 QueryInfo 遍历（svcQueryMemory 同源序列），相邻同
+//   state/perm/attr 的块归一合并（快照/比对两端同一规则）。
 // ---------------------------------------------------------------------------
 
 constexpr char kStateMagic[4] = {'E', 'D', 'S', 'S'};
-constexpr u32 kStateVersion = 3;
-constexpr size_t kChunkSize = 4 * 1024 * 1024; // 4MB 未压缩分片
-constexpr size_t kPageSize = 4 * 1024;          // ≤ 宿主页表粒度，见下注
+constexpr u32 kStateVersion = 4;
+constexpr size_t kPageSize = 4 * 1024; // 4KB，≤ 宿主页表粒度
 
-// 注：Common::PageTable::PageBits ≥ 12（4KB），kPageSize 逐页寻址总是
-// 落在单个页表项内 —— 对更大页粒度的实现同样安全。
-
-// v3：nvdrv GPU 状态段存在标志（GMMU 映射 + nvmap 句柄表随档保存）。
-// 没有该段的 v2 存档原地恢复必拒（宿主 GPU 状态与回滚内存不一致 → 崩溃）。
+// v3/v4：nvdrv GPU 状态段存在标志（GMMU 映射 + nvmap 句柄表随档保存）。
+// 没有该段的存档原地恢复必拒（宿主 GPU 状态与回滚内存不一致 → 崩溃）。
 constexpr u32 kStateFlagHasNvdrv = 1u << 0;
 
-struct StateHeaderV2 {
+// 校验上限（防损坏头/错位文件把分配器炸穿）
+constexpr u32 kMaxBlockCount = 65536;
+constexpr u32 kMaxThreadCount = 16384;
+constexpr u64 kMaxNvdrvSize = 256ull * 1024 * 1024;
+
+struct StateHeaderV4 {
     char magic[4];
     u32 version;
     u64 program_id;
-    u32 region_count;
+    u64 timestamp;           // time(nullptr)，诊断用
+    u32 block_count;         // 归一化布局块数（全部，含未映射）
+    u32 content_count;       // 内容帧数（= FlagMapped 归一块数）
     u32 thread_count;
-    u64 total_uncompressed; // 全部区段未压缩字节（统计/校验）
-    u32 flags;              // bit0: kStateFlagHasNvdrv；其余保留
-    u32 pad0;               // 对齐占位（保持 48B，与 v2 二进制兼容布局）
-    u64 nvdrv_size;         // v3：nvdrv GPU 状态段字节数（无则 0）
+    u32 flags;               // bit0: kStateFlagHasNvdrv
+    u64 total_uncompressed;  // 全部内容帧未压缩字节
+    u64 nvdrv_size;
+    u64 layout_digest;       // 归一化布局 FNV-1a（快速预检）
 };
-static_assert(sizeof(StateHeaderV2) == 48);
+static_assert(sizeof(StateHeaderV4) == 64);
 
-struct RegionDescV2 {
-    u64 guest_va;
-    u64 size;              // 未压缩字节数（≤ kChunkSize）
-    u32 mem_state;         // KMemoryState 原始值（诊断用）
-    u32 mem_perm;          // KMemoryPermission 原始值（诊断用）
-    u64 compressed_size;   // zstd 压缩后字节
-    u64 uncompressed_size; // == size（冗余校验）
+struct BlockDescV4 {
+    u64 va;
+    u64 size;
+    u32 state;    // KMemoryState 原始值
+    u32 perm;     // KMemoryPermission 原始值
+    u32 attr;     // KMemoryAttribute 原始值
+    u32 reserved;
 };
-static_assert(sizeof(RegionDescV2) == 40);
+static_assert(sizeof(BlockDescV4) == 32);
+
+struct ContentDescV4 {
+    u64 va;
+    u64 uncompressed; // 未压缩字节数（= 归一块大小）
+    u64 compressed;   // zstd 帧字节数（写入时占位，帧完成后回填）
+    u32 reserved0;
+    u32 reserved1;
+};
+static_assert(sizeof(ContentDescV4) == 32);
+static_assert(offsetof(ContentDescV4, compressed) == 16);
 
 struct ThreadMetaV2 {
     u64 thread_id;
@@ -175,7 +203,7 @@ static_assert(sizeof(ThreadMetaV2) == 32);
 constexpr size_t kThreadRecordSize =
     sizeof(ThreadMetaV2) + sizeof(Kernel::Svc::ThreadContext);
 
-// v3 nvdrv 段：
+// v3 nvdrv 段（保留不变）：
 //   [NvdrvHeaderV3]
 //   [GmmuSectionV3 + GpuMappingRecord × mapping_count] × gmmu_count
 //   [HandleStateRecord × handle_count]
@@ -196,6 +224,67 @@ struct GmmuSectionV3 {
     u32 reserved;
 };
 static_assert(sizeof(GmmuSectionV3) == 16);
+
+// ---------------------------------------------------------------------------
+// 诊断（Cemu SaveState.cpp v3.3 同款）：cemuLog 之外的 logcat 镜像 +
+// 阶段耗时 + RSS。native 侧信号三关（tripwire）不移植 —— NCE 自身占用
+// SIGSEGV/SIGBUS 处理 fastmem 缺页，叠加竞争 handler 会破坏缺页路径。
+// ---------------------------------------------------------------------------
+
+#ifdef __ANDROID__
+void SSLogcatLine(const char* msg) {
+    __android_log_print(ANDROID_LOG_INFO, "EdenSaveState", "%s", msg);
+}
+void SSLogcatWarn(const char* msg) {
+    __android_log_print(ANDROID_LOG_WARN, "EdenSaveState", "%s", msg);
+}
+u32 CurrentRssMB() {
+    std::FILE* f = std::fopen("/proc/self/statm", "rb");
+    if (f == nullptr) {
+        return 0;
+    }
+    unsigned long total = 0, resident = 0;
+    const int n = std::fscanf(f, "%lu %lu", &total, &resident);
+    std::fclose(f);
+    if (n != 2) {
+        return 0;
+    }
+    return static_cast<u32>(resident * 4096 / (1024 * 1024));
+}
+#else
+inline void SSLogcatLine(const char*) {}
+inline void SSLogcatWarn(const char*) {}
+inline u32 CurrentRssMB() {
+    return 0;
+}
+#endif
+
+void SSLogInfo(std::string_view msg) {
+    LOG_INFO(Frontend, "Eden savestate: {}", msg);
+    SSLogcatLine(fmt::format("{}", msg).c_str());
+}
+
+void SSLogWarn(std::string_view msg) {
+    LOG_WARNING(Frontend, "Eden savestate: {}", msg);
+    SSLogcatWarn(fmt::format("{}", msg).c_str());
+}
+
+std::chrono::steady_clock::time_point NowSteady() {
+    return std::chrono::steady_clock::now();
+}
+
+s64 ElapsedMsSince(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(NowSteady() - t0)
+        .count();
+}
+
+// 进程级冻结串行化（Cemu v3.9 同款）：quick save 与 quick load 并发 /
+// 双击连点会交织 pause/resume 与内存访问。前端 stateOpLock 之外再加
+// native 侧互斥，双保险。
+std::mutex& FreezeOpMutex() {
+    static std::mutex m;
+    return m;
+}
 
 // ---------------------------------------------------------------------------
 // 会话 / 标题信息
@@ -602,6 +691,10 @@ bool CaptureScreenshotToThumbnail(const fs::path& thumbPath) {
 //   Pause → GPU().WaitForIdle() → ObtainContext() ... ReleaseContext → Run
 // Pause() 返回即：全部 guest 线程挂起且寄存器停放进
 // KThread::m_thread_context（SuspendEmulation 自旋等待核心卸载线程）。
+//
+// HaltInsteadOfResume()：应用阶段中途失败（内存已半恢复）时调用 ——
+// 析构时直接关停核心而不是续跑撕裂状态（Cemu 以「先全量校验」规避，
+// 这里对残余 I/O 风险再加一道兜底）。
 // ---------------------------------------------------------------------------
 
 class EmulationFreeze {
@@ -621,12 +714,18 @@ public:
     ~EmulationFreeze() {
         try {
             m_system.GPU().ReleaseContext();
-            if (!m_was_paused) {
+            if (m_halt) {
+                Session().HaltEmulation(); // 撕裂状态不续跑：干净关停
+            } else if (!m_was_paused) {
                 m_system.Run();
             }
         } catch (...) {
             // 析构不抛
         }
+    }
+
+    void HaltInsteadOfResume() {
+        m_halt = true;
     }
 
     EmulationFreeze(const EmulationFreeze&) = delete;
@@ -635,6 +734,7 @@ public:
 private:
     Core::System& m_system;
     bool m_was_paused{};
+    bool m_halt{};
 };
 
 // ---------------------------------------------------------------------------
@@ -647,7 +747,8 @@ private:
 // 分叉 → 恢复运行后在途命令流按过期页表翻译 → 野指针（blit/memcpy 崩溃）。
 // 与 Cemu 不同（Cemu 的 GPU 直接走 PPC 地址空间，无此问题），Eden/yuzu 系
 // 必须把这三层随档快照、读档回放，才能达到 Cemu RestoreStateFromFile 的
-// 原地恢复一致性。
+// 原地恢复一致性。回放走 SMMU/GMMU 正规 Map/Unmap/AllocateFixed API，
+// DeviceMemoryManager 的翻译缓存（tracked_entries/t_slot 等）随之自洽。
 // ---------------------------------------------------------------------------
 
 using NvdrvHandleRecord = Service::Nvidia::NvCore::NvMap::HandleStateRecord;
@@ -756,6 +857,7 @@ bool RestoreNvdrvState(Core::System& system, std::span<const u8> blob, std::stri
         *err = "nvdrv section truncated";
         return false;
     }
+
     NvdrvHeaderV3 header{};
     std::memcpy(&header, blob.data(), sizeof(header));
     blob = blob.subspan(sizeof(header));
@@ -842,13 +944,21 @@ bool RestoreNvdrvState(Core::System& system, std::span<const u8> blob, std::stri
 }
 
 // ---------------------------------------------------------------------------
-// state.bin —— 捕获（quickSaveSlot 调用，必须持冻结）
+// v4：内存布局（归一化）快照 / 比对 —— 原地恢复的安全前提
 // ---------------------------------------------------------------------------
 
-// 页表遍历收集全部已映射区段（base/size 对），供捕获使用。
-// 遍历方式 = svcQueryMemory 同源序列（KPageTableBase::QueryInfo），
-// 从地址空间起点逐步推进直至地址回绕/越界。
-bool CollectMappedRegions(Core::System& system, std::vector<std::pair<u64, u64>>& out) {
+struct LayoutBlock {
+    u64 va;
+    u64 size;
+    u32 state; // KMemoryState 原始值
+    u32 perm;  // KMemoryPermission 原始值
+    u32 attr;  // KMemoryAttribute 原始值
+};
+
+// 页表遍历收集全部内存块（svcQueryMemory 同源序列：QueryInfo 逐步推进），
+// 并把相邻同 state/perm/attr 的块归一合并 —— 快照/比对两端同一规则，
+// 免受块管理器碎片化表示差异的误报。
+bool CollectLayoutBlocks(Core::System& system, std::vector<LayoutBlock>& out) {
     out.clear();
 
     Kernel::KProcess* process = system.ApplicationProcess();
@@ -878,15 +988,15 @@ bool CollectMappedRegions(Core::System& system, std::vector<std::pair<u64, u64>>
             break; // 防御：QueryInfo 保证 size>0，双保险
         }
 
-        const bool mapped =
-            True(static_cast<Kernel::KMemoryState>(info.m_state) & Kernel::KMemoryState::FlagMapped);
-        if (mapped) {
-            // 区段起点可能低于 cur（块包含 cur），裁剪到未覆盖部分
-            const u64 seg_start = std::max(cur, base);
-            const u64 seg_end = base + size;
-            if (seg_end > seg_start) {
-                out.emplace_back(seg_start, seg_end - seg_start);
-            }
+        const u32 state = static_cast<u32>(info.m_state);
+        const u32 perm = static_cast<u32>(info.m_permission);
+        const u32 attr = static_cast<u32>(info.m_attribute);
+
+        if (!out.empty() && out.back().va + out.back().size == base &&
+            out.back().state == state && out.back().perm == perm && out.back().attr == attr) {
+            out.back().size += size; // 归一合并
+        } else {
+            out.push_back({base, size, state, perm, attr});
         }
 
         const u64 next = base + size;
@@ -898,32 +1008,303 @@ bool CollectMappedRegions(Core::System& system, std::vector<std::pair<u64, u64>>
     return !out.empty();
 }
 
-// 逐 4KB 页拷贝一段 guest 内存到 host 缓冲（拷贝端）。宿主后备页不保证
-// 连续，必须逐页寻址；无后备页（MMIO 等）静默跳过。
-// 返回实际拷贝的字节数（可能小于请求值 —— 尾部无后备页时截断）。
-size_t CopyGuestRangeOut(Core::System& system, u64 va, size_t size, u8* dst) {
-    Core::Memory::Memory& memory = system.ApplicationMemory();
-    size_t done = 0;
-    while (done < size) {
-        const u64 page_va = va + done;
-        const size_t in_page = kPageSize - (page_va % kPageSize);
-        const size_t take = std::min(in_page, size - done);
-        const u8* src = memory.GetPointerSilent(Common::ProcessAddress{page_va});
-        if (src == nullptr) {
-            break; // 无后备页：截断（诊断已由区段首页非空保证大概率整段可用）
-        }
-        std::memcpy(dst + done, src, take);
-        done += take;
-    }
-    return done;
+bool IsMappedState(u32 state) {
+    return True(static_cast<Kernel::KMemoryState>(state) & Kernel::KMemoryState::FlagMapped);
 }
 
-// 捕获 state.bin：header + 区段描述符 + zstd 压缩负载 + 线程记录。
-// 写入走临时负载文件后合并（描述符在压缩完成后才知道大小）。
-// 成功时返回 true；失败时 *err 填充诊断信息并清理临时文件。
+// 布局摘要（FNV-1a 64）——快速预检/日志用；权威判定永远是逐块全比较。
+u64 LayoutDigest(const std::vector<LayoutBlock>& blocks) {
+    constexpr u64 kPrime = 0x100000001B3ull;
+    u64 h = 0xCBF29CE484222325ull;
+    auto mix = [&h](u64 v) {
+        h ^= v;
+        h *= kPrime;
+    };
+    for (const auto& b : blocks) {
+        mix(b.va);
+        mix(b.size);
+        mix(b.state);
+        mix(b.perm);
+        mix(b.attr);
+    }
+    return h;
+}
+
+bool SameLayout(const std::vector<LayoutBlock>& a, const std::vector<LayoutBlock>& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].va != b[i].va || a[i].size != b[i].size || a[i].state != b[i].state ||
+            a[i].perm != b[i].perm || a[i].attr != b[i].attr) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 当前存活非 dummy 线程 id 集（排序后与存档集做全等比对）。
+// —— v3 闪退根因之一：存档后新建/销毁的线程会让「内容回滚 + 当前宿主
+//    线程集」分叉（堆内建线程栈不改变块布局，布局校验兜不住）。
+std::vector<u64> CollectLiveThreadIds(Core::System& system) {
+    std::vector<u64> ids;
+    if (Kernel::KProcess* process = system.ApplicationProcess(); process != nullptr) {
+        for (auto& thread : process->GetThreadList()) {
+            if (thread.IsDummyThread()) {
+                continue; // HLE 宿主辅助线程，无 guest 寄存器语义
+            }
+            ids.push_back(thread.GetThreadId());
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+
+u8* PagePtr(Core::Memory::Memory& memory, u64 va) {
+    return memory.GetPointerSilent(Common::ProcessAddress{va});
+}
+
+// ---------------------------------------------------------------------------
+// v4：流式 zstd（Cemu WriteCompressedRange / ReadCompressedRange 同款）
+// ---------------------------------------------------------------------------
+
+constexpr int kZstdLevel = 3;                // Cemu 同款级别
+constexpr size_t kZstdOutChunk = 1 << 20;    // 1MB 出块
+constexpr size_t kZstdInChunk = 256 * 1024;  // 256KB 入块
+
+// 单帧流式压缩器：源直接喂 guest 连续后备 run（无中间拷贝、无临时文件），
+// 输出按 1MB 直接写盘。帧校验和 + pledged size 双保护（损坏载荷在读档
+// 解压时被 zstd 拒绝，而不是把垃圾写进 guest 内存）。
+class ZstdFrameWriter {
+public:
+    explicit ZstdFrameWriter(std::ofstream& out) : m_out{out}, m_buf(kZstdOutChunk) {}
+
+    ~ZstdFrameWriter() {
+        if (m_cctx != nullptr) {
+            ZSTD_freeCCtx(m_cctx);
+        }
+    }
+
+    bool Begin(u64 pledged_src_size) {
+        if (m_cctx == nullptr) {
+            m_cctx = ZSTD_createCCtx();
+            if (m_cctx == nullptr) {
+                return false;
+            }
+        }
+        ZSTD_CCtx_reset(m_cctx, ZSTD_reset_session_only);
+        ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_compressionLevel, kZstdLevel);
+        ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_checksumFlag, 1);
+        if (ZSTD_isError(ZSTD_CCtx_setPledgedSrcSize(m_cctx, pledged_src_size))) {
+            return false;
+        }
+        m_written = 0;
+        return true;
+    }
+
+    bool Write(const void* data, size_t len) {
+        ZSTD_inBuffer in{data, len, 0};
+        while (in.pos < in.size) {
+            ZSTD_outBuffer out{m_buf.data(), m_buf.size(), 0};
+            const size_t r = ZSTD_compressStream2(m_cctx, &out, &in, ZSTD_e_continue);
+            if (ZSTD_isError(r)) {
+                return false;
+            }
+            if (!WriteOut(out.pos)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool Finish() {
+        ZSTD_inBuffer in{nullptr, 0, 0};
+        for (;;) {
+            ZSTD_outBuffer out{m_buf.data(), m_buf.size(), 0};
+            const size_t r = ZSTD_compressStream2(m_cctx, &out, &in, ZSTD_e_end);
+            if (ZSTD_isError(r)) {
+                return false;
+            }
+            if (!WriteOut(out.pos)) {
+                return false;
+            }
+            if (r == 0) {
+                return true; // 帧完成、输入全部消费（pledged 校验通过）
+            }
+        }
+    }
+
+    u64 written() const {
+        return m_written;
+    }
+
+private:
+    bool WriteOut(size_t bytes) {
+        if (bytes == 0) {
+            return true;
+        }
+        m_out.write(reinterpret_cast<const char*>(m_buf.data()),
+                    static_cast<std::streamsize>(bytes));
+        if (!m_out) {
+            return false;
+        }
+        m_written += bytes;
+        return true;
+    }
+
+    std::ofstream& m_out;
+    ZSTD_CCtx* m_cctx{};
+    std::vector<u8> m_buf;
+    u64 m_written{};
+};
+
+// 预校验单帧：流式解码并丢弃输出，要求帧完整、输入精确消费、解码量
+// 与记录的 uncompressed 精确一致（Cemu ValidateCompressedRange 同款）。
+// 帧校验和存在时由 zstd 自动核对。
+bool ValidateFrame(std::ifstream& in, u64 uncompressed, u64 compressed) {
+    ZSTD_DCtx* dctx = ZSTD_createDCtx();
+    if (dctx == nullptr) {
+        return false;
+    }
+    std::vector<u8> inBuf(kZstdInChunk);
+    std::vector<u8> discard(kZstdOutChunk);
+    u64 inRemaining = compressed;
+    u64 outTotal = 0;
+    bool frameDone = false;
+    bool ok = false;
+    while (!frameDone && inRemaining > 0) {
+        const size_t toRead = static_cast<size_t>(std::min<u64>(kZstdInChunk, inRemaining));
+        in.read(reinterpret_cast<char*>(inBuf.data()),
+                static_cast<std::streamsize>(toRead));
+        if (static_cast<size_t>(in.gcount()) != toRead) {
+            goto finish;
+        }
+        inRemaining -= toRead;
+        ZSTD_inBuffer inDesc{inBuf.data(), toRead, 0};
+        while (inDesc.pos < inDesc.size) {
+            ZSTD_outBuffer outDesc{discard.data(), discard.size(), 0};
+            const size_t r = ZSTD_decompressStream(dctx, &outDesc, &inDesc);
+            if (ZSTD_isError(r)) {
+                goto finish;
+            }
+            outTotal += outDesc.pos;
+            if (outTotal > uncompressed) {
+                goto finish; // 解码量超过记录范围
+            }
+            if (r == 0) {
+                frameDone = true;
+                break;
+            }
+        }
+    }
+    ok = frameDone && inRemaining == 0 && outTotal == uncompressed;
+finish:
+    ZSTD_freeDCtx(dctx);
+    return ok;
+}
+
+// 应用单帧到 guest 内存：流式解压（有界 1MB 出块，永不整帧入堆），
+// 每块按 host 连续后备 run 合并拷贝 + run 粒度 icache 刷新（NCE 从
+// guest 页直接执行代码；dynarmic 仅作数据，刷新无害）。
+bool ApplyFrame(std::ifstream& in, Core::System& system, u64 va, u64 uncompressed,
+                u64 compressed, std::string* err) {
+    *err = {};
+    Core::Memory::Memory& memory = system.ApplicationMemory();
+
+    ZSTD_DCtx* dctx = ZSTD_createDCtx();
+    if (dctx == nullptr) {
+        *err = "zstd dctx alloc failed";
+        return false;
+    }
+    std::vector<u8> inBuf(kZstdInChunk);
+    std::vector<u8> outBuf(kZstdOutChunk);
+    u64 inRemaining = compressed;
+    u64 outTotal = 0;
+    bool frameDone = false;
+    bool ok = false;
+    while (!frameDone && inRemaining > 0) {
+        const size_t toRead = static_cast<size_t>(std::min<u64>(kZstdInChunk, inRemaining));
+        in.read(reinterpret_cast<char*>(inBuf.data()),
+                static_cast<std::streamsize>(toRead));
+        if (static_cast<size_t>(in.gcount()) != toRead) {
+            *err = fmt::format("payload read failed @ {:016x}", va + outTotal);
+            goto finish;
+        }
+        inRemaining -= toRead;
+        ZSTD_inBuffer inDesc{inBuf.data(), toRead, 0};
+        while (inDesc.pos < inDesc.size) {
+            ZSTD_outBuffer outDesc{outBuf.data(), outBuf.size(), 0};
+            const size_t r = ZSTD_decompressStream(dctx, &outDesc, &inDesc);
+            if (ZSTD_isError(r)) {
+                *err = fmt::format("zstd decode error @ {:016x}: {}", va + outTotal,
+                                   ZSTD_getErrorName(r));
+                goto finish;
+            }
+            if (outDesc.pos > 0) {
+                // 越界保护：解码量不得超过该帧记录的未压缩大小
+                if (outTotal + outDesc.pos > uncompressed) {
+                    *err = fmt::format("frame overruns range @ {:016x}", va);
+                    goto finish;
+                }
+                const u64 chunk_va = va + outTotal;
+                const u8* src = outBuf.data();
+                size_t off = 0;
+                while (off < outDesc.pos) {
+                    const u64 page_va = chunk_va + off;
+                    const size_t in_page = kPageSize - (page_va % kPageSize);
+                    const size_t take = std::min(in_page, outDesc.pos - off);
+                    u8* dst = PagePtr(memory, page_va);
+                    if (dst == nullptr) {
+                        // 布局一致校验后不应出现；容错跳过（保持 v2 语义）
+                        off += take;
+                        continue;
+                    }
+                    if (take == kPageSize) {
+                        // host 连续 run 合并：单次 memcpy + 单次 icache 刷新
+                        size_t run = kPageSize;
+                        while (off + run + kPageSize <= outDesc.pos) {
+                            u8* const next = PagePtr(memory, page_va + run);
+                            if (next != dst + run) {
+                                break;
+                            }
+                            run += kPageSize;
+                        }
+                        std::memcpy(dst, src + off, run);
+                        __builtin___clear_cache(reinterpret_cast<char*>(dst),
+                                                reinterpret_cast<char*>(dst + run));
+                        off += run;
+                    } else {
+                        std::memcpy(dst, src + off, take);
+                        __builtin___clear_cache(reinterpret_cast<char*>(dst),
+                                                reinterpret_cast<char*>(dst + take));
+                        off += take;
+                    }
+                }
+                outTotal += outDesc.pos;
+            }
+            if (r == 0) {
+                frameDone = true;
+                break;
+            }
+        }
+    }
+    ok = frameDone && inRemaining == 0 && outTotal == uncompressed;
+    if (!ok && err->empty()) {
+        *err = fmt::format("frame size mismatch @ {:016x}", va);
+    }
+finish:
+    ZSTD_freeDCtx(dctx);
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
+// state.bin —— 捕获（quickSaveSlot 调用，必须持冻结）
+// ---------------------------------------------------------------------------
+
 bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 program_id,
                      std::string* err) {
     *err = {};
+    const auto t0 = NowSteady();
 
     Kernel::KProcess* process = system.ApplicationProcess();
     if (process == nullptr) {
@@ -931,185 +1312,214 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
         return false;
     }
 
-    // 1) 收集全部已映射区段
-    std::vector<std::pair<u64, u64>> regions;
-    if (!CollectMappedRegions(system, regions)) {
+    // 1) 归一化布局收集 + 摘要
+    std::vector<LayoutBlock> blocks;
+    if (!CollectLayoutBlocks(system, blocks)) {
+        *err = "layout walk failed";
+        return false;
+    }
+    const u64 digest = LayoutDigest(blocks);
+
+    // 2) 内容段 = FlagMapped 归一块
+    std::vector<LayoutBlock> content_blocks;
+    u64 total_uncompressed = 0;
+    for (const auto& b : blocks) {
+        if (IsMappedState(b.state)) {
+            content_blocks.push_back(b);
+            total_uncompressed += b.size;
+        }
+    }
+    if (content_blocks.empty()) {
         *err = "no mapped regions found";
         return false;
     }
 
-    // 2) 逐段逐片压缩到临时负载文件
-    const fs::path payload_tmp = state_path.string() + ".payload.tmp";
+    Core::Memory::Memory& memory = system.ApplicationMemory();
+
+    // 3) nvdrv 段 + 线程记录（先备好，布局表/内容表/帧一次顺序写出）
+    std::vector<u8> nvdrv_blob;
+    const bool nvdrv_ok = CaptureNvdrvState(system, nvdrv_blob);
+    if (!nvdrv_ok) {
+        SSLogWarn("capture: nvdrv GPU state unavailable, in-place restore disabled for this slot");
+    }
+
+    std::vector<u8> thread_blob;
+    u32 thread_count = 0;
+    for (auto& thread : process->GetThreadList()) {
+        if (thread.IsDummyThread()) {
+            continue; // HLE 宿主辅助线程，无 guest 寄存器语义
+        }
+        ThreadMetaV2 meta{};
+        meta.thread_id = thread.GetThreadId();
+        meta.tls_addr = GetInteger(thread.GetTlsAddress());
+        meta.raw_state = static_cast<u32>(thread.GetRawState() &
+                                          ~Kernel::ThreadState::SuspendFlagMask);
+        meta.active_core = thread.GetActiveCore();
+        meta.priority = thread.GetPriority();
+        meta.reserved = 0;
+
+        const Kernel::Svc::ThreadContext& ctx = thread.GetContext();
+        thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&meta),
+                           reinterpret_cast<const u8*>(&meta) + sizeof(meta));
+        thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&ctx),
+                           reinterpret_cast<const u8*>(&ctx) + sizeof(ctx));
+        ++thread_count;
+    }
+
+    // 4) 顺序写 state.tmp：header → 块表 → 内容表（占位）→ zstd 帧 →
+    //    nvdrv → 线程 → 回填内容表 compressed 字段 → 原子改名。
+    //    （v3 的「负载临时文件 + 16MB 步长合并拷贝」双倍 I/O 已移除。）
     const fs::path state_tmp = state_path.string() + ".tmp";
-    std::vector<RegionDescV2> descs;
-    std::vector<u8> page_scratch(kChunkSize);
+    std::vector<u64> compressed_sizes;
+    compressed_sizes.reserve(content_blocks.size());
 
     {
-        std::ofstream payload(payload_tmp, std::ios::binary | std::ios::trunc);
-        if (!payload) {
-            *err = "failed to open payload temp file";
+        std::ofstream out(state_tmp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            *err = "failed to open state.bin temp file";
             return false;
         }
 
-        u64 total_uncompressed = 0;
-        for (const auto& [va, size] : regions) {
-            u64 off = 0;
-            while (off < size) {
-                const size_t take = static_cast<size_t>(std::min<u64>(kChunkSize, size - off));
-                const size_t got = CopyGuestRangeOut(system, va + off, take, page_scratch.data());
-                if (got != take) {
-                    // 段尾出现无后备页（罕见）：按实际拷贝量截断该分片
-                    if (got == 0) {
-                        off += take;
-                        continue;
-                    }
-                }
-                const std::vector<u8> compressed =
-                    Common::Compression::CompressDataZSTD(page_scratch.data(), got, 1);
-                if (compressed.empty()) {
-                    payload.close();
-                    fs::remove(payload_tmp);
-                    *err = fmt::format("zstd compress failed @ {:016x}", va + off);
-                    return false;
-                }
-                payload.write(reinterpret_cast<const char*>(compressed.data()),
-                               static_cast<std::streamsize>(compressed.size()));
-                if (!payload) {
-                    fs::remove(payload_tmp);
-                    *err = "payload write failed";
-                    return false;
-                }
+        StateHeaderV4 header{};
+        std::memcpy(header.magic, kStateMagic, sizeof(kStateMagic));
+        header.version = kStateVersion;
+        header.program_id = program_id;
+        header.timestamp = static_cast<u64>(std::time(nullptr));
+        header.block_count = static_cast<u32>(blocks.size());
+        header.content_count = static_cast<u32>(content_blocks.size());
+        header.thread_count = thread_count;
+        header.flags = nvdrv_ok ? kStateFlagHasNvdrv : 0;
+        header.total_uncompressed = total_uncompressed;
+        header.nvdrv_size = nvdrv_blob.size();
+        header.layout_digest = digest;
 
-                RegionDescV2 desc{};
-                desc.guest_va = va + off;
-                desc.size = got;
-                desc.mem_state = 0; // 诊断字段：块粒度状态不保留（分片跨块无意义）
-                desc.mem_perm = 0;
-                desc.compressed_size = compressed.size();
-                desc.uncompressed_size = got;
-                descs.push_back(desc);
-
-                total_uncompressed += got;
-                off += take;
-            }
-        }
-        payload.close();
-
-        // 3) 线程记录（挂起态：寄存器组已停放进 KThread::m_thread_context）
-        std::vector<u8> thread_blob;
-        u32 thread_count = 0;
-        for (auto& thread : process->GetThreadList()) {
-            if (thread.IsDummyThread()) {
-                continue; // HLE 宿主辅助线程，无 guest 寄存器语义
-            }
-            ThreadMetaV2 meta{};
-            meta.thread_id = thread.GetThreadId();
-            meta.tls_addr = GetInteger(thread.GetTlsAddress());
-            meta.raw_state = static_cast<u32>(thread.GetRawState() &
-                                              ~Kernel::ThreadState::SuspendFlagMask);
-            meta.active_core = thread.GetActiveCore();
-            meta.priority = thread.GetPriority();
-            meta.reserved = 0;
-
-            const Kernel::Svc::ThreadContext& ctx = thread.GetContext();
-            thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&meta),
-                               reinterpret_cast<const u8*>(&meta) + sizeof(meta));
-            thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&ctx),
-                               reinterpret_cast<const u8*>(&ctx) + sizeof(ctx));
-            ++thread_count;
+        out.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        if (!out) {
+            *err = "state.bin header write failed";
+            fs::remove(state_tmp);
+            return false;
         }
 
-        // 3.5) nvdrv GPU 状态（v3）：GMMU 映射 + nvmap 句柄表（宿主侧 HLE
-        //      派生状态，须随档保存；不可用时该槽将拒绝原地恢复）
-        std::vector<u8> nvdrv_blob;
-        const bool nvdrv_ok = CaptureNvdrvState(system, nvdrv_blob);
-        if (!nvdrv_ok) {
-            LOG_WARNING(Frontend,
-                        "Eden savestate: nvdrv GPU state unavailable, "
-                        "in-place restore disabled for this slot");
+        std::vector<BlockDescV4> block_descs;
+        block_descs.reserve(blocks.size());
+        for (const auto& b : blocks) {
+            block_descs.push_back({b.va, b.size, b.state, b.perm, b.attr, 0});
+        }
+        out.write(reinterpret_cast<const char*>(block_descs.data()),
+                  static_cast<std::streamsize>(block_descs.size() * sizeof(BlockDescV4)));
+        if (!out) {
+            *err = "state.bin block table write failed";
+            fs::remove(state_tmp);
+            return false;
         }
 
-        // 4) 合并写最终 state.bin（先写临时文件再原子替换）
-        {
-            std::ofstream out(state_tmp, std::ios::binary | std::ios::trunc);
-            if (!out) {
-                fs::remove(payload_tmp);
-                *err = "failed to open state.bin temp file";
-                return false;
-            }
+        const std::streamoff content_table_pos = out.tellp();
+        std::vector<ContentDescV4> content_descs;
+        content_descs.reserve(content_blocks.size());
+        for (const auto& b : content_blocks) {
+            content_descs.push_back({b.va, b.size, 0, 0, 0}); // compressed 占位
+        }
+        out.write(reinterpret_cast<const char*>(content_descs.data()),
+                  static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV4)));
+        if (!out) {
+            *err = "state.bin content table write failed";
+            fs::remove(state_tmp);
+            return false;
+        }
 
-            StateHeaderV2 header{};
-            std::memcpy(header.magic, kStateMagic, sizeof(kStateMagic));
-            header.version = kStateVersion;
-            header.program_id = program_id;
-            header.region_count = static_cast<u32>(descs.size());
-            header.thread_count = thread_count;
-            header.total_uncompressed = total_uncompressed;
-            header.flags = nvdrv_ok ? kStateFlagHasNvdrv : 0;
-            header.pad0 = 0;
-            header.nvdrv_size = nvdrv_blob.size();
-
-            out.write(reinterpret_cast<const char*>(&header), sizeof(header));
-            out.write(reinterpret_cast<const char*>(descs.data()),
-                      static_cast<std::streamsize>(descs.size() * sizeof(RegionDescV2)));
-
-            // 负载文件按 16MB 步长搬入（文件布局：header → 描述符 → 压缩负载
-            // → 线程记录，与 RestoreStateBin 的读取顺序严格一致）
-            std::ifstream pin(payload_tmp, std::ios::binary);
-            if (!pin) {
-                out.close();
-                fs::remove(payload_tmp);
+        // 5) 逐块流式压缩：源 = guest 连续后备 run（直读直压）
+        ZstdFrameWriter writer(out);
+        static const std::array<u8, kPageSize> zero_page{};
+        u64 reported = 0;
+        for (size_t ci = 0; ci < content_blocks.size(); ++ci) {
+            const auto& b = content_blocks[ci];
+            if (!writer.Begin(b.size)) {
+                *err = fmt::format("zstd cctx failed @ {:016x}", b.va);
                 fs::remove(state_tmp);
-                *err = "failed to reopen payload temp file";
                 return false;
             }
-            std::vector<char> buf(16 * 1024 * 1024);
-            while (pin) {
-                pin.read(buf.data(), static_cast<std::streamsize>(buf.size()));
-                const auto n = pin.gcount();
-                if (n > 0) {
-                    out.write(buf.data(), n);
-                    if (!out) {
-                        fs::remove(payload_tmp);
+            u64 off = 0;
+            while (off < b.size) {
+                const u64 page_va = b.va + off;
+                const size_t in_page = kPageSize - (page_va % kPageSize);
+                const size_t take = std::min(in_page, b.size - off);
+                u8* p = PagePtr(memory, page_va);
+                if (p == nullptr) {
+                    // 无后备页（MMIO 等）：喂零页保持帧长一致
+                    // （v2 的段尾截断语义升级为显式零填充）
+                    if (!writer.Write(zero_page.data(), take)) {
+                        *err = fmt::format("zstd feed failed @ {:016x}", page_va);
                         fs::remove(state_tmp);
-                        *err = "state.bin write failed (disk full?)";
                         return false;
                     }
+                    off += take;
+                    continue;
                 }
-            }
-
-            // nvdrv 段（紧随压缩负载之后、线程记录之前；与 RestoreStateBin
-            // 读取顺序严格一致）
-            if (!nvdrv_blob.empty()) {
-                out.write(reinterpret_cast<const char*>(nvdrv_blob.data()),
-                          static_cast<std::streamsize>(nvdrv_blob.size()));
-                if (!out) {
-                    fs::remove(payload_tmp);
+                size_t run = take;
+                if (take == kPageSize) {
+                    // host 连续后备 run 扩展（堆等大块通常连续）
+                    while (off + run + kPageSize <= b.size) {
+                        u8* const next = PagePtr(memory, b.va + off + run);
+                        if (next != p + run) {
+                            break;
+                        }
+                        run += kPageSize;
+                    }
+                }
+                if (!writer.Write(p, run)) {
+                    *err = fmt::format("zstd feed failed @ {:016x}", page_va);
                     fs::remove(state_tmp);
-                    *err = "state.bin write failed (disk full?)";
                     return false;
                 }
+                off += run;
             }
-
-            // 线程记录位于全部压缩负载之后（与 RestoreStateBin 读取顺序一致）
-            out.write(reinterpret_cast<const char*>(thread_blob.data()),
-                      static_cast<std::streamsize>(thread_blob.size()));
-            if (!out) {
-                fs::remove(payload_tmp);
+            if (!writer.Finish()) {
+                *err = fmt::format("zstd frame finish failed @ {:016x}", b.va);
                 fs::remove(state_tmp);
-                *err = "state.bin write failed (disk full?)";
                 return false;
             }
-            out.close();
+            compressed_sizes.push_back(writer.written());
+
+            reported += b.size;
+            if ((ci & 0xF) == 0xF || ci + 1 == content_blocks.size()) {
+                SSLogInfo(fmt::format("capture: {}/{} blocks, {}/{} MB, {} ms",
+                                      ci + 1, content_blocks.size(), reported >> 20,
+                                      total_uncompressed >> 20, ElapsedMsSince(t0)));
+            }
         }
 
-        fs::remove(payload_tmp);
+        out.write(reinterpret_cast<const char*>(nvdrv_blob.data()),
+                  static_cast<std::streamsize>(nvdrv_blob.size()));
+        out.write(reinterpret_cast<const char*>(thread_blob.data()),
+                  static_cast<std::streamsize>(thread_blob.size()));
+        if (!out) {
+            *err = "state.bin tail write failed (disk full?)";
+            fs::remove(state_tmp);
+            return false;
+        }
+
+        // 6) 回填内容表 compressed 字段（Cemu 占位符回填同款）
+        {
+            const std::streamoff table_base = content_table_pos;
+            for (size_t i = 0; i < content_descs.size(); ++i) {
+                const std::streamoff pos =
+                    table_base + static_cast<std::streamoff>(i * sizeof(ContentDescV4)) +
+                    static_cast<std::streamoff>(offsetof(ContentDescV4, compressed));
+                out.seekp(pos);
+                out.write(reinterpret_cast<const char*>(&compressed_sizes[i]), sizeof(u64));
+            }
+            if (!out) {
+                *err = "state.bin descriptor patch failed";
+                fs::remove(state_tmp);
+                return false;
+            }
+        }
     }
 
+    // 7) 原子替换（v2 兜底序列）
     std::error_code ec;
     fs::rename(state_tmp, state_path, ec);
     if (ec) {
-        // rename 失败兜底：删除旧 state 后移动
         fs::remove(state_path, ec);
         ec.clear();
         fs::rename(state_tmp, state_path, ec);
@@ -1119,6 +1529,18 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             return false;
         }
     }
+
+    SSLogInfo(fmt::format("capture: done, {} blocks / {} frames / {} threads / {:.1} MB disk, {} ms (rss {} MB)",
+                          blocks.size(), content_blocks.size(), thread_count,
+                          static_cast<double>(
+                              [&] {
+                                  u64 s = 0;
+                                  for (u64 c : compressed_sizes) {
+                                      s += c;
+                                  }
+                                  return s;
+                              }()) / 1048576.0,
+                          ElapsedMsSince(t0), CurrentRssMB()));
     return true;
 }
 
@@ -1126,180 +1548,296 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
 // state.bin —— 原地恢复（quickRestoreSlot 调用，必须持冻结）
 // ---------------------------------------------------------------------------
 
-// 逐 4KB 页写回一段 guest 内存（还原端）。写指令页后刷新 icache
-// （NCE 直接从 guest 内存页执行代码；dynarmic 仅作数据，刷新无害）。
-size_t CopyGuestRangeIn(Core::System& system, u64 va, size_t size, const u8* src) {
-    Core::Memory::Memory& memory = system.ApplicationMemory();
-    size_t done = 0;
-    while (done < size) {
-        const u64 page_va = va + done;
-        const size_t in_page = kPageSize - (page_va % kPageSize);
-        const size_t take = std::min(in_page, size - done);
-        u8* dst = memory.GetPointerSilent(Common::ProcessAddress{page_va});
-        if (dst == nullptr) {
-            break; // 该页当前无映射/无后备（存档后有解映射）：截断
-        }
-        std::memcpy(dst, src + done, take);
-        __builtin___clear_cache(reinterpret_cast<char*>(dst),
-                                reinterpret_cast<char*>(dst + take));
-        done += take;
-    }
-    return done;
-}
+enum class RestoreOutcome {
+    Ok,             // 原地恢复成功
+    LayoutChanged,  // 内存布局与存档不一致 → 调用方走 legacy 重启路径
+    ThreadsChanged, // 线程集与存档不一致 → 同上
+    Error,          // 校验失败（内存未动，可安全回落/报错）
+    Torn,           // 应用中途失败（内存已半恢复 → 必须关停核心）
+};
 
-bool RestoreStateBin(Core::System& system, const fs::path& state_path, u64 program_id,
-                     std::string* err) {
+RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
+                               u64 program_id, std::string* err) {
     *err = {};
+    const auto t0 = NowSteady();
 
     std::error_code ec;
     if (!fs::exists(state_path, ec)) {
         *err = "state.bin missing";
-        return false;
+        return RestoreOutcome::Error;
+    }
+    const u64 file_size = fs::file_size(state_path, ec);
+    if (ec || file_size < sizeof(StateHeaderV4)) {
+        *err = "state.bin too small";
+        return RestoreOutcome::Error;
     }
 
     std::ifstream in(state_path, std::ios::binary);
     if (!in) {
         *err = "failed to open state.bin";
-        return false;
+        return RestoreOutcome::Error;
     }
 
-    // 1) 头部校验
-    StateHeaderV2 header{};
+    // ---- 1) 头部 ----
+    StateHeaderV4 header{};
     in.read(reinterpret_cast<char*>(&header), sizeof(header));
     if (in.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
         std::memcmp(header.magic, kStateMagic, sizeof(kStateMagic)) != 0) {
         *err = "bad state.bin magic";
-        return false;
+        return RestoreOutcome::Error;
     }
     if (header.version != kStateVersion) {
-        *err = fmt::format("unsupported state.bin version {}", header.version);
-        return false;
+        *err = fmt::format("unsupported state.bin version {} (re-save to upgrade)",
+                           header.version);
+        return RestoreOutcome::Error;
     }
     if (header.program_id != program_id) {
         *err = fmt::format("program id mismatch: slot {:016x} vs current {:016x}",
                            header.program_id, program_id);
-        return false;
+        return RestoreOutcome::Error;
     }
     if ((header.flags & kStateFlagHasNvdrv) == 0 || header.nvdrv_size == 0) {
-        // v2 老档 / nvdrv 段缺失：宿主 GPU 状态无法与回滚内存同步，原地恢复
-        // 必拒（否则必崩）。重新存档即可得到 v3 槽位。
-        *err = "state.bin lacks nvdrv GPU state (v2 slot?) - re-save to upgrade";
-        return false;
+        // 无 nvdrv 段的槽位（保存时服务不可用）：宿主 GPU 状态无法与回滚
+        // 内存同步，原地恢复必拒。重新存档即可。
+        *err = "state.bin lacks nvdrv GPU state - re-save to upgrade";
+        return RestoreOutcome::Error;
+    }
+    if (header.block_count == 0 || header.block_count > kMaxBlockCount ||
+        header.content_count == 0 || header.content_count > header.block_count ||
+        header.thread_count > kMaxThreadCount || header.nvdrv_size > kMaxNvdrvSize) {
+        *err = "state.bin header sanity check failed";
+        return RestoreOutcome::Error;
     }
 
-    // 2) 区段描述符
-    std::vector<RegionDescV2> descs(header.region_count);
-    if (!descs.empty()) {
+    // ---- 2) 块表 / 内容表 ----
+    std::vector<LayoutBlock> saved_blocks(header.block_count);
+    {
+        std::vector<BlockDescV4> descs(header.block_count);
         in.read(reinterpret_cast<char*>(descs.data()),
-                static_cast<std::streamsize>(descs.size() * sizeof(RegionDescV2)));
-        if (in.gcount() != static_cast<std::streamsize>(descs.size() * sizeof(RegionDescV2))) {
-            *err = "state.bin descs truncated";
-            return false;
+                static_cast<std::streamsize>(descs.size() * sizeof(BlockDescV4)));
+        if (in.gcount() != static_cast<std::streamsize>(descs.size() * sizeof(BlockDescV4))) {
+            *err = "state.bin block table truncated";
+            return RestoreOutcome::Error;
+        }
+        for (size_t i = 0; i < descs.size(); ++i) {
+            saved_blocks[i] = {descs[i].va, descs[i].size, descs[i].state, descs[i].perm,
+                               descs[i].attr};
         }
     }
 
-    // 3) 逐分片解压写回 guest 内存
+    std::vector<ContentDescV4> content_descs(header.content_count);
+    in.read(reinterpret_cast<char*>(content_descs.data()),
+            static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV4)));
+    if (in.gcount() !=
+        static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV4))) {
+        *err = "state.bin content table truncated";
+        return RestoreOutcome::Error;
+    }
+
+    const std::streamoff frames_start = in.tellg();
+    u64 frames_bytes = 0;
+    u64 total_uncompressed = 0;
+    for (const auto& d : content_descs) {
+        // zstd 最坏轻微膨胀；超过此界视为损坏
+        if (d.compressed > d.uncompressed + (d.uncompressed >> 3) + (64ull << 20)) {
+            *err = fmt::format("implausible compressed size @ {:016x}", d.va);
+            return RestoreOutcome::Error;
+        }
+        frames_bytes += d.compressed;
+        total_uncompressed += d.uncompressed;
+    }
+    if (total_uncompressed != header.total_uncompressed) {
+        *err = "state.bin uncompressed total mismatch";
+        return RestoreOutcome::Error;
+    }
+
+    const u64 nvdrv_off = static_cast<u64>(frames_start) + frames_bytes;
+    const u64 thread_off = nvdrv_off + header.nvdrv_size;
+    const u64 expected_end = thread_off +
+                             static_cast<u64>(header.thread_count) * kThreadRecordSize;
+    if (expected_end != file_size) {
+        *err = fmt::format("state.bin size mismatch: expected {} bytes, file has {}",
+                           expected_end, file_size);
+        return RestoreOutcome::Error;
+    }
+
+    // ---- 3) 校验：布局（逐块全比较，权威） ----
     {
-        std::vector<u8> comp_scratch;
-        for (const auto& desc : descs) {
-            comp_scratch.resize(static_cast<size_t>(desc.compressed_size));
-            in.read(reinterpret_cast<char*>(comp_scratch.data()),
-                    static_cast<std::streamsize>(comp_scratch.size()));
-            if (in.gcount() != static_cast<std::streamsize>(comp_scratch.size())) {
-                *err = fmt::format("payload truncated @ {:016x}", desc.guest_va);
-                return false;
+        std::vector<LayoutBlock> current_blocks;
+        if (!CollectLayoutBlocks(system, current_blocks)) {
+            *err = "current layout walk failed";
+            return RestoreOutcome::Error;
+        }
+        if (LayoutDigest(current_blocks) != header.layout_digest || !SameLayout(current_blocks, saved_blocks)) {
+            size_t cur_i = 0, save_i = 0;
+            std::string first_diff;
+            while (cur_i < current_blocks.size() || save_i < saved_blocks.size()) {
+                const bool has_cur = cur_i < current_blocks.size();
+                const bool has_save = save_i < saved_blocks.size();
+                if (has_cur && has_save && current_blocks[cur_i].va == saved_blocks[save_i].va) {
+                    if (current_blocks[cur_i].size != saved_blocks[save_i].size ||
+                        current_blocks[cur_i].state != saved_blocks[save_i].state ||
+                        current_blocks[cur_i].perm != saved_blocks[save_i].perm ||
+                        current_blocks[cur_i].attr != saved_blocks[save_i].attr) {
+                        first_diff = fmt::format("block {:016x} attrs differ",
+                                                 current_blocks[cur_i].va);
+                        break;
+                    }
+                    ++cur_i;
+                    ++save_i;
+                } else if (has_cur && (!has_save || current_blocks[cur_i].va < saved_blocks[save_i].va)) {
+                    first_diff = fmt::format("mapped after save @ {:016x}+{:x}",
+                                             current_blocks[cur_i].va,
+                                             current_blocks[cur_i].size);
+                    break;
+                } else {
+                    first_diff = fmt::format("missing after save @ {:016x}+{:x}",
+                                             saved_blocks[save_i].va, saved_blocks[save_i].size);
+                    break;
+                }
             }
-
-            const std::vector<u8> decompressed =
-                Common::Compression::DecompressDataZSTD(std::span<const u8>{comp_scratch});
-            if (decompressed.size() != desc.uncompressed_size) {
-                *err = fmt::format("zstd size mismatch @ {:016x}", desc.guest_va);
-                return false;
-            }
-
-            // 写回（只写当前已映射部分；尾部解映射页截断为可接受损失）
-            if (desc.uncompressed_size > 0) {
-                CopyGuestRangeIn(system, desc.guest_va, desc.uncompressed_size,
-                                 decompressed.data());
-            }
+            SSLogWarn(fmt::format("restore: layout changed ({} saved / {} current blocks; {}) - falling back to legacy",
+                                  saved_blocks.size(), current_blocks.size(),
+                                  first_diff.empty() ? "count differs" : first_diff));
+            *err = "memory layout changed since save";
+            return RestoreOutcome::LayoutChanged;
         }
     }
 
-    // 3.5) nvdrv GPU 状态回放：SMMU/nvmap 句柄表 + GMMU 映射（在 guest
-    //      内存写回之后、rasterizer 缓存失效之前）。GMMU 全量清空+重放
-    //      本身就会按设备地址段触发 rasterizer 缓存丢弃 —— Cemu
-    //      queueSaveStateGpuSync(true) 的「丢弃全部 GPU 缓存数据」同构。
+    // ---- 4) 校验：线程集（全等） ----
+    std::vector<u64> saved_thread_ids;
+    saved_thread_ids.reserve(header.thread_count);
     {
-        std::vector<u8> nvdrv_blob(static_cast<size_t>(header.nvdrv_size));
-        if (!nvdrv_blob.empty()) {
+        // 定位线程段（帧 + nvdrv 之后），整段读入（≤ 16384×0x340 ≈ 13MB，
+        // 实际几十 KB）
+        const size_t thread_bytes =
+            static_cast<size_t>(header.thread_count) * kThreadRecordSize;
+        std::vector<u8> thread_blob(thread_bytes);
+        in.seekg(static_cast<std::streamoff>(thread_off), std::ios::beg);
+        in.read(reinterpret_cast<char*>(thread_blob.data()),
+                static_cast<std::streamsize>(thread_bytes));
+        if (static_cast<size_t>(in.gcount()) != thread_bytes) {
+            *err = "state.bin thread section truncated";
+            return RestoreOutcome::Error;
+        }
+        for (u32 i = 0; i < header.thread_count; ++i) {
+            ThreadMetaV2 meta{};
+            std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
+            saved_thread_ids.push_back(meta.thread_id);
+        }
+        std::sort(saved_thread_ids.begin(), saved_thread_ids.end());
+
+        const std::vector<u64> current_ids = CollectLiveThreadIds(system);
+        if (current_ids != saved_thread_ids) {
+            SSLogWarn(fmt::format("restore: thread set changed ({} saved / {} live) - falling back to legacy",
+                                  saved_thread_ids.size(), current_ids.size()));
+            *err = "thread set changed since save";
+            return RestoreOutcome::ThreadsChanged;
+        }
+        // 线程记录留在内存里，应用阶段直接写回（不再二次读盘）
+        //（thread_blob 在下方应用阶段通过参数传递）
+        // 恢复流指针到帧区
+        in.clear();
+        in.seekg(frames_start, std::ios::beg);
+
+        // ---- 5) 校验：逐帧 zstd 流式解码丢弃（动内存前的最后把关） ----
+        for (size_t i = 0; i < content_descs.size(); ++i) {
+            const auto& d = content_descs[i];
+            if (!ValidateFrame(in, d.uncompressed, d.compressed)) {
+                *err = fmt::format("corrupt payload @ {:016x}", d.va);
+                return RestoreOutcome::Error;
+            }
+            if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
+                SSLogInfo(fmt::format("restore: validated {}/{} frames, {} ms", i + 1,
+                                      content_descs.size(), ElapsedMsSince(t0)));
+            }
+        }
+
+        // ---- 应用阶段（到这里文件已全量校验，I/O 仍可能中途失败 → Torn） ----
+        in.clear();
+        in.seekg(frames_start, std::ios::beg);
+        for (size_t i = 0; i < content_descs.size(); ++i) {
+            const auto& d = content_descs[i];
+            if (!ApplyFrame(in, system, d.va, d.uncompressed, d.compressed, err)) {
+                return RestoreOutcome::Torn;
+            }
+            if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
+                SSLogInfo(fmt::format("restore: applied {}/{} frames, {} ms (rss {} MB)",
+                                      i + 1, content_descs.size(), ElapsedMsSince(t0),
+                                      CurrentRssMB()));
+            }
+        }
+
+        // nvdrv GPU 状态回放：SMMU/nvmap 句柄表 + GMMU 映射（在 guest 内存
+        // 写回之后、rasterizer 缓存失效之前）。
+        {
+            std::vector<u8> nvdrv_blob(static_cast<size_t>(header.nvdrv_size));
+            in.clear();
+            in.seekg(static_cast<std::streamoff>(nvdrv_off), std::ios::beg);
             in.read(reinterpret_cast<char*>(nvdrv_blob.data()),
                     static_cast<std::streamsize>(nvdrv_blob.size()));
-            if (in.gcount() != static_cast<std::streamsize>(nvdrv_blob.size())) {
+            if (static_cast<size_t>(in.gcount()) != nvdrv_blob.size()) {
                 *err = "nvdrv section truncated";
-                return false;
+                return RestoreOutcome::Torn;
+            }
+            std::string nvdrv_err;
+            if (!RestoreNvdrvState(system, nvdrv_blob, &nvdrv_err)) {
+                *err = "nvdrv restore failed: " + nvdrv_err;
+                return RestoreOutcome::Torn;
             }
         }
-        std::string nvdrv_err;
-        if (!RestoreNvdrvState(system, nvdrv_blob, &nvdrv_err)) {
-            *err = "nvdrv restore failed: " + nvdrv_err;
-            return false;
-        }
-    }
 
-    // 4) GPU 指令/数据缓存一致性：宿主纹理、缓冲、渲染目标缓存全部
-    //    失效，从还原后的 guest 内存重建（GPU 缓存是 guest 内存的派生
-    //    视图 —— InvalidateGPUCache 与 ReloadDiskShaderCache 同源语义）。
-    if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
-        rasterizer->InvalidateGPUCache();
-        rasterizer->FlushCommands();
-    }
-
-    // 5) ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存）
-    if (Kernel::KProcess* process = system.ApplicationProcess(); process != nullptr) {
-        for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core) {
-            if (Core::ArmInterface* iface = process->GetArmInterface(core); iface != nullptr) {
-                iface->ClearInstructionCache();
-            }
-        }
-    }
-
-    // 6) 线程寄存器组原地写回（按 thread_id 匹配；不改动当前调度状态：
-    //    挂起的线程解冻后被重新调度时经 KScheduler::Reload →
-    //    LoadContext → SetContext 装载恢复后的寄存器组 —— 从存档时刻继续）
-    {
-        Kernel::KProcess* process = system.ApplicationProcess();
-        if (process == nullptr) {
-            *err = "application process is null";
-            return false;
+        // GPU 指令/数据缓存一致性：宿主纹理、缓冲、渲染目标缓存全部
+        // 失效，从还原后的 guest 内存重建（InvalidateGPUCache 与
+        // ReloadDiskShaderCache 同源语义；GMMU 清空重放亦已触发逐段丢弃）。
+        if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
+            rasterizer->InvalidateGPUCache();
+            rasterizer->FlushCommands();
         }
 
-        std::vector<u8> record(kThreadRecordSize);
-        Kernel::Svc::ThreadContext ctx_copy{};
-        for (u32 i = 0; i < header.thread_count; ++i) {
-            in.read(reinterpret_cast<char*>(record.data()),
-                    static_cast<std::streamsize>(record.size()));
-            if (in.gcount() != static_cast<std::streamsize>(record.size())) {
-                *err = fmt::format("thread record {} truncated", i);
-                return false;
-            }
-
-            ThreadMetaV2 meta{};
-            std::memcpy(&meta, record.data(), sizeof(meta));
-            std::memcpy(&ctx_copy, record.data() + sizeof(meta), sizeof(ctx_copy));
-
-            for (auto& thread : process->GetThreadList()) {
-                if (thread.GetThreadId() != meta.thread_id || thread.IsDummyThread()) {
-                    continue;
+        // ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存；
+        // 页粒度 icache 已在 ApplyFrame 按 run 刷新）。
+        if (Kernel::KProcess* process = system.ApplicationProcess(); process != nullptr) {
+            for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core) {
+                if (Core::ArmInterface* iface = process->GetArmInterface(core); iface != nullptr) {
+                    iface->ClearInstructionCache();
                 }
-                // 逐字段写回（GetContext 返回可写引用；v 寄存器数组直接拷贝）
-                Kernel::Svc::ThreadContext& dst = thread.GetContext();
-                std::memcpy(&dst, &ctx_copy, sizeof(Kernel::Svc::ThreadContext));
-                break;
             }
         }
-    }
 
-    return true;
+        // 线程寄存器组原地写回（按 thread_id 匹配；线程集已全等校验，
+        // 每条记录必有目标）。挂起的线程解冻后被重新调度时经
+        // KScheduler::Reload → LoadContext → SetContext 装载恢复后的
+        // 寄存器组 —— 从存档时刻继续。
+        {
+            Kernel::KProcess* process = system.ApplicationProcess();
+            if (process == nullptr) {
+                *err = "application process is null";
+                return RestoreOutcome::Torn;
+            }
+            Kernel::Svc::ThreadContext ctx_copy{};
+            for (u32 i = 0; i < header.thread_count; ++i) {
+                ThreadMetaV2 meta{};
+                std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
+                std::memcpy(&ctx_copy, thread_blob.data() + i * kThreadRecordSize + sizeof(meta),
+                            sizeof(ctx_copy));
+
+                for (auto& thread : process->GetThreadList()) {
+                    if (thread.GetThreadId() != meta.thread_id || thread.IsDummyThread()) {
+                        continue;
+                    }
+                    Kernel::Svc::ThreadContext& dst = thread.GetContext();
+                    std::memcpy(&dst, &ctx_copy, sizeof(Kernel::Svc::ThreadContext));
+                    break;
+                }
+            }
+        }
+
+        SSLogInfo(fmt::format("restore: done, {} frames / {} threads, {} ms (rss {} MB)",
+                              content_descs.size(), header.thread_count,
+                              ElapsedMsSince(t0), CurrentRssMB()));
+        return RestoreOutcome::Ok;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,6 +2025,8 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_getQuickSaveInfo([[maybe_unused]] JNIEnv* 
 extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
 Java_org_yuzu_yuzu_1emu_NativeLibrary_quickSaveSlot([[maybe_unused]] JNIEnv* env,
                                                     [[maybe_unused]] jobject thiz, jint slot) {
+    // ★ 进程级冻结串行化（Cemu v3.9 同款）：与读档/其它存档互斥
+    std::lock_guard freeze_guard{FreezeOpMutex()};
     try {
         if (!IsTitleRunning()) {
             return native_savestate::RESULT_ERROR_NOT_RUNNING;
@@ -1528,6 +2068,7 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickSaveSlot([[maybe_unused]] JNIEnv* env
                                 program_id, &state_err);
             if (!state_ok) {
                 LOG_ERROR(Frontend, "Eden savestate capture failed: {}", state_err);
+                SSLogWarn(fmt::format("capture failed: {}", state_err));
                 return native_savestate::RESULT_ERROR_IO;
             }
 
@@ -1552,6 +2093,8 @@ extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
 Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* env,
                                                        [[maybe_unused]] jobject thiz,
                                                        jint slot, jint flags) {
+    // ★ 进程级冻结串行化（Cemu v3.9 同款）
+    std::lock_guard freeze_guard{FreezeOpMutex()};
     try {
         if (!IsTitleRunning()) {
             return native_savestate::RESULT_ERROR_NOT_RUNNING;
@@ -1572,32 +2115,68 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         }
 
         // ★★ 首选路径：state.bin 进程内原地恢复（= Cemu RestoreStateFromFile）
-        //    游戏暂停 → 内存被快照覆盖 → 从快照时刻继续 —— 完全不重启。
+        //    游戏暂停 → 校验（布局/线程集/逐帧）→ 内存快照覆盖 → 从存档时刻
+        //    继续 —— 完全不重启。布局或线程集已变化时自动回落 legacy 重启
+        //    路径（RESULT_OK_LEGACY_RESTART），绝不带着分叉状态续跑。
+        bool legacy_by_layout = false;
         if (has_state) {
             Core::System& system = Session().System();
             {
                 EmulationFreeze freeze{system};
                 std::string state_err;
-                if (!RestoreStateBin(system, state_path, program_id, &state_err)) {
-                    LOG_ERROR(Frontend, "Eden savestate in-place restore failed: {}", state_err);
+                const RestoreOutcome outcome = RestoreStateBin(system, state_path, program_id,
+                                                               &state_err);
+                switch (outcome) {
+                case RestoreOutcome::Ok:
+                    TrimHeap();
+                    return native_savestate::RESULT_OK_RESTORED_IN_PLACE;
+
+                case RestoreOutcome::LayoutChanged:
+                case RestoreOutcome::ThreadsChanged:
+                    // 原地恢复不可行（宿主侧布局/线程集与存档分叉）：
+                    // 自动回落 legacy —— 前端 relaunchGame() 重启加载。
+                    legacy_by_layout = true;
+                    break;
+
+                case RestoreOutcome::Error:
+                    // 校验失败，内存未动
+                    LOG_ERROR(Frontend, "Eden savestate in-place restore rejected: {}",
+                              state_err);
+                    SSLogWarn(fmt::format("restore rejected: {}", state_err));
                     if ((flags & native_savestate::RESTORE_FLAG_ALLOW_LEGACY) == 0) {
                         // 不静默回落破坏性 legacy 路径 —— 如实报错
                         return native_savestate::RESULT_ERROR_STATE_RESTORE_FAILED;
                     }
                     // 安全模式：继续走下方 legacy 路径
-                } else {
-                    TrimHeap();
-                    return native_savestate::RESULT_OK_RESTORED_IN_PLACE;
+                    break;
+
+                case RestoreOutcome::Torn:
+                    // 应用中途失败：内存已半恢复 —— 关停核心（不续跑撕裂状态）
+                    LOG_ERROR(Frontend, "Eden savestate restore torn: {}", state_err);
+                    SSLogWarn(fmt::format("restore torn (halting): {}", state_err));
+                    freeze.HaltInsteadOfResume();
+                    if ((flags & native_savestate::RESTORE_FLAG_ALLOW_LEGACY) == 0) {
+                        return native_savestate::RESULT_ERROR_STATE_RESTORE_FAILED;
+                    }
+                    // legacy 会整体关停重写，撕裂状态被覆盖 —— 可继续
+                    break;
                 }
+            } // freeze 析构：恢复运行（或 Torn 时关停）
+
+            if (legacy_by_layout) {
+                SSLogInfo("restore: falling back to legacy (restart) path");
             }
         }
 
-        // ── legacy 路径（老槽位无 state.bin / 原地恢复失败且允许回落）──
+        // ── legacy 路径（老槽位无 state.bin / 布局分叉自动回落 / 安全模式）──
         // 与 Cemu ShutdownTitle 同语义：先自动备份当前存档（autobackup 槽），
         // 停止运行中的游戏让游戏释放全部存档文件句柄，杜绝写回与还原拷贝
         // 竞争，随后写回 NAND，由前端 relaunchGame() 进程内重启游戏。
         if (!has_save_data) {
-            return native_savestate::RESULT_ERROR_SLOT_EMPTY;
+            // 有 state.bin 但原地恢复不可行且无 NAND 后备 —— 如实报恢复失败
+            // （仅无任何数据的空槽才报槽位为空）
+            return has_state ? native_savestate::RESULT_ERROR_STATE_RESTORE_FAILED
+                             : native_savestate::RESULT_ERROR_SLOT_EMPTY;
         }
 
         // 覆盖前安全备份当前存档（Cemu autobackup 槽同款）
@@ -1623,7 +2202,11 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         TrimHeap();
         // RESULT_OK = legacy 语义（Cemu 同款）：存档数据已还原、游戏已
         // 关停，由前端 relaunchGame() 进程内重启游戏加载恢复的存档。
-        return native_savestate::RESULT_OK;
+        // RESULT_OK_LEGACY_RESTART：布局分叉自动回落时的同路径返回码 ——
+        // 前端据此提示「内存布局已变化，已重启游戏加载」而非误导性的
+        // 原地恢复话术。
+        return legacy_by_layout ? native_savestate::RESULT_OK_LEGACY_RESTART
+                                : native_savestate::RESULT_OK;
     } catch (...) {
         return native_savestate::RESULT_ERROR_IO;
     }

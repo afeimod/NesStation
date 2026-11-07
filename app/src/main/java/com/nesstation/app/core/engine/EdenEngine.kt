@@ -1100,6 +1100,11 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         }
     }
 
+    /** 最近一次读档是否走了重启路径（legacy：布局分叉自动回落 / 安全模式）。
+     *  UI 据此区分 toast：原地恢复（false）vs 重启加载（true）。*/
+    var lastRestoreWasRestart: Boolean = false
+        private set
+
     override fun loadState(slot: Int, src: File): Boolean {
         if (!isLoaded) return false
         return try {
@@ -1107,22 +1112,33 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             // ★ 与存档/其它读档互斥（防并发关停竞态）
             val r = synchronized(stateOpLock) { NativeLibrary.quickRestoreSlot(nSlot, 0) }
             when (r) {
-                NativeLibrary.RESULT_OK_RESTORED_IN_PLACE -> true // 预留（进程内 state.bin）
-                NativeLibrary.RESULT_OK -> {
+                NativeLibrary.RESULT_OK_RESTORED_IN_PLACE -> {
+                    // v4：state.bin 进程内原地恢复成功 —— 不重启，从存档时刻继续
+                    lastRestoreWasRestart = false
+                    true
+                }
+                NativeLibrary.RESULT_OK,
+                NativeLibrary.RESULT_OK_LEGACY_RESTART -> {
                     // legacy 路径：存档数据已写回 NAND、核心已关停 →
-                    // 进程内重启游戏加载恢复的存档（= Cemu relaunchTitle）
+                    // 进程内重启游戏加载恢复的存档（= Cemu relaunchTitle）。
+                    // RESULT_OK_LEGACY_RESTART：存档后内存布局/线程集已变化，
+                    // native 已自动回落（同一路径，仅 toast 文案不同）。
+                    lastRestoreWasRestart = true
                     relaunchGame()
                     true
                 }
                 NativeLibrary.RESULT_ERROR_SLOT_EMPTY -> {
+                    lastRestoreWasRestart = false
                     lastErrorText = "读档失败：槽位 $slot 为空"
                     false
                 }
                 NativeLibrary.RESULT_ERROR_STATE_RESTORE_FAILED -> {
+                    lastRestoreWasRestart = false
                     lastErrorText = "读档失败：状态恢复失败（可用安全模式重试）"
                     false
                 }
                 else -> {
+                    lastRestoreWasRestart = false
                     lastErrorText = "读档失败（核心返回码 $r）"
                     false
                 }

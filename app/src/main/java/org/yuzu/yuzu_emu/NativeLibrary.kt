@@ -301,6 +301,10 @@ object NativeLibrary {
     const val RESULT_ERROR_IO: Int = 4
     const val RESULT_OK_RESTORED_IN_PLACE: Int = 5
     const val RESULT_ERROR_STATE_RESTORE_FAILED: Int = 6
+    // v4：当前会话内存布局/线程集与存档不一致，native 已自动回落 legacy
+    // 重启路径（语义同 RESULT_OK，前端同样 relaunchGame），以此码提示
+    // 「内存布局已变化，已重启游戏加载」。
+    const val RESULT_OK_LEGACY_RESTART: Int = 7
 
     // 读档 flags（核心支持进程内 state.bin 恢复前预留）
     const val RESTORE_FLAG_ALLOW_LEGACY: Int = 1
