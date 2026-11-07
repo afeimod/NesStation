@@ -70,6 +70,11 @@ public:
         return gmmu.get();
     }
 
+    /// ★ NesStation savestate：nvdevice 基类虚方法覆写（无 RTTI 识别用）。
+    Tegra::MemoryManager* GetAsGpuMemoryManager() const override {
+        return gmmu.get();
+    }
+
     struct VaRegion {
         u64 offset;
         u32 page_size;

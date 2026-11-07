@@ -21,6 +21,10 @@ namespace Kernel {
 class KEvent;
 }
 
+namespace Tegra {
+class MemoryManager;
+}
+
 namespace Service::Nvidia::Devices {
 
 /// Represents an abstract nvidia device node. It is to be subclassed by concrete device nodes to
@@ -75,6 +79,13 @@ public:
     virtual void OnClose(DeviceFD fd) = 0;
 
     virtual Kernel::KEvent* QueryEvent(u32 event_id) {
+        return nullptr;
+    }
+
+    /// ★ NesStation savestate：无 RTTI 构建（-fno-rtti）下识别 nvhost_as_gpu
+    /// 并取得其地址空间 GMMU 的途径；其余设备返回 nullptr。等价于
+    /// dynamic_cast<nvhost_as_gpu*>()->GetGMMU()，但不依赖 RTTI。
+    virtual Tegra::MemoryManager* GetAsGpuMemoryManager() const {
         return nullptr;
     }
 

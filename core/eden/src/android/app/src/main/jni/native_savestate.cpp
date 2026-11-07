@@ -674,11 +674,9 @@ void CollectGmmuInstances(Core::System& system, Service::Nvidia::Module& nvdrv,
     auto& host1x = system.Host1x();
     out.push_back({host1x.gmmu_manager.GetID(), &host1x.gmmu_manager});
     nvdrv.ForEachDevice([&](Service::Nvidia::Devices::nvdevice* device) {
-        auto* as_gpu = dynamic_cast<Service::Nvidia::Devices::nvhost_as_gpu*>(device);
-        if (as_gpu == nullptr) {
-            return;
-        }
-        Tegra::MemoryManager* mm = as_gpu->GetGMMU();
+        // -fno-rtti 构建下不可用 dynamic_cast；走 nvdevice 基类虚方法
+        // （仅 nvhost_as_gpu 覆写，返回其 per-AS GMMU）。
+        Tegra::MemoryManager* mm = device->GetAsGpuMemoryManager();
         if (mm == nullptr) {
             return;
         }
