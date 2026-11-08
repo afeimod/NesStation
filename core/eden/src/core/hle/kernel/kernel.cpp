@@ -1022,6 +1022,16 @@ u64 KernelCore::CreateNewThreadID() {
     return impl->next_thread_id++;
 }
 
+// ★★★ NesStation savestate (v6)：推进线程 ID 计数器到 above 以上 ★★★
+// 重建线程按存档回写旧 thread_id；此处置位计数器，避免后续新线程
+// 拿到与已重建线程重复的 ID（guest 内存中存有线程 ID）。
+void KernelCore::SavestateAdvanceThreadID(u64 above) {
+    u64 cur = impl->next_thread_id.load(std::memory_order_relaxed);
+    while (cur < above && !impl->next_thread_id.compare_exchange_weak(cur, above,
+                                                                      std::memory_order_relaxed)) {
+    }
+}
+
 u64 KernelCore::CreateNewKernelProcessID() {
     return impl->next_kernel_process_id++;
 }

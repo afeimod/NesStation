@@ -281,6 +281,12 @@ public:
     bool IsPhantomModeForSingleCore() const;
     void SetIsPhantomModeForSingleCore(bool value);
 
+    /// ★★★ NesStation savestate (v6)：推进线程 ID 计数器 ★★★
+    /// 重建线程按存档回写旧 thread_id；计数器前移到 above 以上，避免
+    /// 后续新线程拿到与已重建线程重复的 ID（guest 内存中存有线程 ID）。
+    /// 定义在 kernel.cpp（Impl 在此仅前置声明，不可内联访问成员）。
+    void SavestateAdvanceThreadID(u64 above);
+
     Core::System& System();
     const Core::System& System() const;
 
@@ -318,16 +324,6 @@ private:
 
     /// Creates a new thread ID, incrementing the internal thread ID counter.
     u64 CreateNewThreadID();
-
-    /// ★★★ NesStation savestate (v6)：推进线程 ID 计数器 ★★★
-    /// 重建线程按存档回写旧 thread_id；计数器前移到 above 以上，避免
-    /// 后续新线程拿到与已重建线程重复的 ID（guest 内存中存有线程 ID）。
-    void SavestateAdvanceThreadID(u64 above) {
-        u64 cur = impl->next_thread_id.load(std::memory_order_relaxed);
-        while (cur < above && !impl->next_thread_id.compare_exchange_weak(cur, above,
-                                                                          std::memory_order_relaxed)) {
-        }
-    }
 
     /// Provides a reference to the global handle table.
     KHandleTable& GlobalHandleTable();

@@ -2398,7 +2398,7 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
                                       : 0;
             const Result r = Kernel::KThread::InitializeUserThread(
                 system, t, Kernel::KProcessAddress(ctx.pc),
-                static_cast<uintptr_t>(ctx.cpu_registers[0]),
+                static_cast<uintptr_t>(ctx.r[0]),
                 Kernel::KProcessAddress(meta.stack_top), meta.priority, virt_core, process);
             if (R_FAILED(r)) {
                 t->Close(system.Kernel());

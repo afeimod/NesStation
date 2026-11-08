@@ -91,6 +91,16 @@ public:
                       KMemoryBlockSlabManager* slab_manager);
     void Finalize(KMemoryBlockSlabManager* slab_manager, BlockCallback&& block_callback);
 
+    iterator begin() {
+        return m_memory_block_tree.begin();
+    }
+    const_iterator begin() const {
+        return m_memory_block_tree.begin();
+    }
+    const_iterator cbegin() const {
+        return m_memory_block_tree.cbegin();
+    }
+
     iterator end() {
         return m_memory_block_tree.end();
     }
