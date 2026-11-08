@@ -305,6 +305,9 @@ object NativeLibrary {
     // 重启路径（语义同 RESULT_OK，前端同样 relaunchGame），以此码提示
     // 「内存布局已变化，已重启游戏加载」。
     const val RESULT_OK_LEGACY_RESTART: Int = 7
+    // v6：槽位格式来自旧版本（v≤5）—— 需重新存档一次升级格式。
+    // 不回落 legacy、不重启，提示「请重新存档」。
+    const val RESULT_ERROR_STATE_TOO_OLD: Int = 8
 
     // 读档 flags（核心支持进程内 state.bin 恢复前预留）
     const val RESTORE_FLAG_ALLOW_LEGACY: Int = 1

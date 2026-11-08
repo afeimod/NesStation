@@ -192,6 +192,33 @@ public:
     Result Terminate(KernelCore& kernel);
     ThreadState RequestTerminate(KernelCore& kernel);
 
+    // ★★★ NesStation savestate (v6)：线程集按 Cemu 调度器重建语义处理 ★★★
+    // Cemu 读档从不比对线程集 —— 宿主侧调度器从恢复后的状态整表重建
+    //（SavestateRebuildSchedulerAfterRestore）。eden 的对应实现：
+    //  - SavestateRemoveThread：已消亡时间线多余的线程确定性移除
+    //    （不执行任何 guest 代码；镜像 RequestTerminate + StartTermination +
+    //    FinishTermination 的组合，在冻结下直接走完生命周期）
+    //  - SavestateRecreateRun：KThread::Run 的免 GetCurrentThread 版本
+    //    （重建线程从 JNI 宿主线程启动；Run 里的当前线程检查对 JNI 线程
+    //    无意义）
+    //  - SavestateSetIdentity / GetVirtualAffinityMaskForSavestate：
+    //    thread_id / TLS 地址 / 亲和掩码按存档回写（guest 内存里存有
+    //    这些值：互斥锁所有者句柄、TCB 里的线程 id 等）
+    void SavestateRemoveThread(KernelCore& kernel);
+    void SavestateRecreateRun(KernelCore& kernel);
+
+    void SavestateSetIdentity(u64 thread_id, u64 virt_affinity_mask,
+                              KProcessAddress tls_address) {
+        m_thread_id = thread_id;
+        m_virtual_affinity_mask = virt_affinity_mask;
+        m_physical_affinity_mask.SetAffinityMask(virt_affinity_mask);
+        m_tls_address = tls_address;
+    }
+
+    u64 GetVirtualAffinityMaskForSavestate() const {
+        return m_virtual_affinity_mask;
+    }
+
     u32 GetSuspendFlags() const {
         return m_suspend_allowed_flags & m_suspend_request_flags;
     }

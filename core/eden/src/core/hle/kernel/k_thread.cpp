@@ -1285,6 +1285,95 @@ namespace Kernel {
         return this->GetState();
     }
 
+    // ★★★ NesStation savestate (v6)：确定性线程移除（冻结下调用） ★★★
+    // 镜像 Exit/Termination 的宿主侧生命周期（RequestTerminate 的等待取消
+    // + StartTermination 的记账清理 + FinishTermination 的信令与引用归还 +
+    // Finalize 的 PI 锁释放/注销），但不执行任何 guest 代码。挂起的宿主
+    // fiber 从此不再被调度（对象可能因残留引用而滞留 —— 惰性且无害）。
+    void KThread::SavestateRemoveThread(KernelCore& kernel) {
+        // 冻结上下文：无 guest 派发，无并发内核操作。
+        const bool was_started = this->GetState() != ThreadState::Initialized;
+
+        // 1) 解除当前等待（从等待队列/计时器摘除；PI 等待回指一并清空）。
+        if (this->GetState() == ThreadState::Waiting && m_wait_queue != nullptr) {
+            this->CancelWait(kernel, ResultTerminationRequested, true);
+            m_waiting_lock_info = nullptr;
+        }
+
+        // 2) 释放该线程持有的全部优先级继承锁（镜像 Finalize 的循环：
+        //    唤醒全部等待者并归还锁信息节点）。
+        {
+            KScopedSchedulerLock sl{kernel};
+            auto it = m_held_lock_info_list.begin();
+            while (it != m_held_lock_info_list.end()) {
+                auto* const lock_info = std::addressof(*it);
+                while (lock_info->GetWaiterCount() != 0) {
+                    KThread* const waiter = lock_info->GetHighestPriorityWaiter();
+                    if (lock_info->RemoveWaiter(waiter)) {
+                        break;
+                    }
+                    waiter->CancelWait(kernel, ResultInvalidState, true);
+                }
+                it = m_held_lock_info_list.erase(it);
+                LockWithPriorityInheritanceInfo::Free(kernel, lock_info);
+            }
+            m_num_kernel_waiters = 0;
+        }
+
+        // 3) 置终止标志并解除固定（镜像 RequestTerminate 的相应部分）。
+        m_termination_requested.store(true, std::memory_order_relaxed);
+        {
+            KScopedSchedulerLock sl{kernel};
+            m_suspend_allowed_flags = 0;
+            if (m_parent != nullptr) {
+                m_parent->ReleaseUserException(kernel, this);
+                if (this->GetStackParameters().is_pinned) {
+                    m_parent->UnpinThread(kernel, this);
+                }
+            }
+        }
+
+        if (!was_started) {
+            // 从未启动的线程：状态直改 Terminated（RequestTerminate 同款），
+            // 引用归还交给句柄清除方（调用方先清句柄表再调用本函数）。
+            KScopedSchedulerLock sl{kernel};
+            m_thread_state.store(ThreadState::Terminated, std::memory_order_relaxed);
+            m_signaled = true;
+            KSynchronizationObject::NotifyAvailable(kernel);
+            return;
+        }
+
+        // 4) StartTermination：状态 Terminated、清理运行记账与调度器残留。
+        {
+            KScopedSchedulerLock sl{kernel};
+            this->StartTermination(kernel);
+        }
+
+        // 5) 唤醒等待本线程终止的等待者（FinishTermination 的信令部分）。
+        {
+            KScopedSchedulerLock sl{kernel};
+            m_signaled = true;
+            KSynchronizationObject::NotifyAvailable(kernel);
+        }
+
+        // 6) 归还 Run() 持有的运行引用。引用归零则走 Finalize：
+        //    注销线程 + 释放 TLS 槽（调用方保证句柄表引用已先行清除）。
+        this->Close(kernel);
+    }
+
+    // ★★★ NesStation savestate (v6)：重建线程的 Runnable 启动 ★★★
+    // KThread::Run 依赖 GetCurrentThread（JNI 宿主线程上无意义），这里做
+    // 同等的记账：运行计数 +1、取运行引用、状态置 Runnable。
+    void KThread::SavestateRecreateRun(KernelCore& kernel) {
+        KScopedSchedulerLock sl{kernel};
+        m_termination_requested.store(false, std::memory_order_relaxed);
+        if (KProcess* owner = this->GetOwnerProcess(); owner != nullptr) {
+            owner->IncrementRunningThreadCount(kernel);
+        }
+        this->Open(kernel);
+        this->SetState(kernel, ThreadState::Runnable);
+    }
+
     Result KThread::Sleep(KernelCore& kernel, s64 timeout) {
         ASSERT(!KScheduler::IsSchedulerLockedByCurrentThread(kernel));
         ASSERT(this == GetCurrentThreadPointer(kernel));

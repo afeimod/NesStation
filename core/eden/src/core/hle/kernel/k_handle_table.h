@@ -127,6 +127,84 @@ public:
     Result Add(KernelCore& kernel, Handle* out_handle, KAutoObject* obj);
     void Register(KernelCore& kernel, Handle handle, KAutoObject* obj);
 
+    // ★★★ NesStation savestate (v6)：句柄表逃生舱（读档重建用） ★★★
+// guest 内存中存有句柄值（互斥锁所有者句柄、事件句柄等），读档后句柄表
+// 必须与存档时刻一致 —— 与 Cemu 随档恢复 SysAllocator 记账同构。
+// 仅恢复线程对象句柄（其它内核对象图不随档，维持现状语义）。
+public:
+    /// 找到指向 obj 的第一个句柄（无则 0）。冻结下调用，无并发。
+    Handle SavestateFindHandle(KAutoObject* obj) const {
+        KScopedSpinLock lk(m_lock);
+        for (s32 i = 0; i < static_cast<s32>(m_table_size); ++i) {
+            if (m_objects[i] == obj) {
+                return EncodeHandle(static_cast<u16>(i), m_entry_infos[i].GetLinearId());
+            }
+        }
+        return 0;
+    }
+
+    /// 丢弃指向 obj 的全部句柄（被移除线程防悬挂）。
+    void SavestatePurgeObject(KernelCore& kernel, KAutoObject* obj) {
+        KScopedSpinLock lk(m_lock);
+        for (s32 i = 0; i < static_cast<s32>(m_table_size); ++i) {
+            if (m_objects[i] == obj) {
+                // FreeEntry 需要计数/链表一致 —— 直接手写等价逻辑并归还引用
+                m_objects[i] = nullptr;
+                m_entry_infos[i].next_free_index = static_cast<s16>(m_free_head_index);
+                m_free_head_index = i;
+                --m_count;
+                obj->Close(kernel);
+            }
+        }
+    }
+
+    /// 把 obj 放回存档句柄值（槽位被占则先归还旧对象）；取新引用。
+    bool SavestateRestoreHandle(KernelCore& kernel, Handle handle, KAutoObject* obj) {
+        if (handle == 0) {
+            return false;
+        }
+        const auto handle_pack = HandlePack(handle);
+        if (handle_pack.reserved != 0 || handle_pack.linear_id == 0) {
+            return false;
+        }
+        const s32 index = static_cast<s32>(handle_pack.index);
+        KScopedSpinLock lk(m_lock);
+        if (index >= static_cast<s32>(m_table_size)) {
+            return false;
+        }
+        if (m_objects[index] != nullptr) {
+            // 槽位被废弃时间线的对象占用：归还它（槽位此刻既不在空闲链上，
+            // 也不需要入链 —— 下面直接装入新对象）
+            KAutoObject* old = m_objects[index];
+            m_objects[index] = nullptr;
+            old->Close(kernel);
+        } else {
+            // 空闲槽：计数 +1（槽位从空闲链上摘除，见下）
+            m_count++;
+            m_max_count = (std::max)(m_max_count, m_count);
+        }
+        // 若该槽仍在空闲链上（初始为空闲的情形），线性扫描摘链
+        s32 prev = -1;
+        for (s32 i = m_free_head_index; i >= 0;) {
+            if (i == index) {
+                const s16 next = m_entry_infos[i].GetNextFreeIndex();
+                if (prev < 0) {
+                    m_free_head_index = next;
+                } else {
+                    m_entry_infos[prev].next_free_index = next;
+                }
+                break;
+            }
+            prev = i;
+            i = m_entry_infos[i].GetNextFreeIndex();
+        }
+        // 装入：linear_id 用存档值（句柄值与存档完全一致）
+        m_objects[index] = obj;
+        m_entry_infos[index].linear_id = static_cast<u16>(handle_pack.linear_id);
+        obj->Open(kernel);
+        return true;
+    }
+
     template <typename T>
     bool GetMultipleObjects(KernelCore& kernel, T** out, const Handle* handles, size_t num_handles) const {
         // Try to convert and open all the handles.

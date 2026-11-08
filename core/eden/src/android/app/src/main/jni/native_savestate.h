@@ -75,6 +75,10 @@ constexpr int RESULT_ERROR_STATE_RESTORE_FAILED = 6;
 // 「内存布局已变化，已重启游戏加载」。
 constexpr int RESULT_OK_LEGACY_RESTART = 7;
 
+// v6 新增：槽位格式来自旧版本（v≤5），原地读档不可行 —— 需要重新
+// 存档一次升级格式。不回落 legacy、不重启，前端提示「请重新存档」。
+constexpr int RESULT_ERROR_STATE_TOO_OLD = 8;
+
 // restore flags
 constexpr int RESTORE_FLAG_ALLOW_LEGACY = 1;
 

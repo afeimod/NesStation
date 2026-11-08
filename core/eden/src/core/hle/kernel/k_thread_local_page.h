@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <memory>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -101,6 +102,33 @@ private:
         ASSERT(Common::IsAligned(GetInteger(addr), Svc::ThreadLocalRegionSize));
         ASSERT(this->Contains(addr));
         return (addr - this->GetAddress()) / Svc::ThreadLocalRegionSize;
+    }
+
+public:
+    /// ★★★ NesStation savestate (v6)：按存档直接设定页内槽位占用 ★★★
+    /// 读档后 TLS 树整表重建（KProcess::SavestateRebuildTlsState）—— 页的
+    /// 虚拟地址与映射由页表手术恢复，这里只重建宿主册簿（哪些槽在用）。
+    constexpr void SavestateSetRegionUsage(const std::array<bool, RegionsPerPage>& used) {
+        for (size_t i = 0; i < RegionsPerPage; ++i) {
+            m_is_region_free[i] = !used[i];
+        }
+    }
+
+    constexpr bool SavestateIsRegionUsed(size_t i) const {
+        return i < RegionsPerPage && !m_is_region_free[i];
+    }
+
+    /// ★★★ NesStation savestate (v6)：以既有地址构造册簿对象（不映射新页） ★★★
+    static KThreadLocalPage* SavestateCreateForAddress(KernelCore& kernel, KProcess* owner,
+                                                       KProcessAddress addr) {
+        KThreadLocalPage* tlp = KThreadLocalPage::Allocate(kernel);
+        if (tlp == nullptr) {
+            return nullptr;
+        }
+        KThreadLocalPage* p = std::construct_at(tlp, kernel, addr);
+        p->m_owner = owner;
+        p->m_kernel = std::addressof(kernel);
+        return p;
     }
 
 private:

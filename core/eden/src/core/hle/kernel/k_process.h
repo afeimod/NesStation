@@ -7,6 +7,9 @@
 #pragma once
 
 #include <map>
+#include <span>
+#include <string>
+#include <vector>
 
 #include "core/arm/arm_interface.h"
 #include "core/file_sys/program_metadata.h"
@@ -353,6 +356,11 @@ public:
 
     Result CreateThreadLocalRegion(KernelCore& kernel, KProcessAddress* out);
     Result DeleteThreadLocalRegion(KernelCore& kernel, KProcessAddress addr);
+
+    /// ★★★ NesStation savestate (v6)：TLS 宿主册簿整表重建 ★★★
+    /// 页表手术恢复 TLS 映射后，按存档线程集重建 KThreadLocalPage 树。
+    /// 在「多余线程移除之后、缺失线程重建之前」调用（详见 k_process.cpp）。
+    void SavestateRebuildTlsState(KernelCore& kernel, std::span<const u64> used_tls_addrs);
 
     KProcessAddress GetProcessLocalRegionAddress() const {
         return m_plr_address;

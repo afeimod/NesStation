@@ -5292,16 +5292,21 @@ fun EmulatorScreen(
                                     when (r) {
                                         EdenNativeLibrary.RESULT_OK_RESTORED_IN_PLACE ->
                                             Toast.makeText(context, "已读取存档 [槽位 $nSlot]，原地恢复", Toast.LENGTH_SHORT).show()
+                                        EdenNativeLibrary.RESULT_ERROR_STATE_TOO_OLD ->
+                                            Toast.makeText(context,
+                                                "存档来自旧版本核心，请先重新存档一次",
+                                                Toast.LENGTH_LONG).show()
                                         EdenNativeLibrary.RESULT_OK,
                                         EdenNativeLibrary.RESULT_OK_LEGACY_RESTART -> {
                                             // legacy 恢复：存档数据已写回 NAND、游戏已关停
                                             // —— EdenEngine.relaunchGame 进程内重启加载。
-                                            // RESULT_OK_LEGACY_RESTART：存档后内存布局/线程集
-                                            // 已变化，native 自动回落此路径（v4）。
+                                            // RESULT_OK_LEGACY_RESTART（v6 起仅剩跨启动/
+                                            // 跨配置会话的槽位触发 —— 同一启动内不再
+                                            // 因布局/线程集变化回落）。
                                             eden.relaunchGame()
                                             Toast.makeText(context,
                                                 if (r == EdenNativeLibrary.RESULT_OK_LEGACY_RESTART)
-                                                    "存档与当前会话不匹配，已重启游戏加载…"
+                                                    "存档来自另一次启动的会话，已重启游戏加载…"
                                                 else
                                                     "已恢复存档数据，正在重启游戏…",
                                                 Toast.LENGTH_LONG).show()
@@ -20153,6 +20158,8 @@ private fun edenQuickSaveResultMessage(result: Int): String? = when (result) {
     EdenNativeLibrary.RESULT_ERROR_NO_SAVE_DATA ->
         "无存档数据。请先在游戏内保存进度再使用即时存档。"
     EdenNativeLibrary.RESULT_ERROR_SLOT_EMPTY -> "该槽位为空。"
+    EdenNativeLibrary.RESULT_ERROR_STATE_TOO_OLD ->
+        "存档来自旧版本核心，请重新存档一次（重新存档后即可正常读档）。"
     EdenNativeLibrary.RESULT_ERROR_STATE_RESTORE_FAILED -> "读取即时存档失败，游戏仍在运行。"
     EdenNativeLibrary.RESULT_ERROR_NOT_RUNNING -> "核心未在运行，请先启动游戏。"
     EdenNativeLibrary.RESULT_ERROR_IO -> "发生文件错误，请重试。"

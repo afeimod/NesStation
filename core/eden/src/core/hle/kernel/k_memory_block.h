@@ -470,6 +470,15 @@ public:
         m_attribute = (m_attribute & ~mask) | attr;
     }
 
+    /// ★★★ NesStation savestate (v6)：瞬态锁属性位清除（读档手术用） ★★★
+    /// UpdateAttribute 断言禁止清 IpcLocked；瞬态锁（IpcLocked/Locked）
+    /// 是 IPC 在途的瞬态内核状态，读档时属于「已废弃时间线」—— 与 Cemu
+    /// 丢弃排队事件回调同语义，直接清位、不校验（冻结下整表清）。
+    constexpr void SavestateClearTransientLocks() {
+        m_attribute = m_attribute &
+                      ~(KMemoryAttribute::IpcLocked | KMemoryAttribute::Locked);
+    }
+
     constexpr void Split(KMemoryBlock* block, KProcessAddress addr) {
         ASSERT(this->GetAddress() < addr);
         ASSERT(this->Contains(addr));

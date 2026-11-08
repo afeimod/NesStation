@@ -5,6 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <random>
+#include <map>
+#include <span>
+#include <vector>
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/arm/dynarmic/arm_dynarmic.h"
@@ -725,6 +728,95 @@ Result KProcess::DeleteThreadLocalRegion(KernelCore& kernel, KProcessAddress add
     }
 
     R_SUCCEED();
+}
+
+// ★★★ NesStation savestate (v6)：TLS 宿主册簿整表重建 ★★★
+// 页表手术已把 TLS 页的 VA→PA 映射恢复到存档时刻；宿主侧的
+// KThreadLocalPage 树（哪些页存在、页内哪些槽在用）是纯册簿 ——
+// 与 Cemu 重建 SysAllocator 记账同构，按存档线程集整表重建：
+//  - 存档里不再存在的页：只归还想对象（不动映射 —— 映射归页表手术管）
+//  - 存档里存在、当前没有册簿对象的页：按原地址重建册簿对象
+//  - 页内槽位占用 = 存档线程的 TLS + 进程 PLR 槽
+// 必须在「多余线程移除之后、缺失线程重建之前」调用。
+void KProcess::SavestateRebuildTlsState(KernelCore& kernel,
+                                        std::span<const u64> used_tls_addrs) {
+    constexpr size_t kRegionsPerPage =
+        static_cast<size_t>(PageSize / Svc::ThreadLocalRegionSize);
+
+    // 期望状态：页地址 → 槽位占用表
+    std::map<u64, std::array<bool, kRegionsPerPage>> want{};
+    const auto add_tls = [&](u64 addr) {
+        if (addr == 0) {
+            return;
+        }
+        const u64 page = Common::AlignDown(addr, PageSize);
+        const size_t slot =
+            static_cast<size_t>((addr - page) / Svc::ThreadLocalRegionSize);
+        if (slot >= kRegionsPerPage) {
+            return; // 防御：非对齐/越界地址
+        }
+        want[page][slot] = true;
+    };
+    for (const u64 addr : used_tls_addrs) {
+        add_tls(addr);
+    }
+    if (m_plr_address != 0) {
+        add_tls(GetInteger(m_plr_address));
+    }
+
+    KScopedSchedulerLock sl{kernel};
+
+    // ① 现有页归位：仍被需要的页按存档重设槽位；不再需要的页移出树并
+    //    归还册簿对象（仅 Free slab 对象；不 Finalize —— Finalize 会解映射，
+    //    映射已由页表手术接管）
+    auto handle_existing = [&](auto& tree, bool fully_used) {
+        for (auto it = tree.begin(); it != tree.end();) {
+            KThreadLocalPage* tlp = std::addressof(*it);
+            const u64 page = GetInteger(tlp->GetAddress());
+            if (auto w_it = want.find(page); w_it != want.end()) {
+                std::array<bool, kRegionsPerPage> used{};
+                for (size_t i = 0; i < kRegionsPerPage; ++i) {
+                    used[i] = w_it->second[i];
+                }
+                tlp->SavestateSetRegionUsage(used);
+                const bool now_full = tlp->IsAllUsed();
+                it = tree.erase(it);
+                if (now_full == fully_used) {
+                    tree.insert(*tlp);
+                } else {
+                    (now_full ? m_fully_used_tlp_tree : m_partially_used_tlp_tree)
+                        .insert(*tlp);
+                }
+                want.erase(w_it);
+            } else {
+                it = tree.erase(it);
+                KThreadLocalPage::Free(kernel, tlp);
+            }
+        }
+    };
+    handle_existing(m_partially_used_tlp_tree, false);
+    handle_existing(m_fully_used_tlp_tree, true);
+
+    // ② 缺失的册簿页：按存档地址重建对象并插入对应树。映射不动 ——
+    //    页表手术已经把 VA→PA 恢复成存档时刻的状态。
+    for (const auto& [page, used] : want) {
+        KThreadLocalPage* tlp = KThreadLocalPage::SavestateCreateForAddress(
+            kernel, this, KProcessAddress(page));
+        if (tlp == nullptr) {
+            // slab 耗尽属极端情形：该页后续分配退化到新页（不致命）
+            continue;
+        }
+        std::array<bool, kRegionsPerPage> used_arr{};
+        for (size_t i = 0; i < kRegionsPerPage; ++i) {
+            used_arr[i] = used[i];
+        }
+        tlp->SavestateSetRegionUsage(used_arr);
+        if (tlp->IsAllUsed()) {
+            m_fully_used_tlp_tree.insert(*tlp);
+        } else {
+            m_partially_used_tlp_tree.insert(*tlp);
+        }
+    }
 }
 
 bool KProcess::ReserveResource(KernelCore& kernel, Svc::LimitableResource which, s64 value) {

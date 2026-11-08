@@ -165,7 +165,7 @@ constexpr int kThumbMaxHeight = 180;
 // ---------------------------------------------------------------------------
 
 constexpr char kStateMagic[4] = {'E', 'D', 'S', 'S'};
-constexpr u32 kStateVersion = 5;
+constexpr u32 kStateVersion = 6;
 constexpr size_t kPageSize = 4 * 1024; // 4KB，≤ 宿主页表粒度
 
 // v3/v4：nvdrv GPU 状态段存在标志（GMMU 映射 + nvmap 句柄表随档保存）。
@@ -248,12 +248,15 @@ static_assert(offsetof(ContentDescV5, compressed) == 16);
 struct ThreadMetaV2 {
     u64 thread_id;
     u64 tls_addr;
+    u64 virt_affinity_mask; // v6：重建线程的亲和掩码回写（调度正确性）
+    u64 stack_top;          // v6：KThread::Initialize 的 user_stack_top
     u32 raw_state; // 已屏蔽 SuspendFlagMask 的 ThreadState
+    u32 thread_handle; // v6：捕获时的句柄值（guest 互斥锁字/TCB 里存有句柄）
     s32 active_core;
     s32 priority;
     u32 reserved;
 };
-static_assert(sizeof(ThreadMetaV2) == 32);
+static_assert(sizeof(ThreadMetaV2) == 56);
 
 constexpr size_t kThreadRecordSize =
     sizeof(ThreadMetaV2) + sizeof(Kernel::Svc::ThreadContext);
@@ -1556,8 +1559,14 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
         ThreadMetaV2 meta{};
         meta.thread_id = thread.GetThreadId();
         meta.tls_addr = GetInteger(thread.GetTlsAddress());
+        meta.virt_affinity_mask = thread.GetVirtualAffinityMaskForSavestate();
+        meta.stack_top = GetInteger(thread.GetUserStackTop());
         meta.raw_state = static_cast<u32>(thread.GetRawState() &
                                           ~Kernel::ThreadState::SuspendFlagMask);
+        // v6：句柄值随档（guest 互斥锁所有者字、TCB 存有句柄值 —— 读档后
+        // 句柄表必须与存档时刻一致，与 Cemu 恢复 SysAllocator 记账同构）
+        meta.thread_handle =
+            static_cast<u32>(process->GetHandleTable().SavestateFindHandle(&thread));
         meta.active_core = thread.GetActiveCore();
         meta.priority = thread.GetPriority();
         meta.reserved = 0;
@@ -1803,10 +1812,10 @@ enum class SurgeryOutcome {
     Torn,         // 破坏阶段失败（内核状态已改动 → 必须关停核心）
 };
 
-// 手术前置校验（无副作用）：① 会话区域一致（跨启动/配置的槽位拒绝）；
-// ② 冻结状态下无瞬态内核锁（Locked/IpcLocked —— 正常冻结下不该出现，
-// 出现说明有内核操作在途，原地恢复不安全）。必须在 NvdrvTeardown 之前
-// 调用 —— Teardown 之后任何失败都只能 Torn。
+// 手术前置校验（无副作用）：会话区域一致（跨启动/配置的槽位拒绝）。
+// v6：瞬态锁检查已废除 —— IpcLocked/Locked 是 IPC 在途的瞬态内核状态，
+// 属于「已废弃时间线」；Cemu 对这类状态从不拒绝（丢弃排队事件回调同
+// 语义）。手术入口改用 SavestateClearTransientLocks 整表清位。
 bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std::string* err) {
     *err = {};
     Kernel::KProcess* process = system.ApplicationProcess();
@@ -1815,7 +1824,8 @@ bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std
         return false;
     }
 
-    // ① 区域一致
+    // 区域一致（= Cemu 的 "range not mapped / size changed" 校验 —— 静态
+    // 区域跨启动不变，不一致说明是另一个会话的槽位）
     {
         BookkeepingV5 cur{};
         Kernel::KPageTableBase::SavestateBookkeeping bk{};
@@ -1839,26 +1849,6 @@ bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std
         if (!same_regions) {
             *err = "address space regions differ from save (different session)";
             return false;
-        }
-    }
-
-    // ② 瞬态锁检查
-    {
-        std::vector<LayoutBlock> current;
-        if (!CollectLayoutBlocks(system, current)) {
-            *err = "current layout walk failed";
-            return false;
-        }
-        for (const auto& b : current) {
-            if (!IsPgState(b.state)) {
-                continue;
-            }
-            const auto attr = static_cast<Kernel::KMemoryAttribute>(b.attr);
-            if (True(attr & (Kernel::KMemoryAttribute::Locked |
-                             Kernel::KMemoryAttribute::IpcLocked))) {
-                *err = fmt::format("transient kernel memory lock in flight @ {:016x}", b.va);
-                return false;
-            }
         }
     }
     return true;
@@ -1900,10 +1890,10 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
     };
     adjust_all(+1);
 
-    // 3) 清除会挡住 UnmapPages 的持久属性（Uncached / PermissionLocked）。
-    //    UnmapPages 的 CheckMemoryState 要求 attr==None（忽略 IpcLocked/
-    //    DeviceShared）；这两位当初就是经 SetMemoryAttribute 设置的，
-    //    对称清除即可。瞬态锁已在 SurgeryPrecheck 拒绝。
+    // 3) 瞬态锁整表清位（v6）：IpcLocked/Locked 属废弃时间线，直接清
+    //    （Cemu 丢弃排队事件同语义），不再因此拒绝读档。随后清除会挡住
+    //    UnmapPages 的持久属性（Uncached / PermissionLocked）。
+    base.SavestateClearTransientLocks();
     for (const auto& b : current) {
         if (!IsPgState(b.state)) {
             continue;
@@ -2014,11 +2004,16 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
 
 enum class RestoreOutcome {
     Ok,             // 原地恢复成功
-    Incompatible,   // 与当前会话不兼容（区域不一致 / 瞬态锁在途）→ legacy 重启
-    ThreadsChanged, // 线程集与存档不一致 → 同上
+    Incompatible,   // 与当前会话不兼容（区域不一致）→ 仅跨启动槽位会触发
     Error,          // 校验失败（内存未动，可安全报错/回落）
+    TooOld,         // 旧版本格式槽位 → 提示重新存档（不回落、不重启）
     Torn,           // 应用中途失败（内核状态已改动 → 必须关停核心）
 };
+// v6：ThreadsChanged（线程集全等门禁）已废除 —— Cemu 读档从不比对
+// 线程集，而是从恢复后的状态重建调度器。v6 同构：多余的线程确定性
+// 移除（SavestateRemoveThread），缺失的线程按存档重建（含 thread_id /
+// TLS / 句柄值回写）。这是 v5 用户反复命中「与当前会话不匹配→重启」
+// 回退的主因（游戏运行期间短命工作线程很常见）。
 
 RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
                                u64 program_id, std::string* err) {
@@ -2053,7 +2048,7 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     if (header.version != kStateVersion) {
         *err = fmt::format("unsupported state.bin version {} (re-save to upgrade)",
                            header.version);
-        return RestoreOutcome::Error;
+        return RestoreOutcome::TooOld;
     }
     if (header.program_id != program_id) {
         *err = fmt::format("program id mismatch: slot {:016x} vs current {:016x}",
@@ -2064,7 +2059,7 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         // 无 nvdrv 段的槽位（保存时服务不可用）：宿主 GPU 状态无法与回滚
         // 内存同步，原地恢复必拒。重新存档即可。
         *err = "state.bin lacks nvdrv GPU state - re-save to upgrade";
-        return RestoreOutcome::Error;
+        return RestoreOutcome::TooOld;
     }
     if (header.block_count == 0 || header.block_count > kMaxBlockCount ||
         header.content_count == 0 || header.content_count > header.block_count ||
@@ -2179,9 +2174,11 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         return RestoreOutcome::Error;
     }
 
-    // ---- 3) 线程记录读取 + 线程集校验（全等） ----
-    //（线程集与存档不一致时无法原地恢复：新线程的栈/TLS 已被内容回滚
-    //  破坏、已消亡线程的 KThread 宿主对象无法复活 —— 只能重启路径）
+    // ---- 3) 线程记录读取 + 线程集差分（v6：不再全等门禁） ----
+    // Cemu 读档从不比对线程集 —— 宿主侧调度器从恢复后的状态整表重建
+    //（SavestateRebuildSchedulerAfterRestore）。eden 同构：
+    //   多余线程（当前有、存档无）= 已废弃时间线产物 → 确定性移除
+    //   缺失线程（存档有、当前无）→ 按存档重建（id/TLS/句柄/上下文全回放）
     std::vector<u64> saved_thread_ids;
     saved_thread_ids.reserve(header.thread_count);
     std::vector<u8> thread_blob;
@@ -2199,17 +2196,13 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         for (u32 i = 0; i < header.thread_count; ++i) {
             ThreadMetaV2 meta{};
             std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
+            if (meta.thread_id == 0) {
+                *err = "state.bin thread record has zero id";
+                return RestoreOutcome::Error;
+            }
             saved_thread_ids.push_back(meta.thread_id);
         }
         std::sort(saved_thread_ids.begin(), saved_thread_ids.end());
-
-        const std::vector<u64> current_ids = CollectLiveThreadIds(system);
-        if (current_ids != saved_thread_ids) {
-            SSLogWarn(fmt::format("restore: thread set changed ({} saved / {} live) - falling back to legacy",
-                                  saved_thread_ids.size(), current_ids.size()));
-            *err = "thread set changed since save";
-            return RestoreOutcome::ThreadsChanged;
-        }
     }
 
     // ---- 4) nvdrv 段解析（纯解析，无副作用；执行拆到 Teardown/Replay） ----
@@ -2256,11 +2249,49 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
 
     // ════════════════ 应用阶段（此后内核状态被改动；失败一律 Torn） ════════════════
 
-    // ---- 7) nvmap Teardown：拆除当前全部设备映射（清 DeviceShared 属性
+    Kernel::KProcess* process = system.ApplicationProcess();
+    if (process == nullptr) {
+        *err = "application process is null";
+        return RestoreOutcome::Torn;
+    }
+
+    // ---- 7) v6 多余线程移除（存档后新建的线程 = 已废弃时间线产物） ----
+    //      Cemu 语义：废弃时间线的宿主状态全部丢弃（同 GX2 丢弃排队事件
+    //      回调）。确定性移除不执行任何 guest 代码；必须先清句柄表引用，
+    //      且在页表手术前完成（移除过程中的 TLS/PI 清理操作当前页表）。
+    {
+        const std::vector<u64> current_ids = CollectLiveThreadIds(system);
+        std::vector<Kernel::KThread*> to_remove;
+        for (auto& thread : process->GetThreadList()) {
+            if (thread.IsDummyThread()) {
+                continue;
+            }
+            if (!std::binary_search(saved_thread_ids.begin(), saved_thread_ids.end(),
+                                    thread.GetThreadId())) {
+                to_remove.push_back(std::addressof(thread));
+            }
+        }
+        if (!to_remove.empty()) {
+            SSLogInfo(fmt::format(
+                "restore: thread diff ({} saved / {} live) - removing {} extra from discarded timeline",
+                saved_thread_ids.size(), current_ids.size(), to_remove.size()));
+            // 顺序关键：先 SavestateRemoveThread（标记终止 + 释放运行引用，
+            // 对象仍存活），再清句柄表（通常触发最后一次 Close → Finalize
+            // 的干净析构：注销 + TLS 槽归还 + 资源限额释放）。
+            for (Kernel::KThread* thread : to_remove) {
+                thread->SavestateRemoveThread(system.Kernel());
+            }
+            for (Kernel::KThread* thread : to_remove) {
+                process->GetHandleTable().SavestatePurgeObject(system.Kernel(), thread);
+            }
+        }
+    }
+
+    // ---- 8) nvmap Teardown：拆除当前全部设备映射（清 DeviceShared 属性
     //      —— 页表整表卸载的前提） ----
     NvdrvTeardown(system, nvdrv_state);
 
-    // ---- 8) 页表整表回放手术：当前布局 → 存档布局（原 VA/PA/权限） ----
+    // ---- 9) 页表整表回放手术：当前布局 → 存档布局（原 VA/PA/权限） ----
     {
         const SurgeryOutcome so = ReplayPageTableLayout(system, saved_blocks, bookkeeping, err);
         if (so != SurgeryOutcome::Ok) {
@@ -2271,7 +2302,7 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         }
     }
 
-    // ---- 9) 内容帧写回（此刻映射已与存档逐块一致 —— Cemu 的
+    // ---- 10) 内容帧写回（此刻映射已与存档逐块一致 —— Cemu 的
     //      "内容原地覆盖" 至此完全成立） ----
     in.clear();
     in.seekg(frames_start, std::ios::beg);
@@ -2287,13 +2318,13 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         }
     }
 
-    // ---- 10) nvdrv Replay：GMMU 映射 + nvmap 句柄表按存档重建
+    // ---- 11) nvdrv Replay：GMMU 映射 + nvmap 句柄表按存档重建
     //      （SMMU/GMMU/低位 pin 指向手术后的新映射；GMMU 全量清空即触发
     //      rasterizer 对全部受影响设备地址段的缓存丢弃 —— Cemu
     //      RequestGpuCacheReset 同构） ----
     NvdrvReplay(system, nvdrv_state);
 
-    // ---- 11) GPU 指令/数据缓存一致性：宿主纹理、缓冲、渲染目标缓存全部
+    // ---- 12) GPU 指令/数据缓存一致性：宿主纹理、缓冲、渲染目标缓存全部
     //      失效，从还原后的 guest 内存重建（InvalidateGPUCache 与
     //      ReloadDiskShaderCache 同源语义） ----
     if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
@@ -2301,26 +2332,117 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         rasterizer->FlushCommands();
     }
 
-    // ---- 12) ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存；
+    // ---- 13) ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存；
     //      页粒度 icache 已在 ApplyFrame 按 run 刷新） ----
-    if (Kernel::KProcess* process = system.ApplicationProcess(); process != nullptr) {
-        for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core) {
-            if (Core::ArmInterface* iface = process->GetArmInterface(core); iface != nullptr) {
-                iface->ClearInstructionCache();
-            }
+    for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core) {
+        if (Core::ArmInterface* iface = process->GetArmInterface(core); iface != nullptr) {
+            iface->ClearInstructionCache();
         }
     }
 
-    // ---- 13) 线程寄存器组原地写回（按 thread_id 匹配；线程集已全等校验，
-    //      每条记录必有目标）。挂起的线程解冻后被重新调度时经
-    //      KScheduler::Reload → LoadContext → SetContext 装载恢复后的
-    //      寄存器组 —— 从存档时刻继续。 ----
+    // ---- 14) v6 TLS 宿主册簿整表重建：页表手术已恢复 TLS 映射，这里按
+    //      存档线程集重建 KThreadLocalPage 树（哪些页、页内哪些槽在用）。
+    //      与 Cemu 恢复 SysAllocator 记账同构。须在线程重建之前。 ----
     {
-        Kernel::KProcess* process = system.ApplicationProcess();
-        if (process == nullptr) {
-            *err = "application process is null";
-            return RestoreOutcome::Torn;
+        std::vector<u64> saved_tls;
+        saved_tls.reserve(header.thread_count);
+        for (u32 i = 0; i < header.thread_count; ++i) {
+            ThreadMetaV2 meta{};
+            std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
+            if (meta.tls_addr != 0) {
+                saved_tls.push_back(meta.tls_addr);
+            }
         }
+        process->SavestateRebuildTlsState(system.Kernel(), saved_tls);
+    }
+
+    // ---- 15) v6 缺失线程重建（存档时有、现已消亡的线程）----
+    //      Cemu SavestateRebuildSchedulerAfterRestore 同构 —— 宿主侧线程
+    //      对象按存档重建：InitializeUserThread（与游戏 svcCreateThread
+    //      同一条内核路径）→ 身份回写（thread_id / TLS / 亲和掩码）→
+    //      Runnable 启动 → 上下文覆盖（存档时刻寄存器组）→ 句柄表按
+    //      存档值回放。恢复后的 guest 代码自行重验其同步原语（互斥锁
+    //      fastpath 在 guest 侧循环重查 —— 这是 HOS 线程恢复的既有语义）。
+    {
+        u32 recreated = 0;
+        for (u32 i = 0; i < header.thread_count; ++i) {
+            ThreadMetaV2 meta{};
+            std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
+            Kernel::Svc::ThreadContext ctx{};
+            std::memcpy(&ctx, thread_blob.data() + i * kThreadRecordSize + sizeof(meta),
+                        sizeof(ctx));
+
+            // 幸存？
+            bool survives = false;
+            for (auto& thread : process->GetThreadList()) {
+                if (!thread.IsDummyThread() && thread.GetThreadId() == meta.thread_id) {
+                    survives = true;
+                    break;
+                }
+            }
+            if (survives) {
+                continue;
+            }
+
+            Kernel::KThread* t =
+                Kernel::KThread::Create(system.Kernel());
+            if (t == nullptr) {
+                *err = fmt::format("thread slab exhausted @ id {:016x}", meta.thread_id);
+                return RestoreOutcome::Torn;
+            }
+            // InitializeUserThread 会分配一个新 TLS 槽 —— 立即归还，随后
+            // 按存档回写真正的 TLS 地址（页表手术已恢复其映射）。
+            const s32 virt_core = (meta.active_core >= 0 &&
+                                   meta.active_core < static_cast<s32>(Core::Hardware::NUM_CPU_CORES))
+                                      ? meta.active_core
+                                      : 0;
+            const Result r = Kernel::KThread::InitializeUserThread(
+                system, t, Kernel::KProcessAddress(ctx.pc),
+                static_cast<uintptr_t>(ctx.cpu_registers[0]),
+                Kernel::KProcessAddress(meta.stack_top), meta.priority, virt_core, process);
+            if (R_FAILED(r)) {
+                t->Close(system.Kernel());
+                *err = fmt::format("thread recreate failed @ id {:016x}: {:05x}", meta.thread_id,
+                                   r.raw);
+                return RestoreOutcome::Torn;
+            }
+            Kernel::KThread::Register(system.Kernel(), t);
+            if (Kernel::KProcessAddress fresh_tls = t->GetTlsAddress();
+                GetInteger(fresh_tls) != 0) {
+                process->DeleteThreadLocalRegion(system.Kernel(), fresh_tls);
+            }
+            t->SavestateSetIdentity(meta.thread_id, meta.virt_affinity_mask,
+                                    Kernel::KProcessAddress(meta.tls_addr));
+            t->SavestateRecreateRun(system.Kernel());
+            Kernel::Svc::ThreadContext& dst = t->GetContext();
+            std::memcpy(&dst, &ctx, sizeof(Kernel::Svc::ThreadContext));
+            if (meta.thread_handle != 0 &&
+                process->GetHandleTable().SavestateRestoreHandle(
+                    system.Kernel(), static_cast<Kernel::Handle>(meta.thread_handle), t)) {
+                // 句柄表接管对象引用（svc 创建路径的 SCOPE_EXIT Close 同款）
+                t->Close(system.Kernel());
+            }
+            // thread_handle == 0（存档时表中无句柄）则保留 Create 引用作
+            // 对象生命周期持有者 —— 无泄漏风险（进程关闭时整体回收）
+            ++recreated;
+        }
+        if (recreated > 0) {
+            // 线程 ID 计数器前移到存档最大 ID 之上：后续新建线程不会拿到
+            // 与重建线程重复的 ID（guest 内存里存有线程 ID）
+            u64 max_saved_id = 0;
+            for (u64 id : saved_thread_ids) {
+                max_saved_id = std::max(max_saved_id, id);
+            }
+            system.Kernel().SavestateAdvanceThreadID(max_saved_id + 1);
+            SSLogInfo(fmt::format("restore: recreated {} missing thread(s)", recreated));
+        }
+    }
+
+    // ---- 16) 幸存线程：寄存器组原地写回 + 句柄按存档回放（guest 互斥锁
+    //      字/TCB 存有句柄值，句柄表必须与存档时刻一致）。挂起的线程解冻
+    //      后被重新调度时经 KScheduler::Reload → LoadContext → SetContext
+    //      装载恢复后的寄存器组 —— 从存档时刻继续。 ----
+    {
         Kernel::Svc::ThreadContext ctx_copy{};
         for (u32 i = 0; i < header.thread_count; ++i) {
             ThreadMetaV2 meta{};
@@ -2334,6 +2456,15 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
                 }
                 Kernel::Svc::ThreadContext& dst = thread.GetContext();
                 std::memcpy(&dst, &ctx_copy, sizeof(Kernel::Svc::ThreadContext));
+                if (meta.thread_handle != 0) {
+                    // 先清当前指向该线程的句柄（废弃时间线可能关闭过原句柄、
+                    // 开过重复句柄），再按存档值回放
+                    process->GetHandleTable().SavestatePurgeObject(system.Kernel(),
+                                                                   std::addressof(thread));
+                    process->GetHandleTable().SavestateRestoreHandle(
+                        system.Kernel(), static_cast<Kernel::Handle>(meta.thread_handle),
+                        std::addressof(thread));
+                }
                 break;
             }
         }
@@ -2638,12 +2769,18 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
                     return native_savestate::RESULT_OK_RESTORED_IN_PLACE;
 
                 case RestoreOutcome::Incompatible:
-                case RestoreOutcome::ThreadsChanged:
-                    // 原地恢复不可行（跨会话槽位 / 瞬态锁在途 / 线程集
-                    // 分叉 —— 校验阶段失败，内核零改动）：自动回落 legacy
-                    // —— 前端 relaunchGame() 重启加载。
+                    // 原地恢复不可行（仅跨启动/跨配置会话的槽位 —— 校验阶段
+                    // 失败，内核零改动）：自动回落 legacy —— 前端 relaunchGame()
+                    // 重启加载。
                     legacy_by_incompat = true;
                     break;
+
+                case RestoreOutcome::TooOld:
+                    // 旧版本格式槽位：如实提示重新存档 —— 不回落、不重启
+                    //（Cemu 对 v1/v2 档保持可读；格式不兼容时明确报错）
+                    LOG_ERROR(Frontend, "Eden savestate slot format too old: {}", state_err);
+                    SSLogWarn(fmt::format("restore too old: {}", state_err));
+                    return native_savestate::RESULT_ERROR_STATE_TOO_OLD;
 
                 case RestoreOutcome::Error:
                     // 校验失败，内存未动

@@ -800,6 +800,18 @@ public:
         return true;
     }
 
+    // ★★★ NesStation savestate (v6)：瞬态锁整表清除 ★★★
+    // IpcLocked/Locked 是 IPC 在途的瞬态内核状态。v5 曾因它们「在途」而
+    // 拒绝读档（回落重启）—— 但 Cemu 对废弃时间线的在途状态从不比对、
+    // 从不拒绝（丢弃排队事件回调同语义）。读档手术前整表清位，使
+    // UnmapPages/CheckMemoryState 的属性校验（要求 attr==None）通过。
+    void SavestateClearTransientLocks() {
+        for (auto it = m_memory_block_manager.begin(); it != m_memory_block_manager.end();
+             ++it) {
+            it->SavestateClearTransientLocks();
+        }
+    }
+
 public:
     // Linear mapped
     static u8* GetLinearMappedVirtualPointer(KernelCore& kernel, KPhysicalAddress addr) {
