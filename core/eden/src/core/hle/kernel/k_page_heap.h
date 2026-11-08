@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <vector>
 
@@ -71,6 +72,15 @@ public:
     }
 
     void Free(KPhysicalAddress addr, size_t num_pages);
+
+    // ★★★ NesStation savestate (v5)：清空全部空闲位图 ★★★
+    // 配合 KMemoryManager::SavestateRebuildFree 使用：先把所有 order 的
+    // 空闲位清零（= "堆上没有任何空闲块"），再对每段引用计数为 0 的连续
+    // 页调用标准 Free() 重建。位图存储就是 m_management_data 本身，全部
+    // 清零不影响位图的层级结构（Initialize 已固化），只清数据位。
+    void SavestateClearFreeBits() {
+        std::fill(m_management_data.begin(), m_management_data.end(), 0ULL);
+    }
 
     static size_t CalculateManagementOverheadSize(size_t region_size) {
         return CalculateManagementOverheadSize(region_size, MemoryBlockPageShifts.data(),

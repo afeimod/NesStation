@@ -722,6 +722,84 @@ public:
         return m_address_space_width;
     }
 
+    // ★★★ NesStation savestate (v5)：动态记账字段的快照/回写 ★★★
+    // 块布局回放只恢复"VA→PA 映射"本身；svcSetHeapSize / svcMapPhysicalMemory
+    // 还依赖页表内部的记账字段（当前堆尾、已映射物理内存量等）。这些字段
+    // 是宿主侧状态（= Cemu 的 sysAreaAllocatorOffset，Cemu 同样随档保存）。
+    // 区域边界（堆/别名/栈/内核映射/代码区）在整个进程生命周期内不变，
+    // 快照里带上仅用于校验"同一会话"；不一致则拒绝原地恢复。
+    struct SavestateBookkeeping {
+        u64 current_heap_end;
+        u64 heap_region_start, heap_region_end;
+        u64 alias_region_start, alias_region_end;
+        u64 stack_region_start, stack_region_end;
+        u64 kernel_map_region_start, kernel_map_region_end;
+        u64 code_region_start, code_region_end;
+        u64 alias_code_region_start, alias_code_region_end;
+        u64 address_space_start, address_space_end;
+        u64 mapped_physical_memory_size;
+        u64 mapped_unsafe_physical_memory;
+        u64 mapped_insecure_memory;
+        u64 mapped_ipc_server_memory;
+        u64 alias_region_extra_size;
+        u64 max_heap_size;
+    };
+
+    void SavestateCaptureBookkeeping(SavestateBookkeeping& out) const {
+        out.current_heap_end = static_cast<u64>(GetInteger(m_current_heap_end));
+        out.heap_region_start = static_cast<u64>(GetInteger(m_heap_region_start));
+        out.heap_region_end = static_cast<u64>(GetInteger(m_heap_region_end));
+        out.alias_region_start = static_cast<u64>(GetInteger(m_alias_region_start));
+        out.alias_region_end = static_cast<u64>(GetInteger(m_alias_region_end));
+        out.stack_region_start = static_cast<u64>(GetInteger(m_stack_region_start));
+        out.stack_region_end = static_cast<u64>(GetInteger(m_stack_region_end));
+        out.kernel_map_region_start = static_cast<u64>(GetInteger(m_kernel_map_region_start));
+        out.kernel_map_region_end = static_cast<u64>(GetInteger(m_kernel_map_region_end));
+        out.code_region_start = static_cast<u64>(GetInteger(m_code_region_start));
+        out.code_region_end = static_cast<u64>(GetInteger(m_code_region_end));
+        out.alias_code_region_start = static_cast<u64>(GetInteger(m_alias_code_region_start));
+        out.alias_code_region_end = static_cast<u64>(GetInteger(m_alias_code_region_end));
+        out.address_space_start = static_cast<u64>(GetInteger(m_address_space_start));
+        out.address_space_end = static_cast<u64>(GetInteger(m_address_space_end));
+        out.mapped_physical_memory_size = m_mapped_physical_memory_size;
+        out.mapped_unsafe_physical_memory = m_mapped_unsafe_physical_memory;
+        out.mapped_insecure_memory = m_mapped_insecure_memory;
+        out.mapped_ipc_server_memory = m_mapped_ipc_server_memory;
+        out.alias_region_extra_size = m_alias_region_extra_size;
+        out.max_heap_size = m_max_heap_size;
+    }
+
+    // 校验区域边界与会话一致后写回动态字段。区域不一致（跨启动/跨配置的
+    // 槽位）返回 false，调用方拒绝原地恢复。
+    bool SavestateRestoreBookkeeping(const SavestateBookkeeping& in) {
+        const auto same = [](u64 a, KProcessAddress b) {
+            return a == static_cast<u64>(GetInteger(b));
+        };
+        if (!same(in.heap_region_start, m_heap_region_start) ||
+            !same(in.heap_region_end, m_heap_region_end) ||
+            !same(in.alias_region_start, m_alias_region_start) ||
+            !same(in.alias_region_end, m_alias_region_end) ||
+            !same(in.stack_region_start, m_stack_region_start) ||
+            !same(in.stack_region_end, m_stack_region_end) ||
+            !same(in.kernel_map_region_start, m_kernel_map_region_start) ||
+            !same(in.kernel_map_region_end, m_kernel_map_region_end) ||
+            !same(in.code_region_start, m_code_region_start) ||
+            !same(in.code_region_end, m_code_region_end) ||
+            !same(in.alias_code_region_start, m_alias_code_region_start) ||
+            !same(in.alias_code_region_end, m_alias_code_region_end) ||
+            !same(in.address_space_start, m_address_space_start) ||
+            !same(in.address_space_end, m_address_space_end)) {
+            return false;
+        }
+        m_current_heap_end = KProcessAddress(static_cast<u64>(in.current_heap_end));
+        m_mapped_physical_memory_size = in.mapped_physical_memory_size;
+        m_mapped_unsafe_physical_memory = in.mapped_unsafe_physical_memory;
+        m_mapped_insecure_memory = in.mapped_insecure_memory;
+        m_mapped_ipc_server_memory = in.mapped_ipc_server_memory;
+        m_max_heap_size = in.max_heap_size;
+        return true;
+    }
+
 public:
     // Linear mapped
     static u8* GetLinearMappedVirtualPointer(KernelCore& kernel, KPhysicalAddress addr) {

@@ -381,6 +381,14 @@ void NvMap::SaveHandles(std::vector<HandleStateRecord>& out, u32& next_id_out) {
 }
 
 void NvMap::RestoreHandles(const std::vector<HandleStateRecord>& in, u32 saved_next_id) {
+    // ★ v5：拆为 Teardown / Replay 两段 —— 页表手术需要插在中间：
+    //   Teardown 先拆掉全部当前设备映射（清 DeviceShared 属性，页表才能整表
+    //   卸载重建）；手术完成后 Replay 再按存档重新 SMMU/GMMU/低位 pin。
+    RestoreHandlesTeardown(in);
+    RestoreHandlesReplay(in, saved_next_id);
+}
+
+void NvMap::RestoreHandlesTeardown(const std::vector<HandleStateRecord>& in) {
     auto& smmu = host1x.MemoryManager();
 
     // 1) 拆除当前全部句柄的设备映射（SMMU 分配 / heap 映射 / 低位 pin），
@@ -439,9 +447,15 @@ void NvMap::RestoreHandles(const std::vector<HandleStateRecord>& in, u32 saved_n
             }
         }
     }
+}
+
+void NvMap::RestoreHandlesReplay(const std::vector<HandleStateRecord>& in, u32 saved_next_id) {
+    auto& smmu = host1x.MemoryManager();
 
     // 3) 按快照重建句柄字段与设备映射（与 PinHandle 的映射序列一致：
     //    非 heap → SMMU AllocateFixed + Map（track）；heap → mapper->Map）。
+    //    ★ v5：必须在页表手术之后调用 —— smmu.Map / mapper->Map 会锁
+    //    进程页表并设置 DeviceShared 属性，指向手术后的新（＝存档时刻）映射。
     for (const auto& rec : in) {
         std::shared_ptr<Handle> handle = GetHandle(rec.id);
         if (!handle) {

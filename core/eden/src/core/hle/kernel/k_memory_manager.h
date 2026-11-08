@@ -164,6 +164,27 @@ public:
         }
     }
 
+    // ★★★ NesStation savestate (v5)：外层入口（详见 Impl 内注释） ★★★
+    // 调用前提：模拟已整体冻结（System::Pause + GPU 排空），无任何并发
+    // 分配/释放 —— 因此 SavestateRebuildFree 不逐池加锁（同一池可能有多个
+    // manager，KLightLock 不可重入，重复加锁会死锁；冻结本身就是锁）。
+    void SavestateAdjustRef(KPhysicalAddress address, size_t num_pages, s32 delta) {
+        while (num_pages) {
+            auto& manager = this->GetManager(address);
+            const size_t cur_pages =
+                (std::min)(num_pages, manager.GetPageOffsetToEnd(address));
+            manager.SavestateAdjustRef(address, cur_pages, delta);
+            num_pages -= cur_pages;
+            address += cur_pages * PageSize;
+        }
+    }
+
+    void SavestateRebuildFree() {
+        for (size_t i = 0; i < m_num_managers; i++) {
+            m_managers[i].SavestateRebuildFree();
+        }
+    }
+
 public:
     static size_t CalculateManagementOverheadSize(size_t region_size) {
         return Impl::CalculateManagementOverheadSize(region_size);
@@ -318,6 +339,60 @@ private:
 
             if (free_count > 0) {
                 this->Free(m_heap.GetAddress() + free_start * PageSize, free_count);
+            }
+        }
+
+        // ★★★ NesStation savestate (v5)：页表手术期间的分配器一致性维护 ★★★
+        //
+        // 即时存档读档需要把应用进程的页表整表回放到存档时刻的布局
+        //（KPageTableBase::UnmapPages + MapPageGroup）。MapPageGroup 内部经
+        // KScopedPageGroup 走 Open()，而 Open 断言 ref_count > 1 —— 也就是说
+        // 内核约定"被映射的页必须已被某处持有引用"。存档后游戏释放过的页
+        // 此时引用计数为 0（仍在空闲列表里），直接回放映射会撞断言。
+        //
+        // 方案：手术开始前用 SavestateAdjustRef(+1) 把存档布局里出现的所有
+        // 物理页引用预置 +1（绕过 Open 的断言；空闲位图暂不一致 —— 全部
+        // guest 线程已冻结，无并发分配）；手术结束后 SavestateAdjustRef(-1)
+        // 归还预置，最后 SavestateRebuildFree 按"引用计数 == 0 即空闲"整表
+        // 重建空闲位图（清位 + 对每段 0 计数连续区跑标准 Free()，头尾拆分
+        // 与伙伴合并全部走既有代码路径）。
+        void SavestateAdjustRef(KPhysicalAddress address, size_t num_pages, s32 delta) {
+            size_t index = this->GetPageOffset(address);
+            const size_t end = index + num_pages;
+            // 越界保护：调用方只允许喂本 manager 管辖的池内物理页
+            ASSERT(address >= m_heap.GetAddress());
+            ASSERT(end <= m_page_reference_counts.size());
+            while (index < end) {
+                if (delta > 0) {
+                    m_page_reference_counts[index] = static_cast<RefCount>(
+                        static_cast<s32>(m_page_reference_counts[index]) + delta);
+                } else if (delta < 0) {
+                    ASSERT(m_page_reference_counts[index] > 0);
+                    m_page_reference_counts[index] = static_cast<RefCount>(
+                        static_cast<s32>(m_page_reference_counts[index]) + delta);
+                }
+                index++;
+            }
+        }
+
+        void SavestateRebuildFree() {
+            m_heap.SavestateClearFreeBits();
+            const size_t total = m_page_reference_counts.size();
+            size_t run_start = 0;
+            bool in_run = false;
+            for (size_t i = 0; i < total; ++i) {
+                if (m_page_reference_counts[i] == 0) {
+                    if (!in_run) {
+                        run_start = i;
+                        in_run = true;
+                    }
+                } else if (in_run) {
+                    m_heap.Free(m_heap.GetAddress() + run_start * PageSize, i - run_start);
+                    in_run = false;
+                }
+            }
+            if (in_run) {
+                m_heap.Free(m_heap.GetAddress() + run_start * PageSize, total - run_start);
             }
         }
 

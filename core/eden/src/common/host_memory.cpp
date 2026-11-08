@@ -651,6 +651,39 @@ public:
         virtual_base = nullptr;
     }
 
+    // ★★★ NesStation savestate fix (v5)：直接映射（NCE）模式下的窗口查询 ★★★
+    // NCE 构建下预留区是 38 位（256GB），而 guest 地址空间是 39 位（512GB）
+    // —— 直接映射模式下 virtual_offset 是裸 guest 虚拟地址，完全可能落在
+    // 预留窗之外（宿主根本没在那里保留过地址）。Impl::AdjustMap 本来就会
+    // 裁剪，但外层 HostMemory::Map/Unmap/Protect 的断言先于裁剪触发，对窗
+    // 外高地址直接 ASSERT 崩溃（读档回放/进程拆卸期间的 host_memory.cpp:770）。
+    // 这里提供窗口裁剪：窗外的操作整体跳过、跨界操作裁到窗内 —— 与
+    // AdjustMap 的语义一致，但不再崩溃。
+    bool IsDirectMapped() const {
+        return virtual_base == nullptr;
+    }
+
+    // 把 [offset, offset+*length) 裁剪到预留窗内。返回后 *length == 0 表示
+    // 请求完全在窗外，应当整体跳过。仅直接映射模式下有意义。
+    void ClipToDirectMapWindow(std::ptrdiff_t* offset, size_t* length) const {
+        const std::ptrdiff_t win_base = reinterpret_cast<std::ptrdiff_t>(virtual_map_base);
+        const std::ptrdiff_t win_end = win_base + static_cast<std::ptrdiff_t>(virtual_size);
+        std::ptrdiff_t start = *offset;
+        std::ptrdiff_t end = start + static_cast<std::ptrdiff_t>(*length);
+        if (end <= win_base || start >= win_end) {
+            *length = 0;
+            return;
+        }
+        if (start < win_base) {
+            start = win_base;
+        }
+        if (end > win_end) {
+            end = win_end;
+        }
+        *offset = start;
+        *length = static_cast<size_t>(end - start);
+    }
+
     const size_t backing_size; ///< Size of the backing memory in bytes
     const size_t virtual_size; ///< Size of the virtual address placeholder in bytes
 
@@ -754,9 +787,23 @@ void HostMemory::Map(size_t virtual_offset, size_t host_offset, size_t length, M
     ASSERT(virtual_offset % PageAlignment == 0);
     ASSERT(host_offset % PageAlignment == 0);
     ASSERT(length % PageAlignment == 0);
-    ASSERT(virtual_offset + length <= virtual_size);
     ASSERT(host_offset + length <= backing_size);
-    if (length == 0 || !virtual_base || !impl) {
+    if (length == 0 || !impl) {
+        return;
+    }
+    if (impl->IsDirectMapped()) {
+        // ★ NesStation：直接映射模式下 virtual_offset 是裸 guest 地址，
+        //   可能在预留窗外 —— 裁剪而不是断言（见 Impl::ClipToDirectMapWindow）
+        std::ptrdiff_t off = static_cast<std::ptrdiff_t>(virtual_offset);
+        impl->ClipToDirectMapWindow(&off, &length);
+        virtual_offset = static_cast<size_t>(off);
+        if (length == 0) {
+            return;
+        }
+    } else {
+        ASSERT(virtual_offset + length <= virtual_size);
+    }
+    if (!virtual_base) {
         return;
     }
     impl->Map(virtual_offset + virtual_base_offset, host_offset, length, perms);
@@ -767,8 +814,23 @@ void HostMemory::Unmap(size_t virtual_offset, size_t length, bool separate_heap)
 #if !(defined(__OPENORBIS__) || defined(__managarm__))
     ASSERT(virtual_offset % PageAlignment == 0);
     ASSERT(length % PageAlignment == 0);
-    ASSERT(virtual_offset + length <= virtual_size);
-    if (length == 0 || !virtual_base || !impl) {
+    if (length == 0 || !impl) {
+        return;
+    }
+    if (impl->IsDirectMapped()) {
+        // ★ NesStation：窗外 guest 地址的 Unmap 以前直接命中
+        //   host_memory.cpp:770 的断言（进程拆卸/读档回放期间的高地址块）。
+        //   这些地址从未在窗内建立过宿主映射，跳过即可。
+        std::ptrdiff_t off = static_cast<std::ptrdiff_t>(virtual_offset);
+        impl->ClipToDirectMapWindow(&off, &length);
+        virtual_offset = static_cast<size_t>(off);
+        if (length == 0) {
+            return;
+        }
+    } else {
+        ASSERT(virtual_offset + length <= virtual_size);
+    }
+    if (!virtual_base) {
         return;
     }
     impl->Unmap(virtual_offset + virtual_base_offset, length);
@@ -779,8 +841,20 @@ void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission 
 #if !(defined(__OPENORBIS__) || defined(__managarm__))
     ASSERT(virtual_offset % PageAlignment == 0);
     ASSERT(length % PageAlignment == 0);
-    ASSERT(virtual_offset + length <= virtual_size);
-    if (length == 0 || !virtual_base || !impl) {
+    if (length == 0 || !impl) {
+        return;
+    }
+    if (impl->IsDirectMapped()) {
+        std::ptrdiff_t off = static_cast<std::ptrdiff_t>(virtual_offset);
+        impl->ClipToDirectMapWindow(&off, &length);
+        virtual_offset = static_cast<size_t>(off);
+        if (length == 0) {
+            return;
+        }
+    } else {
+        ASSERT(virtual_offset + length <= virtual_size);
+    }
+    if (!virtual_base) {
         return;
     }
     const bool read = True(perm & MemoryPermission::Read);

@@ -5301,7 +5301,7 @@ fun EmulatorScreen(
                                             eden.relaunchGame()
                                             Toast.makeText(context,
                                                 if (r == EdenNativeLibrary.RESULT_OK_LEGACY_RESTART)
-                                                    "存档后内存布局已变化，已重启游戏加载…"
+                                                    "存档与当前会话不匹配，已重启游戏加载…"
                                                 else
                                                     "已恢复存档数据，正在重启游戏…",
                                                 Toast.LENGTH_LONG).show()
@@ -5633,7 +5633,7 @@ fun EmulatorScreen(
                                     val eden = engine as? com.nesstation.app.core.engine.EdenEngine
                                     if (eden?.lastRestoreWasRestart == true) {
                                         Toast.makeText(context,
-                                            "存档已读取 [槽位 $slot]，内存布局已变化——已重启游戏加载…",
+                                            "存档已读取 [槽位 $slot]，与当前会话不匹配——已重启游戏加载…",
                                             Toast.LENGTH_LONG).show()
                                     } else if (eden != null) {
                                         Toast.makeText(context,

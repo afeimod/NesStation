@@ -192,6 +192,15 @@ public:
     /// 下调用。
     void RestoreHandles(const std::vector<HandleStateRecord>& in, u32 saved_next_id);
 
+    /// ★ v5：RestoreHandles 的前半段（拆除当前设备映射 + 丢弃存档后新建的
+    /// 句柄）。清空 DeviceShared 页表属性后，进程页表才能整表卸载重建 ——
+    /// 页表手术（native_savestate v5）需要插在本段与 Replay 之间执行。
+    void RestoreHandlesTeardown(const std::vector<HandleStateRecord>& in);
+
+    /// ★ v5：RestoreHandles 的后半段（按存档重建句柄与 SMMU/GMMU/低位
+    /// pin）。必须在页表手术之后调用 —— 设备映射指向手术后的新映射。
+    void RestoreHandlesReplay(const std::vector<HandleStateRecord>& in, u32 saved_next_id);
+
 private:
     std::list<std::shared_ptr<Handle>> unmap_queue{};
     std::mutex unmap_queue_lock{}; //!< Protects access to `unmap_queue`

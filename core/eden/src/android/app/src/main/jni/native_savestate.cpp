@@ -1,62 +1,75 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v4 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v5 ★★★
 //
-// v4（本轮）：修复 v3 的三个线上问题 ——
-//   ① 读档后闪退（host_memory.cpp:770 断言 / blit memcpy 崩溃）：
-//      根因是「只回滚 guest 内存内容，不校验宿主侧布局」。存档后游戏任何
-//      一次映射变化（堆扩缩、线程栈/TLS、共享内存重映射）都会让回滚后的
-//      guest 代码按过期视图访问内存 → NCE 野地址崩溃。v4 把完整内存块布局
-//      （KMemoryBlockManager 视图：va/size/state/perm/attr，归一化）与
-//      非 dummy 线程 id 集随档快照，读档前逐块比对——完全一致才允许原地
-//      恢复；不一致则自动走 legacy 重启路径（绝不带着分叉状态续跑）。
-//   ② 读档浪费性能：v3 的「临时负载文件 + 合并拷贝」双倍 I/O、每 4KB 页
-//      一次 icache 刷新、整段解压到堆。v4 改为 Cemu 同款流式 zstd
-//      （level 3 + 帧校验和 + pledged size，源直接取 guest 连续后备 run，
-//      无中间拷贝）、有界 1MB 流式解压、host 连续 run 合并拷贝 + 按 run
-//      粒度 icache 刷新。
-//      （注：Cemu 的 MADV_DONTNEED 零页弃置不适用 Eden —— 其竞技场是
-//      memfd 上的 MAP_SHARED，脏页存活于 page cache，madvise 不会归零，
-//      只能照实写回。）
-//   ③ 校验先行：读档先完整校验（头部 / 布局 / 线程集 / 逐帧 zstd 流式
-//      解码丢弃验证）再动内存 —— 撕裂写入永不发生（Cemu 同款保障）；
-//      应用中途 I/O 失败则直接关停核心而不是带着半恢复状态续跑。
+// v5（本轮）：完全按 Cemu（core/cemu/src/Cafe/Savestate/SaveState.cpp）的
+//   读档架构重写 —— 核心变化是「布局比对门禁」换成「布局回放手术」：
 //
-// v4 新结果码 RESULT_OK_LEGACY_RESTART(7)：布局/线程集已变化、原地恢复
-// 不可行时自动走 legacy 路径（重启游戏 + NAND 还原）并以此码告知前端。
+//   Cemu 为什么从不提示"内存布局已变化"？因为 Wii U 的内存映射是启动时
+//   固定的静态 MMURange 集：读档 = 按基址找当前区间、原地覆盖内容，
+//   映射本身永远不需要动。Eden/Switch 的 KPageTable 布局是动态的（游戏
+//   存档后继续分配/释放、disable-merge 标志漂移），v4 试图用「逐块全等
+//   比对、不一致就回落重启」保证安全 —— 结果线上 100% 走重启路径
+//   （1045/1023、95/89 块数漂移；845/845 时 block 0 属性差异也必然出现）。
 //
-// v3：nvdrv GPU 状态段（GMMU 映射 + nvmap 句柄表 + SMMU 设备地址分配）
-//     随档快照/回放（保留不变，走 SMMU 正规 Map/Unmap API，缓存自洽）。
-// v2：state.bin 进程内全量状态捕获/原地恢复（保留）。
-// v1：NAND 存档数据快照 + legacy（关停游戏→写回→前端重启）（保留）。
+//   v5 的 Cemu 等价翻译：**把"静态映射"这个前提造出来** —— 读档时用内核
+//   自己的正规 API（KPageTableBase::UnmapPages / MapPageGroup /
+//   SetMemoryPermission / SetMemoryAttribute，全部与游戏日常 syscall 同源、
+//   经过整个内核验证的代码路径）把当前页表整表回放到存档时刻的布局：
 //
-//   Cemu (Wii U)                        Eden (Switch / yuzu 系)
-//   ─────────────────────────────      ─────────────────────────────────────
-//   静态 MMURange 集（布局固定）    →   动态地址空间 → v4 随档快照归一化布局
-//                                        + 读档严格比对，不一致拒绝原地恢复
-//   CafeSaveState::EmulationFreeze  →   本文件 EmulationFreeze（RAII +
-//                                        Pause → GPU WaitForIdle → ObtainContext）
-//   WriteCompressedRange（流式       →   ZstdFrameWriter（同款流式 + 帧校验
-//     zstd level3 + 帧校验和）            和 + 直接从 guest 连续 run 取源）
-//   ValidateCompressedRange（先校    →   ValidateFrame（同款流式解码丢弃）
-//     验后落内存）
-//   ReadCompressedRange（有界流式）  →   ApplyFrame（同款 + run 合并 icache）
-//   进程级冻结串行化（v3.9）        →   FreezeOpMutex()（同款）
-//   logcat 阶段诊断（CemuSaveState）→   tag "EdenSaveState"（阶段+耗时+RSS）
-//   MLC usr/save 按标题拷贝         →   NAND user/save 按标题拷贝
-//   CafeSystem::ShutdownTitle()     →   HaltEmulation + WaitForShutdown
+//     ① nvmap Teardown：拆掉全部当前 GPU 设备映射（清 DeviceShared
+//        属性，页表才能整表卸载；= Cemu 冻结 FSA IO 线程的等价物）
+//     ② 预置引用：存档布局出现的所有物理页 SavestateAdjustRef(+1)
+//        （MapPageGroup 的 Open 断言 ref>1 —— 内核约定"被映射的页必须
+//        已被持有引用"；游戏释放过的页此刻 ref==0，预置绕过断言）
+//     ③ 卸载当前全部可回放映射块（清 Uncached/PermissionLocked 后
+//        UnmapPages；宿主映射窗口外的地址由 host_memory v5 窗口裁剪
+//        安全跳过 —— 修复读档/拆卸期 host_memory.cpp:770 断言闪退）
+//     ④ 按存档原 VA + 原 PA 重放（MapPageGroup + 存档 perm/state，
+//        别名关系/共享内存因 PA 精确而原样保留）+ Uncached/PermissionLocked
+//        属性重放
+//     ⑤ SavestateAdjustRef(-1) 归还预置 → SavestateRebuildFree 按
+//        「引用计数==0 即空闲」重建空闲位图（分配器整表自洽）
+//     ⑥ 记账回写（current_heap_end 等 = Cemu 的 sysAreaAllocatorOffset）
+//     ⑦ 内容帧按 VA 写回（此刻映射已与存档逐块一致 —— Cemu 的
+//        "内容原地覆盖"至此完全成立）
+//     ⑧ nvmap Replay：按存档重建 SMMU/GMMU/低位 pin（指向⑦之后的新映射）
+//     ⑨ rasterizer 缓存全失效 + icache 逐核清空（= Cemu 的
+//        RequestGpuCacheReset / PPCRecompiler_invalidateRange）
+//     ⑩ 线程寄存器组写回（System::Pause 已保证全部上下文停在
+//        KThread::m_thread_context —— 等价于 Cemu 的
+//        AreAllThreadContextsStored + 内存快照隐含保存）
 //
-// 状态一致性依据（已对照 Eden 内核源码逐行核对）：
-//   · System::Pause() 返回即全部寄存器已停放进 KThread::m_thread_context
-//     （KernelCore::SuspendEmulation 自旋等待核心卸载 guest 线程）。
-//   · 恢复只需写回 m_thread_context：线程重回核心时 KScheduler::Reload →
-//     PhysicalCore::LoadContext → interface->SetContext（dynarmic/NCE 同一
-//     契约）。
-//   · GPU：Pause → WaitForIdle → ObtainContext 排空异步 GPU；捕获前
-//     rasterizer->FlushAll() 把在途脏写回刷入 guest 内存。
-//   · 布局 + 线程集一致 ⇒ guest 内容回滚后，宿主 HLE 内核视图与存档时刻
-//     逐块相同 ⇒ 无野地址（v3 闪退根因消除）。
+//   v4 → v5 的其他修复：
+//   · TLS 内容遗漏：KMemoryState::ThreadLocal 不带 FlagMapped 标志，
+//     v4 的内容过滤器（FlagMapped）把 TLS 页排除在快照外 —— 读档后
+//     线程本地存储是"当前时间线"的垃圾 → 闪退源之一。v5 内容过滤器
+//     = FlagReferenceCounted || ThreadLocal。
+//   · host_memory.cpp:770 断言：NCE 的宿主预留区只有 38 位（256GB），而
+//     guest 地址空间 39 位；直接映射模式下 Map/Unmap/Protect 的外层
+//     断言按"预留区内偏移"校验裸 guest VA，窗外高地址直接崩溃。v5 在
+//     HostMemory 层做窗口裁剪（见 common/host_memory.cpp）。
+//
+//   与 Cemu 的对应关系总表：
+//   ─────────────────────────────────────────────────────────────
+//   Cemu 静态 MMURange（映射永不变）   →  v5 页表整表回放（把布局造回去）
+//   Cemu 校验先行（zstd 逐帧解码丢弃） →  保留（ValidateFrame）
+//   Cemu EmulationFreeze 协议          →  本文件 EmulationFreeze（RAII +
+//        Pause → GPU WaitForIdle → ObtainContext）+ 进程级 FreezeOpMutex
+//   Cemu sysAreaAllocatorOffset        →  SavestateBookkeeping（v5 新增）
+//   Cemu FSA 文件句柄表                →  不做（HLE 句柄表跨时间线差异
+//        以日志告警接受；nvmap 句柄表已完整快照/回放）
+//   Cemu 调度器从内存重建              →  不适用（yuzu 系调度器状态在
+//        KThread 宿主对象里，Pause/Run 周期天然保持自洽；仅回写寄存器组）
+//   Cemu MADV_DONTNEED 零页弃置        →  不适用（memfd MAP_SHARED，
+//        脏页在 page cache，madvise 不归零 —— v4 注释已论证，保留）
+//
+//   v1：NAND 存档数据快照 + legacy（关停游戏→写回→前端重启）（保留）
+//   v2：state.bin 进程内全量状态捕获/原地恢复（保留）
+//   v3：nvdrv GPU 状态段（保留；v5 拆 Teardown/Replay 夹住页表手术）
+//   v4：流式 zstd / 布局门禁 / 线程集门禁（门禁废除，其余保留）
+//   v5：本文件 —— 页表手术 + PA 精确回放 + TLS 修复 + 窗口裁剪
 
 #include "native_savestate.h"
 
@@ -68,6 +81,10 @@
 #include "core/core.h"
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/k_memory_block.h"
+#include "core/hle/kernel/k_memory_manager.h"
+#include "core/hle/kernel/k_page_group.h"
+#include "core/hle/kernel/k_page_table.h"
+#include "core/hle/kernel/k_page_table_base.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
@@ -113,6 +130,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <fmt/format.h>
@@ -128,67 +146,104 @@ constexpr int kThumbMaxWidth = 320;
 constexpr int kThumbMaxHeight = 180;
 
 // ---------------------------------------------------------------------------
-// state.bin v4 —— 进程内全量状态文件格式
+// state.bin v5 —— 进程内全量状态文件格式
 //
-//   [StateHeaderV4]
-//   [BlockDescV4 × block_count]       （完整归一化布局：含未映射块）
-//   [ContentDescV4 × content_count]   （FlagMapped 块的内容帧描述符；
-//                                       compressed 字段先占位后回填）
-//   [zstd 帧 × content_count]         （逐块流式压缩，帧校验和 + pledged size）
+//   [StateHeaderV5]
+//   [BookkeepingV5]                    （页表动态记账 + 会话区域校验字段）
+//   [BlockDescV5 × block_count]        （完整归一化布局：含未映射块）
+//   [PARun 表 × block_count]           （每块 u32 run_count + PARunV5 × n；
+//                                       仅 has_pg 块非零 —— VA→PA 回放脚本）
+//   [ContentDescV5 × content_count]    （内容帧描述符；compressed 先占位后回填）
+//   [zstd 帧 × content_count]          （逐块流式压缩，帧校验和 + pledged size）
 //   [nvdrv 段（NvdrvHeaderV3…）]
 //   [线程记录 × thread_count]          （32B 元数据 + 0x320B 寄存器组）
 //
 //   布局来源：页表 QueryInfo 遍历（svcQueryMemory 同源序列），相邻同
-//   state/perm/attr 的块归一合并（快照/比对两端同一规则）。
+//   state/perm/attr 的块归一合并（快照/回放两端同一规则）。
+//   内容块 = FlagReferenceCounted || ThreadLocal（v4 只看 FlagMapped，
+//   漏掉 TLS —— v5 修复）。
 // ---------------------------------------------------------------------------
 
 constexpr char kStateMagic[4] = {'E', 'D', 'S', 'S'};
-constexpr u32 kStateVersion = 4;
+constexpr u32 kStateVersion = 5;
 constexpr size_t kPageSize = 4 * 1024; // 4KB，≤ 宿主页表粒度
 
 // v3/v4：nvdrv GPU 状态段存在标志（GMMU 映射 + nvmap 句柄表随档保存）。
 // 没有该段的存档原地恢复必拒（宿主 GPU 状态与回滚内存不一致 → 崩溃）。
 constexpr u32 kStateFlagHasNvdrv = 1u << 0;
 
+// BlockDescV5.flags
+constexpr u32 kBlockFlagHasPg = 1u << 0; // 有 PARun（可精确重映射）
+
 // 校验上限（防损坏头/错位文件把分配器炸穿）
 constexpr u32 kMaxBlockCount = 65536;
 constexpr u32 kMaxThreadCount = 16384;
 constexpr u64 kMaxNvdrvSize = 256ull * 1024 * 1024;
+constexpr u32 kMaxPaRunTotal = 4u << 20; // 4M 条 PARun 记录封顶
 
-struct StateHeaderV4 {
+struct StateHeaderV5 {
     char magic[4];
     u32 version;
     u64 program_id;
     u64 timestamp;           // time(nullptr)，诊断用
     u32 block_count;         // 归一化布局块数（全部，含未映射）
-    u32 content_count;       // 内容帧数（= FlagMapped 归一块数）
+    u32 content_count;       // 内容帧数（= 可回放映射归一块数）
     u32 thread_count;
     u32 flags;               // bit0: kStateFlagHasNvdrv
     u64 total_uncompressed;  // 全部内容帧未压缩字节
     u64 nvdrv_size;
-    u64 layout_digest;       // 归一化布局 FNV-1a（快速预检）
+    u64 layout_digest;       // 归一化布局 FNV-1a（诊断/日志用，不再做门禁）
+    u64 pa_run_total;        // v5: PARun 记录总数（校验用）
+    u64 reserved[3];
 };
-static_assert(sizeof(StateHeaderV4) == 64);
+static_assert(sizeof(StateHeaderV5) == 96);
 
-struct BlockDescV4 {
+// KPageTableBase::SavestateBookkeeping 的 POD 镜像（文件格式侧）
+struct BookkeepingV5 {
+    u64 current_heap_end;
+    u64 heap_region_start, heap_region_end;
+    u64 alias_region_start, alias_region_end;
+    u64 stack_region_start, stack_region_end;
+    u64 kernel_map_region_start, kernel_map_region_end;
+    u64 code_region_start, code_region_end;
+    u64 alias_code_region_start, alias_code_region_end;
+    u64 address_space_start, address_space_end;
+    u64 mapped_physical_memory_size;
+    u64 mapped_unsafe_physical_memory;
+    u64 mapped_insecure_memory;
+    u64 mapped_ipc_server_memory;
+    u64 alias_region_extra_size;
+    u64 max_heap_size;
+};
+static_assert(sizeof(BookkeepingV5) ==
+              sizeof(Kernel::KPageTableBase::SavestateBookkeeping));
+
+struct BlockDescV5 {
     u64 va;
     u64 size;
     u32 state;    // KMemoryState 原始值
     u32 perm;     // KMemoryPermission 原始值
     u32 attr;     // KMemoryAttribute 原始值
+    u32 flags;    // kBlockFlag*
+};
+static_assert(sizeof(BlockDescV5) == 32);
+
+struct PARunV5 {
+    u64 pa;     // guest 物理地址（DramMemoryMap::Base 起）
+    u32 pages;  // 连续页数
     u32 reserved;
 };
-static_assert(sizeof(BlockDescV4) == 32);
+static_assert(sizeof(PARunV5) == 16);
 
-struct ContentDescV4 {
+struct ContentDescV5 {
     u64 va;
     u64 uncompressed; // 未压缩字节数（= 归一块大小）
     u64 compressed;   // zstd 帧字节数（写入时占位，帧完成后回填）
     u32 reserved0;
     u32 reserved1;
 };
-static_assert(sizeof(ContentDescV4) == 32);
-static_assert(offsetof(ContentDescV4, compressed) == 16);
+static_assert(sizeof(ContentDescV5) == 32);
+static_assert(offsetof(ContentDescV5, compressed) == 16);
 
 struct ThreadMetaV2 {
     u64 thread_id;
@@ -851,8 +906,27 @@ bool CaptureNvdrvState(Core::System& system, std::vector<u8>& blob_out) {
 // 段布局（与 CaptureNvdrvState 写入顺序严格一致）：
 //   [NvdrvHeaderV3][GmmuSectionV3 + 映射记录 × mapping_count] × gmmu_count
 //   [句柄记录 × handle_count]
-bool RestoreNvdrvState(Core::System& system, std::span<const u8> blob, std::string* err) {
+//
+// ★ v5 三段式（原 RestoreNvdrvState 一步执行 → 拆为 Parse / Teardown /
+//   Replay）：页表手术必须插在 nvmap 拆除（清 DeviceShared 属性）与
+//   nvmap 重建（在新映射上重新 pin）之间 —— GMMU 部分是纯 GPUVA 侧、
+//   与 CPU 页表无耦合，整体挪到 Replay 阶段执行。
+
+struct NvdrvState {
+    u32 next_handle_id = 0;
+    struct GmmuMappings {
+        u64 gmmu_id;
+        std::vector<GpuMappingRecord> mappings;
+    };
+    std::vector<GmmuMappings> gmmu_sections;
+    std::vector<NvdrvHandleRecord> handles;
+};
+
+bool ParseNvdrvState(std::span<const u8> blob, NvdrvState* out, std::string* err) {
     *err = {};
+    out->gmmu_sections.clear();
+    out->handles.clear();
+    out->next_handle_id = 0;
     if (blob.size() < sizeof(NvdrvHeaderV3)) {
         *err = "nvdrv section truncated";
         return false;
@@ -861,22 +935,11 @@ bool RestoreNvdrvState(Core::System& system, std::span<const u8> blob, std::stri
     NvdrvHeaderV3 header{};
     std::memcpy(&header, blob.data(), sizeof(header));
     blob = blob.subspan(sizeof(header));
-
-    auto nvdrv = GetNvdrvModule(system);
-    if (nvdrv == nullptr) {
-        *err = "nvdrv module unavailable";
-        return false;
-    }
-
-    // ---- 解析阶段（顺序 = 文件布局）----
+    out->next_handle_id = header.next_handle_id;
 
     // 1) 各 GMMU 实例段
-    struct GmmuMappings {
-        u64 gmmu_id;
-        std::vector<GpuMappingRecord> mappings;
-    };
-    std::vector<GmmuMappings> gmmu_sections(header.gmmu_count);
-    for (auto& section_records : gmmu_sections) {
+    out->gmmu_sections.resize(header.gmmu_count);
+    for (auto& section_records : out->gmmu_sections) {
         if (blob.size() < sizeof(GmmuSectionV3)) {
             *err = "nvdrv gmmu section truncated";
             return false;
@@ -900,24 +963,44 @@ bool RestoreNvdrvState(Core::System& system, std::span<const u8> blob, std::stri
     }
 
     // 2) nvmap 句柄记录
-    std::vector<NvdrvHandleRecord> handles(header.handle_count);
-    const size_t handles_bytes = handles.size() * sizeof(NvdrvHandleRecord);
+    out->handles.resize(header.handle_count);
+    const size_t handles_bytes = out->handles.size() * sizeof(NvdrvHandleRecord);
     if (blob.size() < handles_bytes) {
         *err = "nvdrv handle records truncated";
         return false;
     }
-    if (!handles.empty()) {
-        std::memcpy(handles.data(), blob.data(), handles_bytes);
+    if (!out->handles.empty()) {
+        std::memcpy(out->handles.data(), blob.data(), handles_bytes);
     }
     blob = blob.subspan(handles_bytes);
+    return true;
+}
 
-    // ---- 执行阶段 ----
+// Teardown：拆除全部当前 nvmap 设备映射（SMMU 分配 / heap 映射 / 低位
+// pin —— 清 DeviceShared 页表属性并归还设备地址），丢弃存档后新建的
+// 句柄。必须在页表手术【前】调用。
+void NvdrvTeardown(Core::System& system, const NvdrvState& state) {
+    auto nvdrv = GetNvdrvModule(system);
+    if (nvdrv == nullptr) {
+        return;
+    }
+    auto& nvmap = nvdrv->GetContainer().GetNvMapFile();
+    nvmap.RestoreHandlesTeardown(state.handles);
+}
 
-    // 3) GMMU 映射：按存档 gmmu_id 匹配当前实例，全量清空 + 按原地址重放
-    //   （清空即触发 rasterizer 对全部受影响设备地址段的缓存丢弃）。
+// Replay：GMMU 映射按原地址重放（全量清空 + 重放，清空即触发 rasterizer
+// 缓存丢弃）+ nvmap 句柄表重建（SMMU/GMMU/低位 pin 指向手术后的新映射）。
+// 必须在页表手术【后】调用。
+void NvdrvReplay(Core::System& system, const NvdrvState& state) {
+    auto nvdrv = GetNvdrvModule(system);
+    if (nvdrv == nullptr) {
+        return;
+    }
+
+    // 1) GMMU 映射：按存档 gmmu_id 匹配当前实例
     std::vector<GmmuInstanceRef> instances;
     CollectGmmuInstances(system, *nvdrv, instances);
-    for (const auto& section_records : gmmu_sections) {
+    for (const auto& section_records : state.gmmu_sections) {
         Tegra::MemoryManager* mm = nullptr;
         for (const auto& inst : instances) {
             if (inst.id == section_records.gmmu_id) {
@@ -935,12 +1018,9 @@ bool RestoreNvdrvState(Core::System& system, std::span<const u8> blob, std::stri
         mm->RestoreMappings(section_records.mappings);
     }
 
-    // 4) nvmap 句柄表回放：拆除当前设备映射 → 丢弃存档后新建句柄 → 按存档
-    //    在原设备地址重建 SMMU 分配/映射、heap 映射与低位 pin（其低位 pin
-    //    的 GMMU 重映射与第 3 步幂等）。
+    // 2) nvmap 句柄表回放
     auto& nvmap = nvdrv->GetContainer().GetNvMapFile();
-    nvmap.RestoreHandles(handles, header.next_handle_id);
-    return true;
+    nvmap.RestoreHandlesReplay(state.handles, state.next_handle_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,8 +1088,25 @@ bool CollectLayoutBlocks(Core::System& system, std::vector<LayoutBlock>& out) {
     return !out.empty();
 }
 
-bool IsMappedState(u32 state) {
-    return True(static_cast<Kernel::KMemoryState>(state) & Kernel::KMemoryState::FlagMapped);
+bool IsContentState(u32 state) {
+    // v5 内容/回放谓词：FlagReferenceCounted（内核可 Open/Close 引用的
+    // 池内页 —— 堆/代码/栈/共享/别名/Transferred/GeneratedCode…），
+    // 外加 ThreadLocal（v4 只看 FlagMapped，而 ThreadLocal 不带该标志，
+    // TLS 页被整体排除在快照外 —— 读档后线程本地存储是当前时间线的
+    // 垃圾，这是 v4 闪退源之一）。
+    const auto s = static_cast<Kernel::KMemoryState>(state);
+    return True(s & Kernel::KMemoryState::FlagReferenceCounted) ||
+           s == Kernel::KMemoryState::ThreadLocal;
+}
+
+bool IsPgState(u32 state) {
+    // 可经 MakeAndOpenPageGroup 抓 VA→PA 页组的状态（同上；ThreadLocal
+    // 走逐页 GetPhysicalAddress，两者都算"可精确重映射"）
+    return IsContentState(state);
+}
+
+bool IsThreadLocalState(u32 state) {
+    return static_cast<Kernel::KMemoryState>(state) == Kernel::KMemoryState::ThreadLocal;
 }
 
 // 布局摘要（FNV-1a 64）——快速预检/日志用；权威判定永远是逐块全比较。
@@ -1030,17 +1127,41 @@ u64 LayoutDigest(const std::vector<LayoutBlock>& blocks) {
     return h;
 }
 
-bool SameLayout(const std::vector<LayoutBlock>& a, const std::vector<LayoutBlock>& b) {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i].va != b[i].va || a[i].size != b[i].size || a[i].state != b[i].state ||
-            a[i].perm != b[i].perm || a[i].attr != b[i].attr) {
-            return false;
+// v5：存档侧的块视图（布局 + PA 回放脚本）
+struct SavedBlock {
+    u64 va;
+    u64 size;
+    u32 state;
+    u32 perm;
+    u32 attr;
+    bool has_pg;                                       // 有 PARun（可精确重映射）
+    std::vector<std::pair<u64, u32>> runs;             // (pa, pages)，VA 顺序
+};
+
+// PA run 合并：把（可能跨块重叠的 —— 别名映射共享物理页）全部 run
+// 合成不相交区间序列。预置/归还引用必须"每页恰好一次"。
+std::vector<std::pair<u64, u64>> MergePaRuns(const std::vector<SavedBlock>& blocks) {
+    std::vector<std::pair<u64, u64>> spans; // (pa_start, pa_end)
+    spans.reserve(blocks.size() * 2);
+    for (const auto& b : blocks) {
+        if (!b.has_pg) {
+            continue;
+        }
+        for (const auto& [pa, pages] : b.runs) {
+            spans.emplace_back(pa, pa + static_cast<u64>(pages) * kPageSize);
         }
     }
-    return true;
+    std::sort(spans.begin(), spans.end());
+    std::vector<std::pair<u64, u64>> merged;
+    merged.reserve(spans.size());
+    for (const auto& [start, end] : spans) {
+        if (!merged.empty() && start <= merged.back().second) {
+            merged.back().second = std::max(merged.back().second, end);
+        } else {
+            merged.emplace_back(start, end);
+        }
+    }
+    return merged;
 }
 
 // 当前存活非 dummy 线程 id 集（排序后与存档集做全等比对）。
@@ -1312,7 +1433,13 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
         return false;
     }
 
-    // 1) 归一化布局收集 + 摘要
+    // ★ v5：确保应用进程是全局 current 页表 —— GetPointerSilent（内容读
+    // 取）与宿主映射门控都走 current_page_table；中途创建的 applet 会把
+    // current 翻走（KProcess::Initialize 每次进程创建都 Set —— 同一语义）
+    system.ApplicationMemory().SetCurrentPageTable(*process);
+
+    // 1) 归一化布局收集 + 摘要 + 页表记账（v5：current_heap_end 等，
+    //    = Cemu 的 sysAreaAllocatorOffset —— 内核记账状态随档保存）
     std::vector<LayoutBlock> blocks;
     if (!CollectLayoutBlocks(system, blocks)) {
         *err = "layout walk failed";
@@ -1320,16 +1447,93 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
     }
     const u64 digest = LayoutDigest(blocks);
 
-    // 2) 内容段 = FlagMapped 归一块
-    std::vector<LayoutBlock> content_blocks;
-    u64 total_uncompressed = 0;
-    for (const auto& b : blocks) {
-        if (IsMappedState(b.state)) {
-            content_blocks.push_back(b);
-            total_uncompressed += b.size;
-        }
+    Kernel::KProcessPageTable& page_table = process->GetPageTable();
+    auto& kernel = system.Kernel();
+
+    BookkeepingV5 bookkeeping{};
+    {
+        Kernel::KPageTableBase::SavestateBookkeeping bk{};
+        page_table.GetBasePageTable().SavestateCaptureBookkeeping(bk);
+        static_assert(std::is_trivially_copyable_v<decltype(bk)>);
+        std::memcpy(&bookkeeping, &bk, sizeof(bookkeeping));
     }
-    if (content_blocks.empty()) {
+
+    // 2) SavedBlock 视图：内容块 = IsContentState（v5：含 ThreadLocal）；
+    //    逐块抓 VA→PA 回放脚本（FlagReferenceCounted → MakeAndOpenPageGroup；
+    //    ThreadLocal 无该标志，逐页 GetPhysicalAddress —— 页同样出自池）
+    std::vector<SavedBlock> saved_blocks;
+    saved_blocks.reserve(blocks.size());
+    u64 total_uncompressed = 0;
+    u64 pa_run_total = 0;
+    u32 content_count = 0;
+    for (const auto& b : blocks) {
+        SavedBlock sb{};
+        sb.va = b.va;
+        sb.size = b.size;
+        sb.state = b.state;
+        sb.perm = b.perm;
+        sb.attr = b.attr;
+        sb.has_pg = false;
+
+        if (IsPgState(b.state) && b.size % kPageSize == 0) {
+            const size_t npages = b.size / kPageSize;
+            if (IsThreadLocalState(b.state)) {
+                bool ok = true;
+                for (size_t i = 0; i < npages; ++i) {
+                    Kernel::KPhysicalAddress pa{};
+                    if (!page_table.GetPhysicalAddress(&pa, sb.va + i * kPageSize)) {
+                        ok = false;
+                        break;
+                    }
+                    sb.runs.emplace_back(GetInteger(pa), 1);
+                }
+                if (ok) {
+                    sb.has_pg = true;
+                } else {
+                    sb.runs.clear();
+                    SSLogWarn(fmt::format(
+                        "capture: TLS page translate failed @ {:016x} - block not replayable",
+                        sb.va));
+                }
+            } else {
+                Kernel::KPageGroup pg(kernel, page_table.GetBlockInfoManager());
+                const Result pg_result = page_table.MakeAndOpenPageGroup(
+                    &pg, sb.va, npages, Kernel::KMemoryState::All,
+                    static_cast<Kernel::KMemoryState>(b.state),
+                    Kernel::KMemoryPermission::None, Kernel::KMemoryPermission::None,
+                    Kernel::KMemoryAttribute::None, Kernel::KMemoryAttribute::None);
+                if (R_SUCCEEDED(pg_result)) {
+                    for (const auto& node : pg) {
+                        sb.runs.emplace_back(GetInteger(node.GetAddress()),
+                                             static_cast<u32>(node.GetNumPages()));
+                    }
+                    pg.CloseAndReset(kernel); // 归还 MakeAndOpen 打开的引用
+                    sb.has_pg = true;
+                } else {
+                    SSLogWarn(fmt::format(
+                        "capture: page group failed @ {:016x} (state {:08x})",
+                        sb.va, b.state));
+                }
+            }
+        }
+
+        if (IsContentState(b.state)) {
+            if (!sb.has_pg) {
+                // 内容块必须可精确重映射，否则该槽位无法原地恢复 ——
+                // 干净失败（冻结中止，游戏继续），好过写出有缺陷的档
+                *err = fmt::format("mapped block {:016x} has no capturable page group",
+                                   sb.va);
+                return false;
+            }
+            total_uncompressed += b.size;
+            ++content_count;
+        }
+        if (sb.has_pg) {
+            pa_run_total += sb.runs.size();
+        }
+        saved_blocks.push_back(std::move(sb));
+    }
+    if (content_count == 0) {
         *err = "no mapped regions found";
         return false;
     }
@@ -1366,12 +1570,12 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
         ++thread_count;
     }
 
-    // 4) 顺序写 state.tmp：header → 块表 → 内容表（占位）→ zstd 帧 →
-    //    nvdrv → 线程 → 回填内容表 compressed 字段 → 原子改名。
+    // 4) 顺序写 state.tmp：header → 记账 → 块表 → PARun 表 → 内容表（占位）
+    //    → zstd 帧 → nvdrv → 线程 → 回填内容表 compressed 字段 → 原子改名。
     //    （v3 的「负载临时文件 + 16MB 步长合并拷贝」双倍 I/O 已移除。）
     const fs::path state_tmp = state_path.string() + ".tmp";
     std::vector<u64> compressed_sizes;
-    compressed_sizes.reserve(content_blocks.size());
+    compressed_sizes.reserve(content_count);
 
     {
         std::ofstream out(state_tmp, std::ios::binary | std::ios::trunc);
@@ -1380,18 +1584,19 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             return false;
         }
 
-        StateHeaderV4 header{};
+        StateHeaderV5 header{};
         std::memcpy(header.magic, kStateMagic, sizeof(kStateMagic));
         header.version = kStateVersion;
         header.program_id = program_id;
         header.timestamp = static_cast<u64>(std::time(nullptr));
-        header.block_count = static_cast<u32>(blocks.size());
-        header.content_count = static_cast<u32>(content_blocks.size());
+        header.block_count = static_cast<u32>(saved_blocks.size());
+        header.content_count = content_count;
         header.thread_count = thread_count;
         header.flags = nvdrv_ok ? kStateFlagHasNvdrv : 0;
         header.total_uncompressed = total_uncompressed;
         header.nvdrv_size = nvdrv_blob.size();
         header.layout_digest = digest;
+        header.pa_run_total = pa_run_total;
 
         out.write(reinterpret_cast<const char*>(&header), sizeof(header));
         if (!out) {
@@ -1400,27 +1605,53 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             return false;
         }
 
-        std::vector<BlockDescV4> block_descs;
-        block_descs.reserve(blocks.size());
-        for (const auto& b : blocks) {
-            block_descs.push_back({b.va, b.size, b.state, b.perm, b.attr, 0});
+        out.write(reinterpret_cast<const char*>(&bookkeeping), sizeof(bookkeeping));
+        if (!out) {
+            *err = "state.bin bookkeeping write failed";
+            fs::remove(state_tmp);
+            return false;
+        }
+
+        std::vector<BlockDescV5> block_descs;
+        block_descs.reserve(saved_blocks.size());
+        for (const auto& b : saved_blocks) {
+            block_descs.push_back({b.va, b.size, b.state, b.perm, b.attr,
+                                   b.has_pg ? kBlockFlagHasPg : 0u});
         }
         out.write(reinterpret_cast<const char*>(block_descs.data()),
-                  static_cast<std::streamsize>(block_descs.size() * sizeof(BlockDescV4)));
+                  static_cast<std::streamsize>(block_descs.size() * sizeof(BlockDescV5)));
         if (!out) {
             *err = "state.bin block table write failed";
             fs::remove(state_tmp);
             return false;
         }
 
+        // v5：PARun 表（与块表同序；每块 u32 run_count + PARunV5×n）
+        for (const auto& b : saved_blocks) {
+            const u32 run_count = static_cast<u32>(b.runs.size());
+            out.write(reinterpret_cast<const char*>(&run_count), sizeof(run_count));
+            for (const auto& [pa, pages] : b.runs) {
+                const PARunV5 run{pa, pages, 0};
+                out.write(reinterpret_cast<const char*>(&run), sizeof(run));
+            }
+        }
+        if (!out) {
+            *err = "state.bin pa run table write failed";
+            fs::remove(state_tmp);
+            return false;
+        }
+
         const std::streamoff content_table_pos = out.tellp();
-        std::vector<ContentDescV4> content_descs;
-        content_descs.reserve(content_blocks.size());
-        for (const auto& b : content_blocks) {
+        std::vector<ContentDescV5> content_descs;
+        content_descs.reserve(content_count);
+        for (const auto& b : saved_blocks) {
+            if (!IsContentState(b.state)) {
+                continue;
+            }
             content_descs.push_back({b.va, b.size, 0, 0, 0}); // compressed 占位
         }
         out.write(reinterpret_cast<const char*>(content_descs.data()),
-                  static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV4)));
+                  static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV5)));
         if (!out) {
             *err = "state.bin content table write failed";
             fs::remove(state_tmp);
@@ -1431,8 +1662,12 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
         ZstdFrameWriter writer(out);
         static const std::array<u8, kPageSize> zero_page{};
         u64 reported = 0;
-        for (size_t ci = 0; ci < content_blocks.size(); ++ci) {
-            const auto& b = content_blocks[ci];
+        size_t ci = 0;
+        for (const auto& b : saved_blocks) {
+            if (!IsContentState(b.state)) {
+                continue;
+            }
+            ++ci;
             if (!writer.Begin(b.size)) {
                 *err = fmt::format("zstd cctx failed @ {:016x}", b.va);
                 fs::remove(state_tmp);
@@ -1481,9 +1716,9 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             compressed_sizes.push_back(writer.written());
 
             reported += b.size;
-            if ((ci & 0xF) == 0xF || ci + 1 == content_blocks.size()) {
+            if ((ci & 0xF) == 0xF || ci == content_count) {
                 SSLogInfo(fmt::format("capture: {}/{} blocks, {}/{} MB, {} ms",
-                                      ci + 1, content_blocks.size(), reported >> 20,
+                                      ci, content_count, reported >> 20,
                                       total_uncompressed >> 20, ElapsedMsSince(t0)));
             }
         }
@@ -1503,8 +1738,8 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             const std::streamoff table_base = content_table_pos;
             for (size_t i = 0; i < content_descs.size(); ++i) {
                 const std::streamoff pos =
-                    table_base + static_cast<std::streamoff>(i * sizeof(ContentDescV4)) +
-                    static_cast<std::streamoff>(offsetof(ContentDescV4, compressed));
+                    table_base + static_cast<std::streamoff>(i * sizeof(ContentDescV5)) +
+                    static_cast<std::streamoff>(offsetof(ContentDescV5, compressed));
                 out.seekp(pos);
                 out.write(reinterpret_cast<const char*>(&compressed_sizes[i]), sizeof(u64));
             }
@@ -1530,8 +1765,8 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
         }
     }
 
-    SSLogInfo(fmt::format("capture: done, {} blocks / {} frames / {} threads / {:.1} MB disk, {} ms (rss {} MB)",
-                          blocks.size(), content_blocks.size(), thread_count,
+    SSLogInfo(fmt::format("capture: done, {} blocks / {} frames / {} pa-runs / {} threads / {:.1} MB disk, {} ms (rss {} MB)",
+                          saved_blocks.size(), content_count, pa_run_total, thread_count,
                           static_cast<double>(
                               [&] {
                                   u64 s = 0;
@@ -1545,15 +1780,244 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
 }
 
 // ---------------------------------------------------------------------------
+// v5：页表整表回放手术（原地恢复的核心）
+//
+// Cemu 的读档之所以稳定：Wii U 的映射是静态 MMURange，读档只覆盖内容。
+// Eden 的映射是动态的 —— v5 的思路是"把 Cemu 的静态前提造出来"：
+// 读档时用内核正规 API（游戏 syscall 同源代码路径）把当前页表整表
+// 回放到存档时刻的布局（原 VA + 原 PA + 原 state/perm/attr），然后
+// 内容帧按 VA 原地覆盖 —— Cemu 语义至此完全成立。
+//
+// 引用计数协议：MapPageGroup 内部经 KScopedPageGroup 走 Open()，
+// Open 断言 ref>1（内核约定"被映射的页必须已被持有引用"）。游戏在
+// 存档后释放过的页此刻 ref==0 —— 手术前先对所有存档 PA 预置 +1
+//（SavestateAdjustRef 绕过断言；冻结期间无并发分配，空闲位图暂时
+// 不一致无妨），手术末尾 -1 归还，再按"引用计数==0 即空闲"整表重建
+// 空闲位图（SavestateRebuildFree）。别名/共享内存因 PA 精确而原样
+// 保留（多个 VA 映射同一 PA 的引用数自然正确）。
+// ---------------------------------------------------------------------------
+
+enum class SurgeryOutcome {
+    Ok,
+    Incompatible, // 会话不兼容（区域不一致 / 瞬态锁在途）—— 未做任何修改
+    Torn,         // 破坏阶段失败（内核状态已改动 → 必须关停核心）
+};
+
+// 手术前置校验（无副作用）：① 会话区域一致（跨启动/配置的槽位拒绝）；
+// ② 冻结状态下无瞬态内核锁（Locked/IpcLocked —— 正常冻结下不该出现，
+// 出现说明有内核操作在途，原地恢复不安全）。必须在 NvdrvTeardown 之前
+// 调用 —— Teardown 之后任何失败都只能 Torn。
+bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std::string* err) {
+    *err = {};
+    Kernel::KProcess* process = system.ApplicationProcess();
+    if (process == nullptr) {
+        *err = "application process is null";
+        return false;
+    }
+
+    // ① 区域一致
+    {
+        BookkeepingV5 cur{};
+        Kernel::KPageTableBase::SavestateBookkeeping bk{};
+        process->GetPageTable().GetBasePageTable().SavestateCaptureBookkeeping(bk);
+        std::memcpy(&cur, &bk, sizeof(cur));
+        const bool same_regions =
+            cur.heap_region_start == bookkeeping.heap_region_start &&
+            cur.heap_region_end == bookkeeping.heap_region_end &&
+            cur.alias_region_start == bookkeeping.alias_region_start &&
+            cur.alias_region_end == bookkeeping.alias_region_end &&
+            cur.stack_region_start == bookkeeping.stack_region_start &&
+            cur.stack_region_end == bookkeeping.stack_region_end &&
+            cur.kernel_map_region_start == bookkeeping.kernel_map_region_start &&
+            cur.kernel_map_region_end == bookkeeping.kernel_map_region_end &&
+            cur.code_region_start == bookkeeping.code_region_start &&
+            cur.code_region_end == bookkeeping.code_region_end &&
+            cur.alias_code_region_start == bookkeeping.alias_code_region_start &&
+            cur.alias_code_region_end == bookkeeping.alias_code_region_end &&
+            cur.address_space_start == bookkeeping.address_space_start &&
+            cur.address_space_end == bookkeeping.address_space_end;
+        if (!same_regions) {
+            *err = "address space regions differ from save (different session)";
+            return false;
+        }
+    }
+
+    // ② 瞬态锁检查
+    {
+        std::vector<LayoutBlock> current;
+        if (!CollectLayoutBlocks(system, current)) {
+            *err = "current layout walk failed";
+            return false;
+        }
+        for (const auto& b : current) {
+            if (!IsPgState(b.state)) {
+                continue;
+            }
+            const auto attr = static_cast<Kernel::KMemoryAttribute>(b.attr);
+            if (True(attr & (Kernel::KMemoryAttribute::Locked |
+                             Kernel::KMemoryAttribute::IpcLocked))) {
+                *err = fmt::format("transient kernel memory lock in flight @ {:016x}", b.va);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// 页表整表回放。前提：EmulationFreeze（全部 guest 线程挂起，NCE 不跑）
+// + NvdrvTeardown 已完成（DeviceShared 已清，nvmap 句柄已按存档裁剪）。
+SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<SavedBlock>& saved,
+                                     const BookkeepingV5& bookkeeping, std::string* err) {
+    *err = {};
+    const auto t0 = NowSteady();
+
+    Kernel::KProcess* process = system.ApplicationProcess();
+    if (process == nullptr) {
+        *err = "application process is null";
+        return SurgeryOutcome::Torn;
+    }
+    Kernel::KProcessPageTable& page_table = process->GetPageTable();
+    Kernel::KPageTableBase& base = page_table.GetBasePageTable();
+    auto& kernel = system.Kernel();
+
+    // ★ v5：确保应用进程是全局 current 页表（同捕获侧 —— 手术的宿主
+    // 映射门控与后续 ApplyFrame 的 PagePtr 都依赖 current_page_table）
+    system.ApplicationMemory().SetCurrentPageTable(*process);
+
+    // 1) 当前布局
+    std::vector<LayoutBlock> current;
+    if (!CollectLayoutBlocks(system, current)) {
+        *err = "current layout walk failed";
+        return SurgeryOutcome::Torn;
+    }
+
+    // 2) 预置引用（+1）：存档布局的全部 PA（去重合并 —— 别名块共享页）
+    const auto preopen = MergePaRuns(saved);
+    const auto adjust_all = [&](s32 delta) {
+        for (const auto& [start, end] : preopen) {
+            kernel.MemoryManager().SavestateAdjustRef(start, (end - start) / kPageSize, delta);
+        }
+    };
+    adjust_all(+1);
+
+    // 3) 清除会挡住 UnmapPages 的持久属性（Uncached / PermissionLocked）。
+    //    UnmapPages 的 CheckMemoryState 要求 attr==None（忽略 IpcLocked/
+    //    DeviceShared）；这两位当初就是经 SetMemoryAttribute 设置的，
+    //    对称清除即可。瞬态锁已在 SurgeryPrecheck 拒绝。
+    for (const auto& b : current) {
+        if (!IsPgState(b.state)) {
+            continue;
+        }
+        const auto attr = static_cast<Kernel::KMemoryAttribute>(b.attr);
+        if (True(attr & Kernel::KMemoryAttribute::Uncached)) {
+            const Result r = page_table.SetMemoryAttribute(
+                b.va, b.size, Kernel::KMemoryAttribute::Uncached, Kernel::KMemoryAttribute::None);
+            if (R_FAILED(r)) {
+                *err = fmt::format("cannot clear Uncached @ {:016x} ({:05x})", b.va, r.raw);
+                return SurgeryOutcome::Torn;
+            }
+        }
+        if (True(attr & Kernel::KMemoryAttribute::PermissionLocked)) {
+            const Result r = page_table.SetMemoryAttribute(
+                b.va, b.size, Kernel::KMemoryAttribute::PermissionLocked,
+                Kernel::KMemoryAttribute::None);
+            if (R_FAILED(r)) {
+                *err = fmt::format("cannot clear PermissionLocked @ {:016x} ({:05x})", b.va,
+                                   r.raw);
+                return SurgeryOutcome::Torn;
+            }
+        }
+    }
+
+    // 4) 卸载当前全部可回放映射块（Io/Static 等不可回放状态原样保留；
+    //    宿主映射窗口外的地址由 HostMemory v5 窗口裁剪安全跳过）
+    for (const auto& b : current) {
+        if (!IsPgState(b.state) || b.size % kPageSize != 0) {
+            continue;
+        }
+        const Result r = page_table.UnmapPages(b.va, b.size / kPageSize,
+                                               static_cast<Kernel::KMemoryState>(b.state));
+        if (R_FAILED(r)) {
+            *err = fmt::format("unmap failed @ {:016x} (state {:08x}): {:05x}", b.va, b.state,
+                               r.raw);
+            return SurgeryOutcome::Torn;
+        }
+    }
+
+    // 5) 按存档重放：原 VA + 原 PA + 原 state/perm（MapPageGroup 与游戏
+    //    日常映射同一条内核路径），随后重放 Uncached / PermissionLocked。
+    size_t replayed_blocks = 0;
+    for (const auto& b : saved) {
+        if (!b.has_pg) {
+            continue; // 存档中的不可回放块（Io/Static…）：当前同样未动，一致
+        }
+        Kernel::KPageGroup pg(kernel, page_table.GetBlockInfoManager());
+        bool pg_ok = true;
+        for (const auto& [pa, pages] : b.runs) {
+            if (R_FAILED(pg.AddBlock(pa, pages))) {
+                pg_ok = false;
+                break;
+            }
+        }
+        if (!pg_ok || pg.GetNumPages() != b.size / kPageSize) {
+            *err = fmt::format("page group rebuild failed @ {:016x}", b.va);
+            return SurgeryOutcome::Torn;
+        }
+        const Result r = page_table.MapPageGroup(
+            b.va, pg, static_cast<Kernel::KMemoryState>(b.state),
+            static_cast<Kernel::KMemoryPermission>(b.perm));
+        if (R_FAILED(r)) {
+            *err = fmt::format("remap failed @ {:016x} (state {:08x}): {:05x}", b.va, b.state,
+                               r.raw);
+            return SurgeryOutcome::Torn;
+        }
+
+        const auto attr = static_cast<Kernel::KMemoryAttribute>(b.attr);
+        if (True(attr & Kernel::KMemoryAttribute::Uncached)) {
+            page_table.SetMemoryAttribute(b.va, b.size, Kernel::KMemoryAttribute::Uncached,
+                                          Kernel::KMemoryAttribute::Uncached);
+        }
+        if (True(attr & Kernel::KMemoryAttribute::PermissionLocked)) {
+            page_table.SetMemoryAttribute(b.va, b.size, Kernel::KMemoryAttribute::PermissionLocked,
+                                          Kernel::KMemoryAttribute::PermissionLocked);
+        }
+        ++replayed_blocks;
+    }
+
+    // 6) 归还预置引用（-1）
+    adjust_all(-1);
+
+    // 7) 分配器空闲位图整表重建（"引用计数==0 即空闲"；头尾拆分与伙伴
+    //    合并全部走 KPageHeap::Free 既有代码路径）
+    kernel.MemoryManager().SavestateRebuildFree();
+
+    // 8) 页表记账回写（current_heap_end / mapped_physical_memory_size 等，
+    //    = Cemu 的 sysAreaAllocatorOffset 随档恢复）
+    {
+        Kernel::KPageTableBase::SavestateBookkeeping bk{};
+        std::memcpy(&bk, &bookkeeping, sizeof(bk));
+        if (!base.SavestateRestoreBookkeeping(bk)) {
+            // Precheck 已校验区域一致，这里不应失败 —— 防御性关停
+            *err = "bookkeeping restore rejected";
+            return SurgeryOutcome::Torn;
+        }
+    }
+
+    SSLogInfo(fmt::format("surgery: {} blocks replayed, {} preopen spans, {} ms",
+                          replayed_blocks, preopen.size(), ElapsedMsSince(t0)));
+    return SurgeryOutcome::Ok;
+}
+
+// ---------------------------------------------------------------------------
 // state.bin —— 原地恢复（quickRestoreSlot 调用，必须持冻结）
 // ---------------------------------------------------------------------------
 
 enum class RestoreOutcome {
     Ok,             // 原地恢复成功
-    LayoutChanged,  // 内存布局与存档不一致 → 调用方走 legacy 重启路径
+    Incompatible,   // 与当前会话不兼容（区域不一致 / 瞬态锁在途）→ legacy 重启
     ThreadsChanged, // 线程集与存档不一致 → 同上
-    Error,          // 校验失败（内存未动，可安全回落/报错）
-    Torn,           // 应用中途失败（内存已半恢复 → 必须关停核心）
+    Error,          // 校验失败（内存未动，可安全报错/回落）
+    Torn,           // 应用中途失败（内核状态已改动 → 必须关停核心）
 };
 
 RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
@@ -1567,7 +2031,7 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         return RestoreOutcome::Error;
     }
     const u64 file_size = fs::file_size(state_path, ec);
-    if (ec || file_size < sizeof(StateHeaderV4)) {
+    if (ec || file_size < sizeof(StateHeaderV5)) {
         *err = "state.bin too small";
         return RestoreOutcome::Error;
     }
@@ -1579,7 +2043,7 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     }
 
     // ---- 1) 头部 ----
-    StateHeaderV4 header{};
+    StateHeaderV5 header{};
     in.read(reinterpret_cast<char*>(&header), sizeof(header));
     if (in.gcount() != static_cast<std::streamsize>(sizeof(header)) ||
         std::memcmp(header.magic, kStateMagic, sizeof(kStateMagic)) != 0) {
@@ -1604,32 +2068,86 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     }
     if (header.block_count == 0 || header.block_count > kMaxBlockCount ||
         header.content_count == 0 || header.content_count > header.block_count ||
-        header.thread_count > kMaxThreadCount || header.nvdrv_size > kMaxNvdrvSize) {
+        header.thread_count > kMaxThreadCount || header.nvdrv_size > kMaxNvdrvSize ||
+        header.pa_run_total > kMaxPaRunTotal) {
         *err = "state.bin header sanity check failed";
         return RestoreOutcome::Error;
     }
 
-    // ---- 2) 块表 / 内容表 ----
-    std::vector<LayoutBlock> saved_blocks(header.block_count);
+    // ---- 2) 记账 / 块表 / PARun 表 / 内容表 ----
+    BookkeepingV5 bookkeeping{};
+    in.read(reinterpret_cast<char*>(&bookkeeping), sizeof(bookkeeping));
+    if (in.gcount() != static_cast<std::streamsize>(sizeof(bookkeeping))) {
+        *err = "state.bin bookkeeping truncated";
+        return RestoreOutcome::Error;
+    }
+
+    std::vector<SavedBlock> saved_blocks(header.block_count);
     {
-        std::vector<BlockDescV4> descs(header.block_count);
+        std::vector<BlockDescV5> descs(header.block_count);
         in.read(reinterpret_cast<char*>(descs.data()),
-                static_cast<std::streamsize>(descs.size() * sizeof(BlockDescV4)));
-        if (in.gcount() != static_cast<std::streamsize>(descs.size() * sizeof(BlockDescV4))) {
+                static_cast<std::streamsize>(descs.size() * sizeof(BlockDescV5)));
+        if (in.gcount() != static_cast<std::streamsize>(descs.size() * sizeof(BlockDescV5))) {
             *err = "state.bin block table truncated";
             return RestoreOutcome::Error;
         }
         for (size_t i = 0; i < descs.size(); ++i) {
-            saved_blocks[i] = {descs[i].va, descs[i].size, descs[i].state, descs[i].perm,
-                               descs[i].attr};
+            saved_blocks[i].va = descs[i].va;
+            saved_blocks[i].size = descs[i].size;
+            saved_blocks[i].state = descs[i].state;
+            saved_blocks[i].perm = descs[i].perm;
+            saved_blocks[i].attr = descs[i].attr;
+            saved_blocks[i].has_pg = (descs[i].flags & kBlockFlagHasPg) != 0;
         }
     }
 
-    std::vector<ContentDescV4> content_descs(header.content_count);
+    // PARun 表（与块表同序；每块 u32 run_count + PARunV5×n）
+    u64 run_total = 0;
+    for (auto& b : saved_blocks) {
+        u32 run_count = 0;
+        in.read(reinterpret_cast<char*>(&run_count), sizeof(run_count));
+        if (in.gcount() != static_cast<std::streamsize>(sizeof(run_count))) {
+            *err = "state.bin pa run table truncated";
+            return RestoreOutcome::Error;
+        }
+        if (!b.has_pg && run_count != 0) {
+            *err = "state.bin pa run table inconsistent";
+            return RestoreOutcome::Error;
+        }
+        if (run_count == 0) {
+            continue;
+        }
+        b.runs.resize(run_count);
+        in.read(reinterpret_cast<char*>(b.runs.data()),
+                static_cast<std::streamsize>(run_count * sizeof(PARunV5)));
+        if (in.gcount() != static_cast<std::streamsize>(run_count * sizeof(PARunV5))) {
+            *err = "state.bin pa run table truncated";
+            return RestoreOutcome::Error;
+        }
+        u64 pages_total = 0;
+        for (auto& [pa, pages] : b.runs) {
+            if (pages == 0 || pa % kPageSize != 0) {
+                *err = fmt::format("bad pa run in block {:016x}", b.va);
+                return RestoreOutcome::Error;
+            }
+            pages_total += pages;
+        }
+        if (pages_total * kPageSize != b.size) {
+            *err = fmt::format("pa run page count mismatch @ {:016x}", b.va);
+            return RestoreOutcome::Error;
+        }
+        run_total += run_count;
+    }
+    if (run_total != header.pa_run_total) {
+        *err = "state.bin pa run total mismatch";
+        return RestoreOutcome::Error;
+    }
+
+    std::vector<ContentDescV5> content_descs(header.content_count);
     in.read(reinterpret_cast<char*>(content_descs.data()),
-            static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV4)));
+            static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV5)));
     if (in.gcount() !=
-        static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV4))) {
+        static_cast<std::streamsize>(content_descs.size() * sizeof(ContentDescV5))) {
         *err = "state.bin content table truncated";
         return RestoreOutcome::Error;
     }
@@ -1661,62 +2179,20 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         return RestoreOutcome::Error;
     }
 
-    // ---- 3) 校验：布局（逐块全比较，权威） ----
-    {
-        std::vector<LayoutBlock> current_blocks;
-        if (!CollectLayoutBlocks(system, current_blocks)) {
-            *err = "current layout walk failed";
-            return RestoreOutcome::Error;
-        }
-        if (LayoutDigest(current_blocks) != header.layout_digest || !SameLayout(current_blocks, saved_blocks)) {
-            size_t cur_i = 0, save_i = 0;
-            std::string first_diff;
-            while (cur_i < current_blocks.size() || save_i < saved_blocks.size()) {
-                const bool has_cur = cur_i < current_blocks.size();
-                const bool has_save = save_i < saved_blocks.size();
-                if (has_cur && has_save && current_blocks[cur_i].va == saved_blocks[save_i].va) {
-                    if (current_blocks[cur_i].size != saved_blocks[save_i].size ||
-                        current_blocks[cur_i].state != saved_blocks[save_i].state ||
-                        current_blocks[cur_i].perm != saved_blocks[save_i].perm ||
-                        current_blocks[cur_i].attr != saved_blocks[save_i].attr) {
-                        first_diff = fmt::format("block {:016x} attrs differ",
-                                                 current_blocks[cur_i].va);
-                        break;
-                    }
-                    ++cur_i;
-                    ++save_i;
-                } else if (has_cur && (!has_save || current_blocks[cur_i].va < saved_blocks[save_i].va)) {
-                    first_diff = fmt::format("mapped after save @ {:016x}+{:x}",
-                                             current_blocks[cur_i].va,
-                                             current_blocks[cur_i].size);
-                    break;
-                } else {
-                    first_diff = fmt::format("missing after save @ {:016x}+{:x}",
-                                             saved_blocks[save_i].va, saved_blocks[save_i].size);
-                    break;
-                }
-            }
-            SSLogWarn(fmt::format("restore: layout changed ({} saved / {} current blocks; {}) - falling back to legacy",
-                                  saved_blocks.size(), current_blocks.size(),
-                                  first_diff.empty() ? "count differs" : first_diff));
-            *err = "memory layout changed since save";
-            return RestoreOutcome::LayoutChanged;
-        }
-    }
-
-    // ---- 4) 校验：线程集（全等） ----
+    // ---- 3) 线程记录读取 + 线程集校验（全等） ----
+    //（线程集与存档不一致时无法原地恢复：新线程的栈/TLS 已被内容回滚
+    //  破坏、已消亡线程的 KThread 宿主对象无法复活 —— 只能重启路径）
     std::vector<u64> saved_thread_ids;
     saved_thread_ids.reserve(header.thread_count);
+    std::vector<u8> thread_blob;
     {
-        // 定位线程段（帧 + nvdrv 之后），整段读入（≤ 16384×0x340 ≈ 13MB，
-        // 实际几十 KB）
         const size_t thread_bytes =
             static_cast<size_t>(header.thread_count) * kThreadRecordSize;
-        std::vector<u8> thread_blob(thread_bytes);
+        thread_blob.resize(thread_bytes);
         in.seekg(static_cast<std::streamoff>(thread_off), std::ios::beg);
         in.read(reinterpret_cast<char*>(thread_blob.data()),
                 static_cast<std::streamsize>(thread_bytes));
-        if (static_cast<size_t>(in.gcount()) != thread_bytes) {
+        if (thread_bytes > 0 && static_cast<size_t>(in.gcount()) != thread_bytes) {
             *err = "state.bin thread section truncated";
             return RestoreOutcome::Error;
         }
@@ -1734,110 +2210,139 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             *err = "thread set changed since save";
             return RestoreOutcome::ThreadsChanged;
         }
-        // 线程记录留在内存里，应用阶段直接写回（不再二次读盘）
-        //（thread_blob 在下方应用阶段通过参数传递）
-        // 恢复流指针到帧区
-        in.clear();
-        in.seekg(frames_start, std::ios::beg);
-
-        // ---- 5) 校验：逐帧 zstd 流式解码丢弃（动内存前的最后把关） ----
-        for (size_t i = 0; i < content_descs.size(); ++i) {
-            const auto& d = content_descs[i];
-            if (!ValidateFrame(in, d.uncompressed, d.compressed)) {
-                *err = fmt::format("corrupt payload @ {:016x}", d.va);
-                return RestoreOutcome::Error;
-            }
-            if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
-                SSLogInfo(fmt::format("restore: validated {}/{} frames, {} ms", i + 1,
-                                      content_descs.size(), ElapsedMsSince(t0)));
-            }
-        }
-
-        // ---- 应用阶段（到这里文件已全量校验，I/O 仍可能中途失败 → Torn） ----
-        in.clear();
-        in.seekg(frames_start, std::ios::beg);
-        for (size_t i = 0; i < content_descs.size(); ++i) {
-            const auto& d = content_descs[i];
-            if (!ApplyFrame(in, system, d.va, d.uncompressed, d.compressed, err)) {
-                return RestoreOutcome::Torn;
-            }
-            if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
-                SSLogInfo(fmt::format("restore: applied {}/{} frames, {} ms (rss {} MB)",
-                                      i + 1, content_descs.size(), ElapsedMsSince(t0),
-                                      CurrentRssMB()));
-            }
-        }
-
-        // nvdrv GPU 状态回放：SMMU/nvmap 句柄表 + GMMU 映射（在 guest 内存
-        // 写回之后、rasterizer 缓存失效之前）。
-        {
-            std::vector<u8> nvdrv_blob(static_cast<size_t>(header.nvdrv_size));
-            in.clear();
-            in.seekg(static_cast<std::streamoff>(nvdrv_off), std::ios::beg);
-            in.read(reinterpret_cast<char*>(nvdrv_blob.data()),
-                    static_cast<std::streamsize>(nvdrv_blob.size()));
-            if (static_cast<size_t>(in.gcount()) != nvdrv_blob.size()) {
-                *err = "nvdrv section truncated";
-                return RestoreOutcome::Torn;
-            }
-            std::string nvdrv_err;
-            if (!RestoreNvdrvState(system, nvdrv_blob, &nvdrv_err)) {
-                *err = "nvdrv restore failed: " + nvdrv_err;
-                return RestoreOutcome::Torn;
-            }
-        }
-
-        // GPU 指令/数据缓存一致性：宿主纹理、缓冲、渲染目标缓存全部
-        // 失效，从还原后的 guest 内存重建（InvalidateGPUCache 与
-        // ReloadDiskShaderCache 同源语义；GMMU 清空重放亦已触发逐段丢弃）。
-        if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
-            rasterizer->InvalidateGPUCache();
-            rasterizer->FlushCommands();
-        }
-
-        // ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存；
-        // 页粒度 icache 已在 ApplyFrame 按 run 刷新）。
-        if (Kernel::KProcess* process = system.ApplicationProcess(); process != nullptr) {
-            for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core) {
-                if (Core::ArmInterface* iface = process->GetArmInterface(core); iface != nullptr) {
-                    iface->ClearInstructionCache();
-                }
-            }
-        }
-
-        // 线程寄存器组原地写回（按 thread_id 匹配；线程集已全等校验，
-        // 每条记录必有目标）。挂起的线程解冻后被重新调度时经
-        // KScheduler::Reload → LoadContext → SetContext 装载恢复后的
-        // 寄存器组 —— 从存档时刻继续。
-        {
-            Kernel::KProcess* process = system.ApplicationProcess();
-            if (process == nullptr) {
-                *err = "application process is null";
-                return RestoreOutcome::Torn;
-            }
-            Kernel::Svc::ThreadContext ctx_copy{};
-            for (u32 i = 0; i < header.thread_count; ++i) {
-                ThreadMetaV2 meta{};
-                std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
-                std::memcpy(&ctx_copy, thread_blob.data() + i * kThreadRecordSize + sizeof(meta),
-                            sizeof(ctx_copy));
-
-                for (auto& thread : process->GetThreadList()) {
-                    if (thread.GetThreadId() != meta.thread_id || thread.IsDummyThread()) {
-                        continue;
-                    }
-                    Kernel::Svc::ThreadContext& dst = thread.GetContext();
-                    std::memcpy(&dst, &ctx_copy, sizeof(Kernel::Svc::ThreadContext));
-                    break;
-                }
-            }
-        }
-
-        SSLogInfo(fmt::format("restore: done, {} frames / {} threads, {} ms (rss {} MB)",
-                              content_descs.size(), header.thread_count,
-                              ElapsedMsSince(t0), CurrentRssMB()));
-        return RestoreOutcome::Ok;
     }
+
+    // ---- 4) nvdrv 段解析（纯解析，无副作用；执行拆到 Teardown/Replay） ----
+    NvdrvState nvdrv_state{};
+    {
+        std::vector<u8> nvdrv_blob(static_cast<size_t>(header.nvdrv_size));
+        in.clear();
+        in.seekg(static_cast<std::streamoff>(nvdrv_off), std::ios::beg);
+        in.read(reinterpret_cast<char*>(nvdrv_blob.data()),
+                static_cast<std::streamsize>(nvdrv_blob.size()));
+        if (static_cast<size_t>(in.gcount()) != nvdrv_blob.size()) {
+            *err = "nvdrv section truncated";
+            return RestoreOutcome::Error;
+        }
+        std::string nvdrv_err;
+        if (!ParseNvdrvState(nvdrv_blob, &nvdrv_state, &nvdrv_err)) {
+            *err = "nvdrv parse failed: " + nvdrv_err;
+            return RestoreOutcome::Error;
+        }
+    }
+
+    // ---- 5) 手术前置校验（会话区域一致 + 无瞬态锁；须在 Teardown 之前，
+    //      失败时零副作用 → 可安全回落 legacy） ----
+    if (!SurgeryPrecheck(system, bookkeeping, err)) {
+        SSLogWarn(fmt::format("restore: precheck rejected ({})", *err));
+        return RestoreOutcome::Incompatible;
+    }
+
+    // ---- 6) 逐帧 zstd 流式解码丢弃验证（动内存前的最后把关；Cemu
+    //      ValidateCompressedRange 同款） ----
+    in.clear();
+    in.seekg(frames_start, std::ios::beg);
+    for (size_t i = 0; i < content_descs.size(); ++i) {
+        const auto& d = content_descs[i];
+        if (!ValidateFrame(in, d.uncompressed, d.compressed)) {
+            *err = fmt::format("corrupt payload @ {:016x}", d.va);
+            return RestoreOutcome::Error;
+        }
+        if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
+            SSLogInfo(fmt::format("restore: validated {}/{} frames, {} ms", i + 1,
+                                  content_descs.size(), ElapsedMsSince(t0)));
+        }
+    }
+
+    // ════════════════ 应用阶段（此后内核状态被改动；失败一律 Torn） ════════════════
+
+    // ---- 7) nvmap Teardown：拆除当前全部设备映射（清 DeviceShared 属性
+    //      —— 页表整表卸载的前提） ----
+    NvdrvTeardown(system, nvdrv_state);
+
+    // ---- 8) 页表整表回放手术：当前布局 → 存档布局（原 VA/PA/权限） ----
+    {
+        const SurgeryOutcome so = ReplayPageTableLayout(system, saved_blocks, bookkeeping, err);
+        if (so != SurgeryOutcome::Ok) {
+            // Teardown 已拆除设备映射、手术可能半途 —— 带撕裂状态续跑必崩，
+            // 上层按 Torn 关停核心（legacy 允许时回落重启路径）
+            SSLogWarn(fmt::format("restore: surgery failed ({})", *err));
+            return RestoreOutcome::Torn;
+        }
+    }
+
+    // ---- 9) 内容帧写回（此刻映射已与存档逐块一致 —— Cemu 的
+    //      "内容原地覆盖" 至此完全成立） ----
+    in.clear();
+    in.seekg(frames_start, std::ios::beg);
+    for (size_t i = 0; i < content_descs.size(); ++i) {
+        const auto& d = content_descs[i];
+        if (!ApplyFrame(in, system, d.va, d.uncompressed, d.compressed, err)) {
+            return RestoreOutcome::Torn;
+        }
+        if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
+            SSLogInfo(fmt::format("restore: applied {}/{} frames, {} ms (rss {} MB)",
+                                  i + 1, content_descs.size(), ElapsedMsSince(t0),
+                                  CurrentRssMB()));
+        }
+    }
+
+    // ---- 10) nvdrv Replay：GMMU 映射 + nvmap 句柄表按存档重建
+    //      （SMMU/GMMU/低位 pin 指向手术后的新映射；GMMU 全量清空即触发
+    //      rasterizer 对全部受影响设备地址段的缓存丢弃 —— Cemu
+    //      RequestGpuCacheReset 同构） ----
+    NvdrvReplay(system, nvdrv_state);
+
+    // ---- 11) GPU 指令/数据缓存一致性：宿主纹理、缓冲、渲染目标缓存全部
+    //      失效，从还原后的 guest 内存重建（InvalidateGPUCache 与
+    //      ReloadDiskShaderCache 同源语义） ----
+    if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
+        rasterizer->InvalidateGPUCache();
+        rasterizer->FlushCommands();
+    }
+
+    // ---- 12) ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存；
+    //      页粒度 icache 已在 ApplyFrame 按 run 刷新） ----
+    if (Kernel::KProcess* process = system.ApplicationProcess(); process != nullptr) {
+        for (std::size_t core = 0; core < Core::Hardware::NUM_CPU_CORES; ++core) {
+            if (Core::ArmInterface* iface = process->GetArmInterface(core); iface != nullptr) {
+                iface->ClearInstructionCache();
+            }
+        }
+    }
+
+    // ---- 13) 线程寄存器组原地写回（按 thread_id 匹配；线程集已全等校验，
+    //      每条记录必有目标）。挂起的线程解冻后被重新调度时经
+    //      KScheduler::Reload → LoadContext → SetContext 装载恢复后的
+    //      寄存器组 —— 从存档时刻继续。 ----
+    {
+        Kernel::KProcess* process = system.ApplicationProcess();
+        if (process == nullptr) {
+            *err = "application process is null";
+            return RestoreOutcome::Torn;
+        }
+        Kernel::Svc::ThreadContext ctx_copy{};
+        for (u32 i = 0; i < header.thread_count; ++i) {
+            ThreadMetaV2 meta{};
+            std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
+            std::memcpy(&ctx_copy, thread_blob.data() + i * kThreadRecordSize + sizeof(meta),
+                        sizeof(ctx_copy));
+
+            for (auto& thread : process->GetThreadList()) {
+                if (thread.GetThreadId() != meta.thread_id || thread.IsDummyThread()) {
+                    continue;
+                }
+                Kernel::Svc::ThreadContext& dst = thread.GetContext();
+                std::memcpy(&dst, &ctx_copy, sizeof(Kernel::Svc::ThreadContext));
+                break;
+            }
+        }
+    }
+
+    SSLogInfo(fmt::format("restore: done, {} frames / {} threads, {} ms (rss {} MB)",
+                          content_descs.size(), header.thread_count,
+                          ElapsedMsSince(t0), CurrentRssMB()));
+    return RestoreOutcome::Ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -2115,10 +2620,11 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         }
 
         // ★★ 首选路径：state.bin 进程内原地恢复（= Cemu RestoreStateFromFile）
-        //    游戏暂停 → 校验（布局/线程集/逐帧）→ 内存快照覆盖 → 从存档时刻
-        //    继续 —— 完全不重启。布局或线程集已变化时自动回落 legacy 重启
-        //    路径（RESULT_OK_LEGACY_RESTART），绝不带着分叉状态续跑。
-        bool legacy_by_layout = false;
+        //    游戏暂停 → 校验 → nvmap 拆除 → 页表整表回放手术（v5：原
+        //    VA/PA/权限 —— 不再要求"存档后游戏什么都没做"）→ 内容覆盖 →
+        //    nvmap 重建 → 从存档时刻继续，完全不重启。
+        //    仅当会话不兼容 / 线程集变化 / 应用中途失败时才回落 legacy。
+        bool legacy_by_incompat = false;
         if (has_state) {
             Core::System& system = Session().System();
             {
@@ -2131,11 +2637,12 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
                     TrimHeap();
                     return native_savestate::RESULT_OK_RESTORED_IN_PLACE;
 
-                case RestoreOutcome::LayoutChanged:
+                case RestoreOutcome::Incompatible:
                 case RestoreOutcome::ThreadsChanged:
-                    // 原地恢复不可行（宿主侧布局/线程集与存档分叉）：
-                    // 自动回落 legacy —— 前端 relaunchGame() 重启加载。
-                    legacy_by_layout = true;
+                    // 原地恢复不可行（跨会话槽位 / 瞬态锁在途 / 线程集
+                    // 分叉 —— 校验阶段失败，内核零改动）：自动回落 legacy
+                    // —— 前端 relaunchGame() 重启加载。
+                    legacy_by_incompat = true;
                     break;
 
                 case RestoreOutcome::Error:
@@ -2163,12 +2670,12 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
                 }
             } // freeze 析构：恢复运行（或 Torn 时关停）
 
-            if (legacy_by_layout) {
+            if (legacy_by_incompat) {
                 SSLogInfo("restore: falling back to legacy (restart) path");
             }
         }
 
-        // ── legacy 路径（老槽位无 state.bin / 布局分叉自动回落 / 安全模式）──
+        // ── legacy 路径（老槽位无 state.bin / 会话不兼容自动回落 / 安全模式）──
         // 与 Cemu ShutdownTitle 同语义：先自动备份当前存档（autobackup 槽），
         // 停止运行中的游戏让游戏释放全部存档文件句柄，杜绝写回与还原拷贝
         // 竞争，随后写回 NAND，由前端 relaunchGame() 进程内重启游戏。
@@ -2202,11 +2709,11 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         TrimHeap();
         // RESULT_OK = legacy 语义（Cemu 同款）：存档数据已还原、游戏已
         // 关停，由前端 relaunchGame() 进程内重启游戏加载恢复的存档。
-        // RESULT_OK_LEGACY_RESTART：布局分叉自动回落时的同路径返回码 ——
-        // 前端据此提示「内存布局已变化，已重启游戏加载」而非误导性的
-        // 原地恢复话术。
-        return legacy_by_layout ? native_savestate::RESULT_OK_LEGACY_RESTART
-                                : native_savestate::RESULT_OK;
+        // RESULT_OK_LEGACY_RESTART：会话不兼容自动回落时的同路径返回码 ——
+        // 前端据此提示「已重启游戏加载」而非误导性的原地恢复话术
+        // （v5 起原地恢复不再受内存布局变化影响，此码只剩跨会话场景）。
+        return legacy_by_incompat ? native_savestate::RESULT_OK_LEGACY_RESTART
+                                  : native_savestate::RESULT_OK;
     } catch (...) {
         return native_savestate::RESULT_ERROR_IO;
     }
