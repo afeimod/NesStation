@@ -89,8 +89,19 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::KProcess& process,
     codeset.DataSegment().size += kip->GetBSSSize();
 
     // TODO: this is bad form of ASLR, it sucks
+    // ★★★ NesStation savestate (v7)：代码基址确定性放置 ★★★
+    // 原本的随机回退（Common::Random::Random64 = std::random_device）让
+    // 同一游戏每次启动的代码基址漂移在 [0, 16MB) 内 —— 页表区域布局由
+    // process_code_start 派生，跨会话读档的 precheck（区域一致校验）必然
+    // 拒绝（= Cemu 的静态 MMURange 前提不成立）。改为固定常数：模拟器
+    // 不是安全边界，确定性基址对 guest 完全透明，且与
+    // KPageTableBase::InitializeForProcess / HostMemory::ChooseVirtualBase
+    // 的确定性化合力，使同一游戏每次启动布局完全一致 → 跨会话槽位也能
+    // 原地恢复。用户显式设置 rng_seed 时仍尊重之（同样是确定性的）。
+    // 0x5A5 & 0xfff → 偏移 0x5A5000（约 5.8MB，仍在入口点之上，保持
+    // 原 ASLR 注释里 skyline 类程序的兼容语义）。
     std::uintptr_t aslr_offset = ((::Settings::values.rng_seed_enabled.GetValue()
-        ? ::Settings::values.rng_seed.GetValue() : Common::Random::Random64(0)) << 12) & 0xfff000;
+        ? ::Settings::values.rng_seed.GetValue() : 0x5A5ULL) << 12) & 0xfff000;
 
     // Setup the process code layout
     if (process.LoadFromMetadata(system.Kernel(), FileSys::ProgramMetadata::GetDefault(), codeset.memory.size(), 0, aslr_offset).IsError()) {

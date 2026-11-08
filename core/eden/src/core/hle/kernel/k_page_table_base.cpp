@@ -310,13 +310,45 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
 
     const size_t remaining_size = alloc_size - needed_size;
 
-    // Determine random placements for each region.
+    // ★★★ NesStation savestate (v7)：区域布局确定性放置 ★★★
+    //
+    // Cemu 的即时存档之所以跨会话可用（RestoreStateFromFile 只按基址找
+    // 当前 MMURange、原地覆盖内容）：Wii U 的内存映射是启动时固定的静态
+    // 区间集，同一游戏每次启动布局完全一致。Eden 这里原本用
+    // KSystemControl::GenerateRandomRange（std::random_device 种子的
+    // MT19937，每次进程启动重新播种）随机化 alias/heap/stack/kmap 四个
+    // 区域的放置 —— 跨会话读档的 precheck（区域一致校验）必然拒绝，
+    // 永远回落「重启加载」路径（用户报告：重新进游戏后读档就提示重启）。
+    //
+    // 修复：把四个放置值改为 (code_address, code_size, 地址空间宽度, pool)
+    // 派生的确定性序列（splitmix64，无全局状态）。同一游戏 + 同一配置 →
+    // 每次启动完全一致的区域布局 = 把 Cemu 的「静态映射」前提造出来。
+    // 模拟器不是安全边界，确定性区域布局对 guest 完全透明（guest 经
+    // svcQueryMemory 适应任意合法布局）。
+    //
+    // 注意：code_address 本身 = 0x8000000 + aslr_offset + NCE 预留基址，
+    // 后两者也各自做了确定性化（loader 的 aslr_offset 常量化、
+    // HostMemory::ChooseVirtualBase 固定种子）—— 三者合力才构成
+    // 「同一游戏跨会话布局一致」。
     size_t alias_rnd = 0, heap_rnd = 0, stack_rnd = 0, kmap_rnd = 0;
     if (enable_aslr) {
-        alias_rnd = KSystemControl::GenerateRandomRange(0, remaining_size / RegionAlignment) * RegionAlignment;
-        heap_rnd = KSystemControl::GenerateRandomRange(0, remaining_size / RegionAlignment) * RegionAlignment;
-        stack_rnd = KSystemControl::GenerateRandomRange(0, remaining_size / RegionAlignment) * RegionAlignment;
-        kmap_rnd = KSystemControl::GenerateRandomRange(0, remaining_size / RegionAlignment) * RegionAlignment;
+        u64 rng_state = GetInteger(code_address) ^
+                        (static_cast<u64>(code_size) * 0x9E3779B97F4A7C15ULL) ^
+                        (static_cast<u64>(m_address_space_width) << 32) ^
+                        (static_cast<u64>(pool) << 48) ^ 0xC2B2AE3D27D4EB4FULL;
+        const auto next_rnd = [&]() {
+            rng_state = rng_state + 0x9E3779B97F4A7C15ULL;
+            u64 z = rng_state;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            return z ^ (z >> 31);
+        };
+        // 与原 GenerateRandomRange(0, remaining/align) 的闭区间语义一致
+        const u64 rnd_max = remaining_size / RegionAlignment;
+        alias_rnd = static_cast<size_t>(next_rnd() % (rnd_max + 1)) * RegionAlignment;
+        heap_rnd = static_cast<size_t>(next_rnd() % (rnd_max + 1)) * RegionAlignment;
+        stack_rnd = static_cast<size_t>(next_rnd() % (rnd_max + 1)) * RegionAlignment;
+        kmap_rnd = static_cast<size_t>(next_rnd() % (rnd_max + 1)) * RegionAlignment;
     }
 
     // Setup heap and alias regions.

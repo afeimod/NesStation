@@ -470,13 +470,39 @@ public:
         m_attribute = (m_attribute & ~mask) | attr;
     }
 
-    /// ★★★ NesStation savestate (v6)：瞬态锁属性位清除（读档手术用） ★★★
-    /// UpdateAttribute 断言禁止清 IpcLocked；瞬态锁（IpcLocked/Locked）
-    /// 是 IPC 在途的瞬态内核状态，读档时属于「已废弃时间线」—— 与 Cemu
-    /// 丢弃排队事件回调同语义，直接清位、不校验（冻结下整表清）。
-    constexpr void SavestateClearTransientLocks() {
-        m_attribute = m_attribute &
-                      ~(KMemoryAttribute::IpcLocked | KMemoryAttribute::Locked);
+    /// ★★★ NesStation savestate (v7)：可回放块的「废弃时间线」簿记复位 ★★★
+    ///
+    /// v5/v6 同会话读档必失败（unmap failed ... 0d401）的根因：
+    /// nvmap::IocAlloc 对每次 nvmap 分配调用 LockForMapDeviceAddressSpace
+    /// 给堆页置 DeviceShared 属性（并累加 m_device_use_count / 禁合并位），
+    /// 而 HLE nvdrv 只有 IocFree 的 can_unlock 分支会对称清除 —— 存档时刻
+    /// 仍然活跃的 nvmap 句柄（游戏帧缓冲/纹理/命令缓冲，几乎必然存在）
+    /// 在读档手术时仍持有 DeviceShared；UnmapPages 的 CheckMemoryState
+    /// 要求 attr==None（attr_mask=All），svcSetMemoryAttribute 又被
+    /// 断言禁止清 DeviceShared → 手术在第一个 nvmap 堆块上必然
+    /// 0xd401 InvalidCurrentMemory 撕裂。v6 只清了 IpcLocked/Locked，
+    /// 漏掉了 DeviceShared —— 本方法补齐。
+    ///
+    /// 语义：调用时机是「本块即将被整表卸载重建」（NvdrvTeardown 已拆掉
+    /// 全部设备映射，冻结期无并发内核操作），因此直接把属性位（Uncached/
+    /// PermissionLocked/DeviceShared/IpcLocked/Locked）、锁/共享计数、
+    /// 设备与 IPC 禁合并位、original_permission（Update() 对非 None 值有
+    /// 断言）全部复位为干净状态；块的 state/perm/映射随后由手术按存档
+    /// 逐块重放，Uncached/PermissionLocked 属性由重放阶段按原值恢复。
+    constexpr void SavestateResetForReplay() {
+        m_attribute = KMemoryAttribute::None;
+        m_ipc_lock_count = 0;
+        m_device_use_count = 0;
+        m_ipc_disable_merge_count = 0;
+        m_device_disable_merge_left_count = 0;
+        m_device_disable_merge_right_count = 0;
+        m_original_permission = KMemoryPermission::None;
+        m_disable_merge_attribute = static_cast<KMemoryBlockDisableMergeAttribute>(
+            m_disable_merge_attribute &
+            ~(KMemoryBlockDisableMergeAttribute::IpcLeft |
+              KMemoryBlockDisableMergeAttribute::Locked |
+              KMemoryBlockDisableMergeAttribute::DeviceLeft |
+              KMemoryBlockDisableMergeAttribute::DeviceRight));
     }
 
     constexpr void Split(KMemoryBlock* block, KProcessAddress addr) {

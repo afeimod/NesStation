@@ -3,6 +3,16 @@
 //
 // ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生槽位契约 v2 ★★★
 //
+// v7 更新（详见 native_savestate.cpp 文件头）：
+//   · 同会话读档失败（unmap 0xd401）已修复 —— nvmap 的 DeviceShared
+//     簿记由 SavestatePrepareForReplay（内核侧配套）随读档手术复位；
+//   · 跨会话（重启游戏后）读档不再必然回落重启 —— 地址空间布局
+//     确定性化（内核区域放置 / loader aslr_offset / NCE 预留基址三处
+//     配套修改），同一游戏 + 同一配置每次启动布局一致 = Cemu
+//     「静态 MMURange」前提成立，旧会话槽位同样原地恢复；
+//   · 槽位格式（EDSS v6）与 v6 完全兼容：现存槽位无需重新存档
+//     （旧版随机布局时代保存的槽位会因布局不兼容干净回落 legacy）。
+//
 // v2 新增（对齐 Cemu 的原地恢复语义 —— 与
 // core/cemu/src/android/app/src/main/cpp/NativeQuickSave.cpp 逐块对应）：
 //

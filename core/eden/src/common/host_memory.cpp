@@ -416,8 +416,19 @@ static void* ChooseVirtualBase(size_t virtual_size) {
     constexpr uintptr_t Map39BitSize = (1ULL << 39);
     constexpr uintptr_t Map36BitSize = (1ULL << 36);
 
-    // This is not a cryptographic application, we just want something random.
-    std::mt19937_64 rng;
+    // ★★★ NesStation savestate (v7)：确定性预留基址 ★★★
+    //
+    // NCE 直接映射模式下 guest 地址空间叠加在宿主预留窗上（guest VA 即
+    // 宿主 VA，代码基址 = 预留基址 + 0x8000000 + aslr_offset）。预留基址
+    // 每次启动不同的话，同一游戏跨会话的内存布局永远对不上 → 即时存档
+    // 读档的 precheck 必然拒绝 → 永远回落「重启加载」路径。改为显式固定
+    // 种子的确定性提示序列（原实现依赖 mt19937_64 默认种子，等效但未成
+    // 文，且碰撞重试顺序未受控）：窗口 [64GB, 256GB) 内进程通常没有任何
+    // 其它映射（Android 把 so 库/线程栈/Java 堆都放在 0x70'00000000 以上），
+    // 首个提示地址直接命中 —— 同一设备上每次启动落在同一基址。若个别
+    // 设备窗口内有既有映射导致命中不同提示，跨会话读档自动回落 legacy
+    // 重启路径（不崩溃、不损数据），同会话读档不受影响。
+    std::mt19937_64 rng{0x9E3779B97F4A7C15ULL ^ static_cast<uint64_t>(virtual_size)};
 
     // We want to ensure we are allocating at an address aligned to the L2 block size.
     // For Qualcomm devices, we must also allocate memory above 36 bits.
@@ -425,7 +436,7 @@ static void* ChooseVirtualBase(size_t virtual_size) {
     const size_t upper = (Map39BitSize - virtual_size) / HugePageSize;
     const size_t range = upper - lower;
 
-    // Try up to 64 times to allocate memory at random addresses in the range.
+    // Try up to 64 times to allocate memory at deterministic addresses in the range.
     for (int i = 0; i < 64; i++) {
         // Calculate a possible location.
         uintptr_t hint_address = ((rng() % range) + lower) * HugePageSize;

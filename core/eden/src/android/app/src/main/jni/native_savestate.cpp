@@ -1,9 +1,45 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v5 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v7 ★★★
 //
-// v5（本轮）：完全按 Cemu（core/cemu/src/Cafe/Savestate/SaveState.cpp）的
+// v7（本轮）：按 Cemu 架构补齐 v5/v6 的两处根因缺陷 ——
+//
+//   ① 同会话读档必失败（用户报告「游戏内存档读取就提示失败」，logcat:
+//      "restore torn (halting): unmap failed @ ... (state 077ebd05): 0d401"）
+//      根因：nvmap::IocAlloc 对每次 nvmap 分配调用
+//      LockForMapDeviceAddressSpace 给堆页置 DeviceShared 属性，而 HLE
+//      nvdrv 只有 IocFree 的 can_unlock 分支对称清除 —— 存档时活跃的
+//      nvmap 句柄（帧缓冲/纹理，几乎必然存在）使堆块在手术时仍带
+//      DeviceShared；UnmapPages 的 CheckMemoryState 要求 attr==None
+//      → 第一个 nvmap 堆块即 0xd401 InvalidCurrentMemory 撕裂。
+//      v6 的 SavestateClearTransientLocks 只清 IpcLocked/Locked，漏了它。
+//      修复：KMemoryBlock::SavestateResetForReplay（内核侧）一次性复位
+//      属性位 + 锁/共享计数 + 禁合并位 + original_permission；本文件
+//      手术入口改调 SavestatePrepareForReplay（只作用于即将整表卸载
+//      重建的可回放块），并废除逐块 SetMemoryAttribute 清属性循环
+//      （svc 路径状态位校验可能失败且无必要 —— 块随后即被卸载，属性由
+//      重放阶段按存档原值恢复）。
+//
+//   ② 跨会话读档必重启（用户报告「重新进游戏后读取存档就提示重新启动」，
+//      logcat: "precheck rejected (address space regions differ from save
+//      (different session))"）根因：地址空间布局三处逐启动随机化 ——
+//      KPageTableBase::InitializeForProcess 的四区域放置
+//      （random_device 种子的 MT19937）、loader 的 aslr_offset
+//      （Common::Random::Random64）、NCE 宿主预留基址
+//      （HostMemory::ChooseVirtualBase）。三者全部确定性化（内核/加载器/
+//      宿主三处配套修改）：同一游戏 + 同一配置 → 每次启动布局一致 =
+//      Cemu「静态 MMURange」前提成立 → 旧会话槽位也能原地恢复。
+//      真正不兼容（NCE 开关切换 / 旧版随机布局时代的槽位）仍回落
+//      legacy 重启，不损数据。
+//
+//   ③ Cemu RestoreStateFromFile 的铁律「先全量校验、后应用」补齐：页组
+//      预建（PrebuildSavedPageGroups）+ 布局冲突预检
+//      （CheckLayoutCompatibility）全部提前到零副作用阶段 —— apply 阶段
+//      只剩内核已验证的 UnmapPages / MapPageGroup 原语，可预见的 Torn
+//      全部转化为干净报错。
+//
+// v5（历史）：完全按 Cemu（core/cemu/src/Cafe/Savestate/SaveState.cpp）的
 //   读档架构重写 —— 核心变化是「布局比对门禁」换成「布局回放手术」：
 //
 //   Cemu 为什么从不提示"内存布局已变化"？因为 Wii U 的内存映射是启动时
@@ -18,14 +54,18 @@
 //   SetMemoryPermission / SetMemoryAttribute，全部与游戏日常 syscall 同源、
 //   经过整个内核验证的代码路径）把当前页表整表回放到存档时刻的布局：
 //
-//     ① nvmap Teardown：拆掉全部当前 GPU 设备映射（清 DeviceShared
-//        属性，页表才能整表卸载；= Cemu 冻结 FSA IO 线程的等价物）
+//     ① nvmap Teardown：拆掉全部当前 GPU 设备映射（SMMU/GMMU/低位
+//        pin；页表块的 DeviceShared 位由手术第 3 步
+//        SavestatePrepareForReplay 一并复位 —— = Cemu 冻结 FSA IO
+//        线程的等价物）
 //     ② 预置引用：存档布局出现的所有物理页 SavestateAdjustRef(+1)
 //        （MapPageGroup 的 Open 断言 ref>1 —— 内核约定"被映射的页必须
 //        已被持有引用"；游戏释放过的页此刻 ref==0，预置绕过断言）
-//     ③ 卸载当前全部可回放映射块（清 Uncached/PermissionLocked 后
-//        UnmapPages；宿主映射窗口外的地址由 host_memory v5 窗口裁剪
-//        安全跳过 —— 修复读档/拆卸期 host_memory.cpp:770 断言闪退）
+//     ③ SavestatePrepareForReplay：可回放块整表复位（属性位全部清零
+//        含 DeviceShared + 锁/共享计数 + 禁合并位 —— v7 根因修复），
+//        随后卸载当前全部可回放映射块（UnmapPages；宿主映射窗口外的
+//        地址由 host_memory v5 窗口裁剪安全跳过 —— 修复读档/拆卸期
+//        host_memory.cpp:770 断言闪退）
 //     ④ 按存档原 VA + 原 PA 重放（MapPageGroup + 存档 perm/state，
 //        别名关系/共享内存因 PA 精确而原样保留）+ Uncached/PermissionLocked
 //        属性重放
@@ -69,7 +109,10 @@
 //   v2：state.bin 进程内全量状态捕获/原地恢复（保留）
 //   v3：nvdrv GPU 状态段（保留；v5 拆 Teardown/Replay 夹住页表手术）
 //   v4：流式 zstd / 布局门禁 / 线程集门禁（门禁废除，其余保留）
-//   v5：本文件 —— 页表手术 + PA 精确回放 + TLS 修复 + 窗口裁剪
+//   v5：页表手术 + PA 精确回放 + TLS 修复 + 窗口裁剪（保留）
+//   v6：线程集差分重建 / 句柄回放 / 瞬态锁清位（保留；清位不完整 → v7）
+//   v7：本文件 —— DeviceShared 根因修复 + 布局确定性化（跨会话原地
+//       恢复）+ 物料预建/冲突预检（Cemu「先全量校验后应用」铁律）
 
 #include "native_savestate.h"
 
@@ -911,7 +954,8 @@ bool CaptureNvdrvState(Core::System& system, std::vector<u8>& blob_out) {
 //   [句柄记录 × handle_count]
 //
 // ★ v5 三段式（原 RestoreNvdrvState 一步执行 → 拆为 Parse / Teardown /
-//   Replay）：页表手术必须插在 nvmap 拆除（清 DeviceShared 属性）与
+//   Replay）：页表手术必须插在 nvmap 拆除（SMMU/GMMU 设备映射拆除；
+//   页表块的 DeviceShared 属性由 SavestatePrepareForReplay 复位）与
 //   nvmap 重建（在新映射上重新 pin）之间 —— GMMU 部分是纯 GPUVA 侧、
 //   与 CPU 页表无耦合，整体挪到 Replay 阶段执行。
 
@@ -980,7 +1024,8 @@ bool ParseNvdrvState(std::span<const u8> blob, NvdrvState* out, std::string* err
 }
 
 // Teardown：拆除全部当前 nvmap 设备映射（SMMU 分配 / heap 映射 / 低位
-// pin —— 清 DeviceShared 页表属性并归还设备地址），丢弃存档后新建的
+// pin —— 归还设备地址；页表块的 DeviceShared 位由
+// SavestatePrepareForReplay 复位），丢弃存档后新建的
 // 句柄。必须在页表手术【前】调用。
 void NvdrvTeardown(Core::System& system, const NvdrvState& state) {
     auto nvdrv = GetNvdrvModule(system);
@@ -1815,7 +1860,11 @@ enum class SurgeryOutcome {
 // 手术前置校验（无副作用）：会话区域一致（跨启动/配置的槽位拒绝）。
 // v6：瞬态锁检查已废除 —— IpcLocked/Locked 是 IPC 在途的瞬态内核状态，
 // 属于「已废弃时间线」；Cemu 对这类状态从不拒绝（丢弃排队事件回调同
-// 语义）。手术入口改用 SavestateClearTransientLocks 整表清位。
+// 语义）。手术入口的 SavestatePrepareForReplay 负责整表复位。
+// v7：区域布局已确定性化（InitializeForProcess / loader aslr_offset /
+// HostMemory::ChooseVirtualBase 三处配套修改）—— 同一游戏 + 同一配置
+// 跨启动布局一致，旧会话槽位也能原地恢复；本检查命中仅剩真正不兼容
+// 的场景（NCE 开关切换、旧版随机布局时代的槽位等）→ 干净回落 legacy。
 bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std::string* err) {
     *err = {};
     Kernel::KProcess* process = system.ApplicationProcess();
@@ -1854,9 +1903,112 @@ bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// v7：手术前置物料 —— 存档布局的页组预建 + 当前布局兼容性预检
+//
+// Cemu RestoreStateFromFile 的铁律：先把整份档解析、校验、逐 range 与
+// 当前映射比对完（任何失败都在动内存之前发生，零副作用报错），然后才
+// 进入 apply 阶段。v5/v6 把「页组重建」放在手术循环中段 —— AddBlock
+// 失败（块信息 slab 枯竭）或页数不符会以 Torn（半撕裂）收场。v7 把全部
+// 页组预先建好、全部可预见的布局冲突预先排除：apply 阶段只剩内核已
+// 验证过的 UnmapPages / MapPageGroup 原语。
+// ---------------------------------------------------------------------------
+
+struct PrebuiltGroup {
+    size_t block_index;                      // saved_blocks 下标
+    std::unique_ptr<Kernel::KPageGroup> pg;  // AddBlock 预建（不持引用）
+};
+
+// 为存档全部可回放块预建页组（纯解析，无内核副作用：AddBlock 只从块
+// 信息 slab 分配 KBlockInfo 节点，不触碰页表/引用计数）。失败返回 false
+//（调用点位于校验阶段，内存未动 → 可安全报错/回落）。
+bool PrebuildSavedPageGroups(Core::System& system, const std::vector<SavedBlock>& saved,
+                             std::vector<PrebuiltGroup>* out, std::string* err) {
+    *err = {};
+    out->clear();
+
+    Kernel::KProcess* process = system.ApplicationProcess();
+    if (process == nullptr) {
+        *err = "application process is null";
+        return false;
+    }
+    Kernel::KProcessPageTable& page_table = process->GetPageTable();
+
+    out->reserve(saved.size());
+    for (size_t i = 0; i < saved.size(); ++i) {
+        const auto& b = saved[i];
+        if (!b.has_pg) {
+            continue;
+        }
+        auto pg = std::make_unique<Kernel::KPageGroup>(system.Kernel(),
+                                                       page_table.GetBlockInfoManager());
+        bool pg_ok = true;
+        for (const auto& [pa, pages] : b.runs) {
+            if (R_FAILED(pg->AddBlock(pa, pages))) {
+                pg_ok = false;
+                break;
+            }
+        }
+        if (!pg_ok || pg->GetNumPages() != b.size / kPageSize) {
+            *err = fmt::format("page group rebuild failed @ {:016x}", b.va);
+            out->clear(); // unique_ptr 析构即释放已建页组的块信息节点
+            return false;
+        }
+        out->push_back({i, std::move(pg)});
+    }
+    SSLogInfo(fmt::format("precheck: {} page groups prebuilt", out->size()));
+    return true;
+}
+
+// 布局兼容性预检（零副作用）：存档的可回放块不能与当前会话的不可回放
+// 块（Io/Static 等手术不卸载的状态）重叠 —— MapPageGroup 要求目标区间
+// 为 Free，重叠意味着 apply 阶段必然 Torn。同会话/确定性布局跨会话下
+// 不可回放块的位置恒定，本检查正常情况下恒通过；命中即说明槽位来自布
+// 局不兼容的会话（如 NCE 开关切换后），干净报错（可回落 legacy）。
+bool CheckLayoutCompatibility(Core::System& system, const std::vector<SavedBlock>& saved,
+                              std::string* err) {
+    *err = {};
+
+    std::vector<LayoutBlock> current;
+    if (!CollectLayoutBlocks(system, current)) {
+        *err = "current layout walk failed";
+        return false;
+    }
+
+    // 当前会话的不可回放区间（手术保留不卸载的）
+    std::vector<std::pair<u64, u64>> frozen;
+    frozen.reserve(current.size());
+    for (const auto& b : current) {
+        if (!IsPgState(b.state)) {
+            frozen.emplace_back(b.va, b.va + b.size);
+        }
+    }
+    std::sort(frozen.begin(), frozen.end());
+
+    for (const auto& b : saved) {
+        if (!b.has_pg) {
+            continue; // 存档的不可回放块与当前不可回放块同源（硬件固定区）
+        }
+        const u64 lo = b.va;
+        const u64 hi = b.va + b.size;
+        auto it = std::lower_bound(
+            frozen.begin(), frozen.end(), lo,
+            [](const std::pair<u64, u64>& span, u64 v) { return span.second <= v; });
+        for (; it != frozen.end() && it->first < hi; ++it) {
+            *err = fmt::format("saved block {:016x} overlaps non-replayable region {:016x}",
+                               b.va, it->first);
+            return false;
+        }
+    }
+    return true;
+}
+
 // 页表整表回放。前提：EmulationFreeze（全部 guest 线程挂起，NCE 不跑）
-// + NvdrvTeardown 已完成（DeviceShared 已清，nvmap 句柄已按存档裁剪）。
+// + NvdrvTeardown 已完成（SMMU/GMMU 设备映射已拆，nvmap 句柄已按存档
+// 裁剪）+ 页组已预建（PrebuildSavedPageGroups）+ 布局兼容已预检
+// （CheckLayoutCompatibility）。
 SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<SavedBlock>& saved,
+                                     std::vector<PrebuiltGroup>& groups,
                                      const BookkeepingV5& bookkeeping, std::string* err) {
     *err = {};
     const auto t0 = NowSteady();
@@ -1890,34 +2042,16 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
     };
     adjust_all(+1);
 
-    // 3) 瞬态锁整表清位（v6）：IpcLocked/Locked 属废弃时间线，直接清
-    //    （Cemu 丢弃排队事件同语义），不再因此拒绝读档。随后清除会挡住
-    //    UnmapPages 的持久属性（Uncached / PermissionLocked）。
-    base.SavestateClearTransientLocks();
-    for (const auto& b : current) {
-        if (!IsPgState(b.state)) {
-            continue;
-        }
-        const auto attr = static_cast<Kernel::KMemoryAttribute>(b.attr);
-        if (True(attr & Kernel::KMemoryAttribute::Uncached)) {
-            const Result r = page_table.SetMemoryAttribute(
-                b.va, b.size, Kernel::KMemoryAttribute::Uncached, Kernel::KMemoryAttribute::None);
-            if (R_FAILED(r)) {
-                *err = fmt::format("cannot clear Uncached @ {:016x} ({:05x})", b.va, r.raw);
-                return SurgeryOutcome::Torn;
-            }
-        }
-        if (True(attr & Kernel::KMemoryAttribute::PermissionLocked)) {
-            const Result r = page_table.SetMemoryAttribute(
-                b.va, b.size, Kernel::KMemoryAttribute::PermissionLocked,
-                Kernel::KMemoryAttribute::None);
-            if (R_FAILED(r)) {
-                *err = fmt::format("cannot clear PermissionLocked @ {:016x} ({:05x})", b.va,
-                                   r.raw);
-                return SurgeryOutcome::Torn;
-            }
-        }
-    }
+    // 3) ★ v7 根因修复：可回放块整备。SavestatePrepareForReplay 一次性
+    //    复位全部瞬态/设备簿记 —— IpcLocked/Locked 锁位、nvmap 的
+    //    DeviceShared（+ m_device_use_count + 禁合并位）、Uncached/
+    //    PermissionLocked 持久属性、original_permission。v5/v6 只清两个
+    //    锁位，漏掉 DeviceShared → nvmap 堆块（帧缓冲/纹理，几乎必然
+    //    存在）unmap 必 0xd401 —— 同会话读档必失败的根因（详见文件头
+    //    v7 说明与 KMemoryBlock::SavestateResetForReplay）。不再逐块
+    //    SetMemoryAttribute 清属性：svc 路径状态位校验可能失败且无必
+    //    要 —— 块随后整表卸载，属性由第 5 步按存档原值恢复。
+    base.SavestatePrepareForReplay();
 
     // 4) 卸载当前全部可回放映射块（Io/Static 等不可回放状态原样保留；
     //    宿主映射窗口外的地址由 HostMemory v5 窗口裁剪安全跳过）
@@ -1935,26 +2069,14 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
     }
 
     // 5) 按存档重放：原 VA + 原 PA + 原 state/perm（MapPageGroup 与游戏
-    //    日常映射同一条内核路径），随后重放 Uncached / PermissionLocked。
+    //    日常映射同一条内核路径；页组为校验阶段预建物料 —— AddBlock 已
+    //    在零副作用阶段完成，apply 期间不会再因页组重建失败而撕裂），
+    //    随后重放 Uncached / PermissionLocked。
     size_t replayed_blocks = 0;
-    for (const auto& b : saved) {
-        if (!b.has_pg) {
-            continue; // 存档中的不可回放块（Io/Static…）：当前同样未动，一致
-        }
-        Kernel::KPageGroup pg(kernel, page_table.GetBlockInfoManager());
-        bool pg_ok = true;
-        for (const auto& [pa, pages] : b.runs) {
-            if (R_FAILED(pg.AddBlock(pa, pages))) {
-                pg_ok = false;
-                break;
-            }
-        }
-        if (!pg_ok || pg.GetNumPages() != b.size / kPageSize) {
-            *err = fmt::format("page group rebuild failed @ {:016x}", b.va);
-            return SurgeryOutcome::Torn;
-        }
+    for (auto& g : groups) {
+        const auto& b = saved[g.block_index];
         const Result r = page_table.MapPageGroup(
-            b.va, pg, static_cast<Kernel::KMemoryState>(b.state),
+            b.va, *g.pg, static_cast<Kernel::KMemoryState>(b.state),
             static_cast<Kernel::KMemoryPermission>(b.perm));
         if (R_FAILED(r)) {
             *err = fmt::format("remap failed @ {:016x} (state {:08x}): {:05x}", b.va, b.state,
@@ -1973,6 +2095,7 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
         }
         ++replayed_blocks;
     }
+    groups.clear(); // 页组已全部消费（unique_ptr 析构释放块信息节点）
 
     // 6) 归还预置引用（-1）
     adjust_all(-1);
@@ -2004,7 +2127,8 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
 
 enum class RestoreOutcome {
     Ok,             // 原地恢复成功
-    Incompatible,   // 与当前会话不兼容（区域不一致）→ 仅跨启动槽位会触发
+    Incompatible,   // 布局真正不兼容（NCE 开关切换 / 旧版随机布局时代的
+                    // 槽位等 —— v7 确定性布局下仅剩这些场景）
     Error,          // 校验失败（内存未动，可安全报错/回落）
     TooOld,         // 旧版本格式槽位 → 提示重新存档（不回落、不重启）
     Torn,           // 应用中途失败（内核状态已改动 → 必须关停核心）
@@ -2224,11 +2348,29 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         }
     }
 
-    // ---- 5) 手术前置校验（会话区域一致 + 无瞬态锁；须在 Teardown 之前，
-    //      失败时零副作用 → 可安全回落 legacy） ----
+    // ---- 5) 手术前置校验（会话区域一致；须在 Teardown 之前，失败时零
+    //      副作用 → 可安全回落 legacy）。v7 起区域布局已确定性化
+    //      （InitializeForProcess / loader aslr_offset / HostMemory 预留
+    //      基址三处配套修改）—— 同一游戏 + 同一配置跨启动布局一致，
+    //      旧会话槽位也能原地恢复；本检查命中仅剩真正不兼容的场景
+    //      （NCE 开关切换、旧版随机布局时代的槽位等）→ 干净回落 legacy ----
     if (!SurgeryPrecheck(system, bookkeeping, err)) {
         SSLogWarn(fmt::format("restore: precheck rejected ({})", *err));
         return RestoreOutcome::Incompatible;
+    }
+
+    // ---- 5b) v7：手术物料预建 + 布局兼容性预检（Cemu
+    //      RestoreStateFromFile 的「先全量校验、后应用」铁律 —— 一切可
+    //      预见的失败在此以零副作用收场，apply 阶段只剩内核原语，
+    //      不会再因页组重建/布局冲突而撕裂） ----
+    std::vector<PrebuiltGroup> prebuilt_groups;
+    if (!PrebuildSavedPageGroups(system, saved_blocks, &prebuilt_groups, err)) {
+        SSLogWarn(fmt::format("restore: prebuild rejected ({})", *err));
+        return RestoreOutcome::Error;
+    }
+    if (!CheckLayoutCompatibility(system, saved_blocks, err)) {
+        SSLogWarn(fmt::format("restore: layout compatibility rejected ({})", *err));
+        return RestoreOutcome::Error;
     }
 
     // ---- 6) 逐帧 zstd 流式解码丢弃验证（动内存前的最后把关；Cemu
@@ -2287,13 +2429,18 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         }
     }
 
-    // ---- 8) nvmap Teardown：拆除当前全部设备映射（清 DeviceShared 属性
-    //      —— 页表整表卸载的前提） ----
+    // ---- 8) nvmap Teardown：拆除当前全部设备映射（SMMU/GMMU/低位 pin；
+    //      页表块上的 DeviceShared 属性由手术第 3 步
+    //      SavestatePrepareForReplay 一并复位 —— v5/v6 依赖本步清属性
+    //      是不成立的：IocFree 的 can_unlock 才是对称清除路径，存档时
+    //      活跃的句柄会把它带进手术现场） ----
     NvdrvTeardown(system, nvdrv_state);
 
-    // ---- 9) 页表整表回放手术：当前布局 → 存档布局（原 VA/PA/权限） ----
+    // ---- 9) 页表整表回放手术：当前布局 → 存档布局（原 VA/PA/权限；
+    //      页组为 5b) 预建物料） ----
     {
-        const SurgeryOutcome so = ReplayPageTableLayout(system, saved_blocks, bookkeeping, err);
+        const SurgeryOutcome so =
+            ReplayPageTableLayout(system, saved_blocks, prebuilt_groups, bookkeeping, err);
         if (so != SurgeryOutcome::Ok) {
             // Teardown 已拆除设备映射、手术可能半途 —— 带撕裂状态续跑必崩，
             // 上层按 Torn 关停核心（legacy 允许时回落重启路径）
@@ -2751,10 +2898,13 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         }
 
         // ★★ 首选路径：state.bin 进程内原地恢复（= Cemu RestoreStateFromFile）
-        //    游戏暂停 → 校验 → nvmap 拆除 → 页表整表回放手术（v5：原
-        //    VA/PA/权限 —— 不再要求"存档后游戏什么都没做"）→ 内容覆盖 →
+        //    游戏暂停 → 全量校验（含 v7 页组预建/布局预检）→ nvmap 拆除 →
+        //    可回放块整备（SavestatePrepareForReplay：含 nvmap DeviceShared
+        //    复位）→ 页表整表回放手术（原 VA/PA/权限）→ 内容覆盖 →
         //    nvmap 重建 → 从存档时刻继续，完全不重启。
-        //    仅当会话不兼容 / 线程集变化 / 应用中途失败时才回落 legacy。
+        //    v7 起布局确定性化：跨会话（重启游戏后）的槽位同样原地恢复；
+        //    仅当真正不兼容（NCE 开关切换 / 旧版随机布局时代的槽位）或
+        //    应用中途失败时才回落 legacy。
         bool legacy_by_incompat = false;
         if (has_state) {
             Core::System& system = Session().System();
@@ -2769,9 +2919,10 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
                     return native_savestate::RESULT_OK_RESTORED_IN_PLACE;
 
                 case RestoreOutcome::Incompatible:
-                    // 原地恢复不可行（仅跨启动/跨配置会话的槽位 —— 校验阶段
-                    // 失败，内核零改动）：自动回落 legacy —— 前端 relaunchGame()
-                    // 重启加载。
+                    // 原地恢复不可行（布局真正不兼容的槽位 —— 校验阶段失败，
+                    // 内核零改动；v7 确定性布局下仅剩 NCE 开关切换、旧版
+                    // 随机布局时代的槽位等场景）：自动回落 legacy —— 前端
+                    // relaunchGame() 重启加载。
                     legacy_by_incompat = true;
                     break;
 
@@ -2846,9 +2997,10 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         TrimHeap();
         // RESULT_OK = legacy 语义（Cemu 同款）：存档数据已还原、游戏已
         // 关停，由前端 relaunchGame() 进程内重启游戏加载恢复的存档。
-        // RESULT_OK_LEGACY_RESTART：会话不兼容自动回落时的同路径返回码 ——
+        // RESULT_OK_LEGACY_RESTART：布局不兼容自动回落时的同路径返回码 ——
         // 前端据此提示「已重启游戏加载」而非误导性的原地恢复话术
-        // （v5 起原地恢复不再受内存布局变化影响，此码只剩跨会话场景）。
+        // （v7 确定性布局下仅剩 NCE 开关切换、旧版随机布局时代的槽位等
+        // 真正不兼容场景才会走到这里）。
         return legacy_by_incompat ? native_savestate::RESULT_OK_LEGACY_RESTART
                                   : native_savestate::RESULT_OK;
     } catch (...) {

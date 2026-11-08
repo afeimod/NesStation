@@ -800,15 +800,23 @@ public:
         return true;
     }
 
-    // ★★★ NesStation savestate (v6)：瞬态锁整表清除 ★★★
-    // IpcLocked/Locked 是 IPC 在途的瞬态内核状态。v5 曾因它们「在途」而
-    // 拒绝读档（回落重启）—— 但 Cemu 对废弃时间线的在途状态从不比对、
-    // 从不拒绝（丢弃排队事件回调同语义）。读档手术前整表清位，使
-    // UnmapPages/CheckMemoryState 的属性校验（要求 attr==None）通过。
-    void SavestateClearTransientLocks() {
+    // ★★★ NesStation savestate (v7)：可回放块整备（读档手术入口） ★★★
+    // 只复位 FlagReferenceCounted / ThreadLocal 状态的块 —— 它们即将被
+    // 手术整表卸载重建，块上的瞬态锁（IpcLocked/Locked）、nvmap 设备
+    // 共享（DeviceShared + 计数 + 禁合并位）与持久属性（Uncached/
+    // PermissionLocked）全部属于「已废弃时间线」，由 SavestateResetForReplay
+    // 一次性复位干净（= Cemu 丢弃废弃时间线宿主状态的同语义）。Io/Static
+    // 等不可回放块原样保留 —— 手术不卸载它们，存档侧也未记录其内容。
+    // v5/v6 只清 IpcLocked/Locked 两个属性位，漏掉 DeviceShared →
+    // UnmapPages 的 attr==None 校验在 nvmap 堆块上必然 0xd401 失败
+    //（同会话读档必撕裂的根因，详见 KMemoryBlock::SavestateResetForReplay）。
+    void SavestatePrepareForReplay() {
         for (auto it = m_memory_block_manager.begin(); it != m_memory_block_manager.end();
              ++it) {
-            it->SavestateClearTransientLocks();
+            const KMemoryState s = it->GetState();
+            if (True(s & KMemoryState::FlagReferenceCounted) || s == KMemoryState::ThreadLocal) {
+                it->SavestateResetForReplay();
+            }
         }
     }
 
