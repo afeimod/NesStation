@@ -285,12 +285,15 @@ object NativeLibrary {
     external fun playTimeManagerSetPlayTime(programId: String, playTimeMs: Long)
 
     // ------------------------------------------------------------------
-    // ★★ v10：即时存档（原生槽位）—— Cemu NativeQuickSave 同构契约 ★★
+    // ★★ v10/v11：即时存档（原生槽位）—— Cemu NativeQuickSave 同构契约 ★★
     //   native 实现见 core/eden/src/android/app/src/main/jni/
     //   native_savestate.cpp（符号绑定 Java_org_yuzu_yuzu_1emu_
     //   NativeLibrary_quickSaveSlot 等，与 Cemu 的
     //   info.cemu.cemu.nativeinterface.NativeQuickSave 逐字段同构）。
-    //   槽位 1..6 + autobackup，<EdenDir>/savestates/<programId>/。
+    //   槽位 1..10 + autobackup，<EdenDir>/savestates/<programId>/。
+    //   ★ v11：原生槽位扩到 10（与通用 SlotPickerDialog 的 UI 槽 0..9
+    //   恒等映射 ui+1；旧版 %6+1 映射使 UI 槽 6..9 复用原生槽 1..4 ——
+    //   「5678 槽没存过也显示有存档」的幽灵槽位根因）。
     // ------------------------------------------------------------------
 
     // 结果码 —— 与 Cemu NativeQuickSave 契约一致
@@ -315,7 +318,7 @@ object NativeLibrary {
     /**
      * 原生槽位即时存档（阻塞：截图等待 + 冻结 + 存档数据拷贝，
      * 必须在 IO 线程调用）。
-     * @param slot 原生槽位 1..6
+     * @param slot 原生槽位 1..10
      * @return [RESULT_OK] / [RESULT_ERROR_NOT_RUNNING] / [RESULT_ERROR_IO]
      */
     external fun quickSaveSlot(slot: Int): Int
@@ -324,10 +327,27 @@ object NativeLibrary {
      * 原生槽位读档（阻塞：自动备份 + 关停核心 + 存档写回 NAND，
      * 必须在 IO 线程调用）。成功返回 [RESULT_OK]（legacy 语义：存档
      * 数据已还原、游戏已关停，由引擎 relaunchGame() 进程内重启）。
-     * @param slot 原生槽位 1..6
+     * @param slot 原生槽位 1..10
      * @param flags [RESTORE_FLAG_ALLOW_LEGACY] 预留
      */
     external fun quickRestoreSlot(slot: Int, flags: Int): Int
+
+    /**
+     * ★ v11：强制 legacy 恢复（阻塞，IO 线程调用）—— 前端看门狗兑底入口。
+     *
+     * 场景：[quickRestoreSlot] 已返回 [RESULT_OK_RESTORED_IN_PLACE]，但核心
+     * 死锁/无帧输出（黑屏）。看门狗采样 realtimeFps ~12 秒无帧后调用本
+     * 入口：不再尝试原地恢复，直接 autobackup 当前 NAND 存档 → 关停核心
+     * → 槽位存档数据写回 NAND → 返回 [RESULT_OK]；前端随后
+     * relaunchGame() 进程内重启加载。玩家最差也能回到存档点，绝不会停
+     * 在无响应黑屏上。
+     *
+     * @param slot 原生槽位 1..10
+     * @return [RESULT_OK]（数据已写回 NAND、核心已关停）/
+     *         [RESULT_ERROR_NOT_RUNNING] / [RESULT_ERROR_NO_SAVE_DATA]
+     *         （槽位无存档数据可回落）/ [RESULT_ERROR_IO]
+     */
+    external fun forceLegacyRestore(slot: Int): Int
 
     /**
      * 槽位信息 JSON（schema 与 Cemu NativeQuickSave.getQuickSaveInfo

@@ -5207,13 +5207,15 @@ fun EmulatorScreen(
                             }
                         } else if (platform == GamePlatform.NSWITCH) {
                             // ★ v10：Switch（Eden）即时存档 —— Cemu 同构语义：
-                            //   1) 原生槽位 1..6（UI 槽位 %6+1 映射）；
+                            //   1) 原生槽位 1..10（★ v11：UI 槽 0..9 恒等映射
+                            //      ui+1 —— 旧版 %6+1 把 UI 槽 6..9 复用到
+                            //      原生槽 1..4，幽灵槽位根因）；
                             //   2) native 调用在 IO 线程（截图等待 + 冻结
                             //      （含★异步 GPU 同步：Pause → GPU
                             //      WaitForIdle → ObtainContext）+ 存档数据
                             //      拷贝会阻塞数秒，主线程调用会 ANR）。
                             val eden = engine as? com.nesstation.app.core.engine.EdenEngine
-                            val nSlot = (saveLoadSlot % 6) + 1
+                            val nSlot = (saveLoadSlot % 10) + 1
                             if (eden == null) {
                                 Toast.makeText(context, "Eden 核心未就绪", Toast.LENGTH_SHORT).show()
                             } else {
@@ -5282,8 +5284,11 @@ fun EmulatorScreen(
                             //   native 调用在 IO 线程（自动备份 + 关停核心 +
                             //   NAND 写回会阻塞数秒）；RESULT_OK（legacy 语义：
                             //   存档数据已还原、游戏已关停）→ 进程内重启游戏。
+                            //   ★ v11：槽位恒等映射（ui+1 → 1..10）；原地恢复
+                            //   成功时 quickRestoreSlotRaw 内部自动布防无帧
+                            //   看门狗（黑屏死锁自动回落 legacy）。
                             val eden = engine as? com.nesstation.app.core.engine.EdenEngine
-                            val nSlot = (saveLoadSlot % 6) + 1
+                            val nSlot = (saveLoadSlot % 10) + 1
                             if (eden == null) {
                                 Toast.makeText(context, "Eden 核心未就绪", Toast.LENGTH_SHORT).show()
                             } else {
@@ -5306,7 +5311,7 @@ fun EmulatorScreen(
                                             eden.relaunchGame()
                                             Toast.makeText(context,
                                                 if (r == EdenNativeLibrary.RESULT_OK_LEGACY_RESTART)
-                                                    "存档来自另一次启动的会话，已重启游戏加载…"
+                                                    "无法原地恢复，已自动重启游戏加载存档数据…"
                                                 else
                                                     "已恢复存档数据，正在重启游戏…",
                                                 Toast.LENGTH_LONG).show()
@@ -5561,6 +5566,9 @@ fun EmulatorScreen(
             //   quickSaveInfo JSON 的 sizeBytes/timestamp）。标记文件仅 22B
             //   只用于存在性检查 —— 旧版直接显示其长度是「存档只有 22B」
             //   误报的根因。
+            //   ★ v11：UI 槽 0..9 → 原生槽 1..10 恒等映射（旧版 %6+1 把
+            //   UI 槽 6..9 复用到原生槽 1..4 —— 「5678 槽没存过也显示
+            //   有存档」的幽灵槽位根因；原生侧 kMaxSlots 已扩到 10）。
             val edenNativeSlotInfo: Map<Int, SlotState>? =
                 if (platform == GamePlatform.NSWITCH && loaded) {
                     remember(showSlotPicker, game.id) {
@@ -5575,7 +5583,7 @@ fun EmulatorScreen(
                                         "yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
                                     val out = HashMap<Int, SlotState>()
                                     for (ui in 0..9) {
-                                        val nSlot = ((ui % 6) + 1).coerceIn(1, 6)
+                                        val nSlot = ui + 1 // v11 恒等映射
                                         val sj = obj.optJSONArray("slots")
                                             ?.optJSONObject(nSlot - 1) ?: continue
                                         if (!sj.optBoolean("exists", false)) continue
@@ -5638,7 +5646,7 @@ fun EmulatorScreen(
                                     val eden = engine as? com.nesstation.app.core.engine.EdenEngine
                                     if (eden?.lastRestoreWasRestart == true) {
                                         Toast.makeText(context,
-                                            "存档已读取 [槽位 $slot]，与当前会话不匹配——已重启游戏加载…",
+                                            "存档已读取 [槽位 $slot]——无法原地恢复，已自动重启游戏加载存档数据…",
                                             Toast.LENGTH_LONG).show()
                                     } else if (eden != null) {
                                         Toast.makeText(context,

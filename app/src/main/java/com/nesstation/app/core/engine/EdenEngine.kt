@@ -72,14 +72,19 @@ import kotlin.concurrent.thread
  * 通过 applySettings 应用）。
  *
  * ROM：.xci/.nsp/.nca/.nro（GameEntry.NSWITCH；.xci/.nsp 为主体格式）。
- * 存档（★ v10）：即时存档原生槽位（Cemu NativeQuickSave 同构）——
+ * 存档（★ v11）：即时存档原生槽位（Cemu NativeQuickSave 同构）——
  *   [saveState]/[loadState] 走 NativeLibrary.quickSaveSlot/quickRestoreSlot
- *   （槽位 1..6 + autobackup，<filesDir>/eden/savestates/<programId>/），
- *   存档 = 冻结（★异步 GPU 同步：Pause → GPU WaitForIdle → ObtainContext）
- *   + 按标题快照 NAND 用户存档 + 截图缩略图；读档 = 自动备份 + 关停核心
- *   （释放存档句柄）+ 写回 NAND + [relaunchGame] 进程内重启（= Cemu
- *   legacy 恢复路径语义）。内核对象无序列化器 → 无进程内 state.bin
- *   路径，恢复后游戏从快照时刻的存档点继续。
+ *   （槽位 1..10 + autobackup，<filesDir>/eden/savestates/<programId>/，
+ *   与通用 SlotPickerDialog 的 UI 槽 0..9 恒等映射 —— v11 修复旧版
+ *   %6+1 映射使 UI 槽 6..9 复用原生槽 1..4 的幽灵槽位问题），
+ *   存档 = 冻结（★异步 GPU 同步：Pause → GPU WaitForIdle →
+ *   ObtainContext）+ state.bin 全量状态 + 按标题快照 NAND 用户存档 +
+ *   截图缩略图；读档首选 = state.bin 进程内原地恢复（页表整表回放手术，
+ *   不重启，native_savestate.cpp v5..v8）；原地恢复不可行时自动回落
+ *   legacy（还原存档数据 + 关停核心）由 [relaunchGame] 进程内重启加载；
+ *   原地恢复成功但核心无帧输出（死锁/黑屏）时由★看门狗
+ *   （[armRestoreHangWatchdog] + NativeLibrary.forceLegacyRestore）自动
+ *   回落 legacy —— 绝不让玩家停在无响应黑屏上。
  *
  * Keys / 固件 / 驱动（设置页完整入口）：
  *  - [installKeysFromAssets] 构建者把 prod.keys/title.keys 放进
@@ -1003,6 +1008,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
 
     private fun unloadLocked() {
         userRequestedStop = true
+        cancelRestoreWatchdog() // 卸载 —— 使恢复看门狗失效
         stopMotionSensorBridge()
         try { if (EdenNative.loaded) NativeLibrary.stopEmulation() } catch (_: Throwable) {}
         // 等待模拟线程退出（有界）
@@ -1053,7 +1059,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     override fun setSaveName(name: String) { /* 存档在原生槽位按 programId 区分；API 兼容 */ }
 
     // ------------------------------------------------------------------
-    // 即时存档（★ v10：Cemu NativeQuickSave 同构 —— 原生槽位 1..6 +
+    // 即时存档（★ v11：Cemu NativeQuickSave 同构 —— 原生槽位 1..10 +
     // autobackup，槽位布局/结果码/JSON schema 与 CemuEngine 完全一致；
     // native 实现见 core/eden/src/android/app/src/main/jni/
     // native_savestate.cpp）
@@ -1062,8 +1068,10 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     /** 存/读档串行锁（防并发冻结竞态 → 偶发闪退，与 CemuEngine 同款）。 */
     private val stateOpLock = Any()
 
-    /** UI 槽位（0..9）→ 原生槽位（1..6）。 */
-    private fun nativeSlotFor(uiSlot: Int): Int = ((uiSlot % 6) + 1).coerceIn(1, 6)
+    /** UI 槽位（0..9）→ 原生槽位（1..10）。
+     *  ★ v11：恒等映射（ui+1）—— 旧版 (ui%6)+1 把 UI 槽 6..9 复用到
+     *  原生槽 1..4，「5678 槽没存过也显示有存档」的幽灵槽位根因。 */
+    private fun nativeSlotFor(uiSlot: Int): Int = (uiSlot % 10 + 1).coerceIn(1, 10)
 
     override fun saveState(slot: Int, dst: File): Boolean {
         if (!isLoaded) return false
@@ -1107,45 +1115,41 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
 
     override fun loadState(slot: Int, src: File): Boolean {
         if (!isLoaded) return false
-        return try {
-            val nSlot = nativeSlotFor(slot)
-            // ★ 与存档/其它读档互斥（防并发关停竞态）
-            val r = synchronized(stateOpLock) { NativeLibrary.quickRestoreSlot(nSlot, 0) }
-            when (r) {
-                NativeLibrary.RESULT_OK_RESTORED_IN_PLACE -> {
-                    // v4：state.bin 进程内原地恢复成功 —— 不重启，从存档时刻继续
-                    lastRestoreWasRestart = false
-                    true
-                }
-                NativeLibrary.RESULT_OK,
-                NativeLibrary.RESULT_OK_LEGACY_RESTART -> {
-                    // legacy 路径：存档数据已写回 NAND、核心已关停 →
-                    // 进程内重启游戏加载恢复的存档（= Cemu relaunchTitle）。
-                    // RESULT_OK_LEGACY_RESTART：存档后内存布局/线程集已变化，
-                    // native 已自动回落（同一路径，仅 toast 文案不同）。
-                    lastRestoreWasRestart = true
-                    relaunchGame()
-                    true
-                }
-                NativeLibrary.RESULT_ERROR_SLOT_EMPTY -> {
-                    lastRestoreWasRestart = false
-                    lastErrorText = "读档失败：槽位 $slot 为空"
-                    false
-                }
-                NativeLibrary.RESULT_ERROR_STATE_RESTORE_FAILED -> {
-                    lastRestoreWasRestart = false
-                    lastErrorText = "读档失败：状态恢复失败（可用安全模式重试）"
-                    false
-                }
-                else -> {
-                    lastRestoreWasRestart = false
-                    lastErrorText = "读档失败（核心返回码 $r）"
-                    false
-                }
+        val nSlot = nativeSlotFor(slot)
+        // ★ 与存档/其它读档互斥（quickRestoreSlotRaw 内持 stateOpLock）；
+        //   原地恢复成功时由其自动布防无帧看门狗。
+        val r = quickRestoreSlotRaw(nSlot, 0)
+        return when (r) {
+            NativeLibrary.RESULT_OK_RESTORED_IN_PLACE -> {
+                // state.bin 进程内原地恢复成功 —— 不重启，从存档时刻继续
+                lastRestoreWasRestart = false
+                true
             }
-        } catch (t: Throwable) {
-            android.util.Log.w("EdenEngine", "loadState($slot)", t)
-            false
+            NativeLibrary.RESULT_OK,
+            NativeLibrary.RESULT_OK_LEGACY_RESTART -> {
+                // legacy 路径：存档数据已写回 NAND、核心已关停 →
+                // 进程内重启游戏加载恢复的存档（= Cemu relaunchTitle）。
+                // RESULT_OK_LEGACY_RESTART：布局不兼容自动回落 / v8 撕裂
+                // 自动回落（同一路径，仅 toast 文案不同）。
+                lastRestoreWasRestart = true
+                relaunchGame()
+                true
+            }
+            NativeLibrary.RESULT_ERROR_SLOT_EMPTY -> {
+                lastRestoreWasRestart = false
+                lastErrorText = "读档失败：槽位 $slot 为空"
+                false
+            }
+            NativeLibrary.RESULT_ERROR_STATE_RESTORE_FAILED -> {
+                lastRestoreWasRestart = false
+                lastErrorText = "读档失败：状态恢复失败（游戏仍在运行，可重试或换用其它槽位）"
+                false
+            }
+            else -> {
+                lastRestoreWasRestart = false
+                lastErrorText = "读档失败（核心返回码 $r）"
+                false
+            }
         }
     }
 
@@ -1165,9 +1169,16 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     /**
      * 原生槽位读档（CemuEngine.quickRestoreSlotRaw 同款：默认 flags=0）。
      * ⚠ 阻塞（关停核心 + NAND 写回），IO 线程执行。
+     * ★ v11：RESULT_OK_RESTORED_IN_PLACE 返回前自动布防无帧看门狗
+     *   （[armRestoreHangWatchdog]）—— 恢复后核心若长时间无帧输出，
+     *   自动回落 legacy（还原存档数据 + 重启），不停黑屏。
      */
     fun quickRestoreSlotRaw(nativeSlot: Int, flags: Int): Int = try {
-        synchronized(stateOpLock) { NativeLibrary.quickRestoreSlot(nativeSlot, flags) }
+        val r = synchronized(stateOpLock) { NativeLibrary.quickRestoreSlot(nativeSlot, flags) }
+        if (r == NativeLibrary.RESULT_OK_RESTORED_IN_PLACE) {
+            armRestoreHangWatchdog(nativeSlot)
+        }
+        r
     } catch (t: Throwable) {
         android.util.Log.w("EdenEngine", "quickRestoreSlotRaw($nativeSlot)", t)
         NativeLibrary.RESULT_ERROR_IO
@@ -1184,6 +1195,83 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         NativeLibrary.getQuickSaveThumbnail(nativeSlot)
     } catch (_: Throwable) { null }
 
+    // ------------------------------------------------------------------
+    // ★ v11：原地读档无帧看门狗 —— 黑屏死锁的最后一道兑底
+    //
+    // 场景：quickRestoreSlot 返回 RESULT_OK_RESTORED_IN_PLACE 后，核心因
+    // 深层同步状态分歧（幸存线程等待在废弃时间线的同步对象上等 HLE
+    // 差异）死锁/无帧输出 —— 用户看到「提示已恢复，结果黑屏啥也没有」。
+    // Cemu 靠全组件序列化器（调度器从内存重建 + 事件回调丢弃 + 音频重置）
+    // 从根上避免；Eden 无法完全根除，这里以看门狗兑底：采样
+    // [realtimeFps]（核心真实出帧计数），~24 秒无帧且非暂停 → 自动调
+    // NativeLibrary.forceLegacyRestore（autobackup 当前 NAND → 关停核心
+    // → 槽位存档数据写回 NAND）+ [relaunchGame] —— 玩家最差也能回到
+    // 存档点，绝不停在无响应黑屏上。
+    //
+    // 误判防护：
+    //  · 暂停（_paused）期间不计数（无法判定），解除后重新计时；
+    //  · 任一次采样 fps > 0 即撤销（核心在出帧 = 活着，着色器重建卡顿
+    //    也会偶尔慢但只要出帧就不回落）；
+    //  · 卸载/重启/新一次读档会使代数 +1（[cancelRestoreWatchdog]），
+    //    旧看门狗线程自行退出（同一时刻至多一个活跃实例）；
+    //  · 槽位无 NAND 存档数据可回落时如实上抛（onPrematureExit）。
+    // ------------------------------------------------------------------
+
+    /** 看门狗代数：每次布防 +1；卸载/重启/新读档时 +1 使旧实例失效。 */
+    private val restoreWatchdogGen = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 使当前活跃的恢复看门狗失效（unload / relaunch / 新读档前调用）。 */
+    private fun cancelRestoreWatchdog() {
+        restoreWatchdogGen.incrementAndGet()
+    }
+
+    /**
+     * 布防无帧看门狗（quickRestoreSlotRaw 在原地恢复成功时自动调用）。
+     * @param nativeSlot 原生槽位 1..10（legacy 回落目标）
+     */
+    fun armRestoreHangWatchdog(nativeSlot: Int) {
+        val gen = restoreWatchdogGen.incrementAndGet()
+        thread(name = "eden-restore-wd", isDaemon = true) {
+            try {
+                // 12 次采样 × 2s = 24s 无帧窗口（宽松：避开首次着色器
+                // 重建等合法慢启动的误判；真死锁多等几秒代价很小）
+                var deadSamples = 0
+                while (deadSamples < 12) {
+                    Thread.sleep(2000)
+                    if (restoreWatchdogGen.get() != gen) return@thread // 被取代/取消
+                    if (!isLoaded || !running.get()) return@thread      // 已退出/重启
+                    if (realtimeFps() > 0.05) return@thread             // 出帧了
+                    if (_paused) continue                               // 暂停中不计
+                    ++deadSamples
+                }
+                if (restoreWatchdogGen.get() != gen) return@thread
+                if (!isLoaded || !running.get()) return@thread
+                android.util.Log.w(
+                    "EdenEngine",
+                    "restore watchdog: no frames 24s after in-place restore, " +
+                        "falling back to legacy (slot $nativeSlot)"
+                )
+                val r = try {
+                    NativeLibrary.forceLegacyRestore(nativeSlot)
+                } catch (t: Throwable) {
+                    android.util.Log.w("EdenEngine", "forceLegacyRestore($nativeSlot)", t)
+                    NativeLibrary.RESULT_ERROR_IO
+                }
+                if (r == NativeLibrary.RESULT_OK) {
+                    // 存档数据已写回 NAND、核心已关停 → 进程内重启加载
+                    relaunchGame()
+                } else {
+                    // 无法自动回落（无存档数据/IO 失败）—— 如实上抛
+                    lastErrorText =
+                        "读档后核心无响应，且槽位 $nativeSlot 无存档数据可自动恢复（请手动重启游戏）"
+                    try { onPrematureExit?.invoke(lastErrorText) } catch (_: Throwable) {}
+                }
+            } catch (_: InterruptedException) {
+                // 引擎关闭时 daemon 线程被中断 —— 静默退出
+            }
+        }
+    }
+
     /**
      * 进程内重启游戏（CemuEngine.relaunchTitle 同款）：
      * quickRestoreSlot legacy 路径已把核心关停（run() 返回），此处等待
@@ -1193,6 +1281,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
      */
     fun relaunchGame() {
         val path = romPath ?: return
+        cancelRestoreWatchdog() // 新启动取代旧会话 —— 使旧看门狗失效
         thread(name = "eden-relaunch", isDaemon = true) {
             try {
                 // 等待模拟线程收尾（quickRestoreSlot 已等核心关停，

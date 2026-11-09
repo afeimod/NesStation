@@ -1,9 +1,45 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v7 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v8 ★★★
 //
-// v7（本轮）：按 Cemu 架构补齐 v5/v6 的两处根因缺陷 ——
+// v8（本轮）：修复用户报告的三类线上问题 ——
+//
+//   ① 「5678 存档槽没存过也显示有存档」：根因是原生槽位只有 6 个，
+//      而 UI（通用 SlotPickerDialog）有 10 个槽位，前端用 %6+1 把
+//      UI 槽 6..9 映射到原生槽 1..4 —— 存过 1..4 槽后 6..9 槽显示
+//      幽灵存档（且存进 6..9 槽实际覆盖 1..4 槽的数据）。修复：原生
+//      槽位扩到 10（kMaxSlots=10），UI↔原生恒等映射（ui+1）；
+//      slot1..slot6 目录旧数据完全兼容。
+//
+//   ② 「读档失败：状态恢复失败」（同会话也复现）：根因是 v7 的
+//      PrebuildSavedPageGroups 把【全部】可回放块的页组同时建好并持有
+//      到手术结束 —— KBlockInfo slab 容量只有 4000 条（kernel.cpp
+//      BlockInfoSlabHeapSize，app 侧不可动态增长），游戏运行一段时间后
+//      堆碎片化，全部块的 PARun 总数轻易超过 4000 → 预建必失败 →
+//      RestoreOutcome::Error → 「状态恢复失败」。修复（三件套）：
+//      a) 预建改为「逐块构建-校验-释放」（ValidateSavedPageGroups，
+//         同一时刻至多一个页组存活，O(1) slab 占用）；
+//      b) 手术 apply 阶段按块【重建即用即释】（MapPageGroup 不消费
+//         页组的引用计数，重建成本只有 slab 节点分配）；
+//      c) 内核 BlockInfoSlabHeapSize 4000 → 65536（kernel.cpp —— app 侧
+//         slab 运行期不可增长，堆碎片化后单块 run 数即可超 4000；扩容后
+//         初始化预建 256 页 ≈ 1MB）。校验阶段已证明每块可独立构建，
+//         冻结期无并发 slab 消耗 → apply 期重建不会失败，v7 的
+//         「零撕裂」保证得以保留。
+//
+//   ③ 「提示已恢复，结果黑屏」：两类残留场景 ——
+//      a) Torn（应用中途失败，内核状态半撕裂）：v7 直接关停核心并报
+//         错 —— 玩家面对死核黑屏。v8：只要槽位有 NAND 存档数据就自动
+//         回落 legacy（重启加载存档数据），toast 如实说明；
+//      b) 原地恢复 Ok 但核心无帧输出（线程同步状态分歧等深层不一致）：
+//         新增 forceLegacyRestore JNI，前端看门狗（EdenEngine）在
+//         RESULT_OK_RESTORED_IN_PLACE 后采样 realtimeFps，~12 秒无帧
+//         即自动调用本入口（还原存档数据 + 关停核心）并 relaunchGame，
+//         绝不让玩家停在无响应黑屏上（= Cemu「先全量校验后应用」
+//         之外的最后兑底）。
+//
+// v7（历史）：按 Cemu 架构补齐 v5/v6 的两处根因缺陷 ——
 //
 //   ① 同会话读档必失败（用户报告「游戏内存档读取就提示失败」，logcat:
 //      "restore torn (halting): unmap failed @ ... (state 077ebd05): 0d401"）
@@ -113,6 +149,9 @@
 //   v6：线程集差分重建 / 句柄回放 / 瞬态锁清位（保留；清位不完整 → v7）
 //   v7：本文件 —— DeviceShared 根因修复 + 布局确定性化（跨会话原地
 //       恢复）+ 物料预建/冲突预检（Cemu「先全量校验后应用」铁律）
+//   v8：本文件 —— 槽位 10 化（恒等映射）+ 页组逐块校验/重建（slab
+//       容量瓶颈根除）+ Torn 自动回落 legacy + forceLegacyRestore
+//       （前端无帧看门狗的兑底入口）
 
 #include "native_savestate.h"
 
@@ -1904,28 +1943,31 @@ bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std
 }
 
 // ---------------------------------------------------------------------------
-// v7：手术前置物料 —— 存档布局的页组预建 + 当前布局兼容性预检
+// v8：手术前置物料 —— 存档页组的【逐块校验】 + 当前布局兼容性预检
 //
 // Cemu RestoreStateFromFile 的铁律：先把整份档解析、校验、逐 range 与
 // 当前映射比对完（任何失败都在动内存之前发生，零副作用报错），然后才
 // 进入 apply 阶段。v5/v6 把「页组重建」放在手术循环中段 —— AddBlock
-// 失败（块信息 slab 枯竭）或页数不符会以 Torn（半撕裂）收场。v7 把全部
-// 页组预先建好、全部可预见的布局冲突预先排除：apply 阶段只剩内核已
-// 验证过的 UnmapPages / MapPageGroup 原语。
+// 失败（块信息 slab 枯竭）或页数不符会以 Torn（半撕裂）收场。v7 把
+// 预建改为全量持有 —— 但 KBlockInfo slab（app 侧不可动态增长，容量仅
+// 4000 条）在堆碎片化后被全部块的 PARun 总数轻易击穿 → 预建必失败
+//（同会话「读档失败：状态恢复失败」的主因）。
+//
+// v8：页组改为「逐块构建-校验-释放」（ValidateSavedPageGroups）——
+// 同一时刻至多一个页组存活，O(1) slab 占用；apply 阶段
+// （ReplayPageTableLayout）按同序列逐块【重建即用即释】。校验阶段已
+// 证明每块可独立构建，而冻结期无任何并发 slab 消耗 → apply 期重建
+// 必然成功 —— v7「apply 阶段只剩内核原语、不会再因页组重建而撕裂」
+// 的保证得以保留，且不再受 slab 总容量制约。
 // ---------------------------------------------------------------------------
 
-struct PrebuiltGroup {
-    size_t block_index;                      // saved_blocks 下标
-    std::unique_ptr<Kernel::KPageGroup> pg;  // AddBlock 预建（不持引用）
-};
-
-// 为存档全部可回放块预建页组（纯解析，无内核副作用：AddBlock 只从块
-// 信息 slab 分配 KBlockInfo 节点，不触碰页表/引用计数）。失败返回 false
-//（调用点位于校验阶段，内存未动 → 可安全报错/回落）。
-bool PrebuildSavedPageGroups(Core::System& system, const std::vector<SavedBlock>& saved,
-                             std::vector<PrebuiltGroup>* out, std::string* err) {
+// 为存档全部可回放块逐一构建页组并校验页数（纯解析，无内核副作用：
+// AddBlock 只从块信息 slab 分配 KBlockInfo 节点，不触碰页表/引用计数；
+// 每块校验后立即析构归还节点）。失败返回 false（调用点位于校验阶段，
+// 内存未动 → 可安全报错/回落）。
+bool ValidateSavedPageGroups(Core::System& system, const std::vector<SavedBlock>& saved,
+                             std::string* err) {
     *err = {};
-    out->clear();
 
     Kernel::KProcess* process = system.ApplicationProcess();
     if (process == nullptr) {
@@ -1934,29 +1976,28 @@ bool PrebuildSavedPageGroups(Core::System& system, const std::vector<SavedBlock>
     }
     Kernel::KProcessPageTable& page_table = process->GetPageTable();
 
-    out->reserve(saved.size());
-    for (size_t i = 0; i < saved.size(); ++i) {
-        const auto& b = saved[i];
+    size_t validated = 0;
+    for (const auto& b : saved) {
         if (!b.has_pg) {
             continue;
         }
-        auto pg = std::make_unique<Kernel::KPageGroup>(system.Kernel(),
-                                                       page_table.GetBlockInfoManager());
+        Kernel::KPageGroup pg(system.Kernel(), page_table.GetBlockInfoManager());
         bool pg_ok = true;
         for (const auto& [pa, pages] : b.runs) {
-            if (R_FAILED(pg->AddBlock(pa, pages))) {
+            if (R_FAILED(pg.AddBlock(pa, pages))) {
                 pg_ok = false;
                 break;
             }
         }
-        if (!pg_ok || pg->GetNumPages() != b.size / kPageSize) {
+        if (!pg_ok || pg.GetNumPages() != b.size / kPageSize) {
             *err = fmt::format("page group rebuild failed @ {:016x}", b.va);
-            out->clear(); // unique_ptr 析构即释放已建页组的块信息节点
-            return false;
+            return false; // pg 析构自动归还已分配的块信息节点
         }
-        out->push_back({i, std::move(pg)});
+        ++validated;
+        // 作用域末尾：pg 析构，节点归还 slab —— 下一块复用同一批节点
     }
-    SSLogInfo(fmt::format("precheck: {} page groups prebuilt", out->size()));
+    SSLogInfo(fmt::format("precheck: {} page groups validated (built-and-freed one by one)",
+                          validated));
     return true;
 }
 
@@ -2005,10 +2046,10 @@ bool CheckLayoutCompatibility(Core::System& system, const std::vector<SavedBlock
 
 // 页表整表回放。前提：EmulationFreeze（全部 guest 线程挂起，NCE 不跑）
 // + NvdrvTeardown 已完成（SMMU/GMMU 设备映射已拆，nvmap 句柄已按存档
-// 裁剪）+ 页组已预建（PrebuildSavedPageGroups）+ 布局兼容已预检
+// 裁剪）+ 页组已逐块校验可构建（ValidateSavedPageGroups —— 冻结期无
+// 并发 slab 消耗，此处按同序列重建必然成功）+ 布局兼容已预检
 // （CheckLayoutCompatibility）。
 SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<SavedBlock>& saved,
-                                     std::vector<PrebuiltGroup>& groups,
                                      const BookkeepingV5& bookkeeping, std::string* err) {
     *err = {};
     const auto t0 = NowSteady();
@@ -2069,20 +2110,42 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
     }
 
     // 5) 按存档重放：原 VA + 原 PA + 原 state/perm（MapPageGroup 与游戏
-    //    日常映射同一条内核路径；页组为校验阶段预建物料 —— AddBlock 已
-    //    在零副作用阶段完成，apply 期间不会再因页组重建失败而撕裂），
+    //    日常映射同一条内核路径）。页组按块【重建即用即释】—— 校验阶段
+    //    （ValidateSavedPageGroups）已证明每块可独立构建，冻结期无并发
+    //    slab 消耗，此处重建不会失败；同一时刻至多一个页组存活，不再受
+    //    BlockInfo slab 总容量制约（v7 全量预建在此处爆 slab —— 同会话
+    //    「状态恢复失败」的根因）。MapPageGroup 不消费页组引用（引用由
+    //    adjust_all 预置/归还对称管理），重建成本仅 slab 节点分配/释放。
     //    随后重放 Uncached / PermissionLocked。
     size_t replayed_blocks = 0;
-    for (auto& g : groups) {
-        const auto& b = saved[g.block_index];
+    for (const auto& b : saved) {
+        if (!b.has_pg) {
+            continue; // 不可回放块：与当前会话同源（硬件固定区），保持不动
+        }
+        Kernel::KPageGroup pg(kernel, page_table.GetBlockInfoManager());
+        for (const auto& [pa, pages] : b.runs) {
+            const Result ar = pg.AddBlock(pa, pages);
+            if (R_FAILED(ar)) {
+                // 校验阶段已证明可构建 —— 仅防御（slab 被意外占用等）
+                *err = fmt::format("page group rebuild failed @ {:016x} (apply): {:05x}",
+                                   b.va, ar.raw);
+                return SurgeryOutcome::Torn;
+            }
+        }
+        if (pg.GetNumPages() != b.size / kPageSize) {
+            *err = fmt::format("page group page count mismatch @ {:016x} (apply)", b.va);
+            return SurgeryOutcome::Torn;
+        }
+
         const Result r = page_table.MapPageGroup(
-            b.va, *g.pg, static_cast<Kernel::KMemoryState>(b.state),
+            b.va, pg, static_cast<Kernel::KMemoryState>(b.state),
             static_cast<Kernel::KMemoryPermission>(b.perm));
         if (R_FAILED(r)) {
             *err = fmt::format("remap failed @ {:016x} (state {:08x}): {:05x}", b.va, b.state,
                                r.raw);
             return SurgeryOutcome::Torn;
         }
+        // pg 离开作用域：节点归还 slab，供下一块复用
 
         const auto attr = static_cast<Kernel::KMemoryAttribute>(b.attr);
         if (True(attr & Kernel::KMemoryAttribute::Uncached)) {
@@ -2095,7 +2158,6 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
         }
         ++replayed_blocks;
     }
-    groups.clear(); // 页组已全部消费（unique_ptr 析构释放块信息节点）
 
     // 6) 归还预置引用（-1）
     adjust_all(-1);
@@ -2359,13 +2421,12 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         return RestoreOutcome::Incompatible;
     }
 
-    // ---- 5b) v7：手术物料预建 + 布局兼容性预检（Cemu
-    //      RestoreStateFromFile 的「先全量校验、后应用」铁律 —— 一切可
-    //      预见的失败在此以零副作用收场，apply 阶段只剩内核原语，
-    //      不会再因页组重建/布局冲突而撕裂） ----
-    std::vector<PrebuiltGroup> prebuilt_groups;
-    if (!PrebuildSavedPageGroups(system, saved_blocks, &prebuilt_groups, err)) {
-        SSLogWarn(fmt::format("restore: prebuild rejected ({})", *err));
+    // ---- 5b) v8：页组逐块校验（构建-校验-释放，O(1) slab 占用）+
+    //      布局兼容性预检（Cemu RestoreStateFromFile 的「先全量校验、
+    //      后应用」铁律 —— 一切可预见的失败在此以零副作用收场，apply
+    //      阶段只剩内核原语，不会再因页组重建/布局冲突而撕裂） ----
+    if (!ValidateSavedPageGroups(system, saved_blocks, err)) {
+        SSLogWarn(fmt::format("restore: page group validation rejected ({})", *err));
         return RestoreOutcome::Error;
     }
     if (!CheckLayoutCompatibility(system, saved_blocks, err)) {
@@ -2437,13 +2498,13 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     NvdrvTeardown(system, nvdrv_state);
 
     // ---- 9) 页表整表回放手术：当前布局 → 存档布局（原 VA/PA/权限；
-    //      页组为 5b) 预建物料） ----
+    //      页组按块重建即用即释 —— 见 ReplayPageTableLayout） ----
     {
         const SurgeryOutcome so =
-            ReplayPageTableLayout(system, saved_blocks, prebuilt_groups, bookkeeping, err);
+            ReplayPageTableLayout(system, saved_blocks, bookkeeping, err);
         if (so != SurgeryOutcome::Ok) {
             // Teardown 已拆除设备映射、手术可能半途 —— 带撕裂状态续跑必崩，
-            // 上层按 Torn 关停核心（legacy 允许时回落重启路径）
+            // 上层按 Torn 处理（v8：自动回落 legacy 重启恢复，不再停在死核）
             SSLogWarn(fmt::format("restore: surgery failed ({})", *err));
             return RestoreOutcome::Torn;
         }
@@ -2751,7 +2812,10 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_getQuickSaveInfo([[maybe_unused]] JNIEnv* 
     try {
         const u64 program_id = IsTitleRunning() ? GetForegroundProgramId() : 0;
         if (program_id == 0) {
-            return env->NewStringUTF(R"({"titleId":"","titleName":"","maxSlots":6,"slots":[]})");
+            return env->NewStringUTF(
+                fmt::format(R"({{"titleId":"","titleName":"","maxSlots":{},"slots":[]}})",
+                            native_savestate::kMaxSlots)
+                    .c_str());
         }
 
         const std::string title_name = GetForegroundTitleName();
@@ -2801,7 +2865,10 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_getQuickSaveInfo([[maybe_unused]] JNIEnv* 
             backup_thumb ? "true" : "false");
         return env->NewStringUTF(json.c_str());
     } catch (...) {
-        return env->NewStringUTF(R"({"titleId":"","titleName":"","maxSlots":6,"slots":[]})");
+        return env->NewStringUTF(
+            fmt::format(R"({{"titleId":"","titleName":"","maxSlots":{},"slots":[]}})",
+                        native_savestate::kMaxSlots)
+                .c_str());
     }
 }
 
@@ -2898,14 +2965,15 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         }
 
         // ★★ 首选路径：state.bin 进程内原地恢复（= Cemu RestoreStateFromFile）
-        //    游戏暂停 → 全量校验（含 v7 页组预建/布局预检）→ nvmap 拆除 →
-        //    可回放块整备（SavestatePrepareForReplay：含 nvmap DeviceShared
+        //    游戏暂停 → 全量校验（含 v8 页组逐块校验/布局预检）→ nvmap 拆除
+        //    → 可回放块整备（SavestatePrepareForReplay：含 nvmap DeviceShared
         //    复位）→ 页表整表回放手术（原 VA/PA/权限）→ 内容覆盖 →
         //    nvmap 重建 → 从存档时刻继续，完全不重启。
         //    v7 起布局确定性化：跨会话（重启游戏后）的槽位同样原地恢复；
-        //    仅当真正不兼容（NCE 开关切换 / 旧版随机布局时代的槽位）或
-        //    应用中途失败时才回落 legacy。
+        //    仅当真正不兼容（NCE 开关切换 / 旧版随机布局时代的槽位）时才
+        //    回落 legacy；v8 起 Torn（撕裂）也自动回落 legacy（见下）。
         bool legacy_by_incompat = false;
+        bool legacy_by_torn = false;
         if (has_state) {
             Core::System& system = Session().System();
             {
@@ -2946,20 +3014,24 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
                     break;
 
                 case RestoreOutcome::Torn:
-                    // 应用中途失败：内存已半恢复 —— 关停核心（不续跑撕裂状态）
+                    // 应用中途失败：内存已半恢复 —— 关停核心（不续跑撕裂状态）。
+                    // ★ v8：撕裂的核心已不可续跑，直接报错只会把玩家留在
+                    // 黑屏死核上（用户报告「提示状态恢复失败，然后黑屏啥
+                    // 也没有」的来源之一）。只要槽位有 NAND 存档数据就
+                    // 自动回落 legacy 重启加载（toast 如实说明）；无
+                    // savedata 时由下方尾段如实报错。
                     LOG_ERROR(Frontend, "Eden savestate restore torn: {}", state_err);
                     SSLogWarn(fmt::format("restore torn (halting): {}", state_err));
                     freeze.HaltInsteadOfResume();
-                    if ((flags & native_savestate::RESTORE_FLAG_ALLOW_LEGACY) == 0) {
-                        return native_savestate::RESULT_ERROR_STATE_RESTORE_FAILED;
-                    }
-                    // legacy 会整体关停重写，撕裂状态被覆盖 —— 可继续
+                    legacy_by_torn = true;
                     break;
                 }
             } // freeze 析构：恢复运行（或 Torn 时关停）
 
             if (legacy_by_incompat) {
                 SSLogInfo("restore: falling back to legacy (restart) path");
+            } else if (legacy_by_torn) {
+                SSLogInfo("restore: torn - auto falling back to legacy (restart) path");
             }
         }
 
@@ -2997,12 +3069,74 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
         TrimHeap();
         // RESULT_OK = legacy 语义（Cemu 同款）：存档数据已还原、游戏已
         // 关停，由前端 relaunchGame() 进程内重启游戏加载恢复的存档。
-        // RESULT_OK_LEGACY_RESTART：布局不兼容自动回落时的同路径返回码 ——
-        // 前端据此提示「已重启游戏加载」而非误导性的原地恢复话术
-        // （v7 确定性布局下仅剩 NCE 开关切换、旧版随机布局时代的槽位等
-        // 真正不兼容场景才会走到这里）。
-        return legacy_by_incompat ? native_savestate::RESULT_OK_LEGACY_RESTART
-                                  : native_savestate::RESULT_OK;
+        // RESULT_OK_LEGACY_RESTART：布局不兼容自动回落 / v8 撕裂自动回落
+        // 时的同路径返回码 —— 前端据此提示「已重启游戏加载」而非误导性
+        // 的原地恢复话术（v7 确定性布局下布局不兼容仅剩 NCE 开关切换、
+        // 旧版随机布局时代的槽位等场景；v8 撕裂在预建重构后已近乎不可能，
+        // 真发生时也绝不把玩家留在死核上）。
+        return (legacy_by_incompat || legacy_by_torn)
+                   ? native_savestate::RESULT_OK_LEGACY_RESTART
+                   : native_savestate::RESULT_OK;
+    } catch (...) {
+        return native_savestate::RESULT_ERROR_IO;
+    }
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
+Java_org_yuzu_yuzu_1emu_NativeLibrary_forceLegacyRestore([[maybe_unused]] JNIEnv* env,
+                                                        [[maybe_unused]] jobject thiz,
+                                                        jint slot) {
+    // ★ v8 新增：前端「原地恢复成功但核心无帧输出」看门狗的兑底入口。
+    //
+    // 场景：quickRestoreSlot 已返回 RESULT_OK_RESTORED_IN_PLACE，但恢复后
+    // 核心死锁/无帧（深层同步状态分歧等 —— Cemu 靠全组件序列化器避免，
+    // Eden 无法完全根除）。前端看门狗（EdenEngine）采样 realtimeFps
+    // ~12 秒无帧后调用本入口：跳过原地恢复（不再冻结/手术 —— 对死锁核心
+    // 再次 Pause 可能无限等待），直接走 legacy 尾段：autobackup 当前
+    // NAND → 关停核心（有界等待）→ 槽位存档数据写回 NAND → 返回
+    // RESULT_OK；前端 relaunchGame() 重启加载。玩家最差也能回到存档点，
+    // 绝不停在无响应黑屏上（Cemu「先全量校验后应用」之外的最后兑底）。
+    std::lock_guard freeze_guard{FreezeOpMutex()};
+    try {
+        if (!IsTitleRunning()) {
+            return native_savestate::RESULT_ERROR_NOT_RUNNING;
+        }
+
+        const u64 program_id = GetForegroundProgramId();
+        if (program_id == 0) {
+            return native_savestate::RESULT_ERROR_NOT_RUNNING;
+        }
+
+        const fs::path slot_save_dir = GetSlotSaveDir(program_id, static_cast<int>(slot));
+        if (!SlotHasSaveData(program_id, static_cast<int>(slot))) {
+            // 槽位无 NAND 存档数据（快照失败过的槽位）—— 无法 legacy 兑底
+            return native_savestate::RESULT_ERROR_NO_SAVE_DATA;
+        }
+
+        // 覆盖前安全备份当前存档（与 quickRestoreSlot legacy 尾段一致）
+        if (!CollectTitleSaveDirs(program_id).empty()) {
+            const fs::path backup_dir = GetSlotDir(program_id, kAutoBackupSlot);
+            std::error_code ec;
+            fs::remove_all(backup_dir, ec);
+            if (SnapshotTitleSaveData(program_id, GetSlotSaveDir(program_id, kAutoBackupSlot))) {
+                WriteSlotInfoFile(backup_dir);
+            }
+        }
+
+        // 停止运行中的游戏（= Cemu ShutdownTitle；有界等待）
+        Session().HaltEmulation();
+        if (!Session().WaitForShutdown(std::chrono::seconds(10))) {
+            return native_savestate::RESULT_ERROR_IO;
+        }
+
+        // 槽位存档数据写回 NAND，返回 RESULT_OK（legacy 语义）
+        if (!RestoreTitleSaveData(program_id, slot_save_dir)) {
+            return native_savestate::RESULT_ERROR_IO;
+        }
+
+        TrimHeap();
+        SSLogWarn("forceLegacyRestore: legacy fallback applied (no frames after in-place restore)");
+        return native_savestate::RESULT_OK;
     } catch (...) {
         return native_savestate::RESULT_ERROR_IO;
     }

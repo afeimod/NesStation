@@ -1,7 +1,20 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生槽位契约 v2 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生槽位契约 v3 ★★★
+//
+// v8 更新（详见 native_savestate.cpp 文件头）：
+//   · 原生槽位扩到 10 个（与通用 SlotPickerDialog 的 0..9 文件槽位
+//     恒等映射 —— 旧版 UI 槽位 6..9 经 %6+1 映射复用原生槽 1..4，
+//     造成「5678 槽从没存过却显示有存档」的幽灵槽位；现存 slot1..slot6
+//     目录与旧存档完全兼容，无需重新存档）；
+//   · 手术物料预建改为「逐块构建-校验-释放」（v7 的全量预建在堆碎片化
+//     后 PARun 总数超过 BlockInfo slab 容量（4000）时必失败 —— 同会话
+//     「读档失败：状态恢复失败」的主因）；
+//   · 撕裂（Torn）状态不再把玩家留在黑屏死核上：只要槽位有 NAND 存档
+//     数据就自动回落 legacy 重启恢复；
+//   · 新增 forceLegacyRestore：前端看门狗检测到原地恢复后核心无帧输出
+//     时直接走 legacy 路径（不再次尝试原地恢复）。
 //
 // v7 更新（详见 native_savestate.cpp 文件头）：
 //   · 同会话读档失败（unmap 0xd401）已修复 —— nvmap 的 DeviceShared
@@ -16,7 +29,7 @@
 // v2 新增（对齐 Cemu 的原地恢复语义 —— 与
 // core/cemu/src/android/app/src/main/cpp/NativeQuickSave.cpp 逐块对应）：
 //
-//   · 槽位布局：<EdenDir>/savestates/<programId016x>/{slot1..slot6,autobackup}
+//   · 槽位布局：<EdenDir>/savestates/<programId016x>/{slot1..slot10,autobackup}
 //     每槽 = thumb.tga（缩略图）+ info.txt（时间戳）
 //            + state.bin（★ v2：进程内全量状态 —— 原地恢复载体）
 //            + savedata/（该作 NAND 用户存档快照 —— 冷启动后备，
@@ -89,10 +102,18 @@ constexpr int RESULT_OK_LEGACY_RESTART = 7;
 // 存档一次升级格式。不回落 legacy、不重启，前端提示「请重新存档」。
 constexpr int RESULT_ERROR_STATE_TOO_OLD = 8;
 
+// v8 新增：强制 legacy 恢复入口（forceLegacyRestore）的返回码约定与
+// quickRestoreSlot 的 legacy 尾段完全一致（RESULT_OK = 数据已写回 NAND、
+// 核心已关停，前端 relaunchGame()）。供前端「原地恢复成功但核心无帧
+// 输出」看门狗使用：不再尝试原地恢复，直接还原存档数据 + 重启。
+
 // restore flags
 constexpr int RESTORE_FLAG_ALLOW_LEGACY = 1;
 
-constexpr int kMaxSlots = 6;
+// v8：原生槽位 1..10 —— 与通用 SlotPickerDialog 的 UI 槽位 0..9 恒等
+// 映射（ui + 1）。旧版为 6（UI 6..9 经 %6+1 复用 1..4 → 幽灵存档）。
+// 现存 slot1..slot6 目录数据不动，slot7..slot10 为新增空槽。
+constexpr int kMaxSlots = 10;
 constexpr int kAutoBackupSlot = -1; // 读档覆盖前的安全备份槽
 
 } // namespace native_savestate

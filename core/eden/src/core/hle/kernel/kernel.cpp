@@ -64,7 +64,16 @@ struct ThreadLocalData {
 struct KernelCore::Impl {
     static constexpr size_t ApplicationMemoryBlockSlabHeapSize = 20000;
     static constexpr size_t SystemMemoryBlockSlabHeapSize = 10000;
-    static constexpr size_t BlockInfoSlabHeapSize = 4000;
+    // ★★★ NesStation savestate (v8)：BlockInfo slab 扩容 4000 → 65536 ★★★
+    //
+    // 上游 4000 条只够 guest 日常运行（svc 映射操作的页组都是瞬时存活，
+    // 同刻占用很小）。即时存档的读档手术（native_savestate.cpp）要按存档
+    // 布局逐块重建页组：堆碎片化后【单个块】的 PA run 数就可能超过 4000
+    //（app 侧 slab 的动态页分配器是 nullptr —— 初始化后运行期不可增长，
+    // 4000 就是硬上限）→ 页组构建必失败（「读档失败：状态恢复失败」主因）。
+    // 扩到 65536 条：KBlockInfo 16B/条，初始化时按 PageBuffer 粒度预建
+    // 256 页 ≈ 1MB（页表堆区共 16.4MB，占用可控）。
+    static constexpr size_t BlockInfoSlabHeapSize = 65536;
     static constexpr size_t ReservedDynamicPageCount = 64;
     // Be very careful when handling TLS data
     // We do not want to concern ourselves with the appropriate way to manage them
