@@ -1137,17 +1137,19 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             }
             NativeLibrary.RESULT_ERROR_SLOT_EMPTY -> {
                 lastRestoreWasRestart = false
-                lastErrorText = "读档失败：槽位 $slot 为空"
+                // v9：lastError 存【纯原因】，展示层统一加“读档失败：”前缀
+                // （v8 双重前缀 bug：本层与 EmulatorScreen 各拼一次）
+                lastErrorText = "槽位 $slot 为空"
                 false
             }
             NativeLibrary.RESULT_ERROR_STATE_RESTORE_FAILED -> {
                 lastRestoreWasRestart = false
-                lastErrorText = "读档失败：状态恢复失败（游戏仍在运行，可重试或换用其它槽位）"
+                lastErrorText = "状态恢复失败（游戏仍在运行，可重试或换用其它槽位）"
                 false
             }
             else -> {
                 lastRestoreWasRestart = false
-                lastErrorText = "读档失败（核心返回码 $r）"
+                lastErrorText = "核心返回码 $r"
                 false
             }
         }
@@ -1233,10 +1235,12 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         val gen = restoreWatchdogGen.incrementAndGet()
         thread(name = "eden-restore-wd", isDaemon = true) {
             try {
-                // 12 次采样 × 2s = 24s 无帧窗口（宽松：避开首次着色器
-                // 重建等合法慢启动的误判；真死锁多等几秒代价很小）
+                // v9：12 → 4 次采样（2s 间隔 = 8s 无帧窗口）。v9 全量线程
+                // 重建后原地恢复不应再出现死锁黑屏，看门狗只是最后兑底；
+                // 8 秒足够区分“首帧着色器重建慢”与“真死锁”，且不给玩家
+                // 留 24 秒的黑屏等待。
                 var deadSamples = 0
-                while (deadSamples < 12) {
+                while (deadSamples < 4) {
                     Thread.sleep(2000)
                     if (restoreWatchdogGen.get() != gen) return@thread // 被取代/取消
                     if (!isLoaded || !running.get()) return@thread      // 已退出/重启
@@ -1248,7 +1252,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
                 if (!isLoaded || !running.get()) return@thread
                 android.util.Log.w(
                     "EdenEngine",
-                    "restore watchdog: no frames 24s after in-place restore, " +
+                    "restore watchdog: no frames 8s after in-place restore, " +
                         "falling back to legacy (slot $nativeSlot)"
                 )
                 val r = try {

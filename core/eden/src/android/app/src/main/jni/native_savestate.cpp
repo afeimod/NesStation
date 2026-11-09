@@ -1,9 +1,37 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v8 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v9 ★★★
 //
-// v8（本轮）：修复用户报告的三类线上问题 ——
+// v9（本轮）：修复 v8 实测仍 100% 失败的两处根因 ——
+//
+//   ① 「读档永远失败：状态恢复失败（游戏仍在运行）」：v8 新增的
+//      CheckLayoutCompatibility 把当前布局的【全部】不可回放状态算成
+//      手术障碍 —— 但其中 Free / Inaccessible 是【未映射的洞】：
+//      手术本来就会把可回放块卸载成 Free、再按存档重放回去，存档块
+//      与当前 Free 洞重叠是【正常且必然】的场景（游戏存档后释放过
+//      任何内存 —— 堆伸缩、临时缓冲，几乎每次都会发生 → v8 下同会话
+//      读档必被误拒 → 100%「状态恢复失败」）。v9 冻结区只收【已映射
+//      且不可回放】的块（Io/Static/IoRegister 等 —— 手术不卸载它们，
+//      重叠才是真正不兼容）。
+//
+//   ② 「提示已恢复、结果黑屏/无响应」：v8 只回写幸存线程的【寄存器
+//      组】(m_thread_context)，但幸存线程的宿主侧执行位置（fiber 停在
+//      废弃时间线的代码里）、等待注册（挂在废弃时间线的同步对象上，
+//      等待节点/等待队列对象都在已弹出的宿主栈帧里）全部是存档后
+//      继续运行产生的残留 —— 寄存器组只在线程从内核等待唤醒装载时
+//      生效，对「解冻后从冻结点继续跑」的 fiber 完全无效 → 线程在
+//      废弃执行位置上跑已回滚的内存数据 → 死锁/黑屏。v9 按 Cemu
+//      SavestateRebuildSchedulerAfterRestore 的语义改为【全量线程
+//      重建】：移除全部当前线程（SavestateRemoveThread —— 废弃
+//      时间线的 fiber/等待注册/锁状态全部随对象作废）→ 按存档逐个
+//      重建（InitializeUserThread 以存档 PC 为入口 → 身份回写 →
+//      【先】写寄存器组【后】置 Runnable —— 顺带修复 v8 重建路径
+//      「Runnable 之后才 memcpy 上下文」的调度竞态）→ 句柄按存档
+//      回放。恢复后的 guest 代码自行重验同步原语（HOS fastpath
+//      循环重查语义 —— 与 Cemu 相同）。
+//
+// v8（历史）：修复用户报告的三类线上问题 ——
 //
 //   ① 「5678 存档槽没存过也显示有存档」：根因是原生槽位只有 6 个，
 //      而 UI（通用 SlotPickerDialog）有 10 个槽位，前端用 %6+1 把
@@ -152,6 +180,8 @@
 //   v8：本文件 —— 槽位 10 化（恒等映射）+ 页组逐块校验/重建（slab
 //       容量瓶颈根除）+ Torn 自动回落 legacy + forceLegacyRestore
 //       （前端无帧看门狗的兑底入口）
+//   v9：本文件 —— 冻结区排除 Free/Inaccessible（同会话误拒根因）+
+//       全量线程重建（幸存线程宿主残留根因，= Cemu 调度器重建语义）
 
 #include "native_savestate.h"
 
@@ -2001,11 +2031,16 @@ bool ValidateSavedPageGroups(Core::System& system, const std::vector<SavedBlock>
     return true;
 }
 
-// 布局兼容性预检（零副作用）：存档的可回放块不能与当前会话的不可回放
-// 块（Io/Static 等手术不卸载的状态）重叠 —— MapPageGroup 要求目标区间
-// 为 Free，重叠意味着 apply 阶段必然 Torn。同会话/确定性布局跨会话下
-// 不可回放块的位置恒定，本检查正常情况下恒通过；命中即说明槽位来自布
-// 局不兼容的会话（如 NCE 开关切换后），干净报错（可回落 legacy）。
+// 布局兼容性预检（零副作用）：存档的可回放块不能与当前会话中【已映射
+// 且不可回放】的块（Io/Static/IoRegister 等手术不卸载的状态）重叠 ——
+// MapPageGroup 要求目标区间为 Free，这种重叠意味着 apply 阶段必然 Torn。
+//
+// ★ v9 根因修复：Free / Inaccessible 是【未映射的洞】，不是障碍 ——
+//   手术本来就会把可回放块卸载成 Free、再按存档重放；游戏存档后释放
+//   过任何内存（堆伸缩、临时缓冲——几乎必然发生）都会让存档的可回放
+//   块与当前 Free 洞重叠。v8 把 Free 也算进冻结区 → 同会话读档必被
+//   误拒（「读档永远失败：状态恢复失败」的根因）。v8 之前（v5-v7）
+//   无此检查、手术直接跑，Free 洞本来就是可重放的目标空间。
 bool CheckLayoutCompatibility(Core::System& system, const std::vector<SavedBlock>& saved,
                               std::string* err) {
     *err = {};
@@ -2016,11 +2051,16 @@ bool CheckLayoutCompatibility(Core::System& system, const std::vector<SavedBlock
         return false;
     }
 
-    // 当前会话的不可回放区间（手术保留不卸载的）
+    // 冻结区 = 已映射且不可回放的块（手术保留不卸载的）。
+    // Free（state==0x0，无任何标志位）与 Inaccessible（0x10，未映射的
+    // 保留区）排除在外 —— 它们是手术的目标空间，不是障碍。
     std::vector<std::pair<u64, u64>> frozen;
     frozen.reserve(current.size());
     for (const auto& b : current) {
-        if (!IsPgState(b.state)) {
+        const auto s = static_cast<Kernel::KMemoryState>(b.state);
+        const bool unmapped_hole =
+            s == Kernel::KMemoryState::Free || s == Kernel::KMemoryState::Inaccessible;
+        if (!IsPgState(b.state) && !unmapped_hole) {
             frozen.emplace_back(b.va, b.va + b.size);
         }
     }
@@ -2458,10 +2498,20 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         return RestoreOutcome::Torn;
     }
 
-    // ---- 7) v6 多余线程移除（存档后新建的线程 = 已废弃时间线产物） ----
-    //      Cemu 语义：废弃时间线的宿主状态全部丢弃（同 GX2 丢弃排队事件
-    //      回调）。确定性移除不执行任何 guest 代码；必须先清句柄表引用，
-    //      且在页表手术前完成（移除过程中的 TLS/PI 清理操作当前页表）。
+    // ---- 7) ★ v9 全量线程移除（不只是差分） ----
+    //      Cemu SavestateRebuildSchedulerAfterRestore 语义：废弃时间线的
+    //      宿主侧线程状态【全部】丢弃 —— 不只是“存档后新建的线程”。
+    //      v8 只回写幸存线程的寄存器组，但幸存线程的宿主执行位置
+    //      （fiber 停在废弃时间线的代码里）、等待注册（挂在废弃时间线
+    //      的同步对象上，等待节点/队列对象都在已弹出的宿主栈帧里）
+    //      全部是残留 —— 寄存器组只在线程从内核等待唤醒装载时生效，
+    //      对“解冻后从冻结点继续跑”的 fiber 无效 → 线程在废弃执行位置
+    //      上跑已回滚的内存 → 死锁/黑屏（“提示已恢复但黑屏”的根因）。
+    //      全量移除后全部线程走重建路径（第 15 步），从存档寄存器组
+    //      重新起跑，宿主侧无任何废弃残留。
+    //      确定性移除不执行任何 guest 代码；必须先 SavestateRemoveThread
+    //      再清句柄表引用，且在页表手术前完成（移除过程中的 TLS/PI
+    //      清理操作当前页表）。HLE 宿主辅助线程（dummy）不在此列。
     {
         const std::vector<u64> current_ids = CollectLiveThreadIds(system);
         std::vector<Kernel::KThread*> to_remove;
@@ -2469,14 +2519,11 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             if (thread.IsDummyThread()) {
                 continue;
             }
-            if (!std::binary_search(saved_thread_ids.begin(), saved_thread_ids.end(),
-                                    thread.GetThreadId())) {
-                to_remove.push_back(std::addressof(thread));
-            }
+            to_remove.push_back(std::addressof(thread));
         }
         if (!to_remove.empty()) {
             SSLogInfo(fmt::format(
-                "restore: thread diff ({} saved / {} live) - removing {} extra from discarded timeline",
+                "restore: full thread reset ({} saved / {} live) - removing all {} for timeline reset",
                 saved_thread_ids.size(), current_ids.size(), to_remove.size()));
             // 顺序关键：先 SavestateRemoveThread（标记终止 + 释放运行引用，
             // 对象仍存活），再清句柄表（通常触发最后一次 Close → Finalize
@@ -2564,33 +2611,26 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         process->SavestateRebuildTlsState(system.Kernel(), saved_tls);
     }
 
-    // ---- 15) v6 缺失线程重建（存档时有、现已消亡的线程）----
+    // ---- 15) ★ v9 全量线程重建（存档的全部线程；无幸存者） ----
     //      Cemu SavestateRebuildSchedulerAfterRestore 同构 —— 宿主侧线程
     //      对象按存档重建：InitializeUserThread（与游戏 svcCreateThread
-    //      同一条内核路径）→ 身份回写（thread_id / TLS / 亲和掩码）→
-    //      Runnable 启动 → 上下文覆盖（存档时刻寄存器组）→ 句柄表按
-    //      存档值回放。恢复后的 guest 代码自行重验其同步原语（互斥锁
-    //      fastpath 在 guest 侧循环重查 —— 这是 HOS 线程恢复的既有语义）。
+    //      同一条内核路径，入口 = 存档时刻 PC）→ 身份回写（thread_id /
+    //      TLS / 亲和掩码）→ 【先】写寄存器组【后】置 Runnable（v8 在
+    //      RecreateRun 之后才 memcpy 上下文 —— 置 Runnable 后线程即可被
+    //      调度器调度，寄存器写入与之存在竞态，v9 修正顺序并改为循环外
+    //      统一启动）→ 句柄表按存档值回放。恢复后的 guest 代码自行重验
+    //      其同步原语（互斥锁 fastpath 在 guest 侧循环重查 —— 这是 HOS
+    //      线程恢复的既有语义）。
     {
         u32 recreated = 0;
+        std::vector<Kernel::KThread*> created_threads;
+        created_threads.reserve(header.thread_count);
         for (u32 i = 0; i < header.thread_count; ++i) {
             ThreadMetaV2 meta{};
             std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
             Kernel::Svc::ThreadContext ctx{};
             std::memcpy(&ctx, thread_blob.data() + i * kThreadRecordSize + sizeof(meta),
                         sizeof(ctx));
-
-            // 幸存？
-            bool survives = false;
-            for (auto& thread : process->GetThreadList()) {
-                if (!thread.IsDummyThread() && thread.GetThreadId() == meta.thread_id) {
-                    survives = true;
-                    break;
-                }
-            }
-            if (survives) {
-                continue;
-            }
 
             Kernel::KThread* t =
                 Kernel::KThread::Create(system.Kernel());
@@ -2621,7 +2661,8 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             }
             t->SavestateSetIdentity(meta.thread_id, meta.virt_affinity_mask,
                                     Kernel::KProcessAddress(meta.tls_addr));
-            t->SavestateRecreateRun(system.Kernel());
+            // ★ 寄存器组先于 Runnable 写入（v8 竞态修复）：此刻线程仍在
+            //   Initialized 状态，调度器不会碰它，memcpy 完整落地。
             Kernel::Svc::ThreadContext& dst = t->GetContext();
             std::memcpy(&dst, &ctx, sizeof(Kernel::Svc::ThreadContext));
             if (meta.thread_handle != 0 &&
@@ -2632,7 +2673,13 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             }
             // thread_handle == 0（存档时表中无句柄）则保留 Create 引用作
             // 对象生命周期持有者 —— 无泄漏风险（进程关闭时整体回收）
+            created_threads.push_back(t);
             ++recreated;
+        }
+        // ★ 统一启动：全部线程的上下文/身份/句柄就位后才置 Runnable ——
+        //   期间任何线程都不会被调度器调度（Initialized 状态）。
+        for (Kernel::KThread* t : created_threads) {
+            t->SavestateRecreateRun(system.Kernel());
         }
         if (recreated > 0) {
             // 线程 ID 计数器前移到存档最大 ID 之上：后续新建线程不会拿到
@@ -2642,41 +2689,13 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
                 max_saved_id = std::max(max_saved_id, id);
             }
             system.Kernel().SavestateAdvanceThreadID(max_saved_id + 1);
-            SSLogInfo(fmt::format("restore: recreated {} missing thread(s)", recreated));
+            SSLogInfo(fmt::format("restore: recreated all {} thread(s) from save",
+                                  recreated));
         }
     }
 
-    // ---- 16) 幸存线程：寄存器组原地写回 + 句柄按存档回放（guest 互斥锁
-    //      字/TCB 存有句柄值，句柄表必须与存档时刻一致）。挂起的线程解冻
-    //      后被重新调度时经 KScheduler::Reload → LoadContext → SetContext
-    //      装载恢复后的寄存器组 —— 从存档时刻继续。 ----
-    {
-        Kernel::Svc::ThreadContext ctx_copy{};
-        for (u32 i = 0; i < header.thread_count; ++i) {
-            ThreadMetaV2 meta{};
-            std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
-            std::memcpy(&ctx_copy, thread_blob.data() + i * kThreadRecordSize + sizeof(meta),
-                        sizeof(ctx_copy));
-
-            for (auto& thread : process->GetThreadList()) {
-                if (thread.GetThreadId() != meta.thread_id || thread.IsDummyThread()) {
-                    continue;
-                }
-                Kernel::Svc::ThreadContext& dst = thread.GetContext();
-                std::memcpy(&dst, &ctx_copy, sizeof(Kernel::Svc::ThreadContext));
-                if (meta.thread_handle != 0) {
-                    // 先清当前指向该线程的句柄（废弃时间线可能关闭过原句柄、
-                    // 开过重复句柄），再按存档值回放
-                    process->GetHandleTable().SavestatePurgeObject(system.Kernel(),
-                                                                   std::addressof(thread));
-                    process->GetHandleTable().SavestateRestoreHandle(
-                        system.Kernel(), static_cast<Kernel::Handle>(meta.thread_handle),
-                        std::addressof(thread));
-                }
-                break;
-            }
-        }
-    }
+    // ---- 16)（v9 废除）幸存线程寄存器写回 —— 全量重建后无幸存者，
+    //      全部线程的寄存器组已在第 15 步重建时装载。 ----
 
     SSLogInfo(fmt::format("restore: done, {} frames / {} threads, {} ms (rss {} MB)",
                           content_descs.size(), header.thread_count,
