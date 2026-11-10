@@ -1,9 +1,27 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v9 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v9.1 ★★★
 //
-// v9（本轮）：修复 v8 实测仍 100% 失败的两处根因 ——
+// v9.1（本轮）：构建链修复 + 线程移除生命周期加固 ——
+//
+//   ① CI 打包 OOM（2026-11-09 Actions：:app:packageRelease 阶段 zipflinger
+//      Compressor.deflate 抛 OutOfMemoryError: Java heap space，APK 打不出
+//      → v9 从未被真机验证）：APK 同时打包三核心 × 3 ABI 的巨型 so，
+//      打包 worker（NoIsolation，跑在 Gradle 守护进程内）压缩单条目
+//      峰值可达条目大小 3~4 倍，4096m 堆不够。gradle.properties 堆上限
+//      4096m → 8192m（本文件无改动；见仓库根 gradle.properties 注释）。
+//
+//   ② 第 7 步全量线程移除的悬垂指针窗口：SavestateRemoveThread 末尾
+//      Close(运行引用) 时，无句柄线程（游戏已 close 句柄的分离线程，
+//      实际游戏里很常见）引用计数直接归零 → Destroy → slab 回收，
+//      to_remove 里的指针立即悬垂；后续 SavestatePurgeObject 虽只做
+//      指针比较（两段之间无 slab 复用窗口时恰好无害），但这是靠巧合
+//      而非构造保证的正确性。修复：移除前逐线程 Open(+1) 预置引用，
+//      全部操作结束后统一 Close 归还 —— 对象存活覆盖全程，引用归零
+//      时走干净 Finalize（注销线程表 + TLS 槽归还 + 资源限额释放）。
+//
+// v9（历史）：修复 v8 实测仍 100% 失败的两处根因 ——
 //
 //   ① 「读档永远失败：状态恢复失败（游戏仍在运行）」：v8 新增的
 //      CheckLayoutCompatibility 把当前布局的【全部】不可回放状态算成
@@ -182,6 +200,8 @@
 //       （前端无帧看门狗的兑底入口）
 //   v9：本文件 —— 冻结区排除 Free/Inaccessible（同会话误拒根因）+
 //       全量线程重建（幸存线程宿主残留根因，= Cemu 调度器重建语义）
+//   v9.1：本文件 —— 全量线程移除的引用预置加固（悬垂指针窗口根除）；
+//       打包 OOM 修复见 gradle.properties（堆 4096m → 8192m）
 
 #include "native_savestate.h"
 
@@ -2525,14 +2545,28 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             SSLogInfo(fmt::format(
                 "restore: full thread reset ({} saved / {} live) - removing all {} for timeline reset",
                 saved_thread_ids.size(), current_ids.size(), to_remove.size()));
-            // 顺序关键：先 SavestateRemoveThread（标记终止 + 释放运行引用，
-            // 对象仍存活），再清句柄表（通常触发最后一次 Close → Finalize
-            // 的干净析构：注销 + TLS 槽归还 + 资源限额释放）。
+            // ★ v9.1 生命周期加固：SavestateRemoveThread 末尾会 Close(运行
+            //   引用)。无句柄线程（游戏已 close 句柄的分离线程）此刻引用
+            //   计数即归零 → Destroy → slab 回收，to_remove 中该指针立刻
+            //   悬垂；后续 PurgeObject 虽只做指针比较，但依赖「两段之间
+            //   无 slab 复用」这一脆弱前提。这里先给每个线程预置 +1 引用，
+            //   保证对象在整个移除过程中必然存活，末尾统一释放 —— 引用
+            //   归零时自然走干净的 Finalize（注销线程表 + TLS 槽归还 +
+            //   资源限额释放）。句柄清除触发的 Close 语义不变。
+            for (Kernel::KThread* thread : to_remove) {
+                thread->Open(system.Kernel());
+            }
+            // 顺序关键：先 SavestateRemoveThread（标记终止 + 释放运行引用），
+            // 再清句柄表（句柄引用归还）。
             for (Kernel::KThread* thread : to_remove) {
                 thread->SavestateRemoveThread(system.Kernel());
             }
             for (Kernel::KThread* thread : to_remove) {
                 process->GetHandleTable().SavestatePurgeObject(system.Kernel(), thread);
+            }
+            // 归还预置引用（无其它引用者时在此触发干净析构）
+            for (Kernel::KThread* thread : to_remove) {
+                thread->Close(system.Kernel());
             }
         }
     }

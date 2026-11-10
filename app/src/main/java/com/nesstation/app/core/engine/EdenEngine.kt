@@ -1158,7 +1158,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     /**
      * 原生槽位快捷存档（CemuEngine.quickSaveSlotRaw 同款）。
      * ⚠ 会阻塞（截图等待 + 冻结 + 存档数据拷贝），IO 线程执行。
-     * @param nativeSlot 原生槽位 1..6（直接透传，不做 UI 映射）
+     * @param nativeSlot 原生槽位 1..10（直接透传，不做 UI 映射）
      * @return NativeLibrary.RESULT_* 结果码
      */
     fun quickSaveSlotRaw(nativeSlot: Int): Int = try {
