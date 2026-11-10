@@ -1081,12 +1081,11 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
             val r = synchronized(stateOpLock) { NativeLibrary.quickSaveSlot(nSlot) }
             when (r) {
                 NativeLibrary.RESULT_OK -> {
-                    // dst 标记文件（UI 槽位列表/时间戳展示用；核心槽位在
-                    // <filesDir>/eden/savestates，进程重启后仍可用）
-                    try {
-                        dst.parentFile?.mkdirs()
-                        dst.writeText("eden-quicksave-slot-$nSlot\n")
-                    } catch (_: Throwable) {}
+                    // ★ v12：不再写 dst 标记文件 —— 原生槽位（getQuickSaveInfo
+                    //   JSON：state.bin + savedata + thumb + info.txt）是唯一
+                    //   事实源。旧版 UI↔原生 %6+1 映射时代写下的残留标记文件
+                    //   会让从未存过档的 6..9 槽显示"有存档"（幽灵槽位的
+                    //   显示层根因）；停止写入后新存档不再产生误导性标记。
                     true
                 }
                 NativeLibrary.RESULT_ERROR_NOT_RUNNING -> {

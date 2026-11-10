@@ -354,7 +354,8 @@
         "hash": "cc5ad4b119a9c2ea57f0b71eeff01113bb506e0d17000159c5409cb8236d22e38c52d5e9e97e7947a4bf1b2dfc44b6c503ab2d9aedbd59458435c6a2849cb029",
         "min_version": "1.5",
         "options": [
-            "ZSTD_BUILD_SHARED OFF"
+            "ZSTD_BUILD_SHARED OFF",
+            "ZSTD_MULTITHREAD_SUPPORT ON"
         ],
         "repo": "facebook/zstd",
         "source_subdir": "build/cmake",

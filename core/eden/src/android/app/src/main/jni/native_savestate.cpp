@@ -1,9 +1,39 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v9.1 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v10 ★★★
 //
-// v9.1（本轮）：构建链修复 + 线程移除生命周期加固 ——
+// v10（本轮）：按 Cemu（Cafe/Savestate/SaveState.cpp）语义重做读档核心
+//   —— 差分布局调和取代整表回放手术 + 存档提速 + 幽灵槽位收尾：
+//
+//   ① 「读档失败/状态恢复失败」根因收敛（Cemu RestoreStateFromFile
+//      语义对齐）：v5~v9.1 的读档对【全部】可回放块做整表卸载+重放
+//      —— 手术面 = 全部内存（数千块），任何一块在 UnmapPages /
+//      MapPageGroup 的内核校验上失败（属性位、块边界、slab、引用
+//      计数……）整个读档就以 Torn/失败收场；且全局
+//      SavestatePrepareForReplay 会复位全部块的簿记，中途失败后内核
+//      状态不可回滚。v10 换成 Cemu 的真实语义：**存档与当前布局逐块
+//      比对（VA+state+perm+attr+物理页序列），完全一致的块原地保留、
+//      只做内容覆盖（= Cemu 对静态 MMURange 的纯 memcpy 语义）；只有
+//      差异部分才产生卸载/重放操作**。「存档→读档」的常见场景（布局
+//      未变）→ 零手术、零内核改动、不可能撕裂；布局漂移（存档后
+//      分配/释放过内存）→ 只动差异块，手术面从全部内存缩小到变化
+//      的几块。手术末尾新增整表复验（布局+物理页与存档逐块比对）。
+//
+//   ② 「存档变慢」：zstd 升级为库内多线程压缩（ZSTD_c_nbWorkers ——
+//      zstd job 模型，单帧输出不变、文件格式与读档侧零改动；非多
+//      线程构建下该参数报错、自动回退单线程），移动端大内存块压缩
+//      提速约 3~4×；另移除存档路径的 rasterizer->FlushAll()（本仓
+//      RasterizerVulkan::FlushAll 为空实现 —— 纯死代码；GPU 排空由
+//      冻结序列的 GPU().WaitForIdle() 完成，与 Cemu「排空命令环」
+//      同语义）。
+//
+//   ③ 幽灵槽位收尾（UI 侧配套，EdenEngine / EmulatorScreen）：Switch
+//      槽位存在性以原生槽位（quickSaveInfo JSON）为唯一事实源，不再
+//      写入/回退检查标记文件（旧版 %6+1 映射时代的残留标记文件是
+//      「5678 槽没存过也显示有存档」的显示层根因）。
+//
+// v9.1（历史）：构建链修复 + 线程移除生命周期加固 ——
 //
 //   ① CI 打包 OOM（2026-11-09 Actions：:app:packageRelease 阶段 zipflinger
 //      Compressor.deflate 抛 OutOfMemoryError: Java heap space，APK 打不出
@@ -1275,32 +1305,6 @@ struct SavedBlock {
     std::vector<std::pair<u64, u32>> runs;             // (pa, pages)，VA 顺序
 };
 
-// PA run 合并：把（可能跨块重叠的 —— 别名映射共享物理页）全部 run
-// 合成不相交区间序列。预置/归还引用必须"每页恰好一次"。
-std::vector<std::pair<u64, u64>> MergePaRuns(const std::vector<SavedBlock>& blocks) {
-    std::vector<std::pair<u64, u64>> spans; // (pa_start, pa_end)
-    spans.reserve(blocks.size() * 2);
-    for (const auto& b : blocks) {
-        if (!b.has_pg) {
-            continue;
-        }
-        for (const auto& [pa, pages] : b.runs) {
-            spans.emplace_back(pa, pa + static_cast<u64>(pages) * kPageSize);
-        }
-    }
-    std::sort(spans.begin(), spans.end());
-    std::vector<std::pair<u64, u64>> merged;
-    merged.reserve(spans.size());
-    for (const auto& [start, end] : spans) {
-        if (!merged.empty() && start <= merged.back().second) {
-            merged.back().second = std::max(merged.back().second, end);
-        } else {
-            merged.emplace_back(start, end);
-        }
-    }
-    return merged;
-}
-
 // 当前存活非 dummy 线程 id 集（排序后与存档集做全等比对）。
 // —— v3 闪退根因之一：存档后新建/销毁的线程会让「内容回滚 + 当前宿主
 //    线程集」分叉（堆内建线程栈不改变块布局，布局校验兜不住）。
@@ -1353,6 +1357,17 @@ public:
         ZSTD_CCtx_reset(m_cctx, ZSTD_reset_session_only);
         ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_compressionLevel, kZstdLevel);
         ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_checksumFlag, 1);
+        // ★ v10：库内多线程压缩（zstd job 模型）。单帧输出格式不变、
+        //   pledged size 与帧校验和照常生效，读档侧零改动。非多线程
+        //   构建（ZSTD_MULTITHREAD 关闭）下该参数报错 —— 一次性降级
+        //   为单线程，不再重试。
+        if (m_workers > 0) {
+            if (ZSTD_isError(ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_nbWorkers,
+                                                     static_cast<int>(m_workers)))) {
+                m_workers = 0;
+                ZSTD_CCtx_setParameter(m_cctx, ZSTD_c_nbWorkers, 0);
+            }
+        }
         if (ZSTD_isError(ZSTD_CCtx_setPledgedSrcSize(m_cctx, pledged_src_size))) {
             return false;
         }
@@ -1410,10 +1425,22 @@ private:
         return true;
     }
 
+    // v10：压缩 worker 数（zstd 库内并行）。大核 ≥3 的移动平台取
+    // min(4, hw-1)；小核设备取 0（单线程 —— 多线程收益抵不过小核
+    // 调度抖动）。构建期未启用 ZSTD_MULTITHREAD 时运行期自动回退 0。
+    static unsigned DetectWorkers() {
+        const unsigned hw = std::thread::hardware_concurrency();
+        if (hw < 3) {
+            return 0;
+        }
+        return std::min(4u, hw - 1);
+    }
+
     std::ofstream& m_out;
     ZSTD_CCtx* m_cctx{};
     std::vector<u8> m_buf;
     u64 m_written{};
+    unsigned m_workers{DetectWorkers()};
 };
 
 // 预校验单帧：流式解码并丢弃输出，要求帧完整、输入精确消费、解码量
@@ -1923,26 +1950,37 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
 }
 
 // ---------------------------------------------------------------------------
-// v5：页表整表回放手术（原地恢复的核心）
+// v10：差分布局调和（原地恢复的核心 —— Cemu 语义的最终对齐）
 //
-// Cemu 的读档之所以稳定：Wii U 的映射是静态 MMURange，读档只覆盖内容。
-// Eden 的映射是动态的 —— v5 的思路是"把 Cemu 的静态前提造出来"：
-// 读档时用内核正规 API（游戏 syscall 同源代码路径）把当前页表整表
-// 回放到存档时刻的布局（原 VA + 原 PA + 原 state/perm/attr），然后
-// 内容帧按 VA 原地覆盖 —— Cemu 语义至此完全成立。
+// Cemu 的读档之所以稳定：Wii U 的映射是静态 MMURange，RestoreStateFromFile
+// 只做「校验 → 内容原地覆盖」，映射本身从不动。Eden 的映射是动态的，
+// v5~v9.1 试图用「整表卸载+重放」把存档时刻的布局整个造回来 —— 手术面
+// 覆盖全部内存，任何一块的内核校验失败都让整个读档撕裂。
 //
-// 引用计数协议：MapPageGroup 内部经 KScopedPageGroup 走 Open()，
-// Open 断言 ref>1（内核约定"被映射的页必须已被持有引用"）。游戏在
-// 存档后释放过的页此刻 ref==0 —— 手术前先对所有存档 PA 预置 +1
-//（SavestateAdjustRef 绕过断言；冻结期间无并发分配，空闲位图暂时
-// 不一致无妨），手术末尾 -1 归还，再按"引用计数==0 即空闲"整表重建
-// 空闲位图（SavestateRebuildFree）。别名/共享内存因 PA 精确而原样
-// 保留（多个 VA 映射同一 PA 的引用数自然正确）。
+// v10 的思路：**把手术面缩小到「布局真正变化的部分」** ——
+//   ① 存档与当前布局逐块比对（VA + state + perm + attr + 物理页序列）；
+//   ② 完全一致的块【原地保留】，只做内容覆盖（= Cemu 纯 memcpy 语义，
+//      零内核改动、零撕裂风险）；
+//   ③ 差异部分（游戏存档后分配/释放/重映射过的区间）才产生卸载/重放
+//      操作 —— 引用计数预置只覆盖重放页（别名页恰好一次），属性复位
+//      只作用于被卸载块（内核侧 SavestatePrepareForReplayRange）；
+//   ④ 手术末尾整表复验：布局+物理页与存档逐块全比，任何漂移立即显式
+//      失败（Cemu「先全量校验后应用」在 apply 末端的镜像）。
+//
+// 物理页（PA）比对的必要性：别名/共享内存是「多个 VA 映射同一物理页」。
+// 仅 VA 布局一致而 PA 漂移（游戏 unmap+remap 过同一 VA）会悄悄丢失别名
+// 关系 —— 之后经任一 VA 的写入不再出现在另一 VA 上（隐性内存损坏）。
+// 只有 VA+PA 逐页全等才允许走纯内容覆盖的保留路径。
+//
+// 引用计数协议（仅重放页）：MapPageGroup 内部对每页 Open(+1) 且断言
+// 预置引用 ≥1（游戏存档后释放过的页此刻 ref==0）；手术前对全部重放
+// PA 预置 +1（去重合并 —— 别名页恰好一次），末尾 -1 归还，再按
+// 「引用计数==0 即空闲」整表重建空闲位图（SavestateRebuildFree）。
 // ---------------------------------------------------------------------------
 
 enum class SurgeryOutcome {
     Ok,
-    Incompatible, // 会话不兼容（区域不一致 / 瞬态锁在途）—— 未做任何修改
+    Incompatible, // 会话不兼容（区域不一致 / 非回放硬件区重叠）—— 未做任何修改
     Torn,         // 破坏阶段失败（内核状态已改动 → 必须关停核心）
 };
 
@@ -1993,124 +2031,511 @@ bool SurgeryPrecheck(Core::System& system, const BookkeepingV5& bookkeeping, std
 }
 
 // ---------------------------------------------------------------------------
-// v8：手术前置物料 —— 存档页组的【逐块校验】 + 当前布局兼容性预检
-//
-// Cemu RestoreStateFromFile 的铁律：先把整份档解析、校验、逐 range 与
-// 当前映射比对完（任何失败都在动内存之前发生，零副作用报错），然后才
-// 进入 apply 阶段。v5/v6 把「页组重建」放在手术循环中段 —— AddBlock
-// 失败（块信息 slab 枯竭）或页数不符会以 Torn（半撕裂）收场。v7 把
-// 预建改为全量持有 —— 但 KBlockInfo slab（app 侧不可动态增长，容量仅
-// 4000 条）在堆碎片化后被全部块的 PARun 总数轻易击穿 → 预建必失败
-//（同会话「读档失败：状态恢复失败」的主因）。
-//
-// v8：页组改为「逐块构建-校验-释放」（ValidateSavedPageGroups）——
-// 同一时刻至多一个页组存活，O(1) slab 占用；apply 阶段
-// （ReplayPageTableLayout）按同序列逐块【重建即用即释】。校验阶段已
-// 证明每块可独立构建，而冻结期无任何并发 slab 消耗 → apply 期重建
-// 必然成功 —— v7「apply 阶段只剩内核原语、不会再因页组重建而撕裂」
-// 的保证得以保留，且不再受 slab 总容量制约。
+// v10：差分调和机器 —— 当前布局（含 PA）/ 差分计划 / 调和执行 / 复验
 // ---------------------------------------------------------------------------
 
-// 为存档全部可回放块逐一构建页组并校验页数（纯解析，无内核副作用：
-// AddBlock 只从块信息 slab 分配 KBlockInfo 节点，不触碰页表/引用计数；
-// 每块校验后立即析构归还节点）。失败返回 false（调用点位于校验阶段，
-// 内存未动 → 可安全报错/回落）。
-bool ValidateSavedPageGroups(Core::System& system, const std::vector<SavedBlock>& saved,
-                             std::string* err) {
-    *err = {};
+// 当前布局块（含 VA→PA run —— 与存档侧 SavedBlock 同构，供物理别名比对）
+struct CurrentBlock {
+    u64 va;
+    u64 size;
+    u32 state;
+    u32 perm;
+    u32 attr;
+    bool has_pg;                           // 有 PA run（可精确重映射/可验证）
+    std::vector<std::pair<u64, u32>> runs; // (pa, pages)，VA 顺序
+};
 
+// 抓取单个块的 VA→PA run 脚本（快照/当前侧共用；与捕获侧同一内核路径）
+bool CaptureBlockRuns(Kernel::KProcessPageTable& page_table, Kernel::KernelCore& kernel, u64 va,
+                      u64 size, u32 state, std::vector<std::pair<u64, u32>>& runs) {
+    runs.clear();
+    if (size == 0 || size % kPageSize != 0) {
+        return false;
+    }
+    const size_t npages = size / kPageSize;
+    if (IsThreadLocalState(state)) {
+        for (size_t i = 0; i < npages; ++i) {
+            Kernel::KPhysicalAddress pa{};
+            if (!page_table.GetPhysicalAddress(&pa, va + i * kPageSize)) {
+                return false;
+            }
+            runs.emplace_back(GetInteger(pa), 1);
+        }
+        return true;
+    }
+    Kernel::KPageGroup pg(kernel, page_table.GetBlockInfoManager());
+    const Result pg_result = page_table.MakeAndOpenPageGroup(
+        &pg, va, npages, Kernel::KMemoryState::All, static_cast<Kernel::KMemoryState>(state),
+        Kernel::KMemoryPermission::None, Kernel::KMemoryPermission::None,
+        Kernel::KMemoryAttribute::None, Kernel::KMemoryAttribute::None);
+    if (R_FAILED(pg_result)) {
+        return false;
+    }
+    for (const auto& node : pg) {
+        runs.emplace_back(GetInteger(node.GetAddress()), static_cast<u32>(node.GetNumPages()));
+    }
+    pg.CloseAndReset(kernel); // 归还 MakeAndOpen 打开的引用
+    return true;
+}
+
+// 收集当前布局（归一化）+ 各可回放块的 PA run
+bool CollectCurrentBlocksWithPa(Core::System& system, std::vector<CurrentBlock>& out) {
+    out.clear();
+
+    std::vector<LayoutBlock> blocks;
+    if (!CollectLayoutBlocks(system, blocks)) {
+        return false;
+    }
+    Kernel::KProcess* process = system.ApplicationProcess();
+    if (process == nullptr) {
+        return false;
+    }
+    Kernel::KProcessPageTable& page_table = process->GetPageTable();
+    auto& kernel = system.Kernel();
+
+    out.reserve(blocks.size());
+    for (const auto& b : blocks) {
+        CurrentBlock cb{};
+        cb.va = b.va;
+        cb.size = b.size;
+        cb.state = b.state;
+        cb.perm = b.perm;
+        cb.attr = b.attr;
+        cb.has_pg = false;
+        if (IsPgState(b.state) && b.size % kPageSize == 0) {
+            // 可回放块抓 PA run 失败（罕见）：视作不可保留 —— 该块若与
+            // 存档有关联，差分中走整块替换路径（卸载 + 按存档重放）
+            if (CaptureBlockRuns(page_table, kernel, cb.va, cb.size, cb.state, cb.runs)) {
+                cb.has_pg = true;
+            }
+        }
+        out.push_back(std::move(cb));
+    }
+    return !out.empty();
+}
+
+// 在块 run 表内定位 va 所在页的游标（run 索引 + run 内页偏移）
+bool PaCursorAt(const std::vector<std::pair<u64, u32>>& runs, u64 block_va, u64 va, size_t* run_idx,
+                u32* page_in_run) {
+    if (va < block_va || runs.empty()) {
+        return false;
+    }
+    u64 off_pages = (va - block_va) / kPageSize;
+    for (size_t i = 0; i < runs.size(); ++i) {
+        if (off_pages < runs[i].second) {
+            *run_idx = i;
+            *page_in_run = static_cast<u32>(off_pages);
+            return true;
+        }
+        off_pages -= runs[i].second;
+    }
+    return false;
+}
+
+// 比较 A 块与 B 块在 [va, va+size) 内逐页物理地址是否一致（别名完整性）
+bool PaRangeEquals(const std::vector<std::pair<u64, u32>>& a_runs, u64 a_va,
+                   const std::vector<std::pair<u64, u32>>& b_runs, u64 b_va, u64 va, u64 size) {
+    if (va % kPageSize != 0 || size % kPageSize != 0 || size == 0) {
+        return false;
+    }
+    size_t ai = 0, bi = 0;
+    u32 ap = 0, bp = 0;
+    if (!PaCursorAt(a_runs, a_va, va, &ai, &ap)) {
+        return false;
+    }
+    if (!PaCursorAt(b_runs, b_va, va, &bi, &bp)) {
+        return false;
+    }
+    const u64 npages = size / kPageSize;
+    for (u64 i = 0; i < npages; ++i) {
+        const u64 pa_a = a_runs[ai].first + static_cast<u64>(ap) * kPageSize;
+        const u64 pa_b = b_runs[bi].first + static_cast<u64>(bp) * kPageSize;
+        if (pa_a != pa_b) {
+            return false;
+        }
+        if (i + 1 == npages) {
+            break;
+        }
+        if (++ap >= a_runs[ai].second) {
+            ++ai;
+            ap = 0;
+            if (ai >= a_runs.size()) {
+                return false;
+            }
+        }
+        if (++bp >= b_runs[bi].second) {
+            ++bi;
+            bp = 0;
+            if (bi >= b_runs.size()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// 从块 run 表中切出 [va, va+size) 的子 run 序列（相邻 PA 合并）
+std::vector<std::pair<u64, u32>> SliceRuns(const std::vector<std::pair<u64, u32>>& runs,
+                                           u64 block_va, u64 va, u64 size) {
+    std::vector<std::pair<u64, u32>> out;
+    if (size == 0 || size % kPageSize != 0) {
+        return out;
+    }
+    size_t ri = 0;
+    u32 rp = 0;
+    if (!PaCursorAt(runs, block_va, va, &ri, &rp)) {
+        return out;
+    }
+    u64 remaining = size / kPageSize;
+    while (remaining > 0 && ri < runs.size()) {
+        const u32 avail = runs[ri].second - rp;
+        const u32 take = static_cast<u32>(std::min<u64>(avail, remaining));
+        const u64 pa = runs[ri].first + static_cast<u64>(rp) * kPageSize;
+        if (!out.empty() &&
+            out.back().first + static_cast<u64>(out.back().second) * kPageSize == pa) {
+            out.back().second += take; // 物理连续 —— 合并 run
+        } else {
+            out.emplace_back(pa, take);
+        }
+        remaining -= take;
+        rp += take;
+        if (rp >= runs[ri].second) {
+            ++ri;
+            rp = 0;
+        }
+    }
+    return out;
+}
+
+// 内存属性的持久位/瞬态位（Svc::MemoryAttribute：Locked=0x1、IpcLocked=0x2、
+// DeviceShared=0x4、Uncached=0x8、PermissionLocked=0x10）：
+//   · 持久位（Uncached|PermissionLocked）—— 游戏通过 svc 设置的长期属性，
+//     布局比对必须逐位比对；
+//   · 瞬态位（Locked|IpcLocked|DeviceShared）—— 废弃时间线的内核簿记：
+//     nvdrv Teardown 已清除 DeviceShared（Replay 阶段按存档重建），
+//     在途 IPC 锁随全量线程移除而废弃。持久化比对必须屏蔽瞬态位，
+//     否则被 GPU 钉住的大块（帧缓冲/纹理）全部被误判为"需替换"，
+//     差分快速路径失效；而当前侧带在途 IPC 锁的块则应整块替换
+//     （锁属于废弃时间线，直接保留会让后续 svcSetMemoryAttribute 失败）。
+constexpr u32 kAttrTransientMask = 0x1u | 0x2u | 0x4u; // Locked|IpcLocked|DeviceShared
+constexpr u32 kAttrPersistentMask = 0x8u | 0x10u;      // Uncached|PermissionLocked
+
+// 当前块是否与存档【完全一致】（全程覆盖：state/perm + 持久属性位 +
+// 逐页 PA，且当前侧无瞬态锁），一致 → 可保留（纯内容覆盖，零手术）
+bool CurrentBlockFullyKept(const std::vector<SavedBlock>& saved, const CurrentBlock& cb) {
+    if (!cb.has_pg || cb.size == 0 || cb.size % kPageSize != 0) {
+        return false;
+    }
+    const u64 start = cb.va;
+    const u64 end = cb.va + cb.size;
+    auto it = std::upper_bound(saved.begin(), saved.end(), start,
+                               [](u64 v, const SavedBlock& b) { return v < b.va; });
+    if (it != saved.begin()) {
+        --it; // 定位包含/紧邻 start 的存档块
+    }
+    u64 covered = start;
+    for (; it != saved.end() && it->va < end; ++it) {
+        const u64 lo = std::max(covered, it->va);
+        const u64 hi = std::min(end, it->va + it->size);
+        if (hi <= lo) {
+            continue;
+        }
+        if (lo != covered) {
+            return false; // 缺口（两侧全空间覆盖，理论不可达 —— 防御）
+        }
+        if (!it->has_pg) {
+            return false; // 存档此处未映射（游戏存档后才分配的）
+        }
+        if (it->state != cb.state || it->perm != cb.perm) {
+            return false;
+        }
+        // 持久属性位必须一致；当前侧带瞬态锁（在途 IPC/设备共享）→ 整块
+        // 替换（锁属于废弃时间线）
+        if ((it->attr & kAttrPersistentMask) != (cb.attr & kAttrPersistentMask) ||
+            (cb.attr & kAttrTransientMask) != 0) {
+            return false;
+        }
+        if (!PaRangeEquals(it->runs, it->va, cb.runs, cb.va, lo, hi - lo)) {
+            return false; // 物理页漂移（重映射过）—— 别名关系必须重建
+        }
+        covered = hi;
+        if (covered >= end) {
+            return true;
+        }
+    }
+    return covered >= end;
+}
+
+// 调和计划：把当前布局变换到存档布局所需的最小手术集
+struct LayoutPlan {
+    bool incompatible = false; // 不可调和的冲突（干净拒绝 —— 零副作用）
+    std::string incompat_reason;
+    bool pure_keep = true; // 无任何手术（布局+物理页与存档全等）
+
+    struct UnmapOp {
+        u64 va;
+        u64 size;
+        u32 state; // 当前块 state（UnmapPages 校验入参）
+    };
+    struct MapOp {
+        u64 va;
+        u64 size;
+        u32 state; // 存档块 state
+        u32 perm;  // 存档块 perm
+        u32 attr;  // 存档块 attr（映射后重放 Uncached/PermissionLocked）
+        std::vector<std::pair<u64, u32>> runs; // 切片后的 PA run
+    };
+    std::vector<UnmapOp> unmaps; // 整块卸载的当前可回放块（含"部分保留"块的整体替换）
+    std::vector<MapOp> maps;     // 按存档重放的区段切片
+
+    // 统计（日志/诊断）
+    u64 keep_bytes = 0;
+    u64 unmap_bytes = 0;
+    u64 map_bytes = 0;
+    size_t kept_blocks = 0;
+};
+
+enum class PlanResult {
+    Ok,
+    Incompatible,
+    Error,
+};
+
+// 构建调和计划（纯函数，零副作用）。saved/current 均为全空间覆盖的
+// 归一化升序块表（Free/Inaccessible 也在内）。
+PlanResult BuildLayoutPlan(const std::vector<SavedBlock>& saved,
+                           const std::vector<CurrentBlock>& current, LayoutPlan* plan,
+                           std::string* err) {
+    *err = {};
+    *plan = LayoutPlan{};
+    if (saved.empty() || current.empty()) {
+        *err = "empty layout";
+        return PlanResult::Error;
+    }
+
+    // ── pass 1：当前块逐块判定（保留 / 卸载 / 冲突）──
+    std::vector<std::pair<u64, u64>> kept; // 保留区间（current 升序 → kept 升序）
+    for (const auto& cb : current) {
+        const bool cur_replayable = IsPgState(cb.state) && cb.size % kPageSize == 0;
+        if (!cur_replayable) {
+            // 非回放映射（Io/Static 等硬件区）：手术永不触碰。Free/
+            // Inaccessible 是未映射的洞（手术目标空间），同样跳过。
+            const bool unmapped_hole =
+                cb.state == static_cast<u32>(Kernel::KMemoryState::Free) ||
+                cb.state == static_cast<u32>(Kernel::KMemoryState::Inaccessible);
+            if (unmapped_hole) {
+                continue;
+            }
+            // 存档回放块与非回放硬件区重叠 → 不可调和（v9.1
+            // CheckLayoutCompatibility 语义 —— MapPageGroup 要求目标
+            // Free，这种重叠必然中途撕裂，提前干净拒绝）
+            auto it = std::upper_bound(saved.begin(), saved.end(), cb.va,
+                                       [](u64 v, const SavedBlock& b) { return v < b.va; });
+            if (it != saved.begin()) {
+                --it;
+            }
+            for (; it != saved.end() && it->va < cb.va + cb.size; ++it) {
+                if (it->has_pg && it->va < cb.va + cb.size && cb.va < it->va + it->size) {
+                    plan->incompatible = true;
+                    plan->incompat_reason = fmt::format(
+                        "saved block {:016x} overlaps non-replayable region {:016x}", it->va,
+                        cb.va);
+                    return PlanResult::Incompatible;
+                }
+            }
+            continue;
+        }
+        if (CurrentBlockFullyKept(saved, cb)) {
+            kept.emplace_back(cb.va, cb.va + cb.size);
+            plan->keep_bytes += cb.size;
+            ++plan->kept_blocks;
+            continue;
+        }
+        // 与存档有差异（部分差异也整块替换 —— 属性复位按块粒度进行，
+        // 避免 SavestatePrepareForReplayRange 的复位的复位"渗漏"进保留段）
+        plan->unmaps.push_back({cb.va, cb.size, cb.state});
+        plan->unmap_bytes += cb.size;
+    }
+
+    // ── pass 2：存档块 → 需重放的切片（未被保留区间覆盖的部分）──
+    for (const auto& sb : saved) {
+        if (!sb.has_pg) {
+            // 防御：存档的非回放映射（Static 等）覆盖当前【可回放】块 →
+            // 区域级状态分歧（跨会话/配置）—— 干净拒绝而非半途撕裂
+            const bool saved_unmapped =
+                sb.state == static_cast<u32>(Kernel::KMemoryState::Free) ||
+                sb.state == static_cast<u32>(Kernel::KMemoryState::Inaccessible);
+            if (saved_unmapped) {
+                continue;
+            }
+            auto cit = std::upper_bound(current.begin(), current.end(), sb.va,
+                                        [](u64 v, const CurrentBlock& b) { return v < b.va; });
+            if (cit != current.begin()) {
+                --cit;
+            }
+            for (; cit != current.end() && cit->va < sb.va + sb.size; ++cit) {
+                const bool cur_replayable =
+                    IsPgState(cit->state) && cit->size % kPageSize == 0;
+                if (cur_replayable && cit->va < sb.va + sb.size &&
+                    sb.va < cit->va + cit->size) {
+                    plan->incompatible = true;
+                    plan->incompat_reason = fmt::format(
+                        "saved non-replayable block {:016x} overlaps replayable region {:016x}",
+                        sb.va, cit->va);
+                    return PlanResult::Incompatible;
+                }
+            }
+            continue;
+        }
+
+        u64 va = sb.va;
+        const u64 end = sb.va + sb.size;
+        while (va < end) {
+            // 前进到第一个【不在任何保留区间内】的位置：跳过覆盖 va 的
+            // 保留区间，以及恰好从 va 起始的保留区间（保留区间可能相邻
+            // 排布 —— 不跳过会产生零尺寸切片/死循环）
+            for (;;) {
+                auto kit = std::upper_bound(kept.begin(), kept.end(), va,
+                                            [](u64 v, const std::pair<u64, u64>& r) {
+                                                return v < r.first;
+                                            });
+                if (kit != kept.begin()) {
+                    auto prev = kit;
+                    --prev;
+                    if (va < prev->second) {
+                        va = prev->second; // va 在保留区间内（含起点）
+                        continue;
+                    }
+                }
+                if (kit != kept.end() && kit->first == va) {
+                    va = kit->second; // 保留区间恰从 va 起始
+                    continue;
+                }
+                break;
+            }
+            if (va >= end) {
+                break;
+            }
+            // map 切片终点：块尾 或 下一个保留区间起点（此刻 va 不在任何
+            // 保留区间内 → 终点必然 > va，循环必然前进）
+            u64 hi = end;
+            auto kit = std::upper_bound(kept.begin(), kept.end(), va,
+                                        [](u64 v, const std::pair<u64, u64>& r) {
+                                            return v < r.first;
+                                        });
+            if (kit != kept.end() && kit->first < hi) {
+                hi = kit->first;
+            }
+            plan->maps.push_back(
+                {va, hi - va, sb.state, sb.perm, sb.attr, SliceRuns(sb.runs, sb.va, va, hi - va)});
+            plan->map_bytes += hi - va;
+            va = hi;
+        }
+    }
+
+    plan->pure_keep = plan->unmaps.empty() && plan->maps.empty();
+    return PlanResult::Ok;
+}
+
+// map op 页组预校验（构建-校验-释放 —— 同一时刻至多一个页组存活，
+// O(1) slab 占用；零内核副作用，可在动内存之前执行）
+bool ValidatePlanPageGroups(Core::System& system, const LayoutPlan& plan, std::string* err) {
+    *err = {};
+    if (plan.maps.empty()) {
+        return true;
+    }
     Kernel::KProcess* process = system.ApplicationProcess();
     if (process == nullptr) {
         *err = "application process is null";
         return false;
     }
     Kernel::KProcessPageTable& page_table = process->GetPageTable();
-
-    size_t validated = 0;
-    for (const auto& b : saved) {
-        if (!b.has_pg) {
-            continue;
-        }
+    for (const auto& op : plan.maps) {
         Kernel::KPageGroup pg(system.Kernel(), page_table.GetBlockInfoManager());
-        bool pg_ok = true;
-        for (const auto& [pa, pages] : b.runs) {
+        for (const auto& [pa, pages] : op.runs) {
             if (R_FAILED(pg.AddBlock(pa, pages))) {
-                pg_ok = false;
-                break;
+                *err = fmt::format("page group rebuild failed @ {:016x}", op.va);
+                return false; // pg 析构自动归还已分配的块信息节点
             }
         }
-        if (!pg_ok || pg.GetNumPages() != b.size / kPageSize) {
-            *err = fmt::format("page group rebuild failed @ {:016x}", b.va);
-            return false; // pg 析构自动归还已分配的块信息节点
-        }
-        ++validated;
-        // 作用域末尾：pg 析构，节点归还 slab —— 下一块复用同一批节点
-    }
-    SSLogInfo(fmt::format("precheck: {} page groups validated (built-and-freed one by one)",
-                          validated));
-    return true;
-}
-
-// 布局兼容性预检（零副作用）：存档的可回放块不能与当前会话中【已映射
-// 且不可回放】的块（Io/Static/IoRegister 等手术不卸载的状态）重叠 ——
-// MapPageGroup 要求目标区间为 Free，这种重叠意味着 apply 阶段必然 Torn。
-//
-// ★ v9 根因修复：Free / Inaccessible 是【未映射的洞】，不是障碍 ——
-//   手术本来就会把可回放块卸载成 Free、再按存档重放；游戏存档后释放
-//   过任何内存（堆伸缩、临时缓冲——几乎必然发生）都会让存档的可回放
-//   块与当前 Free 洞重叠。v8 把 Free 也算进冻结区 → 同会话读档必被
-//   误拒（「读档永远失败：状态恢复失败」的根因）。v8 之前（v5-v7）
-//   无此检查、手术直接跑，Free 洞本来就是可重放的目标空间。
-bool CheckLayoutCompatibility(Core::System& system, const std::vector<SavedBlock>& saved,
-                              std::string* err) {
-    *err = {};
-
-    std::vector<LayoutBlock> current;
-    if (!CollectLayoutBlocks(system, current)) {
-        *err = "current layout walk failed";
-        return false;
-    }
-
-    // 冻结区 = 已映射且不可回放的块（手术保留不卸载的）。
-    // Free（state==0x0，无任何标志位）与 Inaccessible（0x10，未映射的
-    // 保留区）排除在外 —— 它们是手术的目标空间，不是障碍。
-    std::vector<std::pair<u64, u64>> frozen;
-    frozen.reserve(current.size());
-    for (const auto& b : current) {
-        const auto s = static_cast<Kernel::KMemoryState>(b.state);
-        const bool unmapped_hole =
-            s == Kernel::KMemoryState::Free || s == Kernel::KMemoryState::Inaccessible;
-        if (!IsPgState(b.state) && !unmapped_hole) {
-            frozen.emplace_back(b.va, b.va + b.size);
-        }
-    }
-    std::sort(frozen.begin(), frozen.end());
-
-    for (const auto& b : saved) {
-        if (!b.has_pg) {
-            continue; // 存档的不可回放块与当前不可回放块同源（硬件固定区）
-        }
-        const u64 lo = b.va;
-        const u64 hi = b.va + b.size;
-        auto it = std::lower_bound(
-            frozen.begin(), frozen.end(), lo,
-            [](const std::pair<u64, u64>& span, u64 v) { return span.second <= v; });
-        for (; it != frozen.end() && it->first < hi; ++it) {
-            *err = fmt::format("saved block {:016x} overlaps non-replayable region {:016x}",
-                               b.va, it->first);
+        if (pg.GetNumPages() != op.size / kPageSize) {
+            *err = fmt::format("page group page count mismatch @ {:016x}", op.va);
             return false;
         }
     }
     return true;
 }
 
-// 页表整表回放。前提：EmulationFreeze（全部 guest 线程挂起，NCE 不跑）
-// + NvdrvTeardown 已完成（SMMU/GMMU 设备映射已拆，nvmap 句柄已按存档
-// 裁剪）+ 页组已逐块校验可构建（ValidateSavedPageGroups —— 冻结期无
-// 并发 slab 消耗，此处按同序列重建必然成功）+ 布局兼容已预检
-// （CheckLayoutCompatibility）。
-SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<SavedBlock>& saved,
-                                     const BookkeepingV5& bookkeeping, std::string* err) {
+// map ops 的 PA 并集（去重合并 —— 别名页恰好预置一次）
+std::vector<std::pair<u64, u64>> MergePaRunsOfMaps(const LayoutPlan& plan) {
+    std::vector<std::pair<u64, u64>> spans; // (pa_start, pa_end)
+    for (const auto& op : plan.maps) {
+        for (const auto& [pa, pages] : op.runs) {
+            spans.emplace_back(pa, pa + static_cast<u64>(pages) * kPageSize);
+        }
+    }
+    std::sort(spans.begin(), spans.end());
+    std::vector<std::pair<u64, u64>> merged;
+    merged.reserve(spans.size());
+    for (const auto& [start, end] : spans) {
+        if (!merged.empty() && start <= merged.back().second) {
+            merged.back().second = std::max(merged.back().second, end);
+        } else {
+            merged.emplace_back(start, end);
+        }
+    }
+    return merged;
+}
+
+// 手术后复验：重新收集布局（含 PA），与存档逐块全比（state/perm/attr +
+// 物理页序列）。任何漂移显式失败 —— 不把撕裂状态留给续跑的游戏。
+bool VerifyLayoutMatchesSaved(Core::System& system, const std::vector<SavedBlock>& saved,
+                              std::string* err) {
+    *err = {};
+    std::vector<CurrentBlock> current;
+    if (!CollectCurrentBlocksWithPa(system, current)) {
+        *err = "post-surgery layout walk failed";
+        return false;
+    }
+    size_t si = 0, ci = 0;
+    while (si < saved.size() && ci < current.size()) {
+        const SavedBlock& sb = saved[si];
+        const CurrentBlock& cb = current[ci];
+        const u64 lo = std::max(sb.va, cb.va);
+        const u64 se = sb.va + sb.size;
+        const u64 ce = cb.va + cb.size;
+        const u64 hi = std::min(se, ce);
+        if (hi > lo) {
+            if (sb.state != cb.state || sb.perm != cb.perm ||
+                (sb.attr & kAttrPersistentMask) != (cb.attr & kAttrPersistentMask) ||
+                sb.has_pg != cb.has_pg) {
+                *err = fmt::format(
+                    "verify: block mismatch @ {:016x} (state {:08x}/{:08x} perm {:08x}/{:08x} "
+                    "attr {:08x}/{:08x} has_pg {}/{})",
+                    lo, sb.state, cb.state, sb.perm, cb.perm, sb.attr, cb.attr, sb.has_pg ? 1 : 0,
+                    cb.has_pg ? 1 : 0);
+                return false;
+            }
+            if (sb.has_pg && !PaRangeEquals(sb.runs, sb.va, cb.runs, cb.va, lo, hi - lo)) {
+                *err = fmt::format("verify: physical page mismatch @ {:016x}", lo);
+                return false;
+            }
+        }
+        if (se <= ce) {
+            ++si;
+        }
+        if (ce <= se) {
+            ++ci;
+        }
+    }
+    return true;
+}
+
+// 差分调和执行。前提：EmulationFreeze（全部 guest 线程挂起）+ 全量线程
+// 移除已完成 + NvdrvTeardown 已完成 + 计划已过页组预校验。
+SurgeryOutcome ReconcileLayout(Core::System& system, const std::vector<SavedBlock>& saved,
+                               const LayoutPlan& plan, const BookkeepingV5& bookkeeping,
+                               std::string* err) {
     *err = {};
     const auto t0 = NowSteady();
 
@@ -2123,19 +2548,44 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
     Kernel::KPageTableBase& base = page_table.GetBasePageTable();
     auto& kernel = system.Kernel();
 
-    // ★ v5：确保应用进程是全局 current 页表（同捕获侧 —— 手术的宿主
-    // 映射门控与后续 ApplyFrame 的 PagePtr 都依赖 current_page_table）
+    // ★ 与捕获侧同由：宿主映射门控与 ApplyFrame 的 PagePtr 都走
+    //   current_page_table（中途创建的 applet 可能翻走 current）
     system.ApplicationMemory().SetCurrentPageTable(*process);
 
-    // 1) 当前布局
-    std::vector<LayoutBlock> current;
-    if (!CollectLayoutBlocks(system, current)) {
-        *err = "current layout walk failed";
-        return SurgeryOutcome::Torn;
+    if (plan.pure_keep) {
+        // ★★★ Cemu 纯内容覆盖语义：布局与物理页与存档逐块全等 —— 无任何
+        //      页表手术、不触碰属性/引用计数/空闲位图，直接进入内容帧
+        //      写回（= RestoreStateFromFile 对静态 MMURange 的 memcpy）。
+        Kernel::KPageTableBase::SavestateBookkeeping bk{};
+        std::memcpy(&bk, &bookkeeping, sizeof(bk));
+        if (!base.SavestateRestoreBookkeeping(bk)) {
+            *err = "bookkeeping restore rejected";
+            return SurgeryOutcome::Torn;
+        }
+        SSLogInfo("surgery: skipped (layout+physical pages identical to save - pure content "
+                  "restore, cemu semantics)");
+        return SurgeryOutcome::Ok;
     }
 
-    // 2) 预置引用（+1）：存档布局的全部 PA（去重合并 —— 别名块共享页）
-    const auto preopen = MergePaRuns(saved);
+    // 1) 范围化瞬态/设备簿记复位（仅被卸载的块 —— 保留块的属性原样
+    //    不动；UnmapPages 的 CheckMemoryState 要求 attr==None）
+    for (const auto& op : plan.unmaps) {
+        base.SavestatePrepareForReplayRange(op.va, op.va + op.size);
+    }
+
+    // 2) 卸载差异块（内核正规路径 —— 与游戏 svcUnmapMemory 同源）
+    for (const auto& op : plan.unmaps) {
+        const Result r = page_table.UnmapPages(op.va, op.size / kPageSize,
+                                               static_cast<Kernel::KMemoryState>(op.state));
+        if (R_FAILED(r)) {
+            *err = fmt::format("unmap failed @ {:016x} (state {:08x}): {:05x}", op.va, op.state,
+                               r.raw);
+            return SurgeryOutcome::Torn;
+        }
+    }
+
+    // 3) 预置引用（+1，仅重放 PA 并集 —— 别名页恰好一次）
+    const auto preopen = MergePaRunsOfMaps(plan);
     const auto adjust_all = [&](s32 delta) {
         for (const auto& [start, end] : preopen) {
             kernel.MemoryManager().SavestateAdjustRef(start, (end - start) / kPageSize, delta);
@@ -2143,90 +2593,53 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
     };
     adjust_all(+1);
 
-    // 3) ★ v7 根因修复：可回放块整备。SavestatePrepareForReplay 一次性
-    //    复位全部瞬态/设备簿记 —— IpcLocked/Locked 锁位、nvmap 的
-    //    DeviceShared（+ m_device_use_count + 禁合并位）、Uncached/
-    //    PermissionLocked 持久属性、original_permission。v5/v6 只清两个
-    //    锁位，漏掉 DeviceShared → nvmap 堆块（帧缓冲/纹理，几乎必然
-    //    存在）unmap 必 0xd401 —— 同会话读档必失败的根因（详见文件头
-    //    v7 说明与 KMemoryBlock::SavestateResetForReplay）。不再逐块
-    //    SetMemoryAttribute 清属性：svc 路径状态位校验可能失败且无必
-    //    要 —— 块随后整表卸载，属性由第 5 步按存档原值恢复。
-    base.SavestatePrepareForReplay();
-
-    // 4) 卸载当前全部可回放映射块（Io/Static 等不可回放状态原样保留；
-    //    宿主映射窗口外的地址由 HostMemory v5 窗口裁剪安全跳过）
-    for (const auto& b : current) {
-        if (!IsPgState(b.state) || b.size % kPageSize != 0) {
-            continue;
-        }
-        const Result r = page_table.UnmapPages(b.va, b.size / kPageSize,
-                                               static_cast<Kernel::KMemoryState>(b.state));
-        if (R_FAILED(r)) {
-            *err = fmt::format("unmap failed @ {:016x} (state {:08x}): {:05x}", b.va, b.state,
-                               r.raw);
-            return SurgeryOutcome::Torn;
-        }
-    }
-
-    // 5) 按存档重放：原 VA + 原 PA + 原 state/perm（MapPageGroup 与游戏
-    //    日常映射同一条内核路径）。页组按块【重建即用即释】—— 校验阶段
-    //    （ValidateSavedPageGroups）已证明每块可独立构建，冻结期无并发
-    //    slab 消耗，此处重建不会失败；同一时刻至多一个页组存活，不再受
-    //    BlockInfo slab 总容量制约（v7 全量预建在此处爆 slab —— 同会话
-    //    「状态恢复失败」的根因）。MapPageGroup 不消费页组引用（引用由
-    //    adjust_all 预置/归还对称管理），重建成本仅 slab 节点分配/释放。
-    //    随后重放 Uncached / PermissionLocked。
-    size_t replayed_blocks = 0;
-    for (const auto& b : saved) {
-        if (!b.has_pg) {
-            continue; // 不可回放块：与当前会话同源（硬件固定区），保持不动
-        }
+    // 4) 按存档重放差异区段（原 VA + 原 PA + 原 state/perm —— MapPageGroup
+    //    与游戏日常映射同一条内核路径；页组重建即用即释，O(1) slab 占用）
+    for (const auto& op : plan.maps) {
         Kernel::KPageGroup pg(kernel, page_table.GetBlockInfoManager());
-        for (const auto& [pa, pages] : b.runs) {
+        for (const auto& [pa, pages] : op.runs) {
             const Result ar = pg.AddBlock(pa, pages);
             if (R_FAILED(ar)) {
-                // 校验阶段已证明可构建 —— 仅防御（slab 被意外占用等）
-                *err = fmt::format("page group rebuild failed @ {:016x} (apply): {:05x}",
-                                   b.va, ar.raw);
+                // 预校验已证明可构建 —— 仅防御（slab 被意外占用等）
+                *err = fmt::format("page group rebuild failed @ {:016x} (apply): {:05x}", op.va,
+                                   ar.raw);
                 return SurgeryOutcome::Torn;
             }
         }
-        if (pg.GetNumPages() != b.size / kPageSize) {
-            *err = fmt::format("page group page count mismatch @ {:016x} (apply)", b.va);
+        if (pg.GetNumPages() != op.size / kPageSize) {
+            *err = fmt::format("page group page count mismatch @ {:016x} (apply)", op.va);
             return SurgeryOutcome::Torn;
         }
 
         const Result r = page_table.MapPageGroup(
-            b.va, pg, static_cast<Kernel::KMemoryState>(b.state),
-            static_cast<Kernel::KMemoryPermission>(b.perm));
+            op.va, pg, static_cast<Kernel::KMemoryState>(op.state),
+            static_cast<Kernel::KMemoryPermission>(op.perm));
         if (R_FAILED(r)) {
-            *err = fmt::format("remap failed @ {:016x} (state {:08x}): {:05x}", b.va, b.state,
+            *err = fmt::format("remap failed @ {:016x} (state {:08x}): {:05x}", op.va, op.state,
                                r.raw);
             return SurgeryOutcome::Torn;
         }
         // pg 离开作用域：节点归还 slab，供下一块复用
 
-        const auto attr = static_cast<Kernel::KMemoryAttribute>(b.attr);
+        const auto attr = static_cast<Kernel::KMemoryAttribute>(op.attr);
         if (True(attr & Kernel::KMemoryAttribute::Uncached)) {
-            page_table.SetMemoryAttribute(b.va, b.size, Kernel::KMemoryAttribute::Uncached,
+            page_table.SetMemoryAttribute(op.va, op.size, Kernel::KMemoryAttribute::Uncached,
                                           Kernel::KMemoryAttribute::Uncached);
         }
         if (True(attr & Kernel::KMemoryAttribute::PermissionLocked)) {
-            page_table.SetMemoryAttribute(b.va, b.size, Kernel::KMemoryAttribute::PermissionLocked,
+            page_table.SetMemoryAttribute(op.va, op.size, Kernel::KMemoryAttribute::PermissionLocked,
                                           Kernel::KMemoryAttribute::PermissionLocked);
         }
-        ++replayed_blocks;
     }
 
-    // 6) 归还预置引用（-1）
+    // 5) 归还预置引用（-1）
     adjust_all(-1);
 
-    // 7) 分配器空闲位图整表重建（"引用计数==0 即空闲"；头尾拆分与伙伴
+    // 6) 分配器空闲位图整表重建（"引用计数==0 即空闲"；头尾拆分与伙伴
     //    合并全部走 KPageHeap::Free 既有代码路径）
     kernel.MemoryManager().SavestateRebuildFree();
 
-    // 8) 页表记账回写（current_heap_end / mapped_physical_memory_size 等，
+    // 7) 页表记账回写（current_heap_end / mapped_physical_memory_size 等，
     //    = Cemu 的 sysAreaAllocatorOffset 随档恢复）
     {
         Kernel::KPageTableBase::SavestateBookkeeping bk{};
@@ -2238,8 +2651,17 @@ SurgeryOutcome ReplayPageTableLayout(Core::System& system, const std::vector<Sav
         }
     }
 
-    SSLogInfo(fmt::format("surgery: {} blocks replayed, {} preopen spans, {} ms",
-                          replayed_blocks, preopen.size(), ElapsedMsSince(t0)));
+    // 8) ★ v10 整表复验：布局+物理页与存档逐块全比 —— 任何漂移立即
+    //    显式失败（不把撕裂状态留给续跑的游戏发现）
+    if (!VerifyLayoutMatchesSaved(system, saved, err)) {
+        return SurgeryOutcome::Torn;
+    }
+
+    SSLogInfo(fmt::format("surgery: {} unmap ops ({:.0} MB) / {} map ops ({:.0} MB) / {} preopen "
+                          "spans / {} kept blocks ({:.0} MB), {} ms",
+                          plan.unmaps.size(), plan.unmap_bytes / 1048576.0, plan.maps.size(),
+                          plan.map_bytes / 1048576.0, preopen.size(), plan.kept_blocks,
+                          plan.keep_bytes / 1048576.0, ElapsedMsSince(t0)));
     return SurgeryOutcome::Ok;
 }
 
@@ -2481,17 +2903,41 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         return RestoreOutcome::Incompatible;
     }
 
-    // ---- 5b) v8：页组逐块校验（构建-校验-释放，O(1) slab 占用）+
-    //      布局兼容性预检（Cemu RestoreStateFromFile 的「先全量校验、
-    //      后应用」铁律 —— 一切可预见的失败在此以零副作用收场，apply
-    //      阶段只剩内核原语，不会再因页组重建/布局冲突而撕裂） ----
-    if (!ValidateSavedPageGroups(system, saved_blocks, err)) {
-        SSLogWarn(fmt::format("restore: page group validation rejected ({})", *err));
-        return RestoreOutcome::Error;
-    }
-    if (!CheckLayoutCompatibility(system, saved_blocks, err)) {
-        SSLogWarn(fmt::format("restore: layout compatibility rejected ({})", *err));
-        return RestoreOutcome::Error;
+    // ---- 5b) v10：差分预检（零副作用）。收集当前布局（含 PA run）
+    //      构建调和计划：与存档完全一致的块不进手术（Cemu 纯内容覆盖
+    //      语义），只有布局差异部分才产生卸载/重放操作。不可调和的
+    //      冲突（存档回放块与非回放硬件区重叠等）在此干净拒绝 ——
+    //      一切可预见的失败都在动内存之前发生（Cemu
+    //      RestoreStateFromFile 的「先全量校验、后应用」铁律）；
+    //      map op 页组同时预校验（构建-校验-释放，零内核副作用） ----
+    {
+        std::vector<CurrentBlock> current_now;
+        if (!CollectCurrentBlocksWithPa(system, current_now)) {
+            *err = "current layout walk failed";
+            return RestoreOutcome::Error;
+        }
+        LayoutPlan plan{};
+        std::string plan_err;
+        const PlanResult pr = BuildLayoutPlan(saved_blocks, current_now, &plan, &plan_err);
+        if (pr == PlanResult::Incompatible) {
+            *err = plan.incompat_reason;
+            SSLogWarn(fmt::format("restore: layout plan rejected ({})", *err));
+            return RestoreOutcome::Incompatible;
+        }
+        if (pr == PlanResult::Error) {
+            *err = plan_err;
+            SSLogWarn(fmt::format("restore: layout plan failed ({})", *err));
+            return RestoreOutcome::Error;
+        }
+        if (!ValidatePlanPageGroups(system, plan, err)) {
+            SSLogWarn(fmt::format("restore: page group validation rejected ({})", *err));
+            return RestoreOutcome::Error;
+        }
+        SSLogInfo(fmt::format(
+            "restore: plan pure_keep={} kept={} ({:.0} MB) / unmap={} ({:.0} MB) / map={} ({:.0} MB)",
+            plan.pure_keep ? 1 : 0, plan.kept_blocks, plan.keep_bytes / 1048576.0,
+            plan.unmaps.size(), plan.unmap_bytes / 1048576.0, plan.maps.size(),
+            plan.map_bytes / 1048576.0));
     }
 
     // ---- 6) 逐帧 zstd 流式解码丢弃验证（动内存前的最后把关；Cemu
@@ -2572,17 +3018,36 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     }
 
     // ---- 8) nvmap Teardown：拆除当前全部设备映射（SMMU/GMMU/低位 pin；
-    //      页表块上的 DeviceShared 属性由手术第 3 步
-    //      SavestatePrepareForReplay 一并复位 —— v5/v6 依赖本步清属性
-    //      是不成立的：IocFree 的 can_unlock 才是对称清除路径，存档时
+    //      页表块上的 DeviceShared 属性由手术的
+    //      SavestatePrepareForReplayRange 一并复位 —— v5/v6 依赖本步清
+    //      属性是不成立的：IocFree 的 can_unlock 才是对称清除路径，存档时
     //      活跃的句柄会把它带进手术现场） ----
     NvdrvTeardown(system, nvdrv_state);
 
-    // ---- 9) 页表整表回放手术：当前布局 → 存档布局（原 VA/PA/权限；
-    //      页组按块重建即用即释 —— 见 ReplayPageTableLayout） ----
+    // ---- 9) v10 差分布局调和：全量线程移除可能释放 TLS 页 —— 以
+    //      【此刻】的布局重新计算调和计划并执行。纯 keep（布局+物理页
+    //      与存档逐块全等）时零手术，直接进入内容覆盖（Cemu 语义）；
+    //      否则仅对差异块做卸载/重放，术后整表复验 ----
     {
+        std::vector<CurrentBlock> current_now;
+        if (!CollectCurrentBlocksWithPa(system, current_now)) {
+            *err = "current layout walk failed (post thread reset)";
+            return RestoreOutcome::Torn;
+        }
+        LayoutPlan plan_now{};
+        std::string plan_err;
+        if (BuildLayoutPlan(saved_blocks, current_now, &plan_now, &plan_err) != PlanResult::Ok) {
+            *err = "layout plan failed after thread reset: " +
+                   (plan_now.incompatible ? plan_now.incompat_reason : plan_err);
+            return RestoreOutcome::Torn;
+        }
+        SSLogInfo(fmt::format(
+            "restore: apply plan pure_keep={} kept={} ({:.0} MB) / unmap={} ({:.0} MB) / map={} ({:.0} MB)",
+            plan_now.pure_keep ? 1 : 0, plan_now.kept_blocks, plan_now.keep_bytes / 1048576.0,
+            plan_now.unmaps.size(), plan_now.unmap_bytes / 1048576.0, plan_now.maps.size(),
+            plan_now.map_bytes / 1048576.0));
         const SurgeryOutcome so =
-            ReplayPageTableLayout(system, saved_blocks, bookkeeping, err);
+            ReconcileLayout(system, saved_blocks, plan_now, bookkeeping, err);
         if (so != SurgeryOutcome::Ok) {
             // Teardown 已拆除设备映射、手术可能半途 —— 带撕裂状态续跑必崩，
             // 上层按 Torn 处理（v8：自动回落 legacy 重启恢复，不再停在死核）
@@ -2959,11 +3424,9 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickSaveSlot([[maybe_unused]] JNIEnv* env
         {
             EmulationFreeze freeze{system};
 
-            // 在途 GPU 脏写回（宿主→guest）刷入 guest 内存后再捕获，
-            // 保证 state.bin 与 NAND 快照视图一致（与 Cemu 同等语义）。
-            if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
-                rasterizer->FlushAll();
-            }
+            // v10：移除 rasterizer->FlushAll() —— 本仓 RasterizerVulkan::
+            // FlushAll 为空实现（纯死代码）；GPU 命令排空由冻结序列的
+            // GPU().WaitForIdle() 完成（= Cemu「排空命令环 + GPU 同步」）。
 
             std::string state_err;
             const bool state_ok =

@@ -5608,13 +5608,14 @@ fun EmulatorScreen(
                 savesDir = savesDir,
                 gameTitle = game.title,
                 nativeSlotInfo = edenNativeSlotInfo,
+                ignoreMarkerFiles = platform == GamePlatform.NSWITCH,
                 onSlotSelected = { slot ->
                     val stateFile = java.io.File(savesDir, "${game.id}_slot${slot}.state")
                     if (platform == GamePlatform.NSWITCH) {
                         // ★ v10：Switch（Eden）—— 引擎 saveState/loadState 走原生
                         //   槽位（冻结 + NAND 拷贝阻塞数秒），必须派发 IO 线程，
-                        //   否则主线程 ANR。槽位标记文件与通用对话框存在性检查
-                        //   兼容（成功后由引擎写入标记）。
+                        //   否则主线程 ANR。★ v12：不再读写标记文件 —— 原生
+                        //   槽位（quickSaveInfo JSON）为唯一事实源。
                         //   ★ 对话框模式在 launch 前捕获（lambda 尾部会把
                         //     showSlotPicker 置 null，协程内再读必错）。
                         val wantSave = showSlotPicker == "save"
@@ -5630,13 +5631,10 @@ fun EmulatorScreen(
                                     Toast.makeText(context, "存档失败：$reason", Toast.LENGTH_LONG).show()
                                 }
                             } else {
-                                // v4：Switch 快捷存档路径（onQuickSave→quickSaveSlotRaw）
-                                // 不写标记文件 —— 存在性检查用原生槽位数据兜底
-                                val nativeHasSave = edenNativeSlotInfo?.get(slot)?.exists == true
-                                if (!stateFile.exists() && !nativeHasSave) {
-                                    Toast.makeText(context, "槽位 $slot 无存档", Toast.LENGTH_SHORT).show()
-                                    return@launch
-                                }
+                                // ★ v12：不再以标记文件预判存在性 —— 引擎/
+                                //   原生槽位为唯一事实源；空槽由
+                                //   quickRestoreSlot 首步检查（无冻结开销）
+                                //   返回 SLOT_EMPTY 如实上报。
                                 val ok = withContext(Dispatchers.IO) {
                                     try { engine.loadState(slot, stateFile) } catch (t: Throwable) { false }
                                 }
@@ -12599,7 +12597,11 @@ private fun SlotPickerDialog(
     // ★ v4（v75）：原生槽位真实元数据（UI 槽位 → 原生槽位派生的
     //   存在性/时间/大小）。Switch（Eden）传入 —— 通用标记文件仅 22B
     //   （存在性检查用），旧版直接显示其长度就是「存档只有 22B」的根因。
-    nativeSlotInfo: Map<Int, SlotState>? = null
+    nativeSlotInfo: Map<Int, SlotState>? = null,
+    // ★ v12：true = 忽略标记文件（Switch：原生槽位为唯一事实源）。
+    //   旧版 %6+1 映射时代的残留标记文件会让从未存过档的槽显示
+    //   "有存档"（幽灵槽位）；开启后存在性完全由 nativeSlotInfo 决定。
+    ignoreMarkerFiles: Boolean = false
 ) {
     // Re-scan the saves directory every time the dialog opens so the
     // slot status is fresh (a savestate written this session shows up).
@@ -12609,6 +12611,10 @@ private fun SlotPickerDialog(
             if (native != null && native.exists) {
                 // 原生槽位有真实数据：优先展示真实大小/时间（Switch）
                 native
+            } else if (ignoreMarkerFiles) {
+                // ★ v12：Switch 槽位存在性只看原生槽位 —— 历史残留的
+                //   标记文件不再显示为"有存档"（幽灵槽位报底）
+                SlotState(slot, exists = false, lastModified = 0L, sizeBytes = 0L)
             } else {
                 val file = java.io.File(savesDir, "${gameId}_slot${slot}.state")
                 if (file.exists()) {

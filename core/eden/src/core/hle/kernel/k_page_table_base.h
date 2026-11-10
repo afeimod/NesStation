@@ -820,6 +820,34 @@ public:
         }
     }
 
+    // ★★★ NesStation savestate (v10)：范围化整备（差分手术专用） ★★★
+    // v10 的差分调和只卸载/重放【布局有差异】的块；与存档逐块一致
+    // （VA+state+perm+attr+物理页序列全等）的保留块只做内容覆盖
+    // （= Cemu 对静态 MMURange 的纯 memcpy 语义），不进任何手术路径。
+    // 全局版 SavestatePrepareForReplay 会连保留块的瞬态/设备簿记与
+    // 持久属性（Uncached/PermissionLocked）一并复位且无回放路径 ——
+    // 差分路径下保留块正确性的前提就是【完全不动它们】。本函数只复位
+    // 与 [lo, hi) 重叠的可回放块（即将被 UnmapPages 卸载的块 ——
+    // UnmapPages 的 CheckMemoryState 要求 attr==None，0xd401 的出处）。
+    // 块管理器按地址升序遍历，越过 hi 即停。
+    void SavestatePrepareForReplayRange(u64 lo, u64 hi) {
+        for (auto it = m_memory_block_manager.begin(); it != m_memory_block_manager.end();
+             ++it) {
+            const u64 block_start = static_cast<u64>(GetInteger(it->GetAddress()));
+            const u64 block_end = static_cast<u64>(GetInteger(it->GetEndAddress()));
+            if (block_end <= lo) {
+                continue;
+            }
+            if (block_start >= hi) {
+                break; // 块按地址升序 —— 已越过区间，后续必然不重叠
+            }
+            const KMemoryState s = it->GetState();
+            if (True(s & KMemoryState::FlagReferenceCounted) || s == KMemoryState::ThreadLocal) {
+                it->SavestateResetForReplay();
+            }
+        }
+    }
+
 public:
     // Linear mapped
     static u8* GetLinearMappedVirtualPointer(KernelCore& kernel, KPhysicalAddress addr) {
