@@ -1,9 +1,39 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v10 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v11 ★★★
 //
-// v10（本轮）：按 Cemu（Cafe/Savestate/SaveState.cpp）语义重做读档核心
+// v11（本轮）：读档可靠性收尾 + 存档提速的保底 —— 两处根因修复：
+//
+//   ① 「有时候重启游戏 / 有时候读档失败」的残留根因（nvmap 内核侧
+//      DeviceShared 簿记不对称）：nvmap::IocAlloc 每次分配都会给句柄
+//      地址区间置 DeviceShared（LockForMapDeviceAddressSpace），而
+//      Teardown 只拆了 SMMU/GMMU 设备映射，从未对称解锁页表块上的
+//      DeviceShared —— 后果链：
+//        a) 差分调和的「保留快路径」（与存档逐块全等 → 纯内容覆盖，
+//           = Cemu 对静态 MMURange 的 memcpy 语义）因瞬态属性位非零
+//           【永远无法命中】—— 帧缓冲/纹理等活跃 GPU 堆块每次读档都
+//           被迫整块卸载+重放，手术面越大，单块内核校验失败（撕裂 →
+//           自动重启/读档失败）的概率越高；
+//        b) Replay 不重锁 → 读档后游戏 IocFree 对未锁区间解锁，
+//           断言/簿记漂移 → 后续存读档不稳定（「有时候」的来源）。
+//      修复（nvdrv 侧配套，见 core/nvmap.cpp）：Teardown 对每个已分配
+//      句柄补上 IocFree 同款的 UnlockForDeviceAddressSpace；Replay 对
+//      每个存档句柄补上 IocAlloc 同款的 LockForMapDeviceAddressSpace
+//      —— 不变量「nvmap 句柄存在 ⟺ 地址区间持有 DeviceShared」恢复。
+//      保留快路径真正生效：同会话存→读（布局未变）→ 零手术、零内核
+//      改动、不可能撕裂（Cemu 语义）；布局漂移 → 只动真正变化的小块。
+//
+//   ② 「存档变慢」的保底（不依赖 zstd 多线程构建）：state.bin 格式
+//      v7 —— 内容块改为分段编码（DATA=zstd 帧 / ZERO=全零段 / END=块
+//      尾哨兵）。模拟内存大部分是零页（堆未用区、对齐填充）：存档时
+//      ≥64KB 的连续零页不再压缩、只记段头（零页扫描 ~内存带宽速率，
+//      vs 压缩 ~百 MB/s）；读档校验/应用对零段只做算术/memset。与
+//      zstd 库内多线程（v10，依赖 ZSTD_MULTITHREAD 构建）叠加生效，
+//      任一缺失时另一方仍独立提速。旧版 v6 档（整块单帧）继续可读
+//      —— 现存槽位无需重新存档。
+//
+// v10（历史）：按 Cemu（Cafe/Savestate/SaveState.cpp）语义重做读档核心
 //   —— 差分布局调和取代整表回放手术 + 存档提速 + 幽灵槽位收尾：
 //
 //   ① 「读档失败/状态恢复失败」根因收敛（Cemu RestoreStateFromFile
@@ -308,7 +338,7 @@ constexpr int kThumbMaxWidth = 320;
 constexpr int kThumbMaxHeight = 180;
 
 // ---------------------------------------------------------------------------
-// state.bin v5 —— 进程内全量状态文件格式
+// state.bin v7 —— 进程内全量状态文件格式
 //
 //   [StateHeaderV5]
 //   [BookkeepingV5]                    （页表动态记账 + 会话区域校验字段）
@@ -316,9 +346,15 @@ constexpr int kThumbMaxHeight = 180;
 //   [PARun 表 × block_count]           （每块 u32 run_count + PARunV5 × n；
 //                                       仅 has_pg 块非零 —— VA→PA 回放脚本）
 //   [ContentDescV5 × content_count]    （内容帧描述符；compressed 先占位后回填）
-//   [zstd 帧 × content_count]          （逐块流式压缩，帧校验和 + pledged size）
+//   [内容载荷 × content_count]          （v7：分段流，见下；v6：逐块单 zstd 帧）
 //   [nvdrv 段（NvdrvHeaderV3…）]
 //   [线程记录 × thread_count]          （32B 元数据 + 0x320B 寄存器组）
+//
+//   v7 内容载荷（每内容块一条分段流，顺序铺满整块，含段头总字节数
+//   记入 ContentDescV5.compressed —— 文件定位/校验算术与 v6 兼容）：
+//     [SegHeaderV7 type=DATA][zstd 帧（解码量=span_size）]
+//     [SegHeaderV7 type=ZERO]（无载荷；span_size 字节全零，页倍数）
+//     [SegHeaderV7 type=END]（块尾哨兵；后接下一内容块的分段流）
 //
 //   布局来源：页表 QueryInfo 遍历（svcQueryMemory 同源序列），相邻同
 //   state/perm/attr 的块归一合并（快照/回放两端同一规则）。
@@ -327,7 +363,10 @@ constexpr int kThumbMaxHeight = 180;
 // ---------------------------------------------------------------------------
 
 constexpr char kStateMagic[4] = {'E', 'D', 'S', 'S'};
+// v7：分段内容编码（零页跳过）。读档侧同时接受 v6（整块单帧）——
+// 现存 v6 槽位无需重新存档；旧版核心读到 v7 会拒（TooOld，重新存档即可）
 constexpr u32 kStateVersion = 6;
+constexpr u32 kStateVersionSegmented = 7;
 constexpr size_t kPageSize = 4 * 1024; // 4KB，≤ 宿主页表粒度
 
 // v3/v4：nvdrv GPU 状态段存在标志（GMMU 映射 + nvmap 句柄表随档保存）。
@@ -400,12 +439,41 @@ static_assert(sizeof(PARunV5) == 16);
 struct ContentDescV5 {
     u64 va;
     u64 uncompressed; // 未压缩字节数（= 归一块大小）
-    u64 compressed;   // zstd 帧字节数（写入时占位，帧完成后回填）
+    u64 compressed;   // v6：zstd 帧字节数；v7：分段流总字节数（含段头）
+                      //（写入时占位，完成后回填）
     u32 reserved0;
     u32 reserved1;
 };
 static_assert(sizeof(ContentDescV5) == 32);
 static_assert(offsetof(ContentDescV5, compressed) == 16);
+
+// ---------------------------------------------------------------------------
+// v7：内容分段编码（零页跳过 —— 存档提速的保底路径，不依赖 zstd 多线程
+// 构建）。模拟内存大部分是零页（堆未用区/对齐填充/未触碰栈）：连续
+// ≥64KB 的零页不再压缩、只记段头（零页扫描 ~内存带宽速率，压缩只有
+// ~百 MB/s）；小零洞（<64KB）交给 zstd（全零匹配速度极高，单独成段
+// 反而添段头开销）。读档校验/应用对 ZERO 段只做算术/memset —— 校验
+// 阶段（v6 时代的全文件解压丢弃）大幅提速。
+//
+// 段流铺满整个内容块（DATA+ZERO 的 span_size 之和 == 块大小，读取侧
+// 强校验）；END 哨兵后接下一块的分段流。
+// ---------------------------------------------------------------------------
+
+constexpr u32 kSegTypeData = 0; // 后跟 zstd 帧（解码量 = span_size）
+constexpr u32 kSegTypeZero = 1; // span_size 字节全零（无载荷；页倍数）
+constexpr u32 kSegTypeEnd = 2;  // 块尾哨兵（span_size/compressed 恒 0）
+
+struct SegHeaderV7 {
+    u32 type;
+    u32 reserved;
+    u64 span_size;  // DATA：未压缩字节数；ZERO：零字节数（页倍数）
+    u64 compressed; // DATA：紧随其后的 zstd 帧字节数；其它恒 0
+};
+static_assert(sizeof(SegHeaderV7) == 24);
+static_assert(offsetof(SegHeaderV7, compressed) == 16);
+
+// 零段门槛：连续零页 ≥ 16 页（64KB）才单独成段
+constexpr u64 kZeroSegMinPages = 16;
 
 struct ThreadMetaV2 {
     u64 thread_id;
@@ -1326,6 +1394,46 @@ u8* PagePtr(Core::Memory::Memory& memory, u64 va) {
     return memory.GetPointerSilent(Common::ProcessAddress{va});
 }
 
+// ---- v7 零页扫描（PagePtr 之后定义 —— 存档分段编码用） ----
+
+// 页零判定：无后备页（MMIO 等）在捕获语义里本来就是零填充 —— 算零页
+bool HostPageIsZero(const u8* p) {
+    const u64* q = reinterpret_cast<const u64*>(p);
+    for (size_t i = 0; i < kPageSize / sizeof(u64); ++i) {
+        if (q[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// [va, va + max_pages*4K) 内从起点的连续零页数（无后备页计为 0 页）
+u64 CountZeroPages(Core::Memory::Memory& memory, u64 va, u64 max_pages) {
+    u64 n = 0;
+    while (n < max_pages) {
+        const u8* p = PagePtr(memory, va + n * kPageSize);
+        if (p != nullptr && !HostPageIsZero(p)) {
+            break;
+        }
+        ++n;
+    }
+    return n;
+}
+
+// [va, va + max_pages*4K) 内从起点的连续非零页数（首个页必非零：
+// 有后备且内容非零 —— 调用方保证）
+u64 CountNonZeroPages(Core::Memory::Memory& memory, u64 va, u64 max_pages) {
+    u64 n = 0;
+    while (n < max_pages) {
+        const u8* p = PagePtr(memory, va + n * kPageSize);
+        if (p == nullptr || HostPageIsZero(p)) {
+            break;
+        }
+        ++n;
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // v4：流式 zstd（Cemu WriteCompressedRange / ReadCompressedRange 同款）
 // ---------------------------------------------------------------------------
@@ -1583,6 +1691,147 @@ finish:
 }
 
 // ---------------------------------------------------------------------------
+// v7：分段流的校验 / 应用（零页跳过格式的读取侧）
+//
+// ZERO 段只做算术校验 / memset —— 读取侧不再为零页付出解压成本
+//（v6 时代的校验阶段是全文件解压丢弃，零页占比高时这本身就是读档
+// 前的最大开销之一）。
+// ---------------------------------------------------------------------------
+
+// 校验单块分段流：段序铺满整块（span 总和 == 块大小）、DATA 帧完整、
+// 字节精确消费（consumed == stream_bytes）。
+bool ValidateSegmentStream(std::ifstream& in, u64 block_size, u64 stream_bytes,
+                           std::string* err) {
+    *err = {};
+    u64 consumed = 0;
+    u64 span_total = 0;
+    bool ended = false;
+    while (!ended) {
+        SegHeaderV7 seg{};
+        in.read(reinterpret_cast<char*>(&seg), sizeof(seg));
+        if (static_cast<size_t>(in.gcount()) != sizeof(seg)) {
+            *err = "segment header truncated";
+            return false;
+        }
+        consumed += sizeof(seg);
+        switch (seg.type) {
+        case kSegTypeEnd:
+            if (seg.span_size != 0 || seg.compressed != 0) {
+                *err = "bad end segment";
+                return false;
+            }
+            ended = true;
+            break;
+        case kSegTypeZero:
+            if (seg.span_size == 0 || seg.span_size % kPageSize != 0 ||
+                seg.compressed != 0 || span_total + seg.span_size > block_size) {
+                *err = fmt::format("bad zero segment @ +{:x}", span_total);
+                return false;
+            }
+            span_total += seg.span_size;
+            break;
+        case kSegTypeData:
+            if (seg.span_size == 0 || seg.compressed == 0 ||
+                span_total + seg.span_size > block_size || consumed > stream_bytes ||
+                seg.compressed > stream_bytes - consumed) {
+                *err = fmt::format("bad data segment @ +{:x}", span_total);
+                return false;
+            }
+            if (!ValidateFrame(in, seg.span_size, seg.compressed)) {
+                *err = fmt::format("corrupt segment payload @ +{:x}", span_total);
+                return false;
+            }
+            consumed += seg.compressed;
+            span_total += seg.span_size;
+            break;
+        default:
+            *err = "unknown segment type";
+            return false;
+        }
+    }
+    if (consumed != stream_bytes || span_total != block_size) {
+        *err = fmt::format("segment stream mismatch (consumed {} / {}, span {} / {})",
+                           consumed, stream_bytes, span_total, block_size);
+        return false;
+    }
+    return true;
+}
+
+// 零段写回：页粒度 memset + host 连续 run 合并 + run 粒度 icache 刷新
+//（零化可能落在代码页上 —— 必须与 DATA 段同样清指令缓存；无后备页
+// 跳过即可，其语义本来就是零）。
+void ApplyZeroSpan(Core::System& system, u64 va, u64 size) {
+    Core::Memory::Memory& memory = system.ApplicationMemory();
+    u64 off = 0;
+    while (off < size) {
+        const size_t in_page = kPageSize - ((va + off) % kPageSize);
+        const size_t take = std::min(in_page, size - off);
+        u8* dst = PagePtr(memory, va + off);
+        if (dst == nullptr) {
+            off += take; // 无后备页（MMIO 等）：目标语义即零
+            continue;
+        }
+        size_t run = take;
+        if (take == kPageSize) {
+            // host 连续 run 合并（与 DATA 段同一模式）
+            while (off + run + kPageSize <= size) {
+                u8* const next = PagePtr(memory, va + off + run);
+                if (next != dst + run) {
+                    break;
+                }
+                run += kPageSize;
+            }
+        }
+        std::memset(dst, 0, run);
+        __builtin___clear_cache(reinterpret_cast<char*>(dst),
+                                reinterpret_cast<char*>(dst + run));
+        off += run;
+    }
+}
+
+// 应用单块分段流（校验已通过的段流；DATA 段 = ApplyFrame、ZERO 段 = memset）
+bool ApplySegmentStream(std::ifstream& in, Core::System& system, u64 va, u64 block_size,
+                        u64 stream_bytes, std::string* err) {
+    *err = {};
+    u64 off = 0;
+    u64 consumed = 0;
+    bool ended = false;
+    while (!ended) {
+        SegHeaderV7 seg{};
+        in.read(reinterpret_cast<char*>(&seg), sizeof(seg));
+        if (static_cast<size_t>(in.gcount()) != sizeof(seg)) {
+            *err = "segment header truncated (apply)";
+            return false;
+        }
+        consumed += sizeof(seg);
+        switch (seg.type) {
+        case kSegTypeEnd:
+            ended = true;
+            break;
+        case kSegTypeZero:
+            ApplyZeroSpan(system, va + off, seg.span_size);
+            off += seg.span_size;
+            break;
+        case kSegTypeData:
+            if (!ApplyFrame(in, system, va + off, seg.span_size, seg.compressed, err)) {
+                return false;
+            }
+            consumed += seg.compressed;
+            off += seg.span_size;
+            break;
+        default:
+            *err = "unknown segment type (apply)";
+            return false;
+        }
+    }
+    if (consumed != stream_bytes || off != block_size) {
+        *err = fmt::format("segment stream mismatch (apply) @ {:016x}", va);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // state.bin —— 捕获（quickSaveSlot 调用，必须持冻结）
 // ---------------------------------------------------------------------------
 
@@ -1756,7 +2005,9 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
 
         StateHeaderV5 header{};
         std::memcpy(header.magic, kStateMagic, sizeof(kStateMagic));
-        header.version = kStateVersion;
+        // ★ v7：分段内容编码（零页跳过）——旧版核心读到 v7 会拒
+        //   （TooOld，重新存档即可）；本侧同时接受 v6 旧档
+        header.version = kStateVersionSegmented;
         header.program_id = program_id;
         header.timestamp = static_cast<u64>(std::time(nullptr));
         header.block_count = static_cast<u32>(saved_blocks.size());
@@ -1828,43 +2079,54 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             return false;
         }
 
-        // 5) 逐块流式压缩：源 = guest 连续后备 run（直读直压）
+        // 5) ★ v7 分段编码：零页扫描 + DATA（zstd 帧）/ ZERO（零段）/ END。
+        //    连续 ≥64KB 的零页不再压缩、只记段头（扫描 ~内存带宽速率，
+        //    压缩只有 ~百 MB/s —— 存档提速的保底路径，不依赖 zstd 多线程
+        //    构建）；小零洞交给 zstd。段头 compressed 占位 → 帧完成后回填
+        //    （Cemu 占位符回填同款）；块内段流总字节数记入
+        //    compressed_sizes[i]（回填内容表用，文件定位算术与 v6 兼容）。
         ZstdFrameWriter writer(out);
         static const std::array<u8, kPageSize> zero_page{};
         u64 reported = 0;
+        u64 zero_reported = 0;
         size_t ci = 0;
-        for (const auto& b : saved_blocks) {
-            if (!IsContentState(b.state)) {
-                continue;
-            }
-            ++ci;
-            if (!writer.Begin(b.size)) {
-                *err = fmt::format("zstd cctx failed @ {:016x}", b.va);
-                fs::remove(state_tmp);
+
+        // DATA 段：[span_off, span_off+span_size) 直读直压（页 run 合并、
+        // 无后备页零填充 —— 与 v6 同源），段头 compressed 事后回填。
+        // 块描述符由参数传入（lambda 定义于循环之外）。
+        const auto write_data_span = [&](const SavedBlock& blk, u64 span_off,
+                                         u64 span_size) -> bool {
+            const std::streamoff seg_pos = out.tellp();
+            SegHeaderV7 seg{};
+            seg.type = kSegTypeData;
+            seg.span_size = span_size;
+            seg.compressed = 0; // 占位，帧完成后回填
+            out.write(reinterpret_cast<const char*>(&seg), sizeof(seg));
+            if (!out) {
                 return false;
             }
-            u64 off = 0;
-            while (off < b.size) {
-                const u64 page_va = b.va + off;
+            if (!writer.Begin(span_size)) {
+                return false;
+            }
+            u64 foff = 0;
+            while (foff < span_size) {
+                const u64 page_va = blk.va + span_off + foff;
                 const size_t in_page = kPageSize - (page_va % kPageSize);
-                const size_t take = std::min(in_page, b.size - off);
+                const size_t take = std::min(in_page, span_size - foff);
                 u8* p = PagePtr(memory, page_va);
                 if (p == nullptr) {
-                    // 无后备页（MMIO 等）：喂零页保持帧长一致
-                    // （v2 的段尾截断语义升级为显式零填充）
+                    // 无后备页（MMIO 等）：喂零页保持帧长一致（v2 语义）
                     if (!writer.Write(zero_page.data(), take)) {
-                        *err = fmt::format("zstd feed failed @ {:016x}", page_va);
-                        fs::remove(state_tmp);
                         return false;
                     }
-                    off += take;
+                    foff += take;
                     continue;
                 }
                 size_t run = take;
                 if (take == kPageSize) {
                     // host 连续后备 run 扩展（堆等大块通常连续）
-                    while (off + run + kPageSize <= b.size) {
-                        u8* const next = PagePtr(memory, b.va + off + run);
+                    while (foff + run + kPageSize <= span_size) {
+                        u8* const next = PagePtr(memory, blk.va + span_off + foff + run);
                         if (next != p + run) {
                             break;
                         }
@@ -1872,24 +2134,104 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
                     }
                 }
                 if (!writer.Write(p, run)) {
-                    *err = fmt::format("zstd feed failed @ {:016x}", page_va);
+                    return false;
+                }
+                foff += run;
+            }
+            if (!writer.Finish()) {
+                return false;
+            }
+            const u64 frame_bytes = writer.written();
+            // 回填段头 compressed（Cemu compressedSize 补丁同款）
+            const std::streamoff end_pos = out.tellp();
+            out.seekp(seg_pos + static_cast<std::streamoff>(offsetof(SegHeaderV7, compressed)));
+            out.write(reinterpret_cast<const char*>(&frame_bytes), sizeof(frame_bytes));
+            out.seekp(end_pos);
+            if (!out) {
+                return false;
+            }
+            return true;
+        };
+
+        for (const auto& b : saved_blocks) {
+            if (!IsContentState(b.state)) {
+                continue;
+            }
+            ++ci;
+            u64 seg_bytes = 0;
+            u64 off = 0;   // 已铺满的块内偏移（页粒度推进）
+            u64 pend = 0;  // 待写 DATA 段的起点
+            bool has_pend = false;
+            while (off < b.size) {
+                const u64 max_pages = (b.size - off) / kPageSize;
+                const u64 z = CountZeroPages(memory, b.va + off, max_pages);
+                if (z >= kZeroSegMinPages) {
+                    // 大零洞：收尾在途 DATA 段 → 写 ZERO 段（无载荷）
+                    if (has_pend) {
+                        if (!write_data_span(b, pend, off - pend)) {
+                            *err = fmt::format("zstd feed failed @ {:016x}", b.va + pend);
+                            fs::remove(state_tmp);
+                            return false;
+                        }
+                        seg_bytes += sizeof(SegHeaderV7) + writer.written();
+                        has_pend = false;
+                    }
+                    SegHeaderV7 seg{};
+                    seg.type = kSegTypeZero;
+                    seg.span_size = z * kPageSize;
+                    out.write(reinterpret_cast<const char*>(&seg), sizeof(seg));
+                    if (!out) {
+                        *err = "state.bin segment write failed";
+                        fs::remove(state_tmp);
+                        return false;
+                    }
+                    seg_bytes += sizeof(SegHeaderV7);
+                    zero_reported += z * kPageSize;
+                    off += z * kPageSize;
+                    continue;
+                }
+                if (!has_pend) {
+                    pend = off; // 非零/小零洞并入 DATA 段
+                    has_pend = true;
+                }
+                u64 adv = z; // 小零洞整体并入 DATA，一次跳过
+                if (adv == 0) {
+                    // 连续非零页批量推进（首页必非零：CountZeroPages==0）
+                    adv = CountNonZeroPages(memory, b.va + off, max_pages);
+                    if (adv == 0) {
+                        adv = 1; // 防御
+                    }
+                }
+                off += adv * kPageSize;
+            }
+            if (has_pend) {
+                if (!write_data_span(b, pend, b.size - pend)) {
+                    *err = fmt::format("zstd feed failed @ {:016x}", b.va + pend);
                     fs::remove(state_tmp);
                     return false;
                 }
-                off += run;
+                seg_bytes += sizeof(SegHeaderV7) + writer.written();
             }
-            if (!writer.Finish()) {
-                *err = fmt::format("zstd frame finish failed @ {:016x}", b.va);
-                fs::remove(state_tmp);
-                return false;
+            {
+                // END 哨兵（span/compressed 恒 0；后接下一块段流）
+                SegHeaderV7 seg{};
+                seg.type = kSegTypeEnd;
+                out.write(reinterpret_cast<const char*>(&seg), sizeof(seg));
+                if (!out) {
+                    *err = "state.bin segment write failed";
+                    fs::remove(state_tmp);
+                    return false;
+                }
+                seg_bytes += sizeof(SegHeaderV7);
             }
-            compressed_sizes.push_back(writer.written());
+            compressed_sizes.push_back(seg_bytes);
 
             reported += b.size;
             if ((ci & 0xF) == 0xF || ci == content_count) {
-                SSLogInfo(fmt::format("capture: {}/{} blocks, {}/{} MB, {} ms",
+                SSLogInfo(fmt::format("capture: {}/{} blocks, {}/{} MB (zero-skipped {} MB), {} ms",
                                       ci, content_count, reported >> 20,
-                                      total_uncompressed >> 20, ElapsedMsSince(t0)));
+                                      total_uncompressed >> 20, zero_reported >> 20,
+                                      ElapsedMsSince(t0)));
             }
         }
 
@@ -2713,11 +3055,13 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         *err = "bad state.bin magic";
         return RestoreOutcome::Error;
     }
-    if (header.version != kStateVersion) {
+    if (header.version != kStateVersion && header.version != kStateVersionSegmented) {
         *err = fmt::format("unsupported state.bin version {} (re-save to upgrade)",
                            header.version);
         return RestoreOutcome::TooOld;
     }
+    // v7：分段内容编码（DATA/ZERO/END）；v6：整块单帧（旧档兼容）
+    const bool segmented = header.version >= kStateVersionSegmented;
     if (header.program_id != program_id) {
         *err = fmt::format("program id mismatch: slot {:016x} vs current {:016x}",
                            header.program_id, program_id);
@@ -2819,8 +3163,14 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     u64 frames_bytes = 0;
     u64 total_uncompressed = 0;
     for (const auto& d : content_descs) {
-        // zstd 最坏轻微膨胀；超过此界视为损坏
-        if (d.compressed > d.uncompressed + (d.uncompressed >> 3) + (64ull << 20)) {
+        // 压缩尺寸合理性：v6 单帧 —— zstd 最坏轻微膨胀；v7 分段流 ——
+        // 段头（24B）×页数上界 + 同样的膨胀余量。超过即视为损坏。
+        const u64 inflate_allowance = d.uncompressed + (d.uncompressed >> 3) + (64ull << 20);
+        const u64 v7_allowance =
+            inflate_allowance +
+            sizeof(SegHeaderV7) * (d.uncompressed / kPageSize + 4);
+        const u64 limit = segmented ? v7_allowance : inflate_allowance;
+        if (d.compressed == 0 || d.compressed > limit) {
             *err = fmt::format("implausible compressed size @ {:016x}", d.va);
             return RestoreOutcome::Error;
         }
@@ -2941,17 +3291,26 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     }
 
     // ---- 6) 逐帧 zstd 流式解码丢弃验证（动内存前的最后把关；Cemu
-    //      ValidateCompressedRange 同款） ----
+    //      ValidateCompressedRange 同款）。v7 走分段流校验（ZERO 段
+    //      纯算术，DATA 段逐帧验证）；v6 走整块单帧 ----
     in.clear();
     in.seekg(frames_start, std::ios::beg);
     for (size_t i = 0; i < content_descs.size(); ++i) {
         const auto& d = content_descs[i];
-        if (!ValidateFrame(in, d.uncompressed, d.compressed)) {
-            *err = fmt::format("corrupt payload @ {:016x}", d.va);
+        bool ok = false;
+        std::string seg_err;
+        if (segmented) {
+            ok = ValidateSegmentStream(in, d.uncompressed, d.compressed, &seg_err);
+        } else {
+            ok = ValidateFrame(in, d.uncompressed, d.compressed);
+        }
+        if (!ok) {
+            *err = fmt::format("corrupt payload @ {:016x}{}{}", d.va,
+                               segmented ? ": " : "", segmented ? seg_err : "");
             return RestoreOutcome::Error;
         }
         if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
-            SSLogInfo(fmt::format("restore: validated {}/{} frames, {} ms", i + 1,
+            SSLogInfo(fmt::format("restore: validated {}/{} content blocks, {} ms", i + 1,
                                   content_descs.size(), ElapsedMsSince(t0)));
         }
     }
@@ -3057,16 +3416,23 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     }
 
     // ---- 10) 内容帧写回（此刻映射已与存档逐块一致 —— Cemu 的
-    //      "内容原地覆盖" 至此完全成立） ----
+    //      "内容原地覆盖" 至此完全成立）。v7 分段流（ZERO=memset /
+    //      DATA=ApplyFrame）；v6 整块单帧 ----
     in.clear();
     in.seekg(frames_start, std::ios::beg);
     for (size_t i = 0; i < content_descs.size(); ++i) {
         const auto& d = content_descs[i];
-        if (!ApplyFrame(in, system, d.va, d.uncompressed, d.compressed, err)) {
+        bool ok = false;
+        if (segmented) {
+            ok = ApplySegmentStream(in, system, d.va, d.uncompressed, d.compressed, err);
+        } else {
+            ok = ApplyFrame(in, system, d.va, d.uncompressed, d.compressed, err);
+        }
+        if (!ok) {
             return RestoreOutcome::Torn;
         }
         if ((i & 0xF) == 0xF || i + 1 == content_descs.size()) {
-            SSLogInfo(fmt::format("restore: applied {}/{} frames, {} ms (rss {} MB)",
+            SSLogInfo(fmt::format("restore: applied {}/{} content blocks, {} ms (rss {} MB)",
                                   i + 1, content_descs.size(), ElapsedMsSince(t0),
                                   CurrentRssMB()));
         }

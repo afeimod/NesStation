@@ -1203,16 +1203,19 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     // 深层同步状态分歧（幸存线程等待在废弃时间线的同步对象上等 HLE
     // 差异）死锁/无帧输出 —— 用户看到「提示已恢复，结果黑屏啥也没有」。
     // Cemu 靠全组件序列化器（调度器从内存重建 + 事件回调丢弃 + 音频重置）
-    // 从根上避免；Eden 无法完全根除，这里以看门狗兑底：采样
-    // [realtimeFps]（核心真实出帧计数），~24 秒无帧且非暂停 → 自动调
-    // NativeLibrary.forceLegacyRestore（autobackup 当前 NAND → 关停核心
-    // → 槽位存档数据写回 NAND）+ [relaunchGame] —— 玩家最差也能回到
-    // 存档点，绝不停在无响应黑屏上。
+    // 从根上避免；Eden 无法完全根除，这里以看门狗兑底：长时间无推进 →
+    // 自动调 NativeLibrary.forceLegacyRestore（autobackup 当前 NAND →
+    // 关停核心 → 槽位存档数据写回 NAND）+ [relaunchGame] —— 玩家最差也
+    // 能回到存档点，绝不停在无响应黑屏上。
     //
-    // 误判防护：
+    // ★ v11 误判防护（用户报告「有时候重启游戏」的另一来源 —— 看门狗
+    //   把“恢复后首帧慢”误判成死锁）：
+    //  · 窗口 8s → 16s（8 次采样 × 2s）；
+    //  · “活着”不只看出帧：emulation_speed > 0.05（模拟主循环在跑 ——
+    //    读档落在加载段、尚未 present 首帧）或着色器构建中
+    //    （getShadersBuilding > 0，大作首帧重建可达十几秒）都算活着；
     //  · 暂停（_paused）期间不计数（无法判定），解除后重新计时；
-    //  · 任一次采样 fps > 0 即撤销（核心在出帧 = 活着，着色器重建卡顿
-    //    也会偶尔慢但只要出帧就不回落）；
+    //  · 任一次采样判活即撤销（不再回落）；
     //  · 卸载/重启/新一次读档会使代数 +1（[cancelRestoreWatchdog]），
     //    旧看门狗线程自行退出（同一时刻至多一个活跃实例）；
     //  · 槽位无 NAND 存档数据可回落时如实上抛（onPrematureExit）。
@@ -1227,6 +1230,26 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
     }
 
     /**
+     * 看门狗的“核心仍在推进”判定（v11 三重活信号）：
+     *  · 出帧（game fps > 0.05）—— 正常恢复；
+     *  · emulation_speed > 0.05 —— 模拟主循环仍在跑（读档落在加载段、
+     *    尚未 present 首帧 —— 游戏活着，不该被误判重启）；
+     *  · 着色器构建中（getShadersBuilding > 0）—— GPU 线程忙于重建
+     *    缓存（大作首帧可达十几秒），显式豁免。
+     */
+    private fun restoreCoreAdvancing(): Boolean {
+        if (!EdenNative.loaded || !running.get()) return false
+        return try {
+            val stats = NativeLibrary.getPerfStats()
+            val fps = stats.getOrNull(1) ?: 0.0
+            val speed = stats.getOrNull(3) ?: 0.0
+            fps > 0.05 || speed > 0.05 || NativeLibrary.getShadersBuilding() > 0
+        } catch (_: Throwable) {
+            false // 采样异常按“无推进”计 —— 连续 8 次才会触发，单次抖动无影响
+        }
+    }
+
+    /**
      * 布防无帧看门狗（quickRestoreSlotRaw 在原地恢复成功时自动调用）。
      * @param nativeSlot 原生槽位 1..10（legacy 回落目标）
      */
@@ -1234,16 +1257,15 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
         val gen = restoreWatchdogGen.incrementAndGet()
         thread(name = "eden-restore-wd", isDaemon = true) {
             try {
-                // v9：12 → 4 次采样（2s 间隔 = 8s 无帧窗口）。v9 全量线程
-                // 重建后原地恢复不应再出现死锁黑屏，看门狗只是最后兑底；
-                // 8 秒足够区分“首帧着色器重建慢”与“真死锁”，且不给玩家
-                // 留 24 秒的黑屏等待。
+                // ★ v11：8 次采样 × 2s = 16s 无推进窗口（v9 为 8s）。恢复后
+                //   首帧慢的两大合法来源（加载段未 present / 着色器重建）
+                //   已由 restoreCoreAdvancing 豁免；真死锁 16 秒足够判定。
                 var deadSamples = 0
-                while (deadSamples < 4) {
+                while (deadSamples < 8) {
                     Thread.sleep(2000)
                     if (restoreWatchdogGen.get() != gen) return@thread // 被取代/取消
                     if (!isLoaded || !running.get()) return@thread      // 已退出/重启
-                    if (realtimeFps() > 0.05) return@thread             // 出帧了
+                    if (restoreCoreAdvancing()) return@thread           // 核心在推进
                     if (_paused) continue                               // 暂停中不计
                     ++deadSamples
                 }
@@ -1251,7 +1273,7 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
                 if (!isLoaded || !running.get()) return@thread
                 android.util.Log.w(
                     "EdenEngine",
-                    "restore watchdog: no frames 8s after in-place restore, " +
+                    "restore watchdog: no progress 16s after in-place restore, " +
                         "falling back to legacy (slot $nativeSlot)"
                 )
                 val r = try {

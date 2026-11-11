@@ -11,6 +11,8 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging.h"
+#include "core/hle/kernel/k_page_table.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/heap_mapper.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
@@ -393,6 +395,20 @@ void NvMap::RestoreHandlesTeardown(const std::vector<HandleStateRecord>& in) {
 
     // 1) 拆除当前全部句柄的设备映射（SMMU 分配 / heap 映射 / 低位 pin），
     //    与 UnmapHandle 的拆除序列一致；同时摘除待释放队列项。
+    //    ★ v11：随后对已分配句柄补上【对称的内核侧 DeviceShared 解锁】
+    //    （= nvmap::IocFree 的 UnlockForDeviceAddressSpace）。nvmap::IocAlloc
+    //    每次分配都会给句柄地址区间置 DeviceShared，只有 IocFree 会对称
+    //    清除 —— 此前的 Teardown 只拆了 SMMU/GMMU 设备映射，残留在进程
+    //    页表块上的 DeviceShared 属性从未清除：
+    //      a) 差分调和的「保留快路径」（与存档逐块全等 → 纯内容覆盖，
+    //         Cemu 语义）因瞬态属性位非零而【永远无法命中】—— 帧缓冲/
+    //         纹理等活跃 GPU 堆块每次读档都被迫走卸载+重放大手术，手术面
+    //         越大撕裂风险越高（「有时候重启/读档失败」的放大器）；
+    //      b) Replay 不重锁 → 读档后游戏 IocFree 时对未锁区间解锁，
+    //         断言/簿记漂移（后续存读档不稳定）。
+    //    本步在拆除设备映射后同步解锁，废弃时间线的内核簿记彻底归零；
+    //    解锁是尽力而为的（块状态异常只告警不中止 —— 属性复位还有
+    //    SavestatePrepareForReplayRange 兑底）。
     {
         auto handles_copy = [&] {
             std::scoped_lock lk{handles_lock};
@@ -425,6 +441,24 @@ void NvMap::RestoreHandlesTeardown(const std::vector<HandleStateRecord>& in) {
                 }
                 handle->d_address = 0;
                 handle->in_heap = false;
+            }
+            // ★ v11：对称解锁内核侧 DeviceShared（IocFree 同款；存档中
+            //    的句柄随后由 RestoreHandlesReplay 重新上锁）。
+            if (handle->allocated && handle->address != 0 && handle->size > 0) {
+                if (auto* session = core.GetSession(handle->session_id);
+                    session != nullptr && session->process != nullptr) {
+                    const Result unlock_result = session->process->GetPageTable()
+                        .UnlockForDeviceAddressSpace(
+                            Kernel::KProcessAddress(handle->address), handle->size);
+                    if (R_FAILED(unlock_result)) {
+                        // 尽力而为：废弃时间线的残留锁由差分手术的
+                        // SavestatePrepareForReplayRange 归零兑底
+                        LOG_WARNING(Service_NVDRV,
+                                    "savestate teardown: device unlock failed @ {:X} "
+                                    "(size {:X}): {:08X}",
+                                    handle->address, handle->size, unlock_result.raw);
+                    }
+                }
             }
         }
     }
@@ -480,6 +514,36 @@ void NvMap::RestoreHandlesReplay(const std::vector<HandleStateRecord>& in, u32 s
         handle->d_address = 0;
         handle->pin_virt_address = 0;
         handle->unmap_queue_entry.reset();
+
+        // ★ v11：内核侧 DeviceShared 对称重锁（= nvmap::IocAlloc 的
+        //    LockForMapDeviceAddressSpace）。存档时句柄地址区间带有
+        //    DeviceShared（IocAlloc 所置）；Teardown 已把当前时间线的锁
+        //    全部解锁，这里按存档重锁 —— 恢复「nvmap 句柄存在 ⟺ 地址
+        //    区间持有 DeviceShared」不变量：
+        //      · 游戏后续 IocFree → UnlockForDeviceAddressSpace 对称命中
+        //        （不再断言/簿记漂移）；
+        //      · 差分调和的保留判定在【下一次】存/读档时看到与存档一致
+        //        的瞬态状态。
+        //    尽力而为：锁失败只告警（读档前 Preflight 已验证布局，正常
+        //    必命中；失败仅意味着该区间内核状态与存档分叉，如实记录）。
+        if (rec.allocated != 0 && rec.address != 0 && rec.size > 0) {
+            if (auto* session = core.GetSession(handle->session_id);
+                session != nullptr && session->process != nullptr) {
+                bool is_out_io{};
+                const Result lock_result =
+                    session->process->GetPageTable()
+                        .LockForMapDeviceAddressSpace(
+                            &is_out_io,
+                            Kernel::KProcessAddress(rec.address), rec.size,
+                            Kernel::KMemoryPermission::None, true, false);
+                if (R_FAILED(lock_result)) {
+                    LOG_WARNING(Service_NVDRV,
+                                "savestate replay: device relock failed @ {:X} "
+                                "(size {:X}): {:08X}",
+                                rec.address, rec.size, lock_result.raw);
+                }
+            }
+        }
 
         if (rec.d_address) {
             auto* session = core.GetSession(handle->session_id);
