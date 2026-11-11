@@ -5643,8 +5643,12 @@ fun EmulatorScreen(
                                     // legacy 重启路径（布局分叉自动回落 / 老槽位）
                                     val eden = engine as? com.nesstation.app.core.engine.EdenEngine
                                     if (eden?.lastRestoreWasRestart == true) {
+                                        // v11.1：补行动指引 —— 触发 legacy 重启的槽位
+                                        //   （旧版随机布局时代的存档 / NCE 等配置切换后
+                                        //   保存的槽位）在当前版本重新存档一次，之后
+                                        //   即可秒级原地恢复，不再重启。
                                         Toast.makeText(context,
-                                            "存档已读取 [槽位 $slot]——无法原地恢复，已自动重启游戏加载存档数据…",
+                                            "存档已读取 [槽位 $slot]——无法原地恢复，已自动重启游戏加载存档数据（在该槽位重新存档一次后即可原地秒读）",
                                             Toast.LENGTH_LONG).show()
                                     } else if (eden != null) {
                                         Toast.makeText(context,

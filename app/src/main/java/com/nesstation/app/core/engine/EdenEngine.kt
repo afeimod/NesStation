@@ -1146,6 +1146,14 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
                 lastErrorText = "状态恢复失败（游戏仍在运行，可重试或换用其它槽位）"
                 false
             }
+            NativeLibrary.RESULT_ERROR_STATE_TOO_OLD -> {
+                // v11.1：旧格式槽位如实提示（此前落入 else 分支只显示
+                // 「核心返回码 8」，用户无从知道该怎么办）。槽位由旧版本
+                // 核心保存（EDSS v≤5），重新存档一次即升级为 v7 格式。
+                lastRestoreWasRestart = false
+                lastErrorText = "存档来自旧版本核心，请在当前版本重新存档一次"
+                false
+            }
             else -> {
                 lastRestoreWasRestart = false
                 lastErrorText = "核心返回码 $r"
