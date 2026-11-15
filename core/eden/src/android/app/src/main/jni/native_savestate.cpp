@@ -2870,6 +2870,11 @@ bool VerifyLayoutMatchesSaved(Core::System& system, const std::vector<SavedBlock
             ++ci;
         }
     }
+    if (si != saved.size() || ci != current.size()) {
+        *err = fmt::format("verify: layout coverage mismatch (saved {}/{}, current {}/{})",
+                           si, saved.size(), ci, current.size());
+        return false;
+    }
     return true;
 }
 
@@ -3221,6 +3226,11 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             saved_thread_ids.push_back(meta.thread_id);
         }
         std::sort(saved_thread_ids.begin(), saved_thread_ids.end());
+        if (std::adjacent_find(saved_thread_ids.begin(), saved_thread_ids.end()) !=
+            saved_thread_ids.end()) {
+            *err = "state.bin thread records contain duplicate ids";
+            return RestoreOutcome::Error;
+        }
     }
 
     // ---- 4) nvdrv 段解析（纯解析，无副作用；执行拆到 Teardown/Replay） ----
