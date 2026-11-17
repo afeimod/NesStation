@@ -7,6 +7,7 @@
 #pragma once
 
 #include <memory>
+#include <chrono>
 
 #include "common/bit_field.h"
 #include "common/common_types.h"
@@ -169,6 +170,7 @@ public:
     void WaitForSyncOperation(u64 fence);
 
     void WaitForIdle();
+    bool WaitForIdleFor(std::chrono::milliseconds timeout);
 
     /// Tick pending requests within the GPU.
     void TickWork();

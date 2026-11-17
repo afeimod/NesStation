@@ -75,6 +75,8 @@ int Engine::audioSampleRate() {
     return rom::audioSampleRate();
 }
 
+double Engine::videoRefreshRate() { return rom::videoRefreshRate(); }
+
 int Engine::audioTargetSampleRate() {
     return rom::audioTargetSampleRate();
 }
@@ -232,6 +234,11 @@ JNIEXPORT jint JNICALL
 Java_com_nesstation_app_core_jni_NesNative_audioSampleRate(JNIEnv*, jclass) {
     return nescore::Engine::instance().audioSampleRate();
 }
+
+  JNIEXPORT jdouble JNICALL
+  Java_com_nesstation_app_core_jni_NesNative_videoRefreshRate(JNIEnv*, jclass) {
+      return nescore::Engine::instance().videoRefreshRate();
+  }
 
 JNIEXPORT jint JNICALL
 Java_com_nesstation_app_core_jni_NesNative_audioTargetSampleRate(JNIEnv*, jclass) {

@@ -48,6 +48,7 @@ int readAudio(int16_t* out, int maxFrames);
 
 // Sample rate reported by the core after load (e.g. 44100). 0 before load.
 int audioSampleRate();
+double videoRefreshRate();
 
 // Target output sample rate for Android AudioTrack (48000 Hz).
 // Audio is resampled from the core's native rate (typically 44100 Hz for

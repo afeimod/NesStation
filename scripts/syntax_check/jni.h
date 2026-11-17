@@ -14,6 +14,7 @@ typedef uint8_t jboolean;
 typedef int8_t jbyte;
 typedef int16_t jshort;
 typedef int64_t jlong;
+typedef double jdouble;
 typedef void* jobject;
 typedef void* jclass;
 typedef void* jstring;
@@ -52,6 +53,7 @@ struct JNIEnvStub {
     void ReleaseShortArrayElements(jshortArray, jshort*, jint) {}
     jstring NewStringUTF(const char*) { return nullptr; }
     void SetIntArrayRegion(jintArray, jsize, jsize, const jint*) {}
+    void GetIntArrayRegion(jintArray, jsize, jsize, jint*) {}
     void GetByteArrayRegion(jbyteArray, jsize, jsize, jbyte*) {}
     void SetByteArrayRegion(jbyteArray, jsize, jsize, const jbyte*) {}
     void* GetDirectBufferAddress(jobject) { return nullptr; }

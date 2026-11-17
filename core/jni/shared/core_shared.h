@@ -19,8 +19,10 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <condition_variable>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <sys/stat.h>
 #include <vector>
 
@@ -140,7 +142,7 @@ static inline void blitRowArgbToRgba(uint8_t* dst, const uint32_t* src, uint32_t
 // the first blit so the buffer matches the source size — then the Android
 // hardware compositor handles the upscale to the display resolution for free
 // (GPU-accelerated), instead of the CPU doing per-pixel float scaling.
-static inline void blitToSurface(ANativeWindow* window, std::mutex& windowMtx,
+static inline void blitToSurfaceNow(ANativeWindow* window, std::mutex& windowMtx,
                                   const uint32_t* src, unsigned w, unsigned h,
                                   size_t srcStride,
                                   bool highQualityScaling = false) {
@@ -514,7 +516,7 @@ static inline void xbr4xUpscale(const uint32_t* src, unsigned sw, unsigned sh,
 // do pixel upscaling (XBR/HQX) and direct blit.
 // ---------------------------------------------------------------------------
 
-static inline void applyFilterAndBlit(
+static inline void applyFilterAndBlitNow(
     ANativeWindow* window, std::mutex& windowMtx,
     const uint32_t* src, unsigned width, unsigned height, size_t srcStride,
     int filter,
@@ -529,23 +531,140 @@ static inline void applyFilterAndBlit(
     // CPU path — 2xBR v3.3a (from RetroArch) with int32 blend fixes
     if ((filter == 4 || filter == 7) && canUpscale) {
         xbr2xUpscale(src, width, height, srcStride, xbrBuffer2x);
-        blitToSurface(window, windowMtx, xbrBuffer2x, width * 2, height * 2, width * 2, highQualityScaling);
+        blitToSurfaceNow(window, windowMtx, xbrBuffer2x, width * 2, height * 2, width * 2, highQualityScaling);
     } else if ((filter == 8 || filter == 9) && canUpscale) {
         xbr4xUpscale(src, width, height, srcStride, xbrBuffer4x, xbrMidBuffer);
-        blitToSurface(window, windowMtx, xbrBuffer4x, width * 4, height * 4, width * 4, highQualityScaling);
+        blitToSurfaceNow(window, windowMtx, xbrBuffer4x, width * 4, height * 4, width * 4, highQualityScaling);
     } else if (filter == 5 && canUpscale) {
         hq2x_32_rb(src, (uint32_t)(srcStride * sizeof(uint32_t)),
                    xbrBuffer2x, (uint32_t)(width * 2 * sizeof(uint32_t)),
                    (int)width, (int)height);
-        blitToSurface(window, windowMtx, xbrBuffer2x, width * 2, height * 2, width * 2, highQualityScaling);
+        blitToSurfaceNow(window, windowMtx, xbrBuffer2x, width * 2, height * 2, width * 2, highQualityScaling);
     } else if ((filter == 6 || filter == 10) && canUpscale) {
         hq4x_32_rb(src, (uint32_t)(srcStride * sizeof(uint32_t)),
                    xbrBuffer4x, (uint32_t)(width * 4 * sizeof(uint32_t)),
                    (int)width, (int)height);
-        blitToSurface(window, windowMtx, xbrBuffer4x, width * 4, height * 4, width * 4, highQualityScaling);
+        blitToSurfaceNow(window, windowMtx, xbrBuffer4x, width * 4, height * 4, width * 4, highQualityScaling);
     } else {
-        blitToSurface(window, windowMtx, src, width, height, srcStride, highQualityScaling);
+        blitToSurfaceNow(window, windowMtx, src, width, height, srcStride, highQualityScaling);
     }
+}
+
+// BufferQueue dequeue/post may wait for a 50 Hz television, and software
+// scaling to a 4K window may take longer than a whole emulation frame. Neither
+// belongs on the emulation thread. Keep one pending frame, replacing it with
+// the newest one when presentation falls behind; guest frames/audio still run
+// at the core's own rate. All pixels and the window reference are owned here.
+class LatestFramePresenter {
+public:
+    ~LatestFramePresenter() {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_stopping = true;
+        }
+        m_ready.notify_one();
+        if (m_thread.joinable()) m_thread.join();
+    }
+
+    void submit(ANativeWindow*& window, std::mutex& windowMtx,
+                const uint32_t* src, unsigned width, unsigned height,
+                size_t stride, int filter, bool highQualityScaling) {
+        if (!src || !width || !height || stride < width) return;
+        ANativeWindow* target;
+        {
+            // Read the actual pointer under the same lock as setSurface().
+            std::lock_guard<std::mutex> lock(windowMtx);
+            target = window;
+            if (!target) return;
+            ANativeWindow_acquire(target);
+        }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_thread.joinable()) {
+            m_thread = std::thread([this] { present(); });
+        }
+        m_pending.pixels.resize(static_cast<size_t>(width) * height);
+        for (unsigned y = 0; y < height; ++y) {
+            std::memcpy(m_pending.pixels.data() + static_cast<size_t>(y) * width,
+                        src + y * stride, width * sizeof(uint32_t));
+        }
+        if (m_pending.window) ANativeWindow_release(m_pending.window);
+        m_pending.window = target;
+        m_pending.width = width;
+        m_pending.height = height;
+        m_pending.filter = filter;
+        m_pending.highQualityScaling = highQualityScaling;
+        m_ready.notify_one();
+    }
+
+private:
+    struct Frame {
+        std::vector<uint32_t> pixels;
+        ANativeWindow* window = nullptr;
+        unsigned width = 0, height = 0;
+        int filter = 0;
+        bool highQualityScaling = false;
+        ~Frame() { if (window) ANativeWindow_release(window); }
+    };
+
+    void present() {
+        Frame frame;
+        std::vector<uint32_t> buffer2x, buffer4x, mid;
+        std::mutex renderMutex;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                m_ready.wait(lock, [this] { return m_stopping || m_pending.window; });
+                if (m_stopping) return;
+                // Reuse both input allocations. No renderer/window wait holds
+                // the producer mutex or the core's surface mutex.
+                frame.pixels.swap(m_pending.pixels);
+                std::swap(frame.window, m_pending.window);
+                frame.width = m_pending.width;
+                frame.height = m_pending.height;
+                frame.filter = m_pending.filter;
+                frame.highQualityScaling = m_pending.highQualityScaling;
+            }
+            const size_t count = static_cast<size_t>(frame.width) * frame.height;
+            if (frame.filter == 4 || frame.filter == 5 || frame.filter == 7) {
+                buffer2x.resize(count * 4);
+            } else if (frame.filter >= 6 && frame.filter <= 10) {
+                buffer4x.resize(count * 16);
+                if (frame.filter == 8 || frame.filter == 9) mid.resize(count * 4);
+            }
+            applyFilterAndBlitNow(frame.window, renderMutex, frame.pixels.data(),
+                frame.width, frame.height, frame.width, frame.filter,
+                buffer2x.data(), buffer4x.data(), mid.data(),
+                frame.width, frame.height, frame.highQualityScaling);
+            ANativeWindow_release(frame.window);
+            frame.window = nullptr;
+        }
+    }
+
+    std::mutex m_mutex;
+    std::condition_variable m_ready;
+    Frame m_pending;
+    bool m_stopping = false;
+    std::thread m_thread;
+};
+
+static inline LatestFramePresenter& surfacePresenter() {
+    static LatestFramePresenter presenter;
+    return presenter;
+}
+
+static inline void blitToSurface(ANativeWindow*& window, std::mutex& windowMtx,
+    const uint32_t* src, unsigned width, unsigned height, size_t stride,
+    bool highQualityScaling = false) {
+    surfacePresenter().submit(window, windowMtx, src, width, height, stride,
+                              0, highQualityScaling);
+}
+
+static inline void applyFilterAndBlit(ANativeWindow*& window, std::mutex& windowMtx,
+    const uint32_t* src, unsigned width, unsigned height, size_t stride, int filter,
+    uint32_t*, uint32_t*, uint32_t*, unsigned maxSrcW, unsigned maxSrcH,
+    bool highQualityScaling = false) {
+    surfacePresenter().submit(window, windowMtx, src, width, height, stride,
+        width <= maxSrcW && height <= maxSrcH ? filter : 0, highQualityScaling);
 }
 
 // ---------------------------------------------------------------------------

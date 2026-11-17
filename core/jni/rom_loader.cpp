@@ -592,6 +592,10 @@ int readAudio(int16_t* out, int maxFrames) {
 }
 
 int audioSampleRate() { return s_sampleRate; }
+double videoRefreshRate() {
+    // FCEUX exposes a 16.24 fixed-point rate (NTSC ~60.10 / PAL ~50.01).
+    return static_cast<double>(FCEUI_GetDesiredFPS()) / 16777216.0;
+}
 
 int audioTargetSampleRate() { return s_sampleRate; }  // == core rate (passthrough)
 

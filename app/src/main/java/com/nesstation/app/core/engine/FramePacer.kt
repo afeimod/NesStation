@@ -33,6 +33,11 @@ import java.util.concurrent.locks.LockSupport
  */
 object FramePacer {
 
+    // Each emulation loop has its own clock. Starting a fresh budget at every
+    // iteration accumulates every scheduler oversleep (e.g. 20 ms wakeups
+    // become a permanent 50 fps cap for a 60 fps core on some TV boxes).
+    private val clocks = ThreadLocal.withInitial { FrameDeadline() }
+
     /** Below this remainder we switch from Thread.sleep to parkNanos. */
     private const val SLEEP_THRESHOLD_NS = 2_000_000L
 
@@ -56,8 +61,9 @@ object FramePacer {
      * relative to [startNs]. Same return contract as [pace].
      */
     fun paceTo(startNs: Long, targetFrameNs: Long): Boolean {
-        val deadline = startNs + targetFrameNs
+        val deadline = clocks.get().next(startNs, targetFrameNs)
         while (true) {
+            if (Thread.currentThread().isInterrupted) return false
             val remain = deadline - System.nanoTime()
             if (remain <= 0) return true
             if (remain > SLEEP_THRESHOLD_NS) {
@@ -71,5 +77,22 @@ object FramePacer {
                 LockSupport.parkNanos(remain)
             }
         }
+    }
+}
+
+/** Absolute deadlines with bounded catch-up after a late wakeup. */
+internal class FrameDeadline {
+    private var deadline = 0L
+    private var period = 0L
+
+    fun next(startNs: Long, targetFrameNs: Long): Long {
+        val frameNs = targetFrameNs.coerceAtLeast(1L)
+        // Reset after pause, loading, a speed change or a slow core. Catch up
+        // small scheduling delays without a long burst of emulation frames.
+        deadline = if (period != frameNs || deadline == 0L ||
+            startNs < deadline - frameNs || startNs - deadline > frameNs * 3L
+        ) startNs + frameNs else deadline + frameNs
+        period = frameNs
+        return deadline
     }
 }

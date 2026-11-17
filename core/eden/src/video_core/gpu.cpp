@@ -150,6 +150,17 @@ struct GPU::Impl {
         WaitForSyncOperation(fence);
     }
 
+    bool WaitForIdleFor(std::chrono::milliseconds timeout) {
+        const u64 fence = RequestSyncOperation([] {});
+        gpu_thread.TickGPU(is_async);
+        std::unique_lock lock{sync_request_mutex};
+        // The queued callback owns no caller state: safe even if it executes
+        // after a timeout. Never detach a task that still accesses the guest.
+        return sync_request_cv.wait_for(lock, timeout, [this, fence] {
+            return CurrentSyncRequestFence() >= fence;
+        });
+    }
+
     /// Tick pending requests within the GPU.
     void TickWork() {
         std::unique_lock lck{sync_request_mutex};
@@ -508,6 +519,10 @@ void GPU::NotifyShutdown() {
 
 void GPU::WaitForIdle() {
     impl->WaitForIdle();
+}
+
+bool GPU::WaitForIdleFor(std::chrono::milliseconds timeout) {
+    return impl->WaitForIdleFor(timeout);
 }
 
 void GPU::ObtainContext() {

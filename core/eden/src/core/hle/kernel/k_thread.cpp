@@ -24,6 +24,7 @@
 #include "core/core.h"
 #include "core/cpu_manager.h"
 #include "core/hardware_properties.h"
+#include "core/hle/kernel/global_scheduler_context.h"
 #include "core/hle/kernel/k_condition_variable.h"
 #include "core/hle/kernel/k_handle_table.h"
 #include "core/hle/kernel/k_memory_layout.h"
@@ -1292,7 +1293,12 @@ namespace Kernel {
     // fiber 从此不再被调度（对象可能因残留引用而滞留 —— 惰性且无害）。
     void KThread::SavestateRemoveThread(KernelCore& kernel) {
         // 冻结上下文：无 guest 派发，无并发内核操作。
+        if (this->GetState() == ThreadState::Terminated) return;
         const bool was_started = this->GetState() != ThreadState::Initialized;
+        // Match svcExitThread before any slab storage can be reclaimed.
+        // Leaving this pointer in the global list makes the next shutdown
+        // or scheduler walk dereference a freed thread after repeated loads.
+        kernel.GlobalSchedulerContext().RemoveThread(this);
 
         // 1) 解除当前等待（从等待队列/计时器摘除；PI 等待回指一并清空）。
         if (this->GetState() == ThreadState::Waiting && m_wait_queue != nullptr) {
@@ -1344,6 +1350,12 @@ namespace Kernel {
         }
 
         // 4) StartTermination：状态 Terminated、清理运行记账与调度器残留。
+        if (m_parent != nullptr) {
+            m_parent->GetResourceLimit()->Release(
+                kernel, LimitableResource::ThreadCountMax, 0, 1);
+            m_resource_limit_release_hint = true;
+            m_parent->SavestateDecrementRunningThreadCount();
+        }
         {
             KScopedSchedulerLock sl{kernel};
             this->StartTermination(kernel);
@@ -1366,6 +1378,10 @@ namespace Kernel {
     // 同等的记账：运行计数 +1、取运行引用、状态置 Runnable。
     void KThread::SavestateRecreateRun(KernelCore& kernel) {
         KScopedSchedulerLock sl{kernel};
+        // Pause() suspended the old thread set. Newly created threads did
+        // not exist then and must inherit System suspension before Runnable.
+        // System::Run() releases this flag after the entire restore commits.
+        this->RequestSuspend(kernel, SuspendType::System);
         m_termination_requested.store(false, std::memory_order_relaxed);
         if (KProcess* owner = this->GetOwnerProcess(); owner != nullptr) {
             owner->IncrementRunningThreadCount(kernel);

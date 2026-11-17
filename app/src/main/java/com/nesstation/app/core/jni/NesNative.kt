@@ -71,6 +71,7 @@ object NesNative {
 
     /** Core-reported sample rate (e.g. 44100). 0 before a ROM is loaded. */
     @JvmStatic external fun audioSampleRate(): Int
+    @JvmStatic external fun videoRefreshRate(): Double
 
     /**
      * Deprecated TV-era hook — now returns the core's own sample rate

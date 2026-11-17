@@ -270,14 +270,17 @@
 #include "common/common_funcs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/hardware_properties.h"
+#include "core/hle/kernel/global_scheduler_context.h"
 #include "core/hle/kernel/k_memory_block.h"
 #include "core/hle/kernel/k_memory_manager.h"
 #include "core/hle/kernel/k_page_group.h"
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_page_table_base.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_scoped_resource_reservation.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/result.h"
@@ -314,11 +317,13 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <exception>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -995,14 +1000,23 @@ public:
         // ★ 异步 GPU 排空：投递同步操作并等待 GPU 线程越过栅栏 —— 确保
         //   捕获/写回时 guest 可见内存/NAND 视图不再有在途 GPU 写入
         //   （NVDEC 解码帧回写、半更新的缓冲等）。
-        m_system.GPU().WaitForIdle();
-        m_system.GPU().ObtainContext();
+        try {
+            if (!m_system.GPU().WaitForIdleFor(std::chrono::seconds(5))) {
+                SSLogWarn("freeze: GPU idle timeout; state was not modified");
+                throw std::runtime_error("GPU idle timeout");
+            }
+            m_system.GPU().ObtainContext();
+        } catch (...) {
+            // A throwing constructor has no destructor: undo our Pause here.
+            if (!m_was_paused) m_system.Run();
+            throw;
+        }
     }
 
     ~EmulationFreeze() {
         try {
             m_system.GPU().ReleaseContext();
-            if (m_halt) {
+            if (m_halt || (m_mutating && std::uncaught_exceptions() > 0)) {
                 Session().HaltEmulation(); // 撕裂状态不续跑：干净关停
             } else if (!m_was_paused) {
                 m_system.Run();
@@ -1016,6 +1030,8 @@ public:
         m_halt = true;
     }
 
+    void BeginMutation() { m_mutating = true; }
+
     EmulationFreeze(const EmulationFreeze&) = delete;
     EmulationFreeze& operator=(const EmulationFreeze&) = delete;
 
@@ -1023,6 +1039,7 @@ private:
     Core::System& m_system;
     bool m_was_paused{};
     bool m_halt{};
+    bool m_mutating{};
 };
 
 // ---------------------------------------------------------------------------
@@ -1963,7 +1980,7 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
     std::vector<u8> thread_blob;
     u32 thread_count = 0;
     for (auto& thread : process->GetThreadList()) {
-        if (thread.IsDummyThread()) {
+        if (thread.IsDummyThread() || thread.GetState() == Kernel::ThreadState::Terminated) {
             continue; // HLE 宿主辅助线程，无 guest 寄存器语义
         }
         ThreadMetaV2 meta{};
@@ -3031,7 +3048,8 @@ enum class RestoreOutcome {
 // 回退的主因（游戏运行期间短命工作线程很常见）。
 
 RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
-                               u64 program_id, std::string* err) {
+                               u64 program_id, std::string* err,
+                               EmulationFreeze& freeze) {
     *err = {};
     const auto t0 = NowSteady();
 
@@ -3223,6 +3241,19 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
                 *err = "state.bin thread record has zero id";
                 return RestoreOutcome::Error;
             }
+            if (meta.raw_state > static_cast<u32>(Kernel::ThreadState::Runnable) ||
+                meta.priority < Kernel::Svc::HighestThreadPriority ||
+                meta.priority > Kernel::Svc::LowestThreadPriority ||
+                meta.active_core < 0 ||
+                meta.active_core >= static_cast<s32>(Core::Hardware::NUM_CPU_CORES) ||
+                (meta.thread_handle != 0 &&
+                 ((meta.thread_handle >> 30) != 0 ||
+                  ((meta.thread_handle >> 15) & 0x7fff) == 0 ||
+                  (meta.thread_handle & 0x7fff) >=
+                      system.ApplicationProcess()->GetHandleTable().GetTableSize()))) {
+                *err = "state.bin has invalid thread metadata";
+                return RestoreOutcome::Error;
+            }
             saved_thread_ids.push_back(meta.thread_id);
         }
         std::sort(saved_thread_ids.begin(), saved_thread_ids.end());
@@ -3327,11 +3358,14 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
 
     // ════════════════ 应用阶段（此后内核状态被改动；失败一律 Torn） ════════════════
 
+    // An allocation/filesystem exception during application must not resume a
+    // half-restored guest through the JNI catch-all below.
     Kernel::KProcess* process = system.ApplicationProcess();
     if (process == nullptr) {
         *err = "application process is null";
         return RestoreOutcome::Torn;
     }
+    freeze.BeginMutation();
 
     // ---- 7) ★ v9 全量线程移除（不只是差分） ----
     //      Cemu SavestateRebuildSchedulerAfterRestore 语义：废弃时间线的
@@ -3498,8 +3532,13 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     //      线程恢复的既有语义）。
     {
         u32 recreated = 0;
-        std::vector<Kernel::KThread*> created_threads;
+        std::vector<std::pair<Kernel::KThread*, bool>> created_threads;
         created_threads.reserve(header.thread_count);
+        SCOPE_EXIT {
+            for (auto [thread, started] : created_threads) {
+                thread->Close(system.Kernel());
+            }
+        };
         for (u32 i = 0; i < header.thread_count; ++i) {
             ThreadMetaV2 meta{};
             std::memcpy(&meta, thread_blob.data() + i * kThreadRecordSize, sizeof(meta));
@@ -3507,6 +3546,14 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             std::memcpy(&ctx, thread_blob.data() + i * kThreadRecordSize + sizeof(meta),
                         sizeof(ctx));
 
+            // Match svcCreateThread: destruction releases ThreadCountMax,
+            // so recreation must reserve it too (including repeated loads).
+            Kernel::KScopedResourceReservation reservation(
+                system.Kernel(), process, Kernel::LimitableResource::ThreadCountMax, 1, 0);
+            if (!reservation.Succeeded()) {
+                *err = "thread resource limit reached during restore";
+                return RestoreOutcome::Torn;
+            }
             Kernel::KThread* t =
                 Kernel::KThread::Create(system.Kernel());
             if (t == nullptr) {
@@ -3524,12 +3571,16 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
                 static_cast<uintptr_t>(ctx.r[0]),
                 Kernel::KProcessAddress(meta.stack_top), meta.priority, virt_core, process);
             if (R_FAILED(r)) {
+                system.Kernel().GlobalSchedulerContext().RemoveThread(t);
                 t->Close(system.Kernel());
                 *err = fmt::format("thread recreate failed @ id {:016x}: {:05x}", meta.thread_id,
                                    r.raw);
                 return RestoreOutcome::Torn;
             }
+            reservation.Commit();
             Kernel::KThread::Register(system.Kernel(), t);
+            created_threads.emplace_back(
+                t, meta.raw_state != static_cast<u32>(Kernel::ThreadState::Initialized));
             if (Kernel::KProcessAddress fresh_tls = t->GetTlsAddress();
                 GetInteger(fresh_tls) != 0) {
                 process->DeleteThreadLocalRegion(system.Kernel(), fresh_tls);
@@ -3540,21 +3591,22 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
             //   Initialized 状态，调度器不会碰它，memcpy 完整落地。
             Kernel::Svc::ThreadContext& dst = t->GetContext();
             std::memcpy(&dst, &ctx, sizeof(Kernel::Svc::ThreadContext));
+            t->RequestSuspend(system.Kernel(), Kernel::SuspendType::System);
             if (meta.thread_handle != 0 &&
-                process->GetHandleTable().SavestateRestoreHandle(
+                !process->GetHandleTable().SavestateRestoreHandle(
                     system.Kernel(), static_cast<Kernel::Handle>(meta.thread_handle), t)) {
-                // 句柄表接管对象引用（svc 创建路径的 SCOPE_EXIT Close 同款）
-                t->Close(system.Kernel());
+                *err = fmt::format("thread handle restore failed @ id {:016x}", meta.thread_id);
+                return RestoreOutcome::Torn;
             }
-            // thread_handle == 0（存档时表中无句柄）则保留 Create 引用作
-            // 对象生命周期持有者 —— 无泄漏风险（进程关闭时整体回收）
-            created_threads.push_back(t);
+            // Keep the Create reference until Run takes its running reference,
+            // including detached threads with no guest handle.
             ++recreated;
         }
         // ★ 统一启动：全部线程的上下文/身份/句柄就位后才置 Runnable ——
         //   期间任何线程都不会被调度器调度（Initialized 状态）。
-        for (Kernel::KThread* t : created_threads) {
-            t->SavestateRecreateRun(system.Kernel());
+        for (auto [thread, started] : created_threads) {
+            // Created-but-not-started threads must still wait for svcStartThread.
+            if (started) thread->SavestateRecreateRun(system.Kernel());
         }
         if (recreated > 0) {
             // 线程 ID 计数器前移到存档最大 ID 之上：后续新建线程不会拿到
@@ -3872,7 +3924,7 @@ Java_org_yuzu_yuzu_1emu_NativeLibrary_quickRestoreSlot([[maybe_unused]] JNIEnv* 
                 EmulationFreeze freeze{system};
                 std::string state_err;
                 const RestoreOutcome outcome = RestoreStateBin(system, state_path, program_id,
-                                                               &state_err);
+                                                               &state_err, freeze);
                 switch (outcome) {
                 case RestoreOutcome::Ok:
                     TrimHeap();

@@ -170,8 +170,9 @@ class NesEngine private constructor() : EmulatorEngine, RamCheatEngine {
                     // deadline strategy — far less jitter than raw
                     // Thread.sleep, which measurably reduced micro-stutter.
                     val ff = _ffSpeed
-                    val paced = if (ff > 0) FramePacer.pace(t0, 60 * ff)
-                                else FramePacer.pace(t0, 60)
+                    val hz = NesNative.videoRefreshRate().takeIf { it.isFinite() && it > 1.0 } ?: 60.0
+                    val period = (1_000_000_000.0 / (hz * ff.coerceAtLeast(1))).toLong()
+                    val paced = FramePacer.paceTo(t0, period)
                     if (!paced) break
                 }
             } catch (t: Throwable) {

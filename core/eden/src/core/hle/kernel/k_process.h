@@ -387,6 +387,13 @@ public:
     void IncrementRunningThreadCount(KernelCore& kernel);
     void DecrementRunningThreadCount(KernelCore& kernel);
 
+    // A restore replaces the complete thread set while execution is frozen.
+    // Reaching zero here must not terminate the process being reconstructed.
+    void SavestateDecrementRunningThreadCount() {
+        ASSERT(m_num_running_threads.load() > 0);
+        --m_num_running_threads;
+    }
+
     size_t GetRequiredSecureMemorySizeNonDefault() const {
         if (!this->IsDefaultApplicationSystemResource() && m_system_resource->IsSecureResource()) {
             auto* secure_system_resource = static_cast<KSecureSystemResource*>(m_system_resource);

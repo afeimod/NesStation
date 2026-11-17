@@ -43,6 +43,7 @@ public:
 
     // Core-reported sample rate (0 before load).
     int  audioSampleRate();
+    double videoRefreshRate();
 
     // Target output sample rate for Android AudioTrack (48000 Hz).
     // Audio is resampled from the core's native rate to this rate.
