@@ -1,0 +1,18 @@
+# 行尾符规范 —— 防止 Windows 编辑器再次把可执行脚本写坏成 CRLF
+#
+# 背景：.sh / gradlew 若为 CRLF 行尾，shebang 会变成 "#!/usr/bin/env bash\r"，
+# 在 Linux（GitHub Actions runner）上执行时报：
+#   env: 'bash\r': No such file or directory
+#   Error: Process completed with exit code 127.
+# 此前已实际导致 android-build.yml 的 "Fetch Cemu (Wii U) submodules" 步骤失败，
+# 且 gradlew 同样是 CRLF，会导致后续 "./gradlew" 步骤报同样的错。
+#
+# 说明：属性范围刻意只覆盖项目自有、已修复为 LF 的文件，避免对 core/ 下
+# 大量第三方脚本产生 git 重归一化噪音。如需一并归一化第三方脚本，可执行：
+#   git add --renormalize .
+# 然后 git commit（会把全部 .sh 归一化为 LF，属一次性大提交，非必需）。
+
+# 项目自有 shell 脚本：检出为 LF，提交时自动归一化为 LF
+scripts/*.sh text eol=lf
+server/build.sh text eol=lf
+gradlew text eol=lf
