@@ -259,6 +259,35 @@ public:
         return m_wait_result;
     }
 
+    // ★★ NesStation v12（即时存档修复）：SVC 在途跟踪 ★★
+    // PhysicalCore 的用户态 SVC 异常入口在 Kernel::Svc::Call 前记录「哪条
+    // SVC 正在此线程内执行」，SVC 返回后清除。即时存档捕获线程寄存器组
+    // 时据此判定该线程的等待是否【可恢复】（resumable）：
+    //   · 在途 SVC ∈ 白名单（SleepThread / WaitSynchronization /
+    //     CancelSynchronization / ArbitrateLock / WaitProcessWideKeyAtomic /
+    //     WaitForAddress）→ 存档侧把 PC 回拨 4 字节指向 SVC 指令本身，
+    //     读档用 InitializeUserThread(entry = 存档 PC) 从 SVC 指令重入，
+    //     等待按存档时刻参数（X0-X7 随 ThreadContext 落盘）自然重建；
+    //   · 白名单之外 / 未记录 SVC 却处于 Waiting 的线程一律拒绝存档
+    //     （retry saving）—— v11 捕获不可恢复等待正是读档闪退/失败的
+    //     根因。
+    void SavestateBeginSvc(u32 svc_id) {
+        m_savestate_pending_svc = static_cast<u8>(svc_id);
+        m_savestate_svc_inflight = 1;
+    }
+
+    void SavestateEndSvc() {
+        m_savestate_svc_inflight = 0;
+    }
+
+    u32 SavestateGetPendingSvc() const {
+        return m_savestate_pending_svc;
+    }
+
+    bool SavestateSvcInflight() const {
+        return m_savestate_svc_inflight != 0;
+    }
+
     /*
      * Returns the Thread Local Storage address of the current thread
      * @returns Address of the thread's TLS
@@ -926,6 +955,9 @@ private:
     u32 m_suspend_allowed_flags{};
     s32 m_synced_index{};
     Result m_wait_result{ResultSuccess};
+    // ★ NesStation v12：SVC 在途跟踪（即时存档 resumable-waits 判定用）
+    u8 m_savestate_pending_svc{};
+    u8 m_savestate_svc_inflight{};
     s32 m_base_priority{};
     s32 m_physical_ideal_core_id{};
     s32 m_virtual_ideal_core_id{};

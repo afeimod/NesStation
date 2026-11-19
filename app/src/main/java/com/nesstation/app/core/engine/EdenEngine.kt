@@ -1097,7 +1097,15 @@ class EdenEngine private constructor() : EmulatorEngine, EdenCoreEngine,
                     false
                 }
                 else -> {
-                    lastErrorText = "存档失败（核心返回码 $r）"
+                    // ★ v12：存档侧校验拒绝（RESULT_ERROR_IO=4：线程等待可恢复性 /
+                    //   IPC 静默 / GPU·display 可用门）多为瞬态 —— 原因见 logcat
+                    //   "EdenSaveState" 标签的 "capture failed: {原因}"。引导玩家
+                    //   稍后重试，而非误判为永久失败。
+                    lastErrorText = if (r == NativeLibrary.RESULT_ERROR_IO) {
+                        "存档失败（状态未就绪，请稍后重试存档）"
+                    } else {
+                        "存档失败（核心返回码 $r）"
+                    }
                     false
                 }
             }

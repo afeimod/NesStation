@@ -152,7 +152,16 @@ void PhysicalCore::RunThread(KernelCore& kernel, Kernel::KThread* thread) {
         // Handle system calls.
         if (supervisor_call) {
             // Perform call.
-            Svc::Call(system, interface->GetSvcNumber());
+            // ★ NesStation v12（即时存档修复）：SVC 在途跟踪 —— 记录
+            //   「该线程正停在这条 SVC 里」，Svc::Call 返回（阻塞型 SVC
+            //   被唤醒/立即完成）后清除。native_savestate.cpp 捕获线程
+            //   寄存器组时据此判定等待可恢复性（resumable waits）：
+            //   白名单 SVC 的等待读档后从 SVC 指令重入自然重建；
+            //   其余等待状态拒绝存档（retry saving）。
+            const u32 svc_id = interface->GetSvcNumber();
+            thread->SavestateBeginSvc(svc_id);
+            Svc::Call(system, svc_id);
+            thread->SavestateEndSvc();
             return;
         }
 

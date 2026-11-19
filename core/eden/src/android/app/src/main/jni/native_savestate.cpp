@@ -1,9 +1,50 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v11 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生实现 v12 ★★★
 //
-// v11（本轮）：读档可靠性收尾 + 存档提速的保底 —— 两处根因修复：
+// v12（本轮，工作版 so 逆向还原）：即时存档/读档「闪退 + 失败」根因修复
+//   —— 线程等待可恢复性（resumable waits）全链路：
+//
+//   根因（v11）：捕获线程寄存器组时不区分等待可恢复性 —— 等待中的线程
+//   以「SVC 已返回」姿态被写盘（PC = svc 返回点、X0 = 唤醒前的垃圾值、
+//   内核侧等待从未重挂）。读档重建后该线程带着垃圾返回值从 SVC 返回点
+//   假性返回（或悬空等待），内核/游戏状态机错乱 → 闪退；nvmap/显示侧
+//   连锁撕裂 → 读档失败。即用户反馈的「即时存档和读取即时存档闪退和
+//   失败」。
+//
+//   修复（与工作版 libyuzu-android.so 逐条语义对齐）：
+//   ① KThread 增 SVC 在途跟踪（k_thread.h/physical_core.cpp）：用户态
+//      SVC 异常入口记录「哪条 SVC 正在此线程内执行」，SVC 返回后清除；
+//   ② 存档（本文件）——
+//      · IPC 静默门：在途 SendSyncRequest/WithUserBuffer 的线程等其
+//        离开 Waiting（≤2s；HLE 服务端在宿主线程上继续应答），超时
+//        拒绝存档（retry saving）；
+//      · GPU/display 状态可用门：nvdrv 状态不可用直接拒绝存档
+//        （retry saving），不再产出「能存不能读」的槽位；
+//      · 线程可恢复性校验：仅捕获【可恢复】的等待 —— 在途 SVC ∈ 白名单
+//        {SleepThread / WaitSynchronization / CancelSynchronization /
+//         ArbitrateLock / WaitProcessWideKeyAtomic / WaitForAddress}，
+//        且 PC-4 处确为与在途号一致的 svc 指令；PC 回拨 4 字节随档，
+//        condvar 等待须仍在树中（重取互斥锁瞬态拒绝）、地址仲裁等待须
+//        已注册（未注册瞬态拒绝）；Waiting 却无在途 SVC 的线程一律
+//        拒绝。全部拒绝均带「; retry saving」语义（前端提示重试）；
+//   ③ state.bin 格式 v8：ThreadMetaV2.reserved → resume_flags（在途
+//      SVC 号 + 注册态标志），header.flags 增 kStateFlagHasResumableWaits；
+//      v6/v7 旧档读档侧按 TooOld 拒绝并提示重新存档（旧档正是崩源）；
+//   ④ 读档（本文件）：resume_flags 合法性校验（invalid thread resume
+//      flags → Error；缺 resumable waits/display queues 段 → TooOld）；
+//      线程重建以存档 PC（已回拨至 SVC 指令）为入口 —— InitializeUser
+//      Thread → SVC 重入 → 等待以存档时刻参数（X0-X7 已落盘）自然重建
+//      —— 与 Cemu 的「重入式等待恢复」同构。
+//
+//   说明：工作版 so 另含显示队列（display queue）状态随档/回放段
+//   （BufferQueueCore::SaveState 等）。本版以「GPU/display 可用门 +
+//   读档后无帧看门狗 → forceLegacyRestore（自动回落重启恢复）」覆盖同
+//   一故障面（黑屏/无帧场景安全回落，不闪退）；完整显示队列回放作为
+//   后续增强项（见 FIX_NOTES.md）。
+//
+// v11（历史）：读档可靠性收尾 + 存档提速的保底 —— 两处根因修复：
 //
 //   ① 「有时候重启游戏 / 有时候读档失败」的残留根因（nvmap 内核侧
 //      DeviceShared 簿记不对称）：nvmap::IocAlloc 每次分配都会给句柄
@@ -372,11 +413,36 @@ constexpr char kStateMagic[4] = {'E', 'D', 'S', 'S'};
 // 现存 v6 槽位无需重新存档；旧版核心读到 v7 会拒（TooOld，重新存档即可）
 constexpr u32 kStateVersion = 6;
 constexpr u32 kStateVersionSegmented = 7;
+// ★ v12：resumable waits —— 线程记录含 SVC 在途/resume 标志，等待中的
+// 线程 PC 回拨至 SVC 指令随档（读档从 SVC 重入重建等待）。v6/v7 旧档
+// （无 waits 语义，v11 捕获的等待线程读档即崩）读档侧 TooOld。
+constexpr u32 kStateVersionResumable = 8;
 constexpr size_t kPageSize = 4 * 1024; // 4KB，≤ 宿主页表粒度
 
 // v3/v4：nvdrv GPU 状态段存在标志（GMMU 映射 + nvmap 句柄表随档保存）。
 // 没有该段的存档原地恢复必拒（宿主 GPU 状态与回滚内存不一致 → 崩溃）。
 constexpr u32 kStateFlagHasNvdrv = 1u << 0;
+// ★ v12：线程 resumable-waits 段有效（全部线程经捕获期可恢复性校验，
+// 等待经 PC 回拨可从 SVC 重入重建）。缺失 → TooOld（重新存档升级）。
+constexpr u32 kStateFlagHasResumableWaits = 1u << 1;
+
+// ★ v12：ThreadMetaV2.resume_flags 位定义
+constexpr u32 kResumeSvcNumMask = 0xFFu;           // bits 0-7：在途 SVC 号
+constexpr u32 kResumeFlagSvcInflight = 1u << 8;    // SVC 在途（PC 已回拨）
+constexpr u32 kResumeFlagCondvarTree = 1u << 9;    // condvar 等待且仍在树中
+constexpr u32 kResumeFlagAddrArbTree = 1u << 10;   // 地址仲裁等待且已注册
+
+// ★ v12：可恢复等待的 SVC 白名单（SvcId 数值；见 core/hle/kernel/svc.h）。
+//   这六条 SVC 的等待全部可由「PC 回拨 + SVC 重入」以存档时刻参数重建。
+constexpr u32 kSvcSleepThread = 0x0B;               // SleepThread
+constexpr u32 kSvcWaitSynchronization = 0x18;        // WaitSynchronization
+constexpr u32 kSvcCancelSynchronization = 0x19;      // CancelSynchronization
+constexpr u32 kSvcArbitrateLock = 0x1A;              // ArbitrateLock
+constexpr u32 kSvcWaitProcessWideKeyAtomic = 0x1C;   // WaitProcessWideKeyAtomic
+constexpr u32 kSvcWaitForAddress = 0x34;             // WaitForAddress
+//   IPC 型在途 SVC（静默门等待其完成；白名单之外的其余拒绝）：
+constexpr u32 kSvcSendSyncRequest = 0x21;            // SendSyncRequest
+constexpr u32 kSvcSendSyncRequestWithUserBuffer = 0x22; // SendSyncRequestWithUserBuffer
 
 // BlockDescV5.flags
 constexpr u32 kBlockFlagHasPg = 1u << 0; // 有 PARun（可精确重映射）
@@ -489,7 +555,13 @@ struct ThreadMetaV2 {
     u32 thread_handle; // v6：捕获时的句柄值（guest 互斥锁字/TCB 里存有句柄）
     s32 active_core;
     s32 priority;
-    u32 reserved;
+    // ★ v12（原 reserved）：resumable waits 标志 ——
+    //   bits[7:0]  在途 SVC 号（0 = 无在途）
+    //   bit 8      SVC 在途（等待中的线程 PC 已回拨 4 字节至 svc 指令，
+    //              读档从 SVC 重入重建等待）
+    //   bit 9      condvar 等待且仍在树中（捕获期已校验）
+    //   bit 10     地址仲裁等待且已注册（捕获期已校验）
+    u32 resume_flags;
 };
 static_assert(sizeof(ThreadMetaV2) == 56);
 
@@ -1971,10 +2043,51 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
     Core::Memory::Memory& memory = system.ApplicationMemory();
 
     // 3) nvdrv 段 + 线程记录（先备好，布局表/内容表/帧一次顺序写出）
+
+    // ★★ v12：IPC 静默门（工作版 so 语义）★★
+    // 在途 SendSyncRequest / SendSyncRequestWithUserBuffer 的线程等其
+    // 离开 Waiting（HLE 服务端在宿主线程上继续应答 —— 冻结下 guest 不执
+    // 行，但等待状态可迁移），最多 2s；仍未静默 → 拒绝存档（retry
+    // saving）。v11 缺失本门：捕获半途 IPC → 读档重建的会话两侧状态错
+    // 位 → 闪退/读档失败。
+    {
+        const auto ipc_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        for (auto& thread : process->GetThreadList()) {
+            if (thread.IsDummyThread() ||
+                thread.GetState() == Kernel::ThreadState::Terminated) {
+                continue;
+            }
+            if (!thread.SavestateSvcInflight()) {
+                continue;
+            }
+            const u32 pending_svc = thread.SavestateGetPendingSvc();
+            if (pending_svc != kSvcSendSyncRequest &&
+                pending_svc != kSvcSendSyncRequestWithUserBuffer) {
+                continue;
+            }
+            while (thread.GetState() == Kernel::ThreadState::Waiting) {
+                if (std::chrono::steady_clock::now() >= ipc_deadline) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (thread.GetState() == Kernel::ThreadState::Waiting) {
+                *err = "pending IPC did not quiesce; retry saving";
+                return false;
+            }
+        }
+    }
+
+    // ★★ v12：GPU/display 状态可用门（工作版 so 语义）★★
+    // nvdrv 状态（GMMU 映射 + nvmap 句柄表）不可捕获时直接拒绝存档
+    // （retry saving），不再产出「能存不能读」的槽位（v11 的 lenient 行
+    // 为会在读档侧以 lacks nvdrv 拒绝，浪费玩家时间）。
     std::vector<u8> nvdrv_blob;
     const bool nvdrv_ok = CaptureNvdrvState(system, nvdrv_blob);
     if (!nvdrv_ok) {
-        SSLogWarn("capture: nvdrv GPU state unavailable, in-place restore disabled for this slot");
+        *err = "GPU/display state unavailable; retry saving";
+        return false;
     }
 
     std::vector<u8> thread_blob;
@@ -1996,9 +2109,92 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
             static_cast<u32>(process->GetHandleTable().SavestateFindHandle(&thread));
         meta.active_core = thread.GetActiveCore();
         meta.priority = thread.GetPriority();
-        meta.reserved = 0;
+        meta.resume_flags = 0;
 
-        const Kernel::Svc::ThreadContext& ctx = thread.GetContext();
+        // ★★ v12：线程等待可恢复性校验（工作版 so 语义，逐条对应）★★
+        // 仅捕获【可恢复】状态；不可恢复瞬态一律拒绝存档（retry saving）
+        // —— v11 无差别捕获正是「读档闪退/失败」的根因：
+        //   a) 等待中的线程被以「SVC 已返回」姿态写盘（PC = svc 返回点、
+        //      X0 = 垃圾）→ 重建后假性返回 → 游戏状态机错乱 → 闪退；
+        //   b) condvar 重取互斥锁瞬态 / 地址仲裁未注册瞬态 → 等待语义已
+        //      推进到内核内部中间态，PC 回拨重入无法重建 → 拒绝；
+        //   c) Waiting 却无在途 SVC（内核内部等待）→ 无重入依据 → 拒绝。
+        Kernel::Svc::ThreadContext ctx = thread.GetContext();
+        const bool svc_inflight = thread.SavestateSvcInflight();
+        const u32 pending_svc = thread.SavestateGetPendingSvc();
+        if (!svc_inflight) {
+            if ((meta.raw_state & static_cast<u32>(Kernel::ThreadState::Mask)) ==
+                static_cast<u32>(Kernel::ThreadState::Waiting)) {
+                *err = fmt::format(
+                    "waiting thread {} has no resumable SVC; retry saving",
+                    thread.GetThreadId());
+                return false;
+            }
+        } else {
+            const bool is_ipc_svc = pending_svc == kSvcSendSyncRequest ||
+                                    pending_svc == kSvcSendSyncRequestWithUserBuffer;
+            const bool whitelisted = pending_svc == kSvcSleepThread ||
+                                     pending_svc == kSvcWaitSynchronization ||
+                                     pending_svc == kSvcCancelSynchronization ||
+                                     pending_svc == kSvcArbitrateLock ||
+                                     pending_svc == kSvcWaitProcessWideKeyAtomic ||
+                                     pending_svc == kSvcWaitForAddress;
+            const bool waiting = (meta.raw_state &
+                                  static_cast<u32>(Kernel::ThreadState::Mask)) ==
+                                 static_cast<u32>(Kernel::ThreadState::Waiting);
+            if (waiting) {
+                if (!whitelisted && !is_ipc_svc) {
+                    *err = fmt::format(
+                        "thread {} has unsupported pending SVC {:#x}; retry saving",
+                        thread.GetThreadId(), pending_svc);
+                    return false;
+                }
+                // 重入依据：PC-4 处必须是一条与在途号一致的 svc 指令
+                if (ctx.pc < 4 ||
+                    !memory.IsValidVirtualAddress(
+                        Common::ProcessAddress{ctx.pc - 4})) {
+                    *err = fmt::format(
+                        "pending SVC instruction is not mapped (thread {})",
+                        thread.GetThreadId());
+                    return false;
+                }
+                const u32 insn =
+                    memory.Read32(Common::ProcessAddress{ctx.pc - 4});
+                if (insn != (0xD4000000u | (pending_svc << 5))) {
+                    *err = fmt::format(
+                        "pending SVC instruction does not match the saved PC (thread {})",
+                        thread.GetThreadId());
+                    return false;
+                }
+                if (pending_svc == kSvcWaitProcessWideKeyAtomic) {
+                    if (!thread.IsWaitingForConditionVariable()) {
+                        // 已被唤醒、正处互斥锁重取阶段的瞬态 —— 重入无法重建
+                        *err = fmt::format(
+                            "condition waiter {} is reacquiring its mutex; retry saving",
+                            thread.GetThreadId());
+                        return false;
+                    }
+                    meta.resume_flags |= kResumeFlagCondvarTree;
+                } else if (pending_svc == kSvcWaitForAddress) {
+                    if (!thread.IsWaitingForAddressArbiter()) {
+                        *err = fmt::format(
+                            "address waiter {} is not registered; retry saving",
+                            thread.GetThreadId());
+                        return false;
+                    }
+                    meta.resume_flags |= kResumeFlagAddrArbTree;
+                }
+                // ★ PC 回拨至 svc 指令本身：读档重建的线程从 SVC 重入，
+                //   等待以存档时刻参数（X0-X7 已随 ThreadContext 落盘）
+                //   自然重建 —— resumable waits 的核心机制。
+                ctx.pc -= 4;
+                meta.resume_flags |= kResumeFlagSvcInflight |
+                                    (pending_svc & kResumeSvcNumMask);
+            }
+            // 非 Waiting 的在途线程（Runnable 瞬态）：寄存器原样，SVC 返回
+            // 路径由内核写回 X0 —— 不回拨、不记在途位。
+        }
+
         thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&meta),
                            reinterpret_cast<const u8*>(&meta) + sizeof(meta));
         thread_blob.insert(thread_blob.end(), reinterpret_cast<const u8*>(&ctx),
@@ -2022,15 +2218,16 @@ bool CaptureStateBin(Core::System& system, const fs::path& state_path, u64 progr
 
         StateHeaderV5 header{};
         std::memcpy(header.magic, kStateMagic, sizeof(kStateMagic));
-        // ★ v7：分段内容编码（零页跳过）——旧版核心读到 v7 会拒
-        //   （TooOld，重新存档即可）；本侧同时接受 v6 旧档
-        header.version = kStateVersionSegmented;
+        // ★ v12：resumable waits —— 线程记录含 resume_flags，等待中的线程
+        //   PC 已回拨至 svc 指令；v6/v7 旧核心读到 v8 会拒（TooOld，重新
+        //   存档升级；旧档正是 v11 时代读档崩溃的来源，本侧不再兼容读入）
+        header.version = kStateVersionResumable;
         header.program_id = program_id;
         header.timestamp = static_cast<u64>(std::time(nullptr));
         header.block_count = static_cast<u32>(saved_blocks.size());
         header.content_count = content_count;
         header.thread_count = thread_count;
-        header.flags = nvdrv_ok ? kStateFlagHasNvdrv : 0;
+        header.flags = kStateFlagHasNvdrv | kStateFlagHasResumableWaits;
         header.total_uncompressed = total_uncompressed;
         header.nvdrv_size = nvdrv_blob.size();
         header.layout_digest = digest;
@@ -3078,13 +3275,27 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         *err = "bad state.bin magic";
         return RestoreOutcome::Error;
     }
-    if (header.version != kStateVersion && header.version != kStateVersionSegmented) {
-        *err = fmt::format("unsupported state.bin version {} (re-save to upgrade)",
-                           header.version);
+    // ★ v12：读档要求 v8（resumable waits）—— 线程记录含等待重入语义。
+    //   v6/v7 旧档的线程记录没有 waits 语义（v11 无差别捕获的等待线程
+    //   读档即崩），按 TooOld 如实拒绝并提示重新存档（工作版 so 同款：
+    //   "state.bin lacks resumable waits/display queues - re-save to
+    //   upgrade"）。
+    if (header.version != kStateVersionResumable) {
+        if (header.version == kStateVersion ||
+            header.version == kStateVersionSegmented) {
+            *err = "state.bin lacks resumable waits/display queues - re-save to upgrade";
+        } else {
+            *err = fmt::format("unsupported state.bin version {} (re-save to upgrade)",
+                              header.version);
+        }
         return RestoreOutcome::TooOld;
     }
-    // v7：分段内容编码（DATA/ZERO/END）；v6：整块单帧（旧档兼容）
-    const bool segmented = header.version >= kStateVersionSegmented;
+    if ((header.flags & kStateFlagHasResumableWaits) == 0) {
+        *err = "state.bin lacks resumable waits/display queues - re-save to upgrade";
+        return RestoreOutcome::TooOld;
+    }
+    // v7+：分段内容编码（DATA/ZERO/END）。v8 恒为分段编码。
+    const bool segmented = true;
     if (header.program_id != program_id) {
         *err = fmt::format("program id mismatch: slot {:016x} vs current {:016x}",
                            header.program_id, program_id);
@@ -3253,6 +3464,30 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
                       system.ApplicationProcess()->GetHandleTable().GetTableSize()))) {
                 *err = "state.bin has invalid thread metadata";
                 return RestoreOutcome::Error;
+            }
+            // ★ v12：resume_flags 合法性校验（工作版 so 语义 ——
+            //   "state.bin has invalid thread resume flags"）：
+            //   · 在途位 → SVC 号必须在白名单（可重入）；
+            //   · 无在途位 → 该线程不得处于 Waiting（无法重入，捕获期
+            //     本应拒绝，出现即档损）。
+            {
+                const bool inflight =
+                    (meta.resume_flags & kResumeFlagSvcInflight) != 0;
+                const u32 svc = meta.resume_flags & kResumeSvcNumMask;
+                const bool whitelisted = svc == kSvcSleepThread ||
+                                         svc == kSvcWaitSynchronization ||
+                                         svc == kSvcCancelSynchronization ||
+                                         svc == kSvcArbitrateLock ||
+                                         svc == kSvcWaitProcessWideKeyAtomic ||
+                                         svc == kSvcWaitForAddress;
+                const bool waiting = (meta.raw_state &
+                                      static_cast<u32>(Kernel::ThreadState::Mask)) ==
+                                     static_cast<u32>(Kernel::ThreadState::Waiting);
+                if ((inflight && (svc == 0 || !whitelisted)) ||
+                    (!inflight && waiting)) {
+                    *err = "state.bin has invalid thread resume flags";
+                    return RestoreOutcome::Error;
+                }
             }
             saved_thread_ids.push_back(meta.thread_id);
         }
