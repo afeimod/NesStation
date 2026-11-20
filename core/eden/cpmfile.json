@@ -227,6 +227,9 @@
     },
     "reshade": {
         "hash": "6fc9b39821ca6e2d91160f05846b3a42159fec759f5d6fba91d1a57801a1bdaf6047740578c136f0b1a60a9c29ad160d87dbfe0dbfbcdf6ea879a8a078377b8c",
+        "patches": [
+            "0001-from-chars-fallback.patch"
+        ],
         "repo": "crosire/reshade",
         "version": "v6.8.0"
     },
