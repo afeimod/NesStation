@@ -25,6 +25,7 @@
 #include "core/hle/service/nvnflinger/pixel_format.h"
 #include "core/hle/service/nvnflinger/status.h"
 #include "core/hle/service/nvnflinger/window.h"
+#include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
 
 namespace Service::android {
 
@@ -51,6 +52,28 @@ public:
 
     void PushHistory(u64 frame_number, s64 queue_time, s64 presentation_time, BufferState state);
     void UpdateHistory(u64 frame_number, BufferState state);
+
+    struct SavedSlot {
+        NvGraphicBuffer buffer{};
+        u64 frame_number{};
+        u32 state{};
+        u32 flags{};
+    };
+    struct SavedState {
+        std::array<SavedSlot, BufferQueueDefs::NUM_BUFFER_SLOTS> slots{};
+        u64 frame_counter{};
+        s32 override_max_buffer_count{};
+        s32 default_max_buffer_count{};
+        u32 default_width{};
+        u32 default_height{};
+        u32 default_buffer_format{};
+        u32 consumer_usage_bit{};
+        u32 transform_hint{};
+        u32 flags{};
+    };
+    bool SaveState(SavedState& state) const;
+    bool ValidateState(const SavedState& state) const;
+    void RestoreState(const SavedState& state);
 
 private:
     void SignalDequeueCondition();

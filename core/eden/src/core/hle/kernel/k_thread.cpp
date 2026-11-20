@@ -245,6 +245,9 @@ namespace Kernel {
         StackParameters& sp = this->GetStackParameters();
         sp.cur_thread = this;
         sp.disable_count = 1;
+        sp.is_calling_svc = false;
+        m_savestate_restore_condition_wait = false;
+        m_savestate_restore_address_wait = false;
         this->SetInExceptionHandler();
 
         // Set thread ID.

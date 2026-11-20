@@ -271,6 +271,7 @@ void KConditionVariable::Signal(u64 cv_key, s32 count) {
 Result KConditionVariable::Wait(KProcessAddress addr, u64 key, u32 value, s64 timeout) {
     // Prepare to wait.
     KThread* cur_thread = GetCurrentThreadPointer(m_system.Kernel());
+    const bool restoring_wait = cur_thread->SavestateConsumeConditionWait();
     KHardwareTimer* timer{};
     ThreadQueueImplForKConditionVariableWaitConditionVariable wait_queue(m_system.Kernel(),
                                                                          std::addressof(m_tree));
@@ -284,8 +285,9 @@ Result KConditionVariable::Wait(KProcessAddress addr, u64 key, u32 value, s64 ti
             R_THROW(ResultTerminationRequested);
         }
 
-        // Update the value and process for the next owner.
-        {
+        // The saved wait already released its mutex. Re-registering must not
+        // release a mutex that another saved thread now owns.
+        if (!restoring_wait) {
             // Remove waiter thread.
             bool has_waiters{};
             KThread* next_owner_thread =
@@ -316,6 +318,8 @@ Result KConditionVariable::Wait(KProcessAddress addr, u64 key, u32 value, s64 ti
                 slp.CancelSleep();
                 R_THROW(ResultInvalidCurrentMemory);
             }
+        } else {
+            WriteToUser(m_system.Kernel(), key, 1);
         }
 
         // If timeout is zero, time out.

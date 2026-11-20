@@ -31,6 +31,10 @@
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
+
 #if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
 #include <adrenotools/bcenabler.h>
 #include <android/api-level.h>
@@ -986,6 +990,12 @@ bool Device::ShouldBoostClocks() const {
 }
 
 bool Device::HasTimelineSemaphore() const {
+#ifdef __ANDROID__
+    char emulator[PROP_VALUE_MAX]{};
+    if (__system_property_get("ro.kernel.qemu", emulator) > 0 && emulator[0] == '1') {
+        return false;
+    }
+#endif
     if (GetDriverID() == VK_DRIVER_ID_MESA_TURNIP) {
         return false;
     }

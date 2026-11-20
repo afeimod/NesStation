@@ -1,30 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2026 NesStation / Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生槽位契约 v4 ★★★
+// ★★★ NesStation 集成：Switch（Eden）核心即时存档 —— 原生槽位契约 v3 ★★★
 //
-// v12 更新（详见 native_savestate.cpp 文件头 —— 工作版 so 逆向还原）：
-//   · 即时存档「闪退/失败」根因修复 —— 线程等待可恢复性（resumable
-//     waits）全链路：
-//     - KThread SVC 在途跟踪（k_thread.h + physical_core.cpp：SVC 入口
-//       记录、返回清除）；
-//     - 存档侧：IPC 静默门（在途 SendSyncRequest ≤2s 等待完成，超时拒绝
-//       retry saving）+ GPU/display 状态可用门（nvdrv 不可捕获即拒绝，
-//       不再产出能存不能读的槽位）+ 线程可恢复性校验（白名单 SVC 的等待
-//       经「PC 回拨 4 字节至 svc 指令」随档；condvar 重取互斥锁瞬态 /
-//       地址仲裁未注册瞬态 / 无在途 SVC 的 Waiting 一律拒绝 —— 全部带
-//       retry saving 语义，杜绝 v11 无差别捕获产出坏档）；
-//     - state.bin 格式 v8：ThreadMetaV2.reserved → resume_flags（在途
-//       SVC 号 + 注册态标志位）；header.flags 增 kStateFlagHasResumableWaits；
-//     - 读档侧：resume_flags 合法性校验（invalid thread resume flags →
-//       Error）；v6/v7 旧档（无 waits 语义，正是 v11 读档崩溃来源）按
-//       TooOld 拒绝并提示重新存档（"lacks resumable waits/display
-//       queues - re-save to upgrade"）；线程重建以存档 PC（已回拨至
-//       SVC 指令）为入口 → SVC 重入 → 等待以存档时刻参数自然重建。
-//   · 结果码契约不变（RESULT_* 0..8；存档侧校验拒绝 = RESULT_ERROR_IO
-//     + logcat 原因，前端提示重试）。
-//
-// v11 更新（历史）：
+// v11 更新（详见 native_savestate.cpp 文件头）：
 //   · nvmap Teardown/Replay 补上内核侧 DeviceShared 的对称解锁/重锁
 //     （IocFree/IocAlloc 同款）—— v10 的「保留快路径」（与存档逐块
 //     全等 → 纯内容覆盖，Cemu 语义）此前因瞬态属性位残留永远无法命中，

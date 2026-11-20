@@ -9,6 +9,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
+#include <vector>
 
 #include "core/hle/service/vi/conductor.h"
 #include "core/hle/service/vi/display_list.h"
@@ -40,6 +42,10 @@ public:
     ~Container();
 
     void OnTerminate();
+    bool SaveDisplayState(std::vector<u8>& data);
+    bool ValidateDisplayState(std::span<const u8> data);
+    bool RestoreDisplayState(std::span<const u8> data);
+    void SetCompositionPaused(bool paused);
 
     SharedBufferManager* GetSharedBufferManager();
 
@@ -91,6 +97,7 @@ private:
     std::optional<SharedBufferManager> m_shared_buffer_manager{};
     std::optional<Conductor> m_conductor{};
     bool m_is_shut_down{};
+    bool m_composition_paused{};
 };
 
 } // namespace Service::VI

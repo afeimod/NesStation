@@ -16,6 +16,26 @@
 
 namespace Service::VI {
 
+bool Container::SaveDisplayState(std::vector<u8>& data) {
+    std::scoped_lock lk{m_lock};
+    return m_surface_flinger->SaveDisplayState(data);
+}
+
+void Container::SetCompositionPaused(bool paused) {
+    std::scoped_lock lk{m_lock};
+    m_composition_paused = paused;
+}
+
+bool Container::ValidateDisplayState(std::span<const u8> data) {
+    std::scoped_lock lk{m_lock};
+    return m_surface_flinger->ValidateDisplayState(data);
+}
+
+bool Container::RestoreDisplayState(std::span<const u8> data) {
+    std::scoped_lock lk{m_lock};
+    return m_surface_flinger->RestoreDisplayState(data);
+}
+
 Container::Container(Core::System& system) {
     m_displays.CreateDisplay(DisplayName{"Default"});
     m_displays.CreateDisplay(DisplayName{"External"});
@@ -274,6 +294,7 @@ Result Container::CloseLayerLocked(u64 layer_id) {
 bool Container::ComposeOnDisplay(s32* out_swap_interval, f32* out_compose_speed_scale,
                                  u64 display_id) {
     std::scoped_lock lk{m_lock};
+    if (m_composition_paused) return false;
     return m_surface_flinger->ComposeDisplay(out_swap_interval, out_compose_speed_scale,
                                              display_id);
 }

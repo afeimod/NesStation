@@ -15,6 +15,7 @@
 #include "common/common_types.h"
 #include "core/hle/service/nvnflinger/binder.h"
 #include "core/hle/service/nvnflinger/buffer_queue_defs.h"
+#include "core/hle/service/nvnflinger/buffer_queue_core.h"
 #include "core/hle/service/nvnflinger/status.h"
 
 namespace Service::android {
@@ -33,6 +34,11 @@ public:
     Status Connect(std::shared_ptr<IConsumerListener> consumer_listener, bool controlled_by_app);
     Status Disconnect();
     Status GetReleasedBuffers(u64* out_slot_mask);
+    bool SaveState(BufferQueueCore::SavedState& state) const { return core->SaveState(state); }
+    bool ValidateState(const BufferQueueCore::SavedState& state) const {
+        return core->ValidateState(state);
+    }
+    void RestoreState(const BufferQueueCore::SavedState& state) { core->RestoreState(state); }
 
     void Transact(u32 code, std::span<const u8> parcel_data, std::span<u8> parcel_reply,
                   u32 flags) override;

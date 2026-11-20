@@ -37,9 +37,6 @@
         "options": [
             "CPP_JWT_USE_VENDORED_NLOHMANN_JSON OFF"
         ],
-        "patches": [
-            "0001-fix-missing-decl.patch"
-        ],
         "repo": "arun11299/cpp-jwt",
         "version": "7f24eb4c32"
     },
@@ -106,9 +103,6 @@
         "options": [
             "HTTPLIB_REQUIRE_OPENSSL ON",
             "HTTPLIB_DISABLE_MACOSX_AUTOMATIC_ROOT_CERTIFICATES ON"
-        ],
-        "patches": [
-            "0001-mingw.patch"
         ],
         "repo": "yhirose/cpp-httplib",
         "version": "v0.46.0"
@@ -215,10 +209,6 @@
             "OPUS_PRESUME_NEON ON"
         ],
         "package": "Opus",
-        "patches": [
-            "0001-disable-clang-runtime-neon.patch",
-            "0002-no-install.patch"
-        ],
         "repo": "xiph/opus",
         "version": "a3f0ec02b3"
     },
@@ -237,9 +227,6 @@
     },
     "reshade": {
         "hash": "6fc9b39821ca6e2d91160f05846b3a42159fec759f5d6fba91d1a57801a1bdaf6047740578c136f0b1a60a9c29ad160d87dbfe0dbfbcdf6ea879a8a078377b8c",
-        "patches": [
-            "0001-from-chars-fallback.patch"
-        ],
         "repo": "crosire/reshade",
         "version": "v6.8.0"
     },
@@ -308,9 +295,6 @@
         "find_args": "CONFIG",
         "hash": "deb5902ef8db0e329fbd5f3f4385eb0e26bdd9f14f3a2334823fb3fe18f36bc5d235d620d6e5f6fe3551ec3ea7038638899db8778c09f6d5c278f5ff95c3344b",
         "package": "VulkanMemoryAllocator",
-        "patches": [
-            "0001-macos-clang.patch"
-        ],
         "repo": "GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator",
         "version": "v3.3.0"
     },

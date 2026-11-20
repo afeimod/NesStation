@@ -8,6 +8,7 @@
 // https://cs.android.com/android/platform/superproject/+/android-5.1.1_r38:frameworks/native/libs/gui/BufferQueueCore.cpp
 
 #include "common/assert.h"
+#include <cstring>
 
 #include "core/hle/service/nvnflinger/buffer_queue_core.h"
 
@@ -16,6 +17,89 @@ namespace Service::android {
 BufferQueueCore::BufferQueueCore() = default;
 
 BufferQueueCore::~BufferQueueCore() = default;
+
+bool BufferQueueCore::SaveState(SavedState& state) const {
+    std::scoped_lock lk{mutex};
+    if (is_abandoned || is_allocating) return false;
+    state = {};
+    state.frame_counter = frame_counter;
+    state.override_max_buffer_count = override_max_buffer_count;
+    state.default_max_buffer_count = default_max_buffer_count;
+    state.default_width = default_width;
+    state.default_height = default_height;
+    state.default_buffer_format = static_cast<u32>(default_buffer_format);
+    state.consumer_usage_bit = consumer_usage_bit;
+    state.transform_hint = transform_hint;
+    state.flags = (buffer_has_been_queued ? 1u : 0u);
+    for (size_t i = 0; i < slots.size(); ++i) {
+        const auto& slot = slots[i];
+        auto& saved = state.slots[i];
+        saved.state = static_cast<u32>(slot.buffer_state);
+        saved.frame_number = slot.frame_number;
+        saved.flags = (slot.graphic_buffer ? 1u : 0u) |
+                      (slot.request_buffer_called ? 2u : 0u) |
+                      (slot.is_preallocated ? 4u : 0u) |
+                      (slot.attached_by_consumer ? 8u : 0u);
+        if (slot.graphic_buffer) saved.buffer = *slot.graphic_buffer;
+    }
+    return true;
+}
+
+bool BufferQueueCore::ValidateState(const SavedState& state) const {
+    std::scoped_lock lk{mutex};
+    if (is_abandoned || is_allocating || (state.flags & ~1u) != 0 ||
+        state.override_max_buffer_count < 0 ||
+        state.override_max_buffer_count > BufferQueueDefs::NUM_BUFFER_SLOTS ||
+        state.default_max_buffer_count < 0 ||
+        state.default_max_buffer_count > BufferQueueDefs::NUM_BUFFER_SLOTS) return false;
+    for (size_t i = 0; i < slots.size(); ++i) {
+        const auto& saved = state.slots[i];
+        const auto& buffer = slots[i].graphic_buffer;
+        if (saved.state > static_cast<u32>(BufferState::Acquired) ||
+            (saved.flags & ~15u) != 0 ||
+            ((saved.flags & 1u) != 0) != static_cast<bool>(buffer)) return false;
+        if (buffer && std::memcmp(&saved.buffer,
+                static_cast<const NvGraphicBuffer*>(buffer.get()), sizeof(NvGraphicBuffer)) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void BufferQueueCore::RestoreState(const SavedState& state) {
+    std::scoped_lock lk{mutex};
+    // Retire host-owned frames; only the saved producer can still own a dequeue.
+    // The compositor cache is discarded under the VI composition lock.
+    queue.clear();
+    frame_counter = state.frame_counter;
+    override_max_buffer_count = state.override_max_buffer_count;
+    default_max_buffer_count = state.default_max_buffer_count;
+    default_width = state.default_width;
+    default_height = state.default_height;
+    default_buffer_format = static_cast<PixelFormat>(state.default_buffer_format);
+    consumer_usage_bit = state.consumer_usage_bit;
+    transform_hint = state.transform_hint;
+    buffer_has_been_queued = (state.flags & 1u) != 0;
+    for (size_t i = 0; i < slots.size(); ++i) {
+        auto& slot = slots[i];
+        const auto& saved = state.slots[i];
+        slot.buffer_state = saved.state == static_cast<u32>(BufferState::Dequeued)
+                                ? BufferState::Dequeued : BufferState::Free;
+        slot.frame_number = saved.frame_number;
+        slot.request_buffer_called = (saved.flags & 2u) != 0;
+        slot.is_preallocated = (saved.flags & 4u) != 0;
+        slot.attached_by_consumer = (saved.flags & 8u) != 0;
+        slot.acquire_called = false;
+        slot.needs_cleanup_on_release = false;
+        slot.fence = Fence::NoFence();
+    }
+    {
+        std::scoped_lock history_lock{buffer_history_mutex};
+        buffer_history_map.clear();
+        buffer_history_order.clear();
+    }
+    SignalDequeueCondition();
+}
 
 void BufferQueueCore::PushHistory(u64 frame_number, s64 queue_time, s64 presentation_time, BufferState state) {
     std::lock_guard lk(buffer_history_mutex);

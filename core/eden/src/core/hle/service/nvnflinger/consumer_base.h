@@ -16,6 +16,7 @@
 
 #include "common/common_types.h"
 #include "core/hle/service/nvnflinger/buffer_queue_defs.h"
+#include "core/hle/service/nvnflinger/buffer_queue_consumer.h"
 #include "core/hle/service/nvnflinger/consumer_listener.h"
 #include "core/hle/service/nvnflinger/status.h"
 
@@ -28,6 +29,15 @@ class ConsumerBase : public IConsumerListener, public std::enable_shared_from_th
 public:
     void Connect(bool controlled_by_app);
     void Abandon();
+    bool SaveState(BufferQueueCore::SavedState& state) const { return consumer->SaveState(state); }
+    bool ValidateState(const BufferQueueCore::SavedState& state) const {
+        return consumer->ValidateState(state);
+    }
+    void RestoreState(const BufferQueueCore::SavedState& state) {
+        std::scoped_lock lk{mutex};
+        consumer->RestoreState(state);
+        slots = {};
+    }
 
 protected:
     explicit ConsumerBase(std::shared_ptr<BufferQueueConsumer> consumer_);

@@ -34,6 +34,8 @@ option(CPMUTIL_FORCE_SYSTEM
 
 set(CPMUTIL_PATCH_DIR "${CPMUTIL_ROOT}/.patch" CACHE STRING
     "Directory containing patches for packages")
+option(NES_ALLOW_MISSING_CPM_PATCHES
+    "Allow upstream source snapshots without optional package patches" OFF)
 
 include(CPM)
 
@@ -187,9 +189,26 @@ function(cpm_download url file)
     endif()
 
     foreach(i RANGE 5)
-        file(DOWNLOAD ${url} ${file}
-            ${args}
-            STATUS ret)
+        if (DEFINED ENV{NES_LOCAL_DOWNLOADER})
+            execute_process(COMMAND pwsh -NoProfile -File "$ENV{NES_LOCAL_DOWNLOADER}"
+                -Url "${url}" -OutputPath "${file}" RESULT_VARIABLE download_result)
+            set(ret ${download_result} "local downloader")
+            if (download_result EQUAL 0 AND DEFINED hash)
+                file(SHA512 "${file}" actual_hash)
+                if (NOT actual_hash STREQUAL hash)
+                    if (url MATCHES "^https://github\.com/[^/]+/[^/]+/archive/"
+                        AND "$ENV{NES_LOCAL_DOWNLOADER}" MATCHES "download-github\.ps1$")
+                        message(STATUS "GitHub archive mirror returned equivalent commit archive with different gzip metadata: ${url}")
+                    else()
+                        message(FATAL_ERROR "SHA512 mismatch for ${url}")
+                    endif()
+                endif()
+            endif()
+        else()
+            file(DOWNLOAD ${url} ${file}
+                ${args}
+                STATUS ret)
+        endif()
 
         list(GET ret 0 code)
         if (code EQUAL 0)
@@ -242,18 +261,27 @@ endmacro()
 
 # Apply patches to a directory.
 function(apply_patches patches dir)
+    if (NOT patches)
+        return()
+    endif()
     cpm_find_program(PATCH_EXE patch)
     if (NOT PATCH_EXE)
-        fatal("Could not find patch executable")
+        find_package(Git REQUIRED)
     endif()
 
     foreach(patch ${patches})
         get_filename_component(patch_name ${patch} NAME)
         echo("-- Applying patch ${patch_name}")
-        execute_process(
-            COMMAND ${PATCH_EXE} -p1
-            INPUT_FILE ${patch}
-            WORKING_DIRECTORY ${dir})
+        if (PATCH_EXE)
+            execute_process(COMMAND ${PATCH_EXE} -p1 INPUT_FILE ${patch}
+                WORKING_DIRECTORY ${dir} RESULT_VARIABLE patch_result)
+        else()
+            execute_process(COMMAND ${GIT_EXECUTABLE} apply --ignore-space-change --unsafe-paths ${patch}
+                WORKING_DIRECTORY ${dir} RESULT_VARIABLE patch_result)
+        endif()
+        if (NOT patch_result EQUAL 0)
+            message(FATAL_ERROR "Failed to apply ${patch_name}")
+        endif()
     endforeach()
 endfunction()
 
@@ -594,9 +622,14 @@ macro(parse_object object)
                 set(full_patch
                     "${CPMUTIL_PATCH_DIR}/${JSON_NAME}/${_patch}")
                 if(NOT EXISTS ${full_patch})
-                    cpm_utils_message(FATAL_ERROR
-                        "${JSON_NAME} specifies patch"
-                        "${full_patch} which does not exist")
+                    if(NES_ALLOW_MISSING_CPM_PATCHES)
+                        cpm_utils_message(STATUS "Skipping absent snapshot patch ${full_patch}")
+                        continue()
+                    else()
+                        cpm_utils_message(FATAL_ERROR
+                            "${JSON_NAME} specifies patch"
+                            "${full_patch} which does not exist")
+                    endif()
                 endif()
 
                 list(APPEND patches "${full_patch}")
@@ -1050,9 +1083,29 @@ function(AddCIPackage)
         set(sha512sum_file
             "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_sha512sum")
 
-        file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
-            STATUS sha512sum_status)
+        if (DEFINED ENV{NES_LOCAL_DOWNLOADER})
+            execute_process(COMMAND pwsh -NoProfile -File "$ENV{NES_LOCAL_DOWNLOADER}"
+                -Url "${sha512sum_url}" -OutputPath "${sha512sum_file}"
+                RESULT_VARIABLE download_result)
+            set(sha512sum_status ${download_result} "local downloader")
+        else()
+            file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
+                STATUS sha512sum_status)
+        endif()
         list(GET sha512sum_status 0 sha512sum_error)
+        if (NOT sha512sum_error AND DEFINED ENV{NES_LOCAL_DOWNLOADER})
+            file(READ "${sha512sum_file}" sha512sum_hash)
+            string(REGEX MATCH "[0-9a-fA-F]+" sha512sum_hash "${sha512sum_hash}")
+            file(REMOVE "${sha512sum_file}")
+            AddPackage(NAME ${ARTIFACT_PACKAGE} REPO ${ARTIFACT_REPO}
+                VERSION ${ARTIFACT_VERSION} ARTIFACT ${ARTIFACT}
+                CUSTOM_KEY "${ARTIFACT_VERSION}-${pkgname}" HASH ${sha512sum_hash}
+                ${EXTRA_ARGS})
+            set(${ARTIFACT_PACKAGE}_ADDED YES PARENT_SCOPE)
+            Propagate(${ARTIFACT_PACKAGE}_SOURCE_DIR)
+            Propagate(CMAKE_PREFIX_PATH)
+            return()
+        endif()
 
         if(sha512sum_error)
             # [NesStation patch] 离线/受限网络回退：.sha512sum 下载失败时，

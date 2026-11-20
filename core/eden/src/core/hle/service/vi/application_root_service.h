@@ -23,6 +23,7 @@ class IApplicationRootService final : public ServiceFramework<IApplicationRootSe
 public:
     explicit IApplicationRootService(Core::System& system_, std::shared_ptr<Container> container);
     ~IApplicationRootService() override;
+    std::shared_ptr<Container> GetContainer() const { return m_container; }
 
 private:
     Result GetDisplayService(

@@ -251,6 +251,7 @@ Result KAddressArbiter::SignalAndModifyByWaitingCountIfEqual(uint64_t addr, s32 
 Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement, s64 timeout) {
     // Prepare to wait.
     KThread* cur_thread = GetCurrentThreadPointer(system.Kernel());
+    const bool restoring_wait = cur_thread->SavestateConsumeAddressWait();
     KHardwareTimer* timer{};
     ThreadQueueImplForKAddressArbiter wait_queue(system.Kernel(), std::addressof(m_tree));
 
@@ -266,7 +267,11 @@ Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement,
         // Read the value from userspace.
         s32 user_value{};
         bool succeeded{};
-        if (decrement) {
+        if (restoring_wait) {
+            // The saved SVC already checked and possibly decremented this word.
+            user_value = 0;
+            succeeded = true;
+        } else if (decrement) {
             succeeded = DecrementIfLessThan(system.Kernel(), std::addressof(user_value), addr, value);
         } else {
             succeeded = ReadFromUser(system.Kernel(), std::addressof(user_value), addr);
@@ -278,7 +283,7 @@ Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement,
         }
 
         // Check that the value is less than the specified one.
-        if (user_value >= value) {
+        if (!restoring_wait && user_value >= value) {
             slp.CancelSleep();
             R_THROW(ResultInvalidState);
         }
@@ -306,6 +311,7 @@ Result KAddressArbiter::WaitIfLessThan(uint64_t addr, s32 value, bool decrement,
 Result KAddressArbiter::WaitIfEqual(uint64_t addr, s32 value, s64 timeout) {
     // Prepare to wait.
     KThread* cur_thread = GetCurrentThreadPointer(system.Kernel());
+    const bool restoring_wait = cur_thread->SavestateConsumeAddressWait();
     KHardwareTimer* timer{};
     ThreadQueueImplForKAddressArbiter wait_queue(system.Kernel(), std::addressof(m_tree));
 
@@ -320,13 +326,14 @@ Result KAddressArbiter::WaitIfEqual(uint64_t addr, s32 value, s64 timeout) {
 
         // Read the value from userspace.
         s32 user_value{};
-        if (!ReadFromUser(system.Kernel(), std::addressof(user_value), addr)) {
+        if (!restoring_wait &&
+            !ReadFromUser(system.Kernel(), std::addressof(user_value), addr)) {
             slp.CancelSleep();
             R_THROW(ResultInvalidCurrentMemory);
         }
 
         // Check that the value is equal.
-        if (value != user_value) {
+        if (!restoring_wait && value != user_value) {
             slp.CancelSleep();
             R_THROW(ResultInvalidState);
         }

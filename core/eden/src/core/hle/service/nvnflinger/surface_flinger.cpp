@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/core.h"
+#include <cstring>
+#include <type_traits>
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
 #include "core/hle/service/nvnflinger/display.h"
@@ -17,6 +19,51 @@
 #include "core/hle/service/nvnflinger/buffer_queue_producer.h"
 
 namespace Service::Nvnflinger {
+
+namespace {
+struct SavedDisplayLayer {
+    s32 consumer_id{};
+    u32 reserved{};
+    android::BufferQueueCore::SavedState queue{};
+};
+static_assert(std::is_trivially_copyable_v<SavedDisplayLayer>);
+}
+
+bool SurfaceFlinger::SaveDisplayState(std::vector<u8>& data) {
+    data.clear();
+    for (const auto& layer : m_layers.layers) {
+        SavedDisplayLayer saved{};
+        saved.consumer_id = layer->consumer_id;
+        if (!layer->buffer_item_consumer->SaveState(saved.queue)) return false;
+        const auto* bytes = reinterpret_cast<const u8*>(&saved);
+        data.insert(data.end(), bytes, bytes + sizeof(saved));
+    }
+    return true;
+}
+
+bool SurfaceFlinger::ValidateDisplayState(std::span<const u8> data) {
+    if (data.size() != m_layers.layers.size() * sizeof(SavedDisplayLayer)) return false;
+    for (const auto& layer : m_layers.layers) {
+        SavedDisplayLayer saved{};
+        std::memcpy(&saved, data.data(), sizeof(saved));
+        data = data.subspan(sizeof(saved));
+        if (saved.reserved != 0 || saved.consumer_id != layer->consumer_id ||
+            !layer->buffer_item_consumer->ValidateState(saved.queue)) return false;
+    }
+    return true;
+}
+
+bool SurfaceFlinger::RestoreDisplayState(std::span<const u8> data) {
+    if (!ValidateDisplayState(data)) return false;
+    m_composer.DiscardFramebuffersForRestore();
+    for (const auto& layer : m_layers.layers) {
+        SavedDisplayLayer saved{};
+        std::memcpy(&saved, data.data(), sizeof(saved));
+        data = data.subspan(sizeof(saved));
+        layer->buffer_item_consumer->RestoreState(saved.queue);
+    }
+    return true;
+}
 
 SurfaceFlinger::SurfaceFlinger(Core::System& system, HosBinderDriverServer& server)
     : m_system(system), m_server(server), m_context(m_system, "SurfaceFlinger") {

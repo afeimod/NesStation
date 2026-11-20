@@ -7,6 +7,7 @@
 #pragma once
 
 #include <vector>
+#include <span>
 
 #include "common/common_types.h"
 #include "core/hle/service/kernel_helpers.h"
@@ -59,6 +60,9 @@ public:
     // TODO: these don't belong here
     void CreateBufferQueue(s32* out_consumer_binder_id, s32* out_producer_binder_id);
     void DestroyBufferQueue(s32 consumer_binder_id, s32 producer_binder_id);
+    bool SaveDisplayState(std::vector<u8>& data);
+    bool ValidateDisplayState(std::span<const u8> data);
+    bool RestoreDisplayState(std::span<const u8> data);
 
 private:
     Core::System& m_system;
