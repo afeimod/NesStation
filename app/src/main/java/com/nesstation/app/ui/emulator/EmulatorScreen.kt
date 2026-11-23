@@ -5231,6 +5231,23 @@ fun EmulatorScreen(
                                     }
                                 }
                             }
+                        } else if (platform == GamePlatform.NDS &&
+                            engine is com.nesstation.app.core.engine.DraSticEngine) {
+                            val slot = saveLoadSlot
+                            val stateFile = java.io.File(
+                                java.io.File(context.filesDir, "saves").apply { mkdirs() },
+                                "${game.id}_slot${slot}.state"
+                            )
+                            resetScope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    engine.saveState(slot, stateFile)
+                                }
+                                Toast.makeText(
+                                    context,
+                                    if (ok) "已快速存档 [槽位 $slot]" else "存档失败：核心未能生成即时存档",
+                                    if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                                ).show()
+                            }
                         } else {
                             val savesDirS = java.io.File(context.filesDir, "saves").apply { mkdirs() }
                             val slot = saveLoadSlot
@@ -5321,6 +5338,27 @@ fun EmulatorScreen(
                                                 "读档失败：${edenQuickSaveResultMessage(r) ?: "未知错误"}",
                                                 Toast.LENGTH_LONG).show()
                                     }
+                                }
+                            }
+                        } else if (platform == GamePlatform.NDS &&
+                            engine is com.nesstation.app.core.engine.DraSticEngine) {
+                            val slot = saveLoadSlot
+                            val stateFile = java.io.File(
+                                java.io.File(context.filesDir, "saves").apply { mkdirs() },
+                                "${game.id}_slot${slot}.state"
+                            )
+                            resetScope.launch {
+                                if (!stateFile.isFile) {
+                                    Toast.makeText(context, "当前槽位 ($slot) 无存档", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val ok = withContext(Dispatchers.IO) {
+                                        engine.loadState(slot, stateFile)
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        if (ok) "已读取存档 [槽位 $slot]" else "读档失败：存档损坏或版本不兼容",
+                                        if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                                    ).show()
                                 }
                             }
                         } else {
@@ -5664,6 +5702,29 @@ fun EmulatorScreen(
                                     Toast.makeText(context, "读档失败：$reason", Toast.LENGTH_LONG).show()
                                 }
                             }
+                        }
+                    } else if (platform == GamePlatform.NDS &&
+                        engine is com.nesstation.app.core.engine.DraSticEngine) {
+                        val wantSave = showSlotPicker == "save"
+                        resetScope.launch {
+                            val ok = withContext(Dispatchers.IO) {
+                                if (wantSave) {
+                                    engine.saveState(slot, stateFile)
+                                } else {
+                                    engine.loadState(slot, stateFile)
+                                }
+                            }
+                            val message = when {
+                                ok && wantSave -> "存档已保存 [槽位 $slot]"
+                                ok -> "存档已读取 [槽位 $slot]"
+                                wantSave -> "存档失败：核心未能生成即时存档"
+                                else -> "读档失败：存档损坏或版本不兼容"
+                            }
+                            Toast.makeText(
+                                context,
+                                message,
+                                if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                            ).show()
                         }
                     } else if (showSlotPicker == "save") {
                         try {

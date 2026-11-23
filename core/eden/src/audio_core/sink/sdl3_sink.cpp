@@ -264,6 +264,14 @@ void SDLSink::CloseStreams() {
     sink_streams.clear();
 }
 
+void SDLSink::ClearQueues() {
+    for (auto& stream : sink_streams) {
+        if (stream != nullptr) {
+            stream->ClearQueue();
+        }
+    }
+}
+
 f32 SDLSink::GetDeviceVolume() const {
     return device_volume;
 }

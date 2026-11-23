@@ -48,6 +48,11 @@ public:
 
     void CloseStream(SinkStream*) override {}
     void CloseStreams() override {}
+    void ClearQueues() override {
+        if (null_sink != nullptr) {
+            null_sink->ClearQueue();
+        }
+    }
     f32 GetDeviceVolume() const override {
         return device_volume;
     }

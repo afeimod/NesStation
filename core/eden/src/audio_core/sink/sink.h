@@ -43,6 +43,11 @@ public:
     virtual void CloseStreams() = 0;
 
     /**
+     * Discard queued host audio after restoring an earlier emulation timeline.
+     */
+    virtual void ClearQueues() = 0;
+
+    /**
      * Create a new sink stream, kept within this sink, with a pointer returned for use.
      * Do not free the returned pointer. When done with the stream, call CloseStream on the sink.
      *

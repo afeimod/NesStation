@@ -52,6 +52,7 @@ public:
      * Close all streams.
      */
     void CloseStreams() override;
+    void ClearQueues() override;
 
     /**
      * Get the device volume. Set from calls to the IAudioDevice service.

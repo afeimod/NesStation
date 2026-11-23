@@ -271,6 +271,7 @@
 #include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "audio_core/audio_core.h"
 #include "core/core.h"
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/global_scheduler_context.h"
@@ -3647,6 +3648,10 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
         rasterizer->InvalidateGPUCache();
         rasterizer->FlushCommands();
     }
+
+    // Host queues belong to the discarded timeline; clear them before audio resumes.
+    system.AudioCore().GetOutputSink().ClearQueues();
+    system.AudioCore().GetInputSink().ClearQueues();
 
     // ---- 13) ARM 指令缓存：逐核清空（NCE 指令跳板 / dynarmic 翻译缓存；
     //      页粒度 icache 已在 ApplyFrame 按 run 刷新） ----
