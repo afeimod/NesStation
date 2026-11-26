@@ -4,3 +4,6 @@
 [submodule "core/fceumm-dependencies"]
 	path = core/fceumm-dependencies
 	url = https://github.com/libretro/libretro-fceumm-dependencies.git
+[submodule "core/cemu/dependencies/vcpkg"]
+	path = core/cemu/dependencies/vcpkg
+	url = https://github.com/microsoft/vcpkg
