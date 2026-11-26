@@ -84,6 +84,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+private data class NeonLibraryProjection(
+    val modeGames: List<GameEntry>,
+    val displayGames: List<GameEntry>,
+    val coreEntries: List<NeonCoreEntry>
+)
+
 /**
  * ★★ Neon 3D 游戏库（完全重制版）—— 核心列表 + 每核心 3D 封面滚动 ★★
  *
@@ -134,27 +140,7 @@ fun NeonLibraryScreen(
     var coverProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
     // ---- 数据 ----
-    val modeGames = remember(games, mode) {
-        when (mode) {
-            "fav" -> games.filter { it.isFavorite }
-            "recent" -> games.filter { it.lastPlayedAt > 0L }.sortedByDescending { it.lastPlayedAt }
-            else -> games
-        }
-    }
     val searching = searchActive && searchQuery.isNotBlank()
-    val displayGames = remember(modeGames, selectedCore, searching, searchQuery) {
-        if (searching) {
-            modeGames.filter {
-                it.title.contains(searchQuery, ignoreCase = true) ||
-                    (it.customTitle?.contains(searchQuery, ignoreCase = true) ?: false)
-            }
-        } else if (selectedCore != null) {
-            modeGames.filter { it.platform == selectedCore }
-        } else {
-            modeGames
-        }
-    }
-    val countByCore = remember(modeGames) { modeGames.groupingBy { it.platform }.eachCount() }
     val coreOrder = remember {
         listOf(
             GamePlatform.NES, GamePlatform.SFC, GamePlatform.GB, GamePlatform.GBA,
@@ -164,28 +150,48 @@ fun NeonLibraryScreen(
             GamePlatform.PSP, GamePlatform.NSWITCH
         )
     }
-    val coreEntries = remember(modeGames, countByCore, coreOrder, searching) {
-        if (searching) {
-            // 搜索态：核心列表退位为单一「搜索结果」伪核心
-            listOf(NeonCoreEntry(null, "搜索结果", displayGames.size))
-        } else {
-            buildList {
-                add(NeonCoreEntry(null, "全部", modeGames.size))
-                coreOrder.forEach { p ->
-                    val n = countByCore[p] ?: 0
-                    // ★★★ 本轮修复（回应"neon的ui在没有导入游戏时没有显示对应
-                    //   核心，也就无法导入对应游戏"）：旧实现 `if (n > 0)` 把
-                    //   零游戏的核心全部隐藏 —— 全新安装/未导入任何游戏时
-                    //   侧栏只剩「全部(0)」，无法选中目标核心（导入时的平台
-                    //   提示 hint = selectedCore 无从生效，DOS/街机等需指定
-                    //   核心导入的平台完全无法工作）。现在【全部核心始终显示】
-                    //   （含 0 计）：选中某核心 → 导入ROM/导入文件夹以该核心为
-                    //   平台提示，空库也能按核心导入。
-                    add(NeonCoreEntry(p, p.displayName, n))
+    var projection by remember {
+        mutableStateOf(NeonLibraryProjection(emptyList(), emptyList(), emptyList()))
+    }
+    LaunchedEffect(games, mode, selectedCore, searching, searchQuery, coreOrder) {
+        projection = withContext(Dispatchers.Default) {
+            val modeGames = when (mode) {
+                "fav" -> games.filter { it.isFavorite }
+                "recent" -> games.filter { it.lastPlayedAt > 0L }
+                    .sortedByDescending { it.lastPlayedAt }
+                else -> games
+            }
+            val displayGames = when {
+                searching -> modeGames.filter {
+                    it.title.contains(searchQuery, ignoreCase = true) ||
+                        (it.customTitle?.contains(searchQuery, ignoreCase = true) ?: false)
+                }
+                selectedCore != null -> modeGames.filter { it.platform == selectedCore }
+                else -> modeGames
+            }
+            val coreEntries = if (searching) {
+                listOf(NeonCoreEntry(null, "搜索结果", displayGames.size))
+            } else {
+                val countByCore = modeGames.groupingBy { it.platform }.eachCount()
+                buildList {
+                    add(NeonCoreEntry(null, "全部", modeGames.size))
+                    coreOrder.forEach { platform ->
+                        add(
+                            NeonCoreEntry(
+                                platform,
+                                platform.displayName,
+                                countByCore[platform] ?: 0
+                            )
+                        )
+                    }
                 }
             }
+            NeonLibraryProjection(modeGames, displayGames, coreEntries)
         }
     }
+    val modeGames = projection.modeGames
+    val displayGames = projection.displayGames
+    val coreEntries = projection.coreEntries
 
     // 切核心 / 搜索词变化回到第一个；列表变化收敛索引
     LaunchedEffect(selectedCore, searchQuery, searchActive) { selectedIndex = 0 }

@@ -64,6 +64,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -2474,31 +2475,36 @@ private fun FsdGameCover(
         try { java.io.File(it).lastModified() } catch (_: Throwable) { 0L }
     } ?: 0L
     val fullKey = "$cacheKey|$coverStamp"
-    val bmp = remember(fullKey) {
-        // 清掉同一游戏旧图标的残留位图
+    // 首屏只显示卡片底色；封面解析可能会扫描 ZIP/读取 ROM，移到 IO，
+    // 避免游戏数量多时在 Compose 主线程连续解码造成进库卡顿。
+    remember(fullKey) {
         cache.snapshot().keys
             .filter { it.startsWith(staleKey) && it != fullKey }
             .forEach { cache.remove(it) }
-        cache.get(fullKey) ?: run {
-            var b: android.graphics.Bitmap? = null
-            val path = try {
-                com.nesstation.app.core.storage.GameIconExtractor.resolveIconPath(context, game)
-            } catch (_: Exception) { null }
-            if (path != null) {
-                try { b = decodeCoverBitmap(path) } catch (_: Exception) { b = null }
-            }
-            if (b == null) {
-                try {
-                    b = com.nesstation.app.core.storage.GameIconExtractor
-                        .generateFallbackCover(game, 320, 420)
-                } catch (_: Exception) {
-                    b = android.graphics.Bitmap.createBitmap(
-                        4, 4, android.graphics.Bitmap.Config.ARGB_8888
-                    )
+    }
+    val bmp by produceState<android.graphics.Bitmap?>(cache.get(fullKey), fullKey, context) {
+        if (value == null) {
+            value = withContext(Dispatchers.IO) {
+                var b: android.graphics.Bitmap? = null
+                val path = try {
+                    com.nesstation.app.core.storage.GameIconExtractor.resolveIconPath(context, game)
+                } catch (_: Exception) { null }
+                if (path != null) {
+                    try { b = decodeCoverBitmap(path) } catch (_: Exception) { b = null }
                 }
+                if (b == null) {
+                    try {
+                        b = com.nesstation.app.core.storage.GameIconExtractor
+                            .generateFallbackCover(game, 320, 420)
+                    } catch (_: Exception) {
+                        b = android.graphics.Bitmap.createBitmap(
+                            4, 4, android.graphics.Bitmap.Config.ARGB_8888
+                        )
+                    }
+                }
+                b?.let { cache.put(fullKey, it) }
+                b
             }
-            cache.put(fullKey, b!!)
-            b!!
         }
     }
 
@@ -2513,12 +2519,14 @@ private fun FsdGameCover(
                 shape = RoundedCornerShape(10.dp)
             )
     ) {
-        Image(
-            bitmap = bmp.asImageBitmap(),
-            contentDescription = game.customTitle?.takeIf { it.isNotBlank() } ?: game.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
+        bmp?.let {
+            Image(
+                bitmap = it.asImageBitmap(),
+                contentDescription = game.customTitle?.takeIf { title -> title.isNotBlank() } ?: game.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
         // 平台徽标 — 左上角
         FsdPlatformBadge(

@@ -48,6 +48,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.storage.RomStore
 import com.nesstation.app.ui.components.AppBackgroundState
@@ -88,12 +90,16 @@ fun NeonHomeScreen(
     val context = LocalContext.current
     val coverCache = remember { android.util.LruCache<String, android.graphics.Bitmap>(40) }
 
-    // 主视觉列表：最近游玩优先（lastPlayedAt 降序，0=未玩排后）
-    val flowGames = remember(games) {
-        games.sortedWith(
-            compareByDescending<GameEntry> { it.lastPlayedAt > 0L }
-                .thenByDescending { it.lastPlayedAt }
-        )
+    // Sort refreshed libraries away from the UI thread so a large ROM list
+    // cannot delay the first home-screen frame.
+    var flowGames by remember { mutableStateOf(emptyList<GameEntry>()) }
+    LaunchedEffect(games) {
+        flowGames = withContext(Dispatchers.Default) {
+            games.sortedWith(
+                compareByDescending<GameEntry> { it.lastPlayedAt > 0L }
+                    .thenByDescending { it.lastPlayedAt }
+            )
+        }
     }
 
     var selectedIndex by remember { mutableIntStateOf(0) }
@@ -125,7 +131,7 @@ fun NeonHomeScreen(
                     NeonChip("游戏库", Icons.Rounded.GridView, Neon.Red, onOpenLibrary),
                     NeonChip("收藏", Icons.Rounded.Favorite, Neon.Gold, onOpenFavorites),
                     NeonChip("最近", Icons.Rounded.History, Neon.Blue, onOpenHistory),
-                    NeonChip("在线游戏", Icons.Rounded.Public, Neon.Accent, onOpenOnlineGames),
+                    NeonChip("浏览器", Icons.Rounded.Public, Neon.Accent, onOpenOnlineGames),
                     NeonChip("对战平台", Icons.Rounded.SportsEsports, Neon.Purple, onOpenBattle),
                     NeonChip("SWF", Icons.Rounded.Bolt, Neon.Gold, onOpenSwf),
                     NeonChip("设置", Icons.Rounded.Settings, Neon.Text, onOpenSettings),

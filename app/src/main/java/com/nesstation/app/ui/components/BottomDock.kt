@@ -54,7 +54,7 @@ fun BottomDock(
     val items = listOf(
         DockItem("游戏库", Icons.Rounded.GridView),
         DockItem("对战平台", Icons.Rounded.SportsEsports),
-        DockItem("在线游戏", Icons.Rounded.Public),
+        DockItem("浏览器", Icons.Rounded.Public),
         DockItem("SWF", Icons.Rounded.PlayArrow),
         DockItem("设置", Icons.Rounded.Settings),
         DockItem("关于", Icons.AutoMirrored.Rounded.HelpOutline),

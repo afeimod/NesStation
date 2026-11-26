@@ -1753,7 +1753,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     }
 
     // ------------------------------------------------------------------
-    // ★★ 即时存档（本轮重构：能力探测 + 真即时存档 + 存档数据快照兜底）★★
+    // ★★ 即时存档能力探测：仅在核心真正导出状态序列化 JNI 时启用 ★★
     // ------------------------------------------------------------------
     //
     // 【实证背景（V11 诊断保留）】nm/dynsym 全扫 libcitra_mmj.so —— 68 个
@@ -1765,31 +1765,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
     //   覆盖内核对象/HLE 服务/IPC 会话），不是"接口未接线"而是"功能不存在"，
     //   无法通过二进制补丁给剥离的功能凭空注入实现。
     //
-    // 【本实现的双层方案】
-    //   层 1 —— 真·即时存档（未来兼容）：运行时探测核心 .so 是否导出
-    //     SaveState/LoadState JNI（契约见 org.citra.emu.NativeLibrary 注释，
-    //     slot<0 为 no-op）。探测通过即走 Azahar 同款流程（暂停 → 发信号 →
-    //     轮询 states/ 落盘 → 恢复暂停）。当前 .so 探测必失败，但只要未来
-    //     换上带存档的重编核心，NesStation 零改动自动启用。
-    //   层 2 —— 存档数据快照（当前 .so 立即可用）：把游戏的 3DS 存档数据
-    //     （<userDir>/nand/data/** —— ExtSaveData/SystemSaveData/config
-    //     savegame，+ <userDir>/sdmc/** —— SD 卡游戏数据/附加数据）打包
-    //     zip 到槽位文件。读档 = 暂停 → 停止模拟 → 还原快照 → 重启游戏
-    //     （与 reset() 同款链路）。语义 = "游戏存档点回滚"：配合游戏内
-    //     存档点使用即等价即时存档的实际效果；恢复的是存档数据而非运行
-    //     时 RAM 状态，故重启后回到标题画面（该限制由核心能力决定，
-    //     UI 消息如实说明）。
-    //
-    // 【安全设计】
-    //   - 快照在暂停态下进行（PauseEmulation → 打包 → Resume），避免拷贝
-    //     半写入的存档文件；
-    //   - 快照排除 nand/title/**（已安装 CIA/CXI 标题，可达 GB 级 —— 存档
-    //     快照只含存档数据，秒级完成）；
-    //   - 拒绝伪成功：打包/还原任何一步失败都返回 false 并给出可读原因；
-    //   - 还原只清 nand/data/** + sdmc/**，绝不动 nand/title（游戏本体）。
-    //
-    // 【与 Azahar 的关系】MMJ 与 Azahar 共用用户目录（<filesDir>/azahar），
-    //   存档数据（nand/data + sdmc）天然互通 —— 快照对两核心都有效。
+    // 当前预编译 MMJ 不含即时状态序列化能力。禁止用 NAND/SD 文件快照
+    // 冒充即时存档；覆盖共享用户目录会破坏正常游戏存档。
 
     /** 即时存档 JNI 能力探测（null = 未探测；结果缓存，.so 会话内不变）。 */
     @Volatile
@@ -1833,7 +1810,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         return if (probeSavestateSupport()) {
             saveStateNative(slot, dst)
         } else {
-            saveStateSnapshot(slot, dst)
+            lastErrorText = "当前 MMJ 核心未实现即时存档；不会伪造状态档或修改游戏内存档"
+            false
         }
     }
 
@@ -1882,12 +1860,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         }
     }
 
-    /**
-     * 层 2：存档数据快照（当前 MMJ .so 的可用路径）。
-     * 暂停 → 打包 nand/data 与 sdmc 两目录 → 恢复暂停 → dst = 快照 zip。
-     * （KDoc 文本严禁出现 "nand" 目录路径加双星号的通配写法——Kotlin
-     *   块注释支持嵌套，会开新注释层导致注释永不闭合、吞掉后续代码。）
-     */
+    /** Legacy save-data snapshot implementation; intentionally not used as a savestate. */
     private fun saveStateSnapshot(slot: Int, dst: File): Boolean {
         return try {
             val wasPaused = _paused
@@ -1967,7 +1940,8 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         return if (probeSavestateSupport()) {
             loadStateNative(slot, src)
         } else {
-            loadStateSnapshot(slot, src)
+            lastErrorText = "当前 MMJ 核心未实现即时读档；为保护游戏内存档，已拒绝快照回滚"
+            false
         }
     }
 
@@ -2002,11 +1976,7 @@ class CitraMmjEngine private constructor() : EmulatorEngine, AzaharCoreEngine {
         }
     }
 
-    /**
-     * 层 2：快照还原 —— 停止模拟 → 清 nand/data + sdmc → 解包快照 →
-     * 重启游戏（与 reset() 同款链路：SurfaceChanged + startEmulationLocked）。
-     * 存档数据换血后必须冷启动，游戏读到的才是还原后的存档。
-     */
+    /** Legacy save-data restore implementation; intentionally disabled because it restarts. */
     private fun loadStateSnapshot(slot: Int, src: File): Boolean {
         if (!src.exists() || src.length() == 0L) {
             lastErrorText = "槽位 $slot 无存档快照"

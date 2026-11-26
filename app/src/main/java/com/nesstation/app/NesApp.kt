@@ -60,6 +60,8 @@ class NesApp : Application() {
         //    try-catch so a failure in one doesn't prevent the others.
         tryInit("SettingsRepository") { SettingsRepository.init(this) }
         tryInit("AppContainer")       { _container = AppContainer(this) }
+        Thread({
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_LOWEST)
         tryInit("NesEngine")          { NesEngine.ensureLoaded() }
         tryInit("SnesEngine")         { SnesEngine.ensureLoaded() }
         tryInit("GbaEngine")          { GbaEngine.ensureLoaded() }
@@ -174,6 +176,7 @@ class NesApp : Application() {
                 engine.probeAvailability()
             }
         }
+        }, "NesCoreWarmup").start()
         tryInit("FdsBios")            { ensureFdsBios() }
         tryInit("FbNeoBios")          { ensureFbNeoBios() }
         tryInit("GenesisBios")        { ensureGenesisBios() }

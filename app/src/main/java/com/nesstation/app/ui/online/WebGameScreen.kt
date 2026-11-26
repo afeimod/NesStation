@@ -2681,7 +2681,7 @@ private fun BrowserHomeOverlay(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "在线游戏",
+                        "浏览器",
                         color = Color.White,
                         fontSize = 14.sp,
                         fontWeight = androidx.compose.ui.text.font.FontWeight.Bold

@@ -200,7 +200,7 @@ fun FsdHomeScreen(
                         iconAlpha = alpha("platform:${p.name}")))
                 }
             }
-            add(FsdTileItem("online", "在线游戏", Icons.Rounded.Public,
+            add(FsdTileItem("online", "浏览器", Icons.Rounded.Public,
                 iconPath = tileIcons["online"], iconAlpha = alpha("online")))
             add(FsdTileItem("battle", "对战平台", Icons.Rounded.SportsEsports,
                 iconPath = tileIcons["battle"], iconAlpha = alpha("battle")))

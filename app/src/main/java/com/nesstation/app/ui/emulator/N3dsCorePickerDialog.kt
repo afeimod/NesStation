@@ -101,7 +101,7 @@ fun N3dsCorePickerDialog(
                     description = if (mmjAvailable) {
                         "老设备性能与兼容性表现出色；MMJ 专属设置" +
                             "（分辨率/帧率/着色器/Hack 等）已全部接入；" +
-                            "即时存档以存档数据快照实现（游戏内存档点回滚）；" +
+                            "当前 MMJ 二进制不支持即时存档；" +
                             "不支持联机。"
                     } else {
                         "Citra MMJ 核心库不可用（仅提供 arm64 库；" +

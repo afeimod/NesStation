@@ -8,6 +8,9 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 
+internal fun networkInputToExecutionFrame(networkFrame: Long, inputDelay: Int): Long =
+    networkFrame - inputDelay.coerceIn(0, 16)
+
 /**
  * 帧同步联机控制器：通过 [NetplayHook] 接入到既有 [com.nesstation.app.core.engine.EmulatorEngine]
  * 的模拟循环中，让本地 / 远端玩家在同一 ROM 上同帧同画执行。
@@ -487,13 +490,16 @@ class NetplayController(
                     rbLastKnownPad.set(slot, pad)
                     val prev = rbSlotLatest.get(slot)
                     if (frame > prev) rbSlotLatest.set(slot, frame)
-                    if (frame <= rbLastExecuted) {
-                        val used = inputLog[frame]
+                    // Inputs are tagged with the network frame, while inputLog and
+                    // rollback checkpoints use the frame actually executed by the core.
+                    val execFrame = networkInputToExecutionFrame(frame, inputDelay)
+                    if (execFrame >= 0 && execFrame <= rbLastExecuted) {
+                        val used = inputLog[execFrame]
                         if (used != null && used[slot - 1] != pad) {
                             // 取最早待纠正帧（CAS min，网络线程并发安全）
                             var p = rbPendingFrom.get()
-                            while (frame < p) {
-                                if (rbPendingFrom.compareAndSet(p, frame)) break
+                            while (execFrame < p) {
+                                if (rbPendingFrom.compareAndSet(p, execFrame)) break
                                 p = rbPendingFrom.get()
                             }
                         }
@@ -2042,6 +2048,12 @@ class NetplayController(
                     "rollback unavailable (pending=$pending lastExec=$rbLastExecuted) → block-wait")
                 rbBlockWaitFor(pending)
             }
+            // Rollback recovery may have paused this client while the server
+            // coordinates a room-wide restart. Never advance the divergent timeline.
+            if (gateEventPending || restartPending || syncPaused) {
+                zeroPadFrame = true
+                return IntArray(4)
+            }
         }
 
         // 2. 采样 + 发送
@@ -2199,8 +2211,17 @@ class NetplayController(
                         slot == mySlot -> {
                             // 座位激活门控（与主路径同一判定）
                             val actFrom = slotActiveFrom[mySlot]
-                            if (pendingOwnActivation || (actFrom != null && execFrame <= actFrom)) 0
-                            else padsHistory[slot][execFrame] ?: localPad
+                            if (pendingOwnActivation || (actFrom != null && execFrame <= actFrom)) {
+                                0
+                            } else {
+                                val localAtFrame = padsHistory[slot][execFrame]
+                                if (localAtFrame == null) {
+                                    missing = true
+                                    0
+                                } else {
+                                    localAtFrame
+                                }
+                            }
                         }
                         !slotNeedsInput(slot, execFrame) -> 0
                         else -> {
@@ -2209,7 +2230,9 @@ class NetplayController(
                         }
                     }
                 }
-                if (missing) break   // 远端输入缺帧：停止追帧，交回正常锁步等待
+                // Never substitute a live button sample for a historical frame.
+                // That would run a different input stream from the other peers.
+                if (missing) break
                 if (!io.runFrameDirect(pads)) break
                 inputLog[execFrame] = pads.copyOf()
                 rbLastExecuted = execFrame
@@ -2233,7 +2256,7 @@ class NetplayController(
         }
     }
 
-    /** 回滚模式当前确认帧（全部活跃远端槽位输入都已到达的最大帧；无远端 = MAX）。 */
+    /** 回滚模式当前确认的执行帧（远端最新网络帧扣除 inputDelay；无远端 = MAX）。 */
     private fun rbConfirmedFrame(): Long {
         var min = Long.MAX_VALUE
         for (s in activeSlots) {
@@ -2242,7 +2265,7 @@ class NetplayController(
                 if (f < min) min = f
             }
         }
-        return min
+        return if (min == Long.MAX_VALUE) min else networkInputToExecutionFrame(min, inputDelay)
     }
 
     /** 检查点环里 < [target] 的最新检查点帧号（RB_INVALID = 无）。仅引擎线程。 */
@@ -2299,15 +2322,17 @@ class NetplayController(
         if (base == RB_INVALID) return false
         val lastExec = rbLastExecuted
         if (lastExec - base > RB_MAX_REPLAY) {
-            // ★★ v67 回退 v66"请求全员重开"（实测把可恢复的深抖动升级成全员重开，
-            //   旧服务器上更会把房间挂死在启动门）。且该分支几乎不可达：检查点环
-            //   32 帧 × 逐帧存档，正常重放深度 ≈ 预测窗+2。恢复旧语义 = 跳过本次
-            //   纠正继续跑（极端情况短暂不同步，后续正常纠错继续工作），绝不为此
-            //   打断整局对齐。
-            android.util.Log.w("NetplayController", "replay too deep (${lastExec - base}f) — skip correction")
+            android.util.Log.e("NetplayController",
+                "replay too deep (${lastExec - base}f) — pausing for room restart")
             rbPendingFrom.set(Long.MAX_VALUE)
-            dispatch { it.onNetplayWait("网络深度抖动：已跳过本次纠正，可能短暂不同步…") }
-            return true // 已处置（本帧继续跑）
+            gateEventPending = true
+            synchronized(syncGate) {
+                syncPaused = true
+                syncGate.notifyAll()
+            }
+            dispatch { it.onNetplayWait("网络抖动导致无法安全纠正，正在请求全员重开…") }
+            requestRestartOrReport("网络抖动导致回滚超出同步窗口")
+            return true
         }
         // 1) 丢掉预测帧产生的待播音频（防重复音效；重放的新样本随后入环）
         try { io.discardPendingAudio() } catch (_: Throwable) {}

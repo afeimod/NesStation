@@ -5356,7 +5356,8 @@ fun EmulatorScreen(
                                     }
                                     Toast.makeText(
                                         context,
-                                        if (ok) "已读取存档 [槽位 $slot]" else "读档失败：存档损坏或版本不兼容",
+                                        if (ok) "已读取存档 [槽位 $slot]"
+                                        else "读档失败：${engine.lastError().ifBlank { "核心不支持或存档无效" }}",
                                         if (ok) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
                                     ).show()
                                 }
@@ -5371,7 +5372,8 @@ fun EmulatorScreen(
                                     if (ok) {
                                         Toast.makeText(context, "已读取存档 [槽位 $slot]", Toast.LENGTH_SHORT).show()
                                     } else {
-                                        Toast.makeText(context, "读档失败：存档损坏或版本不兼容", Toast.LENGTH_SHORT).show()
+                                        val reason = engine.lastError().ifBlank { "核心不支持或存档无效" }
+                                        Toast.makeText(context, "读档失败：$reason", Toast.LENGTH_LONG).show()
                                     }
                                 } catch (e: Exception) {
                                     Toast.makeText(context, "读档失败: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -18143,7 +18145,7 @@ private fun SettingsPanel(
                     Text("当前核心：Citra MMJ（高性能老核心）。全部设置如下，" +
                         "与主界面 设置 → 核心设置 → 3DS (Citra MMJ) 完全同步；" +
                         "布局/自定义布局改动即时生效，其余下次进游戏生效。" +
-                        "即时存档 = 存档数据快照（配合游戏内存档点回滚），不支持联机。",
+                        "当前 MMJ 核心不支持即时存档与联机。",
                         color = Color(0xFF667788), fontSize = 10.sp, lineHeight = 14.sp)
                     Spacer(Modifier.size(6.dp))
 

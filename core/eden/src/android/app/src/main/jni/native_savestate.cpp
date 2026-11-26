@@ -3645,8 +3645,10 @@ RestoreOutcome RestoreStateBin(Core::System& system, const fs::path& state_path,
     //      失效，从还原后的 guest 内存重建（InvalidateGPUCache 与
     //      ReloadDiskShaderCache 同源语义） ----
     if (auto* rasterizer = system.Renderer().ReadRasterizer(); rasterizer != nullptr) {
-        rasterizer->InvalidateGPUCache();
+        // Drain commands from the discarded timeline before destroying cache
+        // objects they may still reference.
         rasterizer->FlushCommands();
+        rasterizer->InvalidateGPUCache();
     }
 
     // Host queues belong to the discarded timeline; clear them before audio resumes.

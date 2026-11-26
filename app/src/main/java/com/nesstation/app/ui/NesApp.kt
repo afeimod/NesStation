@@ -105,19 +105,24 @@ fun NesApp(nav: androidx.navigation.NavHostController) {
         return (nesGames + javaGames).distinctBy { it.id }
     }
 
-    var games by remember { mutableStateOf(loadAllGames(ctx)) }
+    var games by remember(ctx) { mutableStateOf(emptyList<GameEntry>()) }
+    var gamesRevision by remember(ctx) { mutableStateOf(0) }
+
+    LaunchedEffect(ctx, gamesRevision) {
+        games = withContext(Dispatchers.IO) { loadAllGames(ctx) }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                games = loadAllGames(ctx)
+                gamesRevision += 1
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val reloadGames: () -> Unit = { games = loadAllGames(ctx) }
+    val reloadGames: () -> Unit = { gamesRevision += 1 }
 
     if (isTv) {
         TvNavHost(nav = nav, games = games, reloadGames = reloadGames)

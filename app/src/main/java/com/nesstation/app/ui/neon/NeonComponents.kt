@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -69,6 +70,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nesstation.app.core.model.GameEntry
 import com.nesstation.app.core.model.GamePlatform
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 // =====================================================================
@@ -216,7 +219,18 @@ fun neonResolveCoverBitmap(
     } catch (_: Exception) { null }
     if (path != null) {
         try {
-            b = android.graphics.BitmapFactory.decodeFile(path)
+            val bounds = android.graphics.BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            android.graphics.BitmapFactory.decodeFile(path, bounds)
+            val largest = maxOf(bounds.outWidth, bounds.outHeight)
+            val sample = if (largest > 512) {
+                Integer.highestOneBit((largest / 512).coerceAtLeast(1))
+            } else 1
+            b = android.graphics.BitmapFactory.decodeFile(
+                path,
+                android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            )
         } catch (_: Exception) { b = null }
     }
     if (b == null) {
@@ -248,11 +262,15 @@ fun NeonCoverImage(
     cache: android.util.LruCache<String, android.graphics.Bitmap>
 ) {
     val context = LocalContext.current
-    val bmp = remember(neonCoverCacheKey(game)) {
-        neonResolveCoverBitmap(context, game, cache)
+    val key = neonCoverCacheKey(game)
+    val bmp by produceState<android.graphics.Bitmap?>(cache.get(key), key, context) {
+        if (value == null) value = withContext(Dispatchers.IO) {
+            neonResolveCoverBitmap(context, game, cache)
+        }
     }
+    val image = bmp ?: return
     Image(
-        bitmap = bmp.asImageBitmap(),
+        bitmap = image.asImageBitmap(),
         contentDescription = game.customTitle?.takeIf { it.isNotBlank() } ?: game.title,
         contentScale = ContentScale.Crop,
         modifier = Modifier.fillMaxSize()
@@ -278,8 +296,11 @@ fun NeonCoverBackdrop(
         return
     }
     val context = LocalContext.current
-    val bmp = remember(neonCoverCacheKey(game)) {
-        neonResolveCoverBitmap(context, game, cache)
+    val key = neonCoverCacheKey(game)
+    val bmp by produceState<android.graphics.Bitmap?>(cache.get(key), key, context) {
+        if (value == null) value = withContext(Dispatchers.IO) {
+            neonResolveCoverBitmap(context, game, cache)
+        }
     }
     Box(modifier = modifier.fillMaxSize()) {
         Crossfade(
@@ -288,7 +309,7 @@ fun NeonCoverBackdrop(
             label = "neon-cover-backdrop"
         ) { b ->
             Image(
-                bitmap = b.asImageBitmap(),
+                bitmap = b?.asImageBitmap() ?: return@Crossfade,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
